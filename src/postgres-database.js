@@ -250,6 +250,20 @@ class PostgresManager {
                 notes TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
+            `CREATE TABLE IF NOT EXISTS manual_postpaid_sales (
+                id SERIAL PRIMARY KEY,
+                customer_name TEXT NOT NULL,
+                amount DECIMAL(10,2) NOT NULL,
+                reason TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )`,
+            `CREATE TABLE IF NOT EXISTS manual_customer_receipts (
+                id SERIAL PRIMARY KEY,
+                customer_name TEXT NOT NULL,
+                amount DECIMAL(10,2) NOT NULL,
+                reason TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )`,
             `CREATE TABLE IF NOT EXISTS return_invoices (
                 id SERIAL PRIMARY KEY,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,

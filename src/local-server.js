@@ -487,49 +487,81 @@ class LocalWebServer {
             }
             if (dateTo) {
                 dateFilterSales += ' AND ps.created_at <= ?';
-                dateFilterReceipts += ' AND cr.created_at <= ?';
+                dateFilterSales += ' AND created_at <= ?';
+                dateFilterReceipts += ' AND created_at <= ?';
                 paramsSales.push(dateTo + ' 23:59:59');
                 paramsReceipts.push(dateTo + ' 23:59:59');
             }
 
-            // Get Debits (Sales) - المدين (لنا)
-            // Get Debits (Sales) - المدين (لنا)
+            // Get Debits (Sales) - From Reconciliations
             const sales = await this.dbManager.db.prepare(`
-                SELECT
-            ps.id,
-                ps.amount,
-                ps.created_at,
-                'مبيعات آجلة' as type,
+            SELECT 
+                ps.id, 
+                ps.amount, 
+                ps.created_at, 
+                'مبيعات آجلة' as type, 
                 'فاتورة مبيعات' as description,
                 c.name as cashier_name,
                 r.reconciliation_number
-                FROM postpaid_sales ps 
-                LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
-                LEFT JOIN cashiers c ON r.cashier_id = c.id
-                WHERE ps.customer_name = ? ${dateFilterSales}
-            `).all(paramsSales);
+            FROM postpaid_sales ps 
+            LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
+            LEFT JOIN cashiers c ON r.cashier_id = c.id
+            WHERE ps.customer_name = ? ${dateFilterSales.replace(/created_at/g, 'ps.created_at')}
+        `).all(paramsSales);
 
-            // Get Credits (Receipts) - الدائن (لهم)
+            // Get Manual Debits (Sales)
+            const manualSales = await this.dbManager.db.prepare(`
+            SELECT 
+                id, 
+                amount, 
+                created_at, 
+                'مبيعات يدوية' as type, 
+                reason as description,
+                'مسؤول النظام' as cashier_name,
+                NULL as reconciliation_number
+            FROM manual_postpaid_sales 
+            WHERE customer_name = ? ${dateFilterSales}
+        `).all(paramsSales);
+
+
+            // Get Credits (Receipts) - From Reconciliations
             const receipts = await this.dbManager.db.prepare(`
-            SELECT
-            cr.id,
-                cr.amount,
-                cr.payment_type,
-                cr.created_at,
-                'سند قبض' as type,
+            SELECT 
+                cr.id, 
+                cr.amount, 
+                cr.payment_type, 
+                cr.created_at, 
+                'سند قبض' as type, 
                 'سداد - ' || cr.payment_type as description,
                 c.name as cashier_name,
                 r.reconciliation_number
-                FROM customer_receipts cr 
-                LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
-                LEFT JOIN cashiers c ON r.cashier_id = c.id
-                WHERE cr.customer_name = ? ${dateFilterReceipts}
-            `).all(paramsReceipts);
+            FROM customer_receipts cr 
+            LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
+            LEFT JOIN cashiers c ON r.cashier_id = c.id
+            WHERE cr.customer_name = ? ${dateFilterReceipts.replace(/created_at/g, 'cr.created_at')}
+        `).all(paramsReceipts);
+
+            // Get Manual Credits (Receipts)
+            const manualReceipts = await this.dbManager.db.prepare(`
+            SELECT 
+                id, 
+                amount, 
+                'نقدي' as payment_type, 
+                created_at, 
+                'سند قبض يدوي' as type, 
+                reason as description,
+                'مسؤول النظام' as cashier_name,
+                NULL as reconciliation_number
+            FROM manual_customer_receipts 
+            WHERE customer_name = ? ${dateFilterReceipts}
+        `).all(paramsReceipts);
 
             // Combine and sort
             const ledger = [
                 ...sales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
-                ...receipts.map(r => ({ ...r, debit: 0, credit: r.amount }))
+                ...manualSales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
+                ...receipts.map(r => ({ ...r, debit: 0, credit: r.amount })),
+                ...manualReceipts.map(r => ({ ...r, debit: 0, credit: r.amount }))
             ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
             this.sendJson(res, { success: true, data: ledger });
@@ -538,7 +570,6 @@ class LocalWebServer {
             this.sendJson(res, { success: false, error: error.message });
         }
     }
-
     async handleGetCustomersSummary(res) {
         try {
             const sql = `
@@ -1092,6 +1123,48 @@ class LocalWebServer {
                         { name: 'id' }, { name: 'reconciliation_number' }, { name: 'cashier_id' },
                         { name: 'accountant_id' }, { name: 'reconciliation_date' }, { name: 'system_sales' },
                         { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' }
+                    ]);
+                }
+
+                if (data.cash_receipts) {
+                    await syncTable('cash_receipts', data.cash_receipts, [
+                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'denomination' },
+                        { name: 'quantity' }, { name: 'total_amount' }
+                    ]);
+                }
+
+                if (data.bank_receipts) {
+                    await syncTable('bank_receipts', data.bank_receipts, [
+                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'operation_type' },
+                        { name: 'atm_id' }, { name: 'amount' }
+                    ]);
+                }
+
+                if (data.postpaid_sales) {
+                    await syncTable('postpaid_sales', data.postpaid_sales, [
+                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_name' },
+                        { name: 'amount' } //, {name: 'notes'}
+                    ]);
+                }
+
+                if (data.customer_receipts) {
+                    await syncTable('customer_receipts', data.customer_receipts, [
+                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_name' },
+                        { name: 'amount' }, { name: 'payment_type' } //, {name: 'notes'}
+                    ]);
+                }
+
+                if (data.manual_postpaid_sales) {
+                    await syncTable('manual_postpaid_sales', data.manual_postpaid_sales, [
+                        { name: 'id' }, { name: 'customer_name' }, { name: 'amount' },
+                        { name: 'reason' }, { name: 'created_at' }
+                    ]);
+                }
+
+                if (data.manual_customer_receipts) {
+                    await syncTable('manual_customer_receipts', data.manual_customer_receipts, [
+                        { name: 'id' }, { name: 'customer_name' }, { name: 'amount' },
+                        { name: 'reason' }, { name: 'created_at' }
                     ]);
                 }
 
