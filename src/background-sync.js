@@ -32,12 +32,12 @@ function startBackgroundSync(dbManager) {
             const accountants = db.prepare('SELECT * FROM accountants').all();
             const atms = db.prepare('SELECT * FROM atms').all();
 
-            // Sync last 100 reconciliations
+            // Sync EXTENSIVE history (Last 10,000 records essentially all)
             const reconciliations = db.prepare(`
-                SELECT * FROM reconciliations
+                SELECT * FROM reconciliations 
                 WHERE status = 'completed'
-                ORDER BY id DESC
-                LIMIT 100
+                ORDER BY id DESC 
+                LIMIT 10000
             `).all();
 
             // Get IDs for detail fetching
@@ -46,10 +46,8 @@ function startBackgroundSync(dbManager) {
 
             let cash_receipts = [];
             let bank_receipts = [];
-            let postpaid_sales = [];
-            let customer_receipts = []; // reconciliations linked
 
-            // Manual entries (Independent) - Increase limit
+            // Manual entries (Independent)
             const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC LIMIT 2000').all();
             const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC LIMIT 2000').all();
 
@@ -59,9 +57,10 @@ function startBackgroundSync(dbManager) {
             const customer_receipts = db.prepare('SELECT * FROM customer_receipts ORDER BY id DESC LIMIT 5000').all();
 
             if (recIdsParams) {
+                // Fetch details for ALL synced reconciliations
                 cash_receipts = db.prepare(`SELECT * FROM cash_receipts WHERE reconciliation_id IN (${recIdsParams})`).all();
+                // ATM Reports associated with synced reconciliations
                 bank_receipts = db.prepare(`SELECT * FROM bank_receipts WHERE reconciliation_id IN (${recIdsParams})`).all();
-                // postpaid_sales and customer_receipts are now fetched separately above
             }
 
             // Prepare Payload with ALL details
