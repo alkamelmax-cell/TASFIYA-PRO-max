@@ -33,6 +33,8 @@ class BackgroundSync {
         try {
             const db = this.dbManager.db;
 
+            // --- PUSH: Upload Local Data ---
+
             // 1. Fetch Lookups (Small data, send all at once)
             const admins = db.prepare('SELECT * FROM admins').all();
             const branches = db.prepare('SELECT * FROM branches').all();
@@ -59,15 +61,17 @@ class BackgroundSync {
             const customer_receipts = db.prepare('SELECT * FROM customer_receipts ORDER BY id DESC').all();
             await this.sendInBatches('customer_receipts', customer_receipts, 500);
 
-            // 4. Fetch Details Linked to Reconciliations (Optional optimization: only sync relevant ones, but full sync is safer)
-            // For now, let's sync ALL cash/bank receipts too, to ensure reports work fully
+            // 4. Fetch Details Linked to Reconciliations
             const cash_receipts = db.prepare('SELECT * FROM cash_receipts ORDER BY id DESC LIMIT 10000').all();
             await this.sendInBatches('cash_receipts', cash_receipts, 500);
 
             const bank_receipts = db.prepare('SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000').all();
             await this.sendInBatches('bank_receipts', bank_receipts, 500);
 
-            console.log('✅ [SYNC] Full sync completed successfully');
+            console.log('✅ [SYNC] Push completed successfully');
+
+            // --- PULL: Fetch Remote Requests (Reconciliation Requests) ---
+            await this.fetchRemoteRequests(db);
 
         } catch (error) {
             console.error('⚠️ [SYNC] Error:', error.message);
@@ -98,17 +102,86 @@ class BackgroundSync {
             if (!res.ok) throw new Error(`HTTP Error: ${res.status} ${res.statusText}`);
             // console.log(`📤 [SYNC] Sent ${Object.keys(dataToSend).join(', ')}`);
         } catch (e) {
-        } else {
-            console.error('❌ [SYNC] Error:', e.message);
+            console.error(`❌ [SYNC] Error sending ${Object.keys(dataToSend).join(', ')}:`, e.message);
+            throw e;
+        }
+    }
+
+    // Helper: Split array into chunks and send
+    async sendInBatches(key, items, batchSize = 500) {
+        if (!items || items.length === 0) return;
+
+        console.log(`📦 [SYNC] Syncing ${key} (${items.length} items)...`);
+
+        for (let i = 0; i < items.length; i += batchSize) {
+            const chunk = items.slice(i, i + batchSize);
+            await this.sendPayload({ [key]: chunk });
+            await new Promise(r => setTimeout(r, 100));
+        }
+    }
+
+    // Helper: Pull Requests from Web
+    async fetchRemoteRequests(db) {
+        try {
+            // Adjust URL to point to GET /api/reconciliation-requests
+            // BASE URL is https://tasfiya-pro-max.onrender.com/api/sync/users
+            // We need https://tasfiya-pro-max.onrender.com/api/reconciliation-requests
+            const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests');
+
+            const res = await fetch(reqUrl);
+            if (!res.ok) return;
+
+            const json = await res.json();
+            if (json.success && json.data && Array.isArray(json.data)) {
+                const requests = json.data;
+                const insertStmt = db.prepare(`
+                    INSERT OR IGNORE INTO reconciliation_requests (
+                        id, cashier_id, status, notes, details_json, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                `);
+
+                const updateStmt = db.prepare(`
+                    UPDATE reconciliation_requests 
+                    SET status = ?, notes = ?, details_json = ? 
+                    WHERE id = ?
+                `);
+
+                let newCount = 0;
+                const existingIds = db.prepare('SELECT id FROM reconciliation_requests').all().map(r => r.id);
+
+                db.transaction(() => {
+                    requests.forEach(r => {
+                        const details = typeof r.details === 'object' ? JSON.stringify(r.details) : r.details_json;
+                        // Use ID from server to ensure sync consistency? 
+                        // Actually, desktop usually creates its own IDs. 
+                        // If Web creates IDs, we should respect them OR map them.
+                        // Assuming these act as "External Requests", we can use their ID if available
+
+                        if (existingIds.includes(r.id)) {
+                            updateStmt.run(r.status, r.notes, details, r.id);
+                        } else {
+                            insertStmt.run(r.id, r.cashier_id, r.status, r.notes, details, r.created_at);
+                            newCount++;
+                        }
+                    });
+                })();
+
+                if (newCount > 0) console.log(`📥 [SYNC] Downloaded ${newCount} new reconciliation requests.`);
+            }
+        } catch (e) {
+            console.error('⚠️ [SYNC] Failed to fetch requests:', e.message);
         }
     }
 }
 
-// Run immediately once
-doSync();
+// Wrapper for backward compatibility (Singleton pattern)
+let syncInstance = null;
 
-// Schedule
-setInterval(doSync, SYNC_INTERVAL_MS);
+function startBackgroundSync(dbManager) {
+    if (!syncInstance) {
+        syncInstance = new BackgroundSync(dbManager);
+        syncInstance.start();
+    }
 }
 
 module.exports = { startBackgroundSync };
