@@ -161,13 +161,13 @@
 
         async function loadCashiers() {
             try {
-                const res = await fetch(`${API_URL}/cashiers-list`);
+                const res = await fetch(`${API_URL}/lookups`);
                 const result = await res.json();
 
-                if (result.success) {
-                    renderTable(result.data);
+                if (result.success && result.cashiers) {
+                    renderTable(result.cashiers);
                 } else {
-                    console.error(result.error);
+                    console.error(result.error || 'No cashiers data');
                 }
             } catch (error) {
                 console.error(error);
@@ -186,7 +186,9 @@
             cashiers.forEach((c, index) => {
                 const tr = document.createElement('tr');
 
-                const statusBadge = c.has_pin
+                // Check if PIN is set (either has_pin or pin_code)
+                const hasPinSet = c.has_pin || (c.pin_code && c.pin_code.trim().length > 0);
+                const statusBadge = hasPinSet
                     ? '<span class="badge bg-success bg-opacity-75 pin-status-badge"><i class="fas fa-check me-1"></i> مفعل</span>'
                     : '<span class="badge bg-danger bg-opacity-75 pin-status-badge"><i class="fas fa-times me-1"></i> غير مفعل</span>';
 
