@@ -143,6 +143,9 @@ class LocalWebServer {
                 else if (pathname === '/api/atms') {
                     await this.handleGetAtms(res);
                 }
+                else if (pathname === '/api/sync/users' && req.method === 'POST') {
+                    await this.handleSyncUsers(req, res);
+                }
                 else {
                     res.writeHead(404, { 'Content-Type': 'text/plain' });
                     res.end('Not Found');
@@ -943,6 +946,91 @@ class LocalWebServer {
             console.error('Error fetching customers:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
+    }
+
+    async handleSyncUsers(req, res) {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const data = JSON.parse(body);
+                console.log('🔄 [SYNC] Received sync data:', Object.keys(data));
+
+                // Helper to sync table
+                const syncTable = async (table, items, columns, conflictCol = 'id') => {
+                    if (!items || items.length === 0) return;
+                    console.log(`🔄 [SYNC] Syncing ${table} (${items.length} items)...`);
+
+                    const cols = columns.map(c => c.name);
+                    const updateSets = cols.map(c => `${c} = EXCLUDED.${c}`).join(', ');
+
+                    // Simple loop - optimized for correctness over speed
+                    for (const item of items) {
+                        try {
+                            // Build values array in order of cols
+                            const values = cols.map(c => {
+                                let val = item[c];
+                                if (typeof val === 'object' && val !== null) return JSON.stringify(val);
+                                return val;
+                            });
+
+                            // Generate placeholders ($1, $2...)
+                            const placeholders = values.map((_, i) => '$' + (i + 1)).join(', ');
+
+                            const sql = `
+                                INSERT INTO ${table} (${cols.join(', ')})
+                                VALUES (${placeholders})
+                                ON CONFLICT (${conflictCol}) DO UPDATE SET 
+                                ${updateSets}
+                            `;
+
+                            await this.dbManager.db.prepare(sql).run(...values);
+                        } catch (err) {
+                            console.error(`❌ [SYNC] Error syncing ${table} item ${item.id}:`, err.message);
+                        }
+                    }
+                };
+
+                if (data.branches) {
+                    await syncTable('branches', data.branches, [
+                        { name: 'id' }, { name: 'branch_name' }, { name: 'branch_address' },
+                        { name: 'branch_phone' }, { name: 'is_active' }
+                    ]);
+                }
+
+                if (data.admins) {
+                    await syncTable('admins', data.admins, [
+                        { name: 'id' }, { name: 'name' }, { name: 'username' },
+                        { name: 'password' }, { name: 'role' }, { name: 'active' }, { name: 'permissions' }
+                    ]);
+                }
+
+                if (data.cashiers) {
+                    await syncTable('cashiers', data.cashiers, [
+                        { name: 'id' }, { name: 'name' }, { name: 'cashier_number' },
+                        { name: 'branch_id' }, { name: 'active' }, { name: 'pin_code' }
+                    ]);
+                }
+
+                if (data.accountants) {
+                    await syncTable('accountants', data.accountants, [
+                        { name: 'id' }, { name: 'name' }, { name: 'active' }
+                    ]);
+                }
+
+                if (data.atms) {
+                    await syncTable('atms', data.atms, [
+                        { name: 'id' }, { name: 'name' }, { name: 'bank_name' },
+                        { name: 'location' }, { name: 'branch_id' }, { name: 'active' }
+                    ]);
+                }
+
+                this.sendJson(res, { success: true, message: 'Sync completed' });
+            } catch (error) {
+                console.error('❌ [SYNC] Error:', error);
+                this.sendJson(res, { success: false, error: error.message });
+            }
+        });
     }
 
     sendJson(res, data) {
