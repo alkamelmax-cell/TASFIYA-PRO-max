@@ -32,17 +32,39 @@ function startBackgroundSync(dbManager) {
             const accountants = db.prepare('SELECT * FROM accountants').all();
             const atms = db.prepare('SELECT * FROM atms').all();
 
-            // Sync last 100 reconciliations only (to avoid huge payload)
+            // Sync last 100 reconciliations
             const reconciliations = db.prepare(`
-                SELECT * FROM reconciliations 
+                SELECT * FROM reconciliations
                 WHERE status = 'completed'
-                ORDER BY id DESC 
+                ORDER BY id DESC
                 LIMIT 100
             `).all();
 
-            // Prepare Payload
+            // Get IDs for detail fetching
+            const recIds = reconciliations.map(r => r.id);
+            const recIdsParams = recIds.length ? recIds.join(',') : null;
+
+            let cash_receipts = [];
+            let bank_receipts = [];
+            let postpaid_sales = [];
+            let customer_receipts = []; // reconciliations linked
+
+            // Manual entries (Independent of reconciliations)
+            const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC LIMIT 500').all();
+            const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC LIMIT 500').all();
+
+            if (recIdsParams) {
+                cash_receipts = db.prepare(`SELECT * FROM cash_receipts WHERE reconciliation_id IN (${recIdsParams})`).all();
+                bank_receipts = db.prepare(`SELECT * FROM bank_receipts WHERE reconciliation_id IN (${recIdsParams})`).all();
+                postpaid_sales = db.prepare(`SELECT * FROM postpaid_sales WHERE reconciliation_id IN (${recIdsParams})`).all();
+                customer_receipts = db.prepare(`SELECT * FROM customer_receipts WHERE reconciliation_id IN (${recIdsParams})`).all();
+            }
+
+            // Prepare Payload with ALL details
             const payload = {
-                admins, branches, cashiers, accountants, atms, reconciliations
+                admins, branches, cashiers, accountants, atms, reconciliations,
+                cash_receipts, bank_receipts, postpaid_sales, customer_receipts,
+                manual_postpaid_sales, manual_customer_receipts
             };
 
             // Send to Cloud
