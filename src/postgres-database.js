@@ -32,6 +32,14 @@ class PostgresManager {
             // Fix denomination column type from INTEGER to DECIMAL to support fraction coins (0.5, 0.25)
             // This is safe to run multiple times (it will just set the type)
             await client.query('ALTER TABLE cash_receipts ALTER COLUMN denomination TYPE DECIMAL(10,2)');
+
+            // Ensure username is UNIQUE for admins (Critical for Sync ON CONFLICT logic)
+            try {
+                await client.query('ALTER TABLE admins ADD CONSTRAINT admins_username_key UNIQUE (username)');
+            } catch (e) {
+                // Ignore if constraint already exists
+            }
+
             client.release();
             console.log('✅ [DB] Schema migration applied (cash_receipts modified).');
         } catch (error) {
