@@ -1039,12 +1039,74 @@ class LocalWebServer {
                     ]);
                 }
 
+                if (data.reconciliations) {
+                    await syncTable('reconciliations', data.reconciliations, [
+                        { name: 'id' }, { name: 'reconciliation_number' }, { name: 'cashier_id' },
+                        { name: 'accountant_id' }, { name: 'reconciliation_date' }, { name: 'system_sales' },
+                        { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' }
+                    ]);
+                }
+
                 this.sendJson(res, { success: true, message: 'Sync completed' });
             } catch (error) {
                 console.error('❌ [SYNC] Error:', error);
                 this.sendJson(res, { success: false, error: error.message });
             }
         });
+    }
+
+    async handleGetUsers(res) {
+        try {
+            const users = this.dbManager.db.prepare(`
+                SELECT id, name, username, role, active, permissions, created_at 
+                FROM admins 
+                ORDER BY id DESC
+            `).all();
+
+            this.sendJson(res, { success: true, users });
+        } catch (error) {
+            this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    async handleSaveUser(req, res) {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const user = JSON.parse(body);
+
+                if (user.id) {
+                    // Update
+                    this.dbManager.db.prepare(`
+                        UPDATE admins 
+                        SET name = ?, username = ?, role = ?, active = ?, permissions = ?
+                        WHERE id = ?
+                    `).run(user.name, user.username, user.role, user.active ? 1 : 0,
+                        JSON.stringify(user.permissions || []), user.id);
+                } else {
+                    // Insert
+                    this.dbManager.db.prepare(`
+                        INSERT INTO admins (name, username, password, role, active, permissions)
+                        VALUES (?, ?, ?, ?, ?, ?)
+                    `).run(user.name, user.username, user.password || 'admin123',
+                        user.role, user.active ? 1 : 0, JSON.stringify(user.permissions || []));
+                }
+
+                this.sendJson(res, { success: true });
+            } catch (error) {
+                this.sendJson(res, { success: false, error: error.message });
+            }
+        });
+    }
+
+    async handleDeleteUser(res, id) {
+        try {
+            this.dbManager.db.prepare('DELETE FROM admins WHERE id = ?').run(id);
+            this.sendJson(res, { success: true });
+        } catch (error) {
+            this.sendJson(res, { success: false, error: error.message });
+        }
     }
 
     sendJson(res, data) {

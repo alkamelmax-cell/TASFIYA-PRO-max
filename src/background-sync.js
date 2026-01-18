@@ -32,9 +32,17 @@ function startBackgroundSync(dbManager) {
             const accountants = db.prepare('SELECT * FROM accountants').all();
             const atms = db.prepare('SELECT * FROM atms').all();
 
+            // Sync last 100 reconciliations only (to avoid huge payload)
+            const reconciliations = db.prepare(`
+                SELECT * FROM reconciliations 
+                WHERE status = 'completed'
+                ORDER BY id DESC 
+                LIMIT 100
+            `).all();
+
             // Prepare Payload
             const payload = {
-                admins, branches, cashiers, accountants, atms
+                admins, branches, cashiers, accountants, atms, reconciliations
             };
 
             // Send to Cloud
