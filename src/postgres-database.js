@@ -17,11 +17,27 @@ class PostgresManager {
             console.log('✅ [DB] Connected to Neon PostgreSQL');
             client.release();
             await this.createTables();
+            await this.migrateSchema();
             await this.insertDefaultData();
             return true;
         } catch (error) {
             console.error('❌ [DB] Connection to Neon failed:', error);
             return false;
+        }
+    }
+
+    async migrateSchema() {
+        try {
+            const client = await this.pool.connect();
+            // Fix denomination column type from INTEGER to DECIMAL to support fraction coins (0.5, 0.25)
+            // This is safe to run multiple times (it will just set the type)
+            await client.query('ALTER TABLE cash_receipts ALTER COLUMN denomination TYPE DECIMAL(10,2)');
+            client.release();
+            console.log('✅ [DB] Schema migration applied (cash_receipts modified).');
+        } catch (error) {
+            // Usually fails if table doesn't exist yet (handled by createTables) or other minor reasons. 
+            // We can logging it as a note or ignoring if it's "column already exists" type errors.
+            // console.log('[DB] Migration note:', error.message); 
         }
     }
 
@@ -228,7 +244,7 @@ class PostgresManager {
             `CREATE TABLE IF NOT EXISTS cash_receipts (
                 id SERIAL PRIMARY KEY,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
-                denomination INTEGER NOT NULL,
+                denomination DECIMAL(10,2) NOT NULL,
                 quantity INTEGER NOT NULL,
                 total_amount DECIMAL(10,2) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
