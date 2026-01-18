@@ -33,15 +33,21 @@ class PostgresManager {
         return {
             get: async (...params) => {
                 try {
-                    const res = await executor.query(pgSql, params);
+                    // ROOT FIX: Only pass params array if it's not empty
+                    const res = params.length > 0
+                        ? await executor.query(pgSql, params)
+                        : await executor.query(pgSql);
                     return res.rows[0];
-                } catch (e) { console.error('PG Get Error:', e.message, pgSql); throw e; }
+                } catch (e) { console.error('PG Get Error:', e.message, pgSql, 'Params:', params); throw e; }
             },
             all: async (...params) => {
                 try {
-                    const res = await executor.query(pgSql, params);
+                    // ROOT FIX: Only pass params array if it's not empty
+                    const res = params.length > 0
+                        ? await executor.query(pgSql, params)
+                        : await executor.query(pgSql);
                     return res.rows;
-                } catch (e) { console.error('PG All Error:', e.message, pgSql); throw e; }
+                } catch (e) { console.error('PG All Error:', e.message, pgSql, 'Params:', params); throw e; }
             },
             run: async (...params) => {
                 let finalSql = pgSql; // Move outside try
@@ -52,14 +58,17 @@ class PostgresManager {
                         finalSql += ' RETURNING id';
                     }
 
-                    const res = await executor.query(finalSql, params);
+                    // ROOT FIX: Only pass params array if it's not empty
+                    const res = params.length > 0
+                        ? await executor.query(finalSql, params)
+                        : await executor.query(finalSql);
 
                     let lastId = 0;
                     if (isInsert && res.rows.length > 0) {
                         lastId = res.rows[0].id; // Postgres usually returns id column
                     }
                     return { changes: res.rowCount, lastInsertRowid: lastId };
-                } catch (e) { console.error('PG Run Error:', e.message, finalSql); throw e; }
+                } catch (e) { console.error('PG Run Error:', e.message, finalSql, 'Params:', params); throw e; }
             }
         };
     }
