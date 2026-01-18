@@ -577,6 +577,13 @@ class LocalWebServer {
     }
     async handleGetCustomersSummary(res) {
         try {
+            // Determine DB type for compatibility
+            // SQLite uses MAX(a,b,c), Postgres uses GREATEST(a,b,c)
+            // Postgres throws error on empty string for timestamp, SQLite accepts it
+            const isPostgres = !!process.env.DATABASE_URL;
+            const greatestFunc = isPostgres ? 'GREATEST' : 'MAX';
+            const defaultDate = isPostgres ? "'1970-01-01 00:00:00'" : "''";
+
             // Complex query to get balance (Sales - Receipts) + Manual Entries
             const sql = `
             SELECT 
@@ -584,7 +591,12 @@ class LocalWebServer {
                 COALESCE(sales.total_debit, 0) + COALESCE(manual_sales.total_debit, 0) as total_debit,
                 COALESCE(receipts.total_credit, 0) + COALESCE(manual_receipts.total_credit, 0) as total_credit,
                 (COALESCE(sales.total_debit, 0) + COALESCE(manual_sales.total_debit, 0)) - (COALESCE(receipts.total_credit, 0) + COALESCE(manual_receipts.total_credit, 0)) as balance,
-                MAX(COALESCE(sales.last_date, ''), COALESCE(receipts.last_date, ''), COALESCE(manual_sales.last_date, ''), COALESCE(manual_receipts.last_date, '')) as last_transaction,
+                ${greatestFunc}(
+                    COALESCE(sales.last_date, ${defaultDate}), 
+                    COALESCE(receipts.last_date, ${defaultDate}), 
+                    COALESCE(manual_sales.last_date, ${defaultDate}), 
+                    COALESCE(manual_receipts.last_date, ${defaultDate})
+                ) as last_transaction,
                 (COALESCE(sales.count, 0) + COALESCE(manual_sales.count, 0) + COALESCE(receipts.count, 0) + COALESCE(manual_receipts.count, 0)) as transaction_count,
                  (
                     SELECT b.branch_name 
