@@ -970,41 +970,63 @@ class LocalWebServer {
                 const data = JSON.parse(body);
                 console.log('🔄 [SYNC] Received sync data:', Object.keys(data));
 
-                // Helper to sync table
+                // **ROOT FIX**: Use pool.query() directly for PostgreSQL
+                const pool = this.dbManager.pool || this.dbManager.db.pool;
+
+                if (!pool) {
+                    throw new Error('Database pool not available');
+                }
+
+                // Helper to sync table using CORRECT PostgreSQL async pattern
                 const syncTable = async (table, items, columns, conflictCol = 'id') => {
-                    if (!items || items.length === 0) return;
+                    if (!items || items.length === 0) {
+                        console.log(`⏭️ [SYNC] Skipping ${table} (no items)`);
+                        return;
+                    }
+
                     console.log(`🔄 [SYNC] Syncing ${table} (${items.length} items)...`);
 
                     const cols = columns.map(c => c.name);
                     const updateSets = cols.map(c => `${c} = EXCLUDED.${c}`).join(', ');
 
-                    // Simple loop - optimized for correctness over speed
+                    let successCount = 0;
+                    let errorCount = 0;
+
+                    // Sync each item individually (safe but slower - optimized for correctness)
                     for (const item of items) {
                         try {
-                            // Build values array in order of cols
+                            // Build values array in column order
                             const values = cols.map(c => {
                                 let val = item[c];
+                                // Serialize objects/arrays to JSON for PostgreSQL
                                 if (typeof val === 'object' && val !== null) return JSON.stringify(val);
+                                // Convert undefined to null
+                                if (val === undefined) return null;
                                 return val;
                             });
 
-                            // Generate placeholders ($1, $2...)
-                            const placeholders = values.map((_, i) => '$' + (i + 1)).join(', ');
+                            // Generate PostgreSQL placeholders ($1, $2, ...)
+                            const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
 
                             const sql = `
                                 INSERT INTO ${table} (${cols.join(', ')})
                                 VALUES (${placeholders})
-                                ON CONFLICT (${conflictCol}) DO UPDATE SET 
-                                ${updateSets}
+                                ON CONFLICT (${conflictCol}) DO UPDATE SET ${updateSets}
                             `;
 
-                            await this.dbManager.db.prepare(sql).run(...values);
+                            // **CRITICAL FIX**: Use pool.query() directly
+                            await pool.query(sql, values);
+                            successCount++;
                         } catch (err) {
-                            console.error(`❌ [SYNC] Error syncing ${table} item ${item.id}:`, err.message);
+                            errorCount++;
+                            console.error(`❌ [SYNC] Error syncing ${table} item ${item.id || 'unknown'}:`, err.message);
                         }
                     }
+
+                    console.log(`✅ [SYNC] ${table}: ${successCount}/${items.length} synced (${errorCount} errors)`);
                 };
 
+                // Sync all tables in dependency order
                 if (data.branches) {
                     await syncTable('branches', data.branches, [
                         { name: 'id' }, { name: 'branch_name' }, { name: 'branch_address' },
@@ -1012,23 +1034,24 @@ class LocalWebServer {
                     ]);
                 }
 
+                if (data.accountants) {
+                    await syncTable('accountants', data.accountants, [
+                        { name: 'id' }, { name: 'name' }, { name: 'active' }
+                    ]);
+                }
+
                 if (data.admins) {
+                    // For admins, use username as conflict key to handle duplicate usernames
                     await syncTable('admins', data.admins, [
                         { name: 'id' }, { name: 'name' }, { name: 'username' },
                         { name: 'password' }, { name: 'role' }, { name: 'active' }, { name: 'permissions' }
-                    ]);
+                    ], 'username'); // Use username instead of id to avoid constraint violations
                 }
 
                 if (data.cashiers) {
                     await syncTable('cashiers', data.cashiers, [
                         { name: 'id' }, { name: 'name' }, { name: 'cashier_number' },
                         { name: 'branch_id' }, { name: 'active' }, { name: 'pin_code' }
-                    ]);
-                }
-
-                if (data.accountants) {
-                    await syncTable('accountants', data.accountants, [
-                        { name: 'id' }, { name: 'name' }, { name: 'active' }
                     ]);
                 }
 
@@ -1047,9 +1070,10 @@ class LocalWebServer {
                     ]);
                 }
 
-                this.sendJson(res, { success: true, message: 'Sync completed' });
+                console.log('✅ [SYNC] Full sync completed successfully');
+                this.sendJson(res, { success: true, message: 'Full sync completed' });
             } catch (error) {
-                console.error('❌ [SYNC] Error:', error);
+                console.error('❌ [SYNC] Fatal error:', error);
                 this.sendJson(res, { success: false, error: error.message });
             }
         });
