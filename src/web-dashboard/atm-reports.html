@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>تصفية برو - تقرير الصراف</title>
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Almarai:wght@300;400;700;800&display=swap" rel="stylesheet">
+
+    <!-- Bootstrap RTL CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/custom.css?v=2">
+    <style>
+        /* Better Table Padding - Fix for cells touching borders */
+        .table-container table th,
+        .table-container table td {
+            padding: 0.85rem 1rem !important;
+            vertical-align: middle !important;
+        }
+
+        /* Ensure numbers don't touch borders */
+        .table-container table td.text-ltr {
+            padding-right: 1.2rem !important;
+            padding-left: 1.2rem !important;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- Loading Overlay -->
+    <div id="loading"
+        style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(15,23,42,0.9);z-index:9999;display:none;align-items:center;justify-content:center;">
+        <div class="spinner-border text-primary" style="width:3rem;height:3rem;" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+
+    <!-- Navbar -->
+    <nav class="custom-navbar navbar-layout mb-4">
+        <!-- Brand Section -->
+        <div class="navbar-brand-section">
+            <div class="nav-brand d-flex align-items-center gap-2">
+                <i class="fas fa-receipt brand-icon"></i>
+                <span class="brand-text">تصفية <span class="pro-badge">Pro</span></span>
+            </div>
+        </div>
+
+        <!-- Links Section -->
+        <div class="navbar-links-section">
+            <a href="index.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-home me-1"></i> الرئيسية
+            </a>
+            <a href="atm-reports.html"
+                class="btn btn-sm btn-primary fw-bold text-white px-3 py-2 rounded-pill shadow-sm">
+                <i class="fas fa-credit-card me-1"></i> تقرير الصراف
+            </a>
+            <a href="customer-ledger.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-book me-1"></i> دفتر العملاء
+            </a>
+            <a href="users-management.html" id="navUsersMgmt"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-users-cog me-1"></i> إدارة المستخدمين
+            </a>
+            <a href="cashiers-management.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-cash-register me-1"></i> إدارة الكاشير
+            </a>
+        </div>
+
+        <!-- User Section -->
+        <div class="dropdown navbar-user-section">
+            <button class="user-profile-btn" type="button" data-bs-toggle="dropdown">
+                <div class="bg-primary rounded-circle d-flex align-items-center justify-content-center"
+                    style="width: 32px; height: 32px;">
+                    <i class="fas fa-user text-white"></i>
+                </div>
+                <span id="userNameDisplay" class="d-none d-md-inline fw-bold font-monospace small">Admin</span>
+                <i class="fas fa-chevron-down small opacity-50"></i>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end bg-card border-secondary shadow-lg mt-2">
+                <li><a class="dropdown-item text-danger d-flex align-items-center gap-2" href="#" onclick="logout()">
+                        <i class="fas fa-sign-out-alt"></i> تسجيل الخروج
+                    </a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container-fluid px-3 px-md-4">
+
+        <!-- Stats Row -->
+        <div class="row g-3 mb-4">
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-credit-card icon-wrapper text-primary"></i>
+                    <div class="stat-label">عمليات الصراف</div>
+                    <div class="stat-value text-primary" id="statsAtmOps">0</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-coins icon-wrapper text-success"></i>
+                    <div class="stat-label">إجمالي المبالغ</div>
+                    <div class="stat-value text-success" id="statsAtmTotal">0</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-chart-line icon-wrapper text-info"></i>
+                    <div class="stat-label">متوسط المبلغ</div>
+                    <div class="stat-value text-info" id="statsAtmAvg">0</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-trophy icon-wrapper text-warning"></i>
+                    <div class="stat-label">أعلى مبلغ</div>
+                    <div class="stat-value text-warning" id="statsAtmMax">0</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="filter-container mb-4">
+            <div class="section-title">
+                <i class="fas fa-search small text-primary"></i>
+                البحث والفلترة
+            </div>
+            <div class="row g-3">
+                <div class="col-6 col-md-3">
+                    <label class="custom-label">من تاريخ</label>
+                    <input type="date" class="custom-input w-100" id="filterDateFrom">
+                </div>
+                <div class="col-6 col-md-3">
+                    <label class="custom-label">إلى تاريخ</label>
+                    <input type="date" class="custom-input w-100" id="filterDateTo">
+                </div>
+                <div class="col-6 col-md-2">
+                    <label class="custom-label">الكاشير</label>
+                    <select class="custom-input form-select w-100" id="filterCashier">
+                        <option value="all">الكل</option>
+                    </select>
+                </div>
+                <div class="col-6 col-md-2">
+                    <label class="custom-label">الفرع</label>
+                    <select class="custom-input form-select w-100" id="filterBranch">
+                        <option value="all">جميع الفروع</option>
+                    </select>
+                </div>
+                <div class="col-6 col-md-2">
+                    <label class="custom-label">رقم الحساب</label>
+                    <select class="custom-input form-select w-100" id="filterAccount">
+                        <option value="all">جميع الحسابات</option>
+                    </select>
+                </div>
+            </div>
+            <div class="row g-3 mt-1">
+                <div class="col-6 col-md-3">
+                    <label class="custom-label">نوع العملية</label>
+                    <select class="custom-input form-select w-100" id="filterOperationType">
+                        <option value="all">الكل</option>
+                        <option value="mada">مدى</option>
+                        <option value="visa">فيزا</option>
+                        <option value="mastercard">ماستر كارد</option>
+                    </select>
+                </div>
+                <div class="col-6 col-md-3">
+                    <label class="custom-label">الجهاز</label>
+                    <select class="custom-input form-select w-100" id="filterDevice">
+                        <option value="all">الكل</option>
+                    </select>
+                </div>
+                <div class="col-6 col-md-3">
+                    <label class="custom-label">مبلغ محدد</label>
+                    <input type="number" class="custom-input w-100" id="filterAmount" placeholder="ابحث عن مبلغ">
+                </div>
+                <div class="col-12 col-md-3 d-flex align-items-end">
+                    <button class="btn-search" onclick="loadReconciliations()">
+                        بحث <i class="fas fa-arrow-left ms-1"></i>
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="pro-card mb-4 min-vh-100">
+            <div class="p-3 border-bottom border-secondary d-flex justify-content-between align-items-center">
+                <div class="section-title mb-0">عمليات الصراف والبطاقات</div>
+                <small class="text-secondary" id="recordCount">0 عملية</small>
+            </div>
+
+            <div class="table-container border-0">
+                <table class="custom-table atm-table">
+                    <thead>
+                        <tr>
+                            <th class="d-none d-md-table-cell">#</th>
+                            <th>التاريخ</th>
+                            <th class="text-center">نوع العملية</th>
+                            <th class="text-center">الجهاز</th>
+                            <!-- <th class="d-none d-md-table-cell">رقم الحساب</th> -->
+                            <th class="d-none d-md-table-cell">البنك</th>
+                            <th class="text-ltr">المبلغ</th>
+                            <th class="d-none d-md-table-cell">الكاشير</th>
+                            <th class="d-none d-md-table-cell">رقم التصفية</th>
+                        </tr>
+                    </thead>
+                    <tbody id="atmTableBody">
+                        <!-- Rows -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal fade" id="detailsModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold text-white">تفاصيل التصفية</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body p-4" id="modalBody">
+                    <!-- Dynamic -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Auth Check
+        const userStr = localStorage.getItem('user');
+        if (!userStr) {
+            window.location.href = '/login.html';
+        }
+        const user = JSON.parse(userStr || '{}');
+        document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
+
+        // Check Permissions
+        const isAllowed = (user.role === 'admin') || (user.permissions && user.permissions.includes('atm-reports.html'));
+        if (!isAllowed) {
+            console.warn('⛔ وصول غير مصرح به. إعادة التوجيه للصفحة الرئيسية.');
+            window.location.href = 'index.html';
+        }
+
+        function logout() {
+            localStorage.removeItem('user');
+            window.location.href = '/login.html';
+        }
+
+        const API_URL = '/api';
+        let allAtmRecords = [];
+
+        function filterAndRender() {
+            const opType = document.getElementById('filterOperationType').value;
+            const devFilter = document.getElementById('filterDevice').value;
+            let filtered = allAtmRecords;
+
+            if (opType !== 'all') {
+                filtered = filtered.filter(row => {
+                    const rType = (row.operation_type || '').toLowerCase();
+                    if (opType === 'mada') return rType.includes('مدى') || rType.includes('mada');
+                    if (opType === 'visa') return rType.includes('فيزا') || rType.includes('visa');
+                    if (opType === 'mastercard') return rType.includes('ماستر') || rType.includes('master');
+                    return false;
+                });
+            }
+
+            if (devFilter !== 'all') {
+                filtered = filtered.filter(row => row.atm_name === devFilter);
+            }
+
+            renderAtmTable(filtered);
+            calculateAtmStats(filtered);
+        }
+
+        function populateDeviceFilter(data) {
+            const deviceSelect = document.getElementById('filterDevice');
+            // Keep selection if refreshing data
+            const currentVal = deviceSelect.value;
+
+            deviceSelect.innerHTML = '<option value="all">الكل</option>';
+
+            const devices = [...new Set(data.map(item => item.atm_name).filter(Boolean))];
+
+            devices.forEach(dev => {
+                const opt = document.createElement('option');
+                opt.value = dev;
+                opt.textContent = dev;
+                deviceSelect.appendChild(opt);
+            });
+
+            if (devices.includes(currentVal)) deviceSelect.value = currentVal;
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Defaults: This Month (Disabled to show all)
+            // const date = new Date();
+            // const firstDay = new Date(date.getFullYear(), date.getMonth(), 1).toISOString().split('T')[0];
+            // const today = new Date().toISOString().split('T')[0];
+
+            // document.getElementById('filterDateFrom').value = firstDay;
+            // document.getElementById('filterDateTo').value = today;
+
+            document.getElementById('filterDateFrom').value = '';
+            document.getElementById('filterDateTo').value = '';
+
+            await loadLookups();
+            loadReconciliations();
+        });
+
+        async function loadLookups() {
+            try {
+                const res = await fetch(`${API_URL}/lookups`);
+                const data = await res.json();
+                if (data.success) {
+                    // Populate Cashiers
+                    const cashierSelect = document.getElementById('filterCashier');
+                    data.cashiers.forEach(c => {
+                        const opt = document.createElement('option');
+                        opt.value = c.id;
+                        opt.textContent = c.name;
+                        cashierSelect.appendChild(opt);
+                    });
+
+                    // Populate Branches
+                    const branchSelect = document.getElementById('filterBranch');
+                    if (data.branches) {
+                        data.branches.forEach(b => {
+                            const opt = document.createElement('option');
+                            opt.value = b.id;
+                            opt.textContent = b.name;
+                            branchSelect.appendChild(opt);
+                        });
+                    }
+
+                    // Populate Accounts (ATM Locations)
+                    const accountSelect = document.getElementById('filterAccount');
+                    if (data.accounts) {
+                        data.accounts.forEach(acc => {
+                            const opt = document.createElement('option');
+                            opt.value = acc.name;
+                            opt.textContent = acc.name;
+                            accountSelect.appendChild(opt);
+                        });
+                    }
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        async function loadReconciliations() {
+            const dateFrom = document.getElementById('filterDateFrom').value;
+            const dateTo = document.getElementById('filterDateTo').value;
+            const cashierId = document.getElementById('filterCashier').value;
+            const branchId = document.getElementById('filterBranch').value;
+            const accountLocation = document.getElementById('filterAccount').value;
+            const specificAmount = document.getElementById('filterAmount').value;
+
+            const params = new URLSearchParams();
+            if (dateFrom) params.append('dateFrom', dateFrom);
+            if (dateTo) params.append('dateTo', dateTo);
+            if (cashierId && cashierId !== 'all') params.append('cashierId', cashierId);
+            if (branchId && branchId !== 'all') params.append('branchId', branchId);
+            if (accountLocation && accountLocation !== 'all') params.append('accountLocation', accountLocation);
+            if (specificAmount) params.append('specificAmount', specificAmount);
+
+            showLoading(true);
+            try {
+                const res = await fetch(`${API_URL}/atm-report?${params.toString()}`);
+                const result = await res.json();
+
+                if (result.success) {
+                    allAtmRecords = result.data;
+                    populateDeviceFilter(result.data);
+                    filterAndRender();
+                }
+            } catch (error) {
+                console.error(error);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function renderAtmTable(data) {
+            const tbody = document.getElementById('atmTableBody');
+            tbody.innerHTML = '';
+            document.getElementById('recordCount').textContent = `${data.length} عملية`;
+
+            if (data.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="8" class="text-center py-5"><div class="text-muted opacity-50"><i class="fas fa-inbox fa-3x mb-3"></i><br>لا توجد بيانات للعرض</div></td></tr>`;
+                return;
+            }
+
+            data.forEach((row, index) => {
+                // Operation type badge
+                let opBadge = '';
+                const opType = (row.operation_type || '').toLowerCase();
+                if (opType.includes('مدى') || opType.includes('mada')) {
+                    opBadge = '<span class="badge bg-info text-white">مدى</span>';
+                } else if (opType.includes('فيزا') || opType.includes('visa')) {
+                    opBadge = '<span class="badge bg-primary text-white">فيزا</span>';
+                } else if (opType.includes('ماستر') || opType.includes('master')) {
+                    opBadge = '<span class="badge bg-warning text-white">ماستركارد</span>';
+                } else {
+                    opBadge = `<span class="badge bg-secondary">${row.operation_type || '-'}</span>`;
+                }
+
+                const tr = document.createElement('tr');
+                // Format Account Number (Location field)
+                const accountNumber = row.location || 'غير محدد';
+
+                tr.innerHTML = `
+                    <td class="text-white d-none d-md-table-cell">${index + 1}</td>
+                    <td>${new Date(row.reconciliation_date).toLocaleDateString('en-GB')}</td>
+                    <td class="text-center">${opBadge}</td>
+                    <td class="text-center" style="min-width: 140px; vertical-align: middle;">
+                        <b style="color: #60a5fa !important; font-size: 0.9rem; display: inline-block;">${row.atm_name || 'غير معروف'}</b>
+                        <br>
+                        <span class="badge bg-dark border border-secondary text-light mt-1" style="font-size: 0.75rem; letter-spacing: 0.5px;">${accountNumber}</span>
+                    </td>
+                    <!-- <td class="text-white d-none d-md-table-cell font-monospace">${row.account_number || '-'}</td> -->
+                    <td class="text-white d-none d-md-table-cell">${row.bank_name || '-'}</td>
+                    <td class="font-monospace text-success fw-bold text-ltr">${formatCurrency(row.amount)}</td>
+                    <td class="text-white d-none d-md-table-cell">${row.cashier_name || '-'}</td>
+                    <td class="text-center d-none d-md-table-cell"><span class="badge bg-secondary">#${row.reconciliation_number || row.reconciliation_id}</span></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function calculateAtmStats(data) {
+            const count = data.length;
+            const totalAmount = data.reduce((sum, r) => sum + Number(r.amount || 0), 0);
+            const avgAmount = count > 0 ? totalAmount / count : 0;
+            const maxAmount = count > 0 ? Math.max(...data.map(r => Number(r.amount || 0))) : 0;
+
+            document.getElementById('statsAtmOps').textContent = formatNum(count);
+            document.getElementById('statsAtmTotal').textContent = formatNum(totalAmount);
+            document.getElementById('statsAtmAvg').textContent = formatNum(avgAmount);
+            document.getElementById('statsAtmMax').textContent = formatNum(maxAmount);
+        }
+
+        function formatCurrency(val) {
+            return Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function formatNum(val) {
+            // Compact format for cards (e.g. 1.2k) if needed, currently full number
+            return Number(val || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'flex' : 'none';
+        }
+    </script>
+</body>
+
+</html>

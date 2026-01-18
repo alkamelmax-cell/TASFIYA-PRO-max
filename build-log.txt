@@ -1,0 +1,20 @@
+
+> casher@4.0.0 build
+> cross-env NODE_ENV=production electron-builder --config electron-builder.config.js
+
+  ظت electron-builder  version=26.0.12 os=10.0.26100
+  ظت loaded configuration  file=C:\Users\KC\Music\casher\electron-builder.config.js
+  ظت @electron/rebuild already used by electron-builder, please consider to remove excess dependency from devDependencies
+
+To ensure your native dependencies are always matched electron version, simply add script `"postinstall": "electron-builder install-app-deps" to your `package.json`
+  ظت skipped dependencies rebuild  reason=npmRebuild is set to false
+  ظت packaging       platform=win32 arch=x64 electron=37.2.4 appOutDir=dist\win-unpacked
+  ظت updating asar integrity executable resource  executablePath=dist\win-unpacked\╪ز╪╡┘┘è╪ر ╪ذ╪▒┘ê - Tasfiya Pro.exe
+  ظت signing with signtool.exe  path=dist\win-unpacked\╪ز╪╡┘┘è╪ر ╪ذ╪▒┘ê - Tasfiya Pro.exe
+  ظت building        target=nsis file=dist\╪ز╪╡┘┘è╪ر ╪ذ╪▒┘ê - Tasfiya Pro-4.0.0.exe archs=x64 oneClick=false perMachine=false
+  ظت signing with signtool.exe  path=dist\win-unpacked\resources\elevate.exe
+  ظت signing with signtool.exe  path=dist\__uninstaller-nsis-casher.exe
+  ظت signing with signtool.exe  path=dist\╪ز╪╡┘┘è╪ر ╪ذ╪▒┘ê - Tasfiya Pro-4.0.0.exe
+  ظت building block map  blockMapFile=dist\╪ز╪╡┘┘è╪ر ╪ذ╪▒┘ê - Tasfiya Pro-4.0.0.exe.blockmap
+  ظت building        target=portable file=dist\╪ز╪╡┘┘è╪ر ╪ذ╪▒┘ê - Tasfiya Pro-4.0.0-portable.exe archs=x64
+  ظت signing with signtool.exe  path=dist\╪ز╪╡┘┘è╪ر ╪ذ╪▒┘ê - Tasfiya Pro-4.0.0-portable.exe

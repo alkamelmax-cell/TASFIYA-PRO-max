@@ -1,0 +1,66 @@
+
+// ============================================
+// EXTENDED API FOR FULL RECONCILIATION SUPPORT
+// ============================================
+
+Object.assign(window.appAPI, {
+    // Add Postpaid Sale (مبيعات آجلة)
+    addPostpaidSale: (customerName, amount) => {
+        postpaidSales.push({
+            id: Date.now() + Math.random(),
+            customer_name: customerName,
+            amount: parseFloat(amount)
+        });
+        updatePostpaidSalesTable();
+    },
+
+    // Add Customer Receipt (مقبوضات عملاء)
+    addCustomerReceipt: (customerName, amount, paymentType, notes) => {
+        customerReceipts.push({
+            id: Date.now() + Math.random(),
+            customer_name: customerName,
+            amount: parseFloat(amount),
+            payment_type: paymentType || 'cash',
+            notes: notes || ''
+        });
+        updateCustomerReceiptsTable();
+    },
+
+    // Add Return Invoice (مرتجع)
+    addReturnInvoice: (invoiceNo, amount, notes) => {
+        returnInvoices.push({
+            id: Date.now() + Math.random(),
+            invoice_number: invoiceNo,
+            amount: parseFloat(amount),
+            notes: notes || ''
+        });
+        updateReturnInvoicesTable();
+    },
+
+    // Add Supplier/Expense (موردين/مصروفات)
+    addSupplier: (supplierName, invoiceNo, amount, vat, notes) => {
+        suppliers.push({
+            id: Date.now() + Math.random(),
+            supplier_name: supplierName,
+            invoice_number: invoiceNo,
+            amount: parseFloat(amount),
+            vat_amount: parseFloat(vat) || 0,
+            notes: notes || ''
+        });
+        updateSuppliersTable();
+    },
+    
+    // Add Bank Receipt with Details
+    addDetailedBankReceipt: (atmName, bankName, amount, operationType) => {
+        bankReceipts.push({
+             id: Date.now() + Math.random(),
+             operation_type: operationType || 'settlement',
+             atm_name: atmName,
+             bank_name: bankName,
+             amount: parseFloat(amount)
+        });
+        updateBankReceiptsTable();
+    }
+});
+
+console.log('✅ Full AppAPI extensions loaded');

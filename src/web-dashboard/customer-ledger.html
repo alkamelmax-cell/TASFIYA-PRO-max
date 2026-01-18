@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>تصفية برو - دفتر العملاء</title>
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Almarai:wght@300;400;700;800&display=swap" rel="stylesheet">
+
+    <!-- Bootstrap RTL CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/custom.css?v=2">
+</head>
+
+<body>
+
+    <!-- Loading Overlay -->
+    <div id="loading"
+        style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(15,23,42,0.9);z-index:9999;display:none;align-items:center;justify-content:center;">
+        <div class="spinner-border text-primary" style="width:3rem;height:3rem;" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+
+    <!-- Navbar -->
+    <nav class="custom-navbar navbar-layout mb-4">
+        <!-- Brand Section -->
+        <div class="navbar-brand-section">
+            <div class="nav-brand d-flex align-items-center gap-2">
+                <i class="fas fa-receipt brand-icon"></i>
+                <span class="brand-text">تصفية <span class="pro-badge">Pro</span></span>
+            </div>
+        </div>
+
+        <!-- Links Section -->
+        <div class="navbar-links-section">
+            <a href="index.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-home me-1"></i> الرئيسية
+            </a>
+            <a href="atm-reports.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-credit-card me-1"></i> تقرير الصراف
+            </a>
+            <a href="customer-ledger.html"
+                class="btn btn-sm btn-primary fw-bold text-white px-3 py-2 rounded-pill shadow-sm">
+                <i class="fas fa-book me-1"></i> دفتر العملاء
+            </a>
+            <a href="users-management.html" id="navUsersMgmt"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-users-cog me-1"></i> إدارة المستخدمين
+            </a>
+            <a href="cashiers-management.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-cash-register me-1"></i> إدارة الكاشير
+            </a>
+        </div>
+
+        <!-- User Section -->
+        <div class="dropdown navbar-user-section">
+            <button class="user-profile-btn" type="button" data-bs-toggle="dropdown">
+                <div class="bg-primary rounded-circle d-flex align-items-center justify-content-center"
+                    style="width: 32px; height: 32px;">
+                    <i class="fas fa-user text-white"></i>
+                </div>
+                <span id="userNameDisplay" class="d-none d-md-inline fw-bold font-monospace small">Admin</span>
+                <i class="fas fa-chevron-down small opacity-50"></i>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end bg-card border-secondary shadow-lg mt-2">
+                <li><a class="dropdown-item text-danger d-flex align-items-center gap-2" href="#" onclick="logout()">
+                        <i class="fas fa-sign-out-alt"></i> تسجيل الخروج
+                    </a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container-fluid px-3 px-md-4">
+
+        <!-- ==================== LIST VIEW ==================== -->
+        <div id="customersListSection">
+            <!-- Filters Container -->
+            <div class="filter-container mb-4 mt-4">
+                <div class="section-title">
+                    <i class="fas fa-users small text-primary"></i>
+                    قائمة العملاء والأرصدة
+                </div>
+                <div class="row g-3">
+                    <div class="col-md-4">
+                        <label class="custom-label">بحث عن عميل</label>
+                        <input type="text" class="custom-input w-100" id="searchCustomerInput"
+                            placeholder="اكتب اسم العميل...">
+                    </div>
+                    <div class="col-md-3">
+                        <label class="custom-label">فلتر الفرع</label>
+                        <select class="custom-input form-select w-100" id="filterBranchList">
+                            <option value="all">جميع الفروع</option>
+                        </select>
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        <button class="btn-search w-100" onclick="filterCustomersList()">
+                            بحث <i class="fas fa-search ms-1"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Table Card -->
+            <div class="pro-card mb-4 min-vh-100">
+                <div class="table-container border-0 p-0">
+                    <table class="custom-table customer-table table-hover mb-0">
+                        <thead class="bg-dark text-white">
+                            <tr>
+                                <th>اسم العميل</th>
+                                <th class="d-none d-md-table-cell">الفرع</th>
+                                <th class="text-danger text-ltr d-none d-md-table-cell">إجمالي المبيعات الآجلة</th>
+                                <th class="text-success text-ltr d-none d-md-table-cell">إجمالي المقبوضات</th>
+                                <th class="text-center">الرصيد</th>
+                                <th class="d-none d-md-table-cell">آخر حركة</th>
+                                <th class="d-none d-md-table-cell">عدد الحركات</th>
+                                <th>الإجراءات</th>
+                            </tr>
+                        </thead>
+                        <tbody id="customersSummaryTableBody">
+                            <tr>
+                                <td colspan="8" class="text-center py-5">
+                                    <div class="text-muted opacity-50">جاري التحميل...</div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <!-- ==================== DETAILS VIEW ==================== -->
+        <div id="customerDetailsSection" class="d-none">
+
+            <div class="d-flex align-items-center gap-3 mb-4 mt-4">
+                <button class="btn btn-outline-secondary rounded-pill px-4" onclick="showListView()">
+                    <i class="fas fa-arrow-right me-2"></i> رجوع للقائمة
+                </button>
+                <h4 class="text-white mb-0" id="selectedCustomerTitle">تفاصيل العميل</h4>
+            </div>
+
+            <!-- Stats Row -->
+            <div class="row g-3 mb-4">
+                <div class="col-6 col-lg-4">
+                    <div class="stat-box">
+                        <i class="fas fa-file-invoice-dollar icon-wrapper text-danger"></i>
+                        <div class="stat-label">إجمالي المبيعات الآجلة</div>
+                        <div class="stat-value text-danger" id="statsTotalDebit">0.00</div>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-4">
+                    <div class="stat-box">
+                        <i class="fas fa-hand-holding-usd icon-wrapper text-success"></i>
+                        <div class="stat-label">إجمالي السداد</div>
+                        <div class="stat-value text-success" id="statsTotalCredit">0.00</div>
+                    </div>
+                </div>
+                <div class="col-12 col-lg-4">
+                    <div class="stat-box">
+                        <i class="fas fa-balance-scale icon-wrapper text-info"></i>
+                        <div class="stat-label">الرصيد المتبقي</div>
+                        <div class="stat-value text-info" id="statsBalance">0.00</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Filters -->
+            <div class="filter-container mb-4">
+                <div class="section-title">
+                    <i class="fas fa-filter small text-primary"></i>
+                    فلترة الحركات
+                </div>
+                <div class="row g-3">
+                    <input type="hidden" id="currentCustomerName">
+                    <div class="col-6 col-md-4">
+                        <label class="custom-label">من تاريخ</label>
+                        <input type="date" class="custom-input w-100" id="filterDateFrom">
+                    </div>
+                    <div class="col-6 col-md-4">
+                        <label class="custom-label">إلى تاريخ</label>
+                        <input type="date" class="custom-input w-100" id="filterDateTo">
+                    </div>
+                    <div class="col-12 col-md-4 d-flex align-items-end">
+                        <button class="btn-search w-100" onclick="refreshLedger()">
+                            تطبيق الفلتر <i class="fas fa-filter ms-1"></i>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Table -->
+            <div class="pro-card mb-4 min-vh-100">
+                <div class="p-3 border-bottom border-secondary d-flex justify-content-between align-items-center">
+                    <div class="section-title mb-0">سجل الحركات</div>
+                    <small class="text-secondary" id="recordCount">0 حركة</small>
+                </div>
+
+                <div class="table-container border-0">
+                    <table class="custom-table ledger-details-table">
+                        <thead>
+                            <tr>
+                                <th width="50">#</th>
+                                <th>التاريخ</th>
+                                <th>نوع الحركة</th>
+                                <th class="d-none">البيان</th>
+                                <th class="text-danger text-ltr text-center">مدين</th>
+                                <th class="text-success text-ltr text-center">دائن</th>
+                                <th class="text-info text-ltr text-center">الرصيد</th>
+                            </tr>
+                        </thead>
+                        <tbody id="ledgerTableBody">
+                            <!-- Rows -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="customer-ledger.js?v=3"></script>
+</body>
+
+</html>

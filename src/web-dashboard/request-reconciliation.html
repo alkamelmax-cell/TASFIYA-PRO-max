@@ -1,0 +1,979 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تصفية برو - طلب تصفية شامل</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="css/custom.css?v=8" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        /* Tabs: professional look matching theme */
+        .nav-pills {
+            gap: .5rem;
+        }
+
+        .nav-pills .nav-link {
+            color: var(--text-secondary);
+            border-radius: 999px;
+            padding: .55rem 1.2rem;
+            font-weight: 800;
+            background: rgba(255, 255, 255, .04);
+            border: 1px solid var(--glass-border);
+            transition: var(--transition);
+        }
+
+        .nav-pills .nav-link:hover {
+            color: #fff;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, .25);
+        }
+
+        .nav-pills .nav-link.active {
+            background: var(--primary);
+            color: #fff;
+            border-color: var(--primary);
+            box-shadow: 0 10px 24px -8px var(--primary-glow);
+        }
+
+        /* Content area uses cards per table; keep container clean */
+        .tab-content {
+            background: transparent;
+            border: 0;
+            padding: 0;
+        }
+
+        .tab-pane>h4 {
+            margin-bottom: 1rem;
+        }
+
+        .table-container {
+            margin-bottom: 1rem;
+        }
+
+        .summary-fixed {
+            position: sticky;
+            top: 20px;
+        }
+
+        /* Better Table Padding - Fix for cells touching borders */
+        .table-container table th,
+        .table-container table td {
+            padding: 0.85rem 1rem !important;
+            vertical-align: middle !important;
+        }
+
+        /* Ensure numbers don't touch borders */
+        .table-container table td.text-ltr {
+            padding-right: 1.2rem !important;
+            padding-left: 1.2rem !important;
+        }
+
+        /* Add spacing around delete buttons */
+        .table-container table td:last-child {
+            padding: 0.85rem 0.75rem !important;
+        }
+
+        /* Better spacing for action buttons */
+        .table-container .btn-sm {
+            padding: 0.35rem 0.75rem;
+        }
+    </style>
+</head>
+
+<body class="bg-dark text-light">
+
+    <!-- Navbar -->
+    <nav class="custom-navbar d-flex justify-content-between align-items-center mb-4">
+        <div class="brand-logo">
+            <i class="fas fa-wallet text-warning"></i>
+            <span>تصفية <span class="text-primary">برو</span></span>
+        </div>
+        <div>
+            <span class="text-white fw-bold ms-3" id="userNameDisplay">...</span>
+            <a href="index.html" class="btn btn-outline-light btn-sm rounded-pill">
+                <i class="fas fa-arrow-right me-1"></i> عودة
+            </a>
+        </div>
+    </nav>
+
+    <div class="container-fluid px-4">
+        <div class="row g-4">
+
+            <!-- Main Content (Tabs) -->
+            <div class="col-lg-8">
+
+                <!-- Navigation Tabs -->
+                <ul class="nav nav-pills mb-3 justify-content-center" id="pills-tab" role="tablist">
+                    <li class="nav-item">
+                        <button class="nav-link active" data-bs-toggle="pill" data-bs-target="#tab-cash">
+                            <i class="fas fa-money-bill-wave me-2"></i> النقدية
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-bank">
+                            <i class="fas fa-credit-card me-2"></i> البنك والشبكة
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-postpaid">
+                            <i class="fas fa-user-clock me-2"></i> مبيعات آجلة
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-customer">
+                            <i class="fas fa-hand-holding-usd me-2"></i> مقبوضات
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-returns">
+                            <i class="fas fa-undo me-2"></i> مرتجعات
+                        </button>
+                    </li>
+                    <li class="nav-item">
+                        <button class="nav-link" data-bs-toggle="pill" data-bs-target="#tab-suppliers">
+                            <i class="fas fa-truck me-2"></i> مصروفات/موردين
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content shadow-lg" id="pills-tabContent">
+
+                    <!-- 1. Cash Tab -->
+                    <!-- 1. Cash Tab (Dynamic) -->
+                    <div class="tab-pane fade show active" id="tab-cash" role="tabpanel">
+                        <h4 class="mb-4 text-success"><i class="fas fa-coins me-2"></i> جرد النقدية اليومي</h4>
+
+                        <!-- Dynamic Input Section -->
+                        <div class="pro-card p-3 mb-4 border border-secondary bg-black bg-opacity-25"
+                            style="border-radius: 16px;">
+                            <label class="text-white mb-2 small fw-bold"><i class="fas fa-plus-circle me-1"></i> إضافة
+                                فئة نقدية</label>
+                            <div class="row g-2 align-items-center">
+                                <div class="col-6 col-md-5">
+                                    <select
+                                        class="form-select custom-input text-center fw-bold text-white bg-dark border-secondary"
+                                        id="cashDenomSelect" style="height: 48px;">
+                                        <option value="" selected disabled>اختر الفئة...</option>
+                                        <option value="500">500 ريال</option>
+                                        <option value="200">200 ريال</option>
+                                        <option value="100">100 ريال</option>
+                                        <option value="50">50 ريال</option>
+                                        <option value="20">20 ريال</option>
+                                        <option value="10">10 ريال</option>
+                                        <option value="5">5 ريال</option>
+                                        <option value="1">1 ريال</option>
+                                        <option value="0.5">0.5 ريال (نصف)</option>
+                                        <option value="0.25">0.25 ريال (ربع)</option>
+                                    </select>
+                                </div>
+                                <div class="col-3 col-md-5">
+                                    <input type="number"
+                                        class="form-control custom-input text-center fw-bold border-secondary"
+                                        id="cashCountInput" placeholder="العدد" min="1" style="height: 48px;">
+                                </div>
+                                <div class="col-3 col-md-2">
+                                    <button class="btn btn-primary w-100 fw-bold h-100" onclick="addCashItem()"
+                                        style="border-radius: 12px;">
+                                        <i class="fas fa-plus"></i>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Cash Table -->
+                        <div class="table-container pro-card mb-3" style="max-height: 300px; overflow-y: auto;">
+                            <table class="custom-table text-center table-hover sticky-header">
+                                <thead class="bg-dark text-white">
+                                    <tr>
+                                        <th>الفئة</th>
+                                        <th>العدد</th>
+                                        <th class="text-ltr">المجموع</th>
+                                        <th style="width: 50px;">حذف</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="cashTableBody">
+                                    <!-- Rows added dynamically -->
+                                </tbody>
+                            </table>
+                        </div>
+
+                        <div
+                            class="p-3 bg-black bg-opacity-50 rounded border border-success d-flex justify-content-between align-items-center">
+                            <h5 class="mb-0 text-white">إجمالي النقد:</h5>
+                            <h3 class="mb-0 text-success fw-bold font-monospace" id="totalCashTabDisplay">0.00</h3>
+                        </div>
+                    </div>
+
+                    <!-- 2. Bank Tab -->
+                    <div class="tab-pane fade" id="tab-bank">
+                        <h4 class="mb-4 text-info"><i class="fas fa-credit-card me-2"></i> إيداعات الشبكة والبنك</h4>
+                        <div class="row g-3 mb-3">
+                            <div class="col-md-6">
+                                <label class="text-secondary small mb-1">طريقة الدفع</label>
+                                <select id="bankOpType" class="form-select custom-input bg-dark text-white">
+                                    <option value="mada" selected>مدى (Mada)</option>
+                                    <option value="visa">فيزا (Visa)</option>
+                                    <option value="mastercard">ماستركارد (MasterCard)</option>
+                                    <option value="amex">أمريكان إكسبريس</option>
+                                    <option value="transfer">تحويل بنكي</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="text-secondary small mb-1">جهاز الصراف / الماكينة</label>
+                                <select id="bankAtmName" class="form-select custom-input bg-dark text-white">
+                                    <option value="" selected disabled>جاري تحميل الأجهزة...</option>
+                                </select>
+                            </div>
+                        </div>
+                        <div class="row g-3 mb-4 align-items-end">
+                            <div class="col-md-5">
+                                <label class="text-secondary small mb-1">اسم البنك</label>
+                                <input type="text" id="input_bank_name_v2" class="form-control custom-input"
+                                    placeholder="اسم البنك">
+                            </div>
+                            <div class="col-md-5">
+                                <label class="text-secondary small mb-1">المبلغ</label>
+                                <input type="number" id="input_bank_amount_v2" class="form-control custom-input"
+                                    placeholder="المبلغ">
+                            </div>
+                            <div class="col-md-2">
+                                <button class="btn btn-primary w-100 fw-bold" onclick="addBankItem()">
+                                    <i class="fas fa-plus"></i>
+                                </button>
+                            </div>
+                        </div>
+                        <div class="table-container pro-card">
+                            <table class="custom-table text-center">
+                                <thead>
+                                    <tr>
+                                        <th>العملية</th>
+                                        <th>الصراف</th>
+                                        <th>البنك</th>
+                                        <th class="text-ltr">المبلغ</th>
+                                        <th>حذف</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="bankTableBody"></tbody>
+                            </table>
+                        </div>
+
+                    </div>
+
+                    <!-- 3. Postpaid Tab -->
+                    <div class="tab-pane fade" id="tab-postpaid">
+                        <h4 class="mb-4 text-warning"><i class="fas fa-user-clock me-2"></i> مبيعات آجلة (ذمم)</h4>
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-7">
+                                <input type="text" id="postpaidName" class="form-control custom-input"
+                                    placeholder="اسم العميل" list="customersList">
+                            </div>
+                            <div class="col-md-3">
+                                <input type="number" id="postpaidAmount" class="form-control custom-input"
+                                    placeholder="المبلغ">
+                            </div>
+                            <div class="col-md-2">
+                                <button class="btn btn-warning w-100 text-dark fw-bold" onclick="addPostpaidItem()"><i
+                                        class="fas fa-plus"></i> إضافة</button>
+                            </div>
+                        </div>
+                        <div class="table-container pro-card">
+                            <table class="custom-table text-center">
+                                <thead>
+                                    <tr>
+                                        <th>العميل</th>
+                                        <th class="text-ltr">المبلغ</th>
+                                        <th>حذف</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="postpaidTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 4. Customer Receipts Tab -->
+                    <div class="tab-pane fade" id="tab-customer">
+                        <h4 class="mb-4 text-success"><i class="fas fa-hand-holding-usd me-2"></i> مقبوضات من عملاء</h4>
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-5">
+                                <input type="text" id="custReceiptName" class="form-control custom-input"
+                                    placeholder="اسم العميل" list="customersList">
+                            </div>
+                            <div class="col-md-3">
+                                <select id="custReceiptType" class="form-select custom-input bg-dark text-white">
+                                    <option value="cash">نقد</option>
+                                    <option value="bank">شبكة</option>
+                                    <option value="transfer">تحويل</option>
+                                </select>
+                            </div>
+                            <div class="col-md-2">
+                                <input type="number" id="custReceiptAmount" class="form-control custom-input"
+                                    placeholder="المبلغ">
+                            </div>
+                            <div class="col-md-2">
+                                <button class="btn btn-success w-100 fw-bold" onclick="addCustomerReceiptItem()"><i
+                                        class="fas fa-plus"></i> إضافة</button>
+                            </div>
+                        </div>
+                        <div class="table-container pro-card">
+                            <table class="custom-table text-center">
+                                <thead>
+                                    <tr>
+                                        <th>العميل</th>
+                                        <th>نوع الدفع</th>
+                                        <th class="text-ltr">المبلغ</th>
+                                        <th>حذف</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="custReceiptTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 5. Returns Tab -->
+                    <div class="tab-pane fade" id="tab-returns">
+                        <h4 class="mb-4 text-danger"><i class="fas fa-undo me-2"></i> فواتير المرتجعات</h4>
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-4">
+                                <input type="text" id="returnInv" class="form-control custom-input"
+                                    placeholder="رقم الفاتورة">
+                            </div>
+                            <div class="col-md-3">
+                                <input type="number" id="returnAmount" class="form-control custom-input"
+                                    placeholder="المبلغ">
+                            </div>
+                            <div class="col-md-3">
+                                <input type="text" id="returnNote" class="form-control custom-input"
+                                    placeholder="ملاحظات (اختياري)">
+                            </div>
+                            <div class="col-md-2">
+                                <button class="btn btn-danger w-100 fw-bold" onclick="addReturnItem()"><i
+                                        class="fas fa-plus"></i> إضافة</button>
+                            </div>
+                        </div>
+                        <div class="table-container pro-card">
+                            <table class="custom-table text-center">
+                                <thead>
+                                    <tr>
+                                        <th>رقم الفاتورة</th>
+                                        <th class="text-ltr">المبلغ</th>
+                                        <th>ملاحظات</th>
+                                        <th>حذف</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="returnTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                    <!-- 6. Supplier Expenses Tab -->
+                    <div class="tab-pane fade" id="tab-suppliers">
+                        <h4 class="mb-4 text-muted"><i class="fas fa-truck me-2"></i> مصروفات وموردين (لا تؤثر على
+                            المجموع)</h4>
+                        <div class="row g-3 mb-4">
+                            <div class="col-md-4">
+                                <input type="text" id="supplierName" class="form-control custom-input"
+                                    placeholder="اسم المورد">
+                            </div>
+                            <div class="col-md-3">
+                                <input type="text" id="supplierInv" class="form-control custom-input"
+                                    placeholder="رقم الفاتورة">
+                            </div>
+                            <div class="col-md-3">
+                                <input type="number" id="supplierAmount" class="form-control custom-input"
+                                    placeholder="المبلغ">
+                            </div>
+                            <div class="col-md-2">
+                                <button class="btn btn-secondary w-100 fw-bold" onclick="addSupplierItem()"><i
+                                        class="fas fa-plus"></i> إضافة</button>
+                            </div>
+                        </div>
+                        <div class="table-container pro-card">
+                            <table class="custom-table text-center">
+                                <thead>
+                                    <tr>
+                                        <th>الجهة</th>
+                                        <th>رقم الفاتورة</th>
+                                        <th class="text-ltr">المبلغ</th>
+                                        <th>حذف</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="supplierTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+
+                </div>
+            </div>
+
+            <!-- Left: Summary Sidebar -->
+            <div class="col-lg-4">
+                <div class="pro-card h-100 position-sticky" style="top: 20px;">
+                    <h5 class="text-primary mb-4 border-bottom border-secondary pb-2">ملخص الوردية</h5>
+
+                    <div class="mb-3">
+                        <label class="form-label text-secondary small">مبيعات النظام (Z-Report)</label>
+                        <input type="number" id="systemSales"
+                            class="form-control custom-input fs-5 fw-bold font-monospace text-center"
+                            placeholder="0.00">
+                    </div>
+
+                    <hr class="border-secondary">
+
+                    <div class="d-flex justify-content-between mb-2">
+                        <span class="text-secondary">اجمالي النقد</span>
+                        <span class="fw-bold text-success" id="sumCash">0.00</span>
+                    </div>
+                    <div class="d-flex justify-content-between mb-2">
+                        <span class="text-secondary">اجمالي الشبكة</span>
+                        <span class="fw-bold text-info" id="sumBank">0.00</span>
+                    </div>
+                    <div class="d-flex justify-content-between mb-2">
+                        <span class="text-secondary">مبيعات آجلة (+)</span>
+                        <span class="fw-bold text-warning" id="sumPostpaid">0.00</span>
+                    </div>
+                    <div class="d-flex justify-content-between mb-2">
+                        <span class="text-secondary">مقبوضات عملاء (-)</span>
+                        <span class="fw-bold text-danger" id="sumCustomer">-0.00</span>
+                    </div>
+                    <div class="d-flex justify-content-between mb-2">
+                        <span class="text-secondary">مرتجع (+ يضاف للكاش)</span>
+                        <span class="fw-bold text-warning" id="sumReturns">0.00</span>
+                    </div>
+                    <div class="d-flex justify-content-between mb-2">
+                        <span class="text-secondary small text-muted">موردين (للمعاينة فقط)</span>
+                        <span class="fw-bold text-muted" id="sumSuppliers">0.00</span>
+                    </div>
+
+                    <hr class="border-secondary">
+
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <span class="fw-bold fs-5">إجمالي الموجود</span>
+                        <span class="fs-4 fw-bold font-monospace text-white" id="totalFound">0.00</span>
+                    </div>
+
+                    <div class="p-3 bg-dark rounded border text-center">
+                        <span class="d-block text-secondary small mb-1">فارق التصفية</span>
+                        <span class="fs-3 fw-bold font-monospace" id="diffValue">0.00</span>
+                    </div>
+
+                    <div class="mt-3">
+                        <label class="text-secondary small">ملاحظات عامة</label>
+                        <textarea id="notes" class="form-control custom-input" rows="2"></textarea>
+                    </div>
+
+                    <button class="btn btn-primary w-100 py-3 mt-3 fw-bold rounded-pill shadow-lg"
+                        onclick="submitFullRequest()">
+                        <i class="fas fa-paper-plane me-2"></i> إرسال التصفية للمراجعة
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Generic Data List -->
+    <datalist id="customersList"></datalist>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // --- User Initialization (Global) ---
+        const userStr = localStorage.getItem('user');
+        if (!userStr) window.location.href = '/login.html';
+        const user = JSON.parse(userStr);
+        document.getElementById('userNameDisplay').textContent = user.name;
+
+        // --- Fetch Customers for Autocomplete ---
+        async function loadCustomers() {
+            try {
+                // Send cashier ID to filter by branch
+                const cashierId = user && user.id ? user.id : null;
+                const url = cashierId ? `/api/customers?cashierId=${cashierId}` : '/api/customers';
+                const res = await fetch(url);
+                const data = await res.json();
+                if (data.success && data.customers) {
+                    const list = document.getElementById('customersList');
+                    list.innerHTML = data.customers.map(name => `<option value="${name}">`).join('');
+                }
+            } catch (e) {
+                console.error('Failed to load customers', e);
+            }
+        }
+        loadCustomers();
+
+        // --- Fetch ATMs ---
+        let atmsData = [];
+        async function loadAtms() {
+            try {
+                const res = await fetch('/api/atms');
+                const data = await res.json();
+                if (data.success && data.atms) {
+                    atmsData = data.atms;
+                    const select = document.getElementById('bankAtmName');
+                    select.innerHTML = '<option value="" selected disabled>اختر الصراف / الماكينة...</option>' +
+                        atmsData.map(atm => `<option value="${atm.name}">${atm.name}</option>`).join('');
+
+                    // Auto-fill Bank Name on Change (USING NEW ID)
+                    select.addEventListener('change', function () {
+                        const selectedName = this.value;
+                        const atm = atmsData.find(a => a.name === selectedName);
+                        if (atm && atm.bank_name) {
+                            // Update the NEW input field
+                            const input = document.getElementById('input_bank_name_v2');
+                            if (input) input.value = atm.bank_name;
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error('Failed to load ATMs', e);
+                const select = document.getElementById('bankAtmName');
+                if (select) select.innerHTML = '<option disabled>فشل تحميل القائمة</option>';
+            }
+        }
+        loadAtms();
+
+        // --- Data Lists ---
+        let cashItems = [];
+        let bankItems = [];
+        let postpaidItems = [];
+        let custReceiptItems = [];
+        let returnItems = [];
+        let supplierItems = [];
+
+        // --- Core Functions ---
+
+        // Cashier UI Adjustments
+        if (user.role === 'cashier') {
+            const backBtn = document.querySelector('nav .btn-outline-light');
+            if (backBtn) {
+                backBtn.innerHTML = '<i class="fas fa-sign-out-alt me-1"></i> خروج';
+                backBtn.classList.remove('btn-outline-light');
+                backBtn.classList.add('btn-danger', 'border-0');
+                backBtn.href = '#';
+                backBtn.onclick = function (e) {
+                    e.preventDefault();
+                    if (confirm('هل أنت متأكد من تسجيل الخروج؟')) {
+                        localStorage.removeItem('user');
+                        window.location.href = '/login.html';
+                    }
+                };
+            }
+        }
+
+        function updateUI() {
+            // Calculate Cash
+            let totalCash = cashItems.reduce((acc, item) => acc + item.sub, 0);
+
+            document.getElementById('totalCashTabDisplay').textContent = totalCash.toFixed(2);
+            document.getElementById('sumCash').textContent = totalCash.toFixed(2);
+
+            // Calculate Lists
+            const sumBank = bankItems.reduce((a, b) => a + b.amount, 0);
+            const sumPostpaid = postpaidItems.reduce((a, b) => a + b.amount, 0);
+            const sumCust = custReceiptItems.reduce((a, b) => a + b.amount, 0);
+            const sumReturn = returnItems.reduce((a, b) => a + b.amount, 0);
+            const sumSupplier = supplierItems.reduce((a, b) => a + b.amount, 0);
+
+            // Note: In typical reconciliation:
+            // Actual Found = Cash + Bank + Postpaid (Paper) - Customer Receipts (Money received not sales) 
+            // - Returns (Paid out but sales reduced) - Expenses (Paid out)
+            // Wait, logic depends on store policy. 
+            // Usually: 
+            // System Sales (Expected) vs Actual (Cash + Bank + Postpaid)
+            // If expense is paid from cash, cash decreases.
+            // Let's stick to simple "Found Assets" vs "System Sales".
+
+            // Total Found = Cash + Bank + Postpaid
+            // Note: Expenses, Returns are usually deducted from Cash in hand before counting?
+            // If I counted cash AFTER expenses, then Cash is net.
+            // Let's assume standard logic:
+            // Total Revenue = Cash + Bank + PostpaidSales
+            // But we need to account for non-sales cash (Customer Debt Payment)
+            // And cash paid out (Returns, Expenses).
+
+            // Let's keep it simple: MATCH THE DESKTOP LOGIC if possible.
+            // Desktop logic usually: Total = Cash + Bank + Postpaid.
+
+            // Equation: Cash + Bank + Postpaid - Customer Receipts + Returns
+            const totalFound = totalCash + sumBank + sumPostpaid - sumCust + sumReturn;
+
+            const systemSales = parseFloat(document.getElementById('systemSales').value) || 0;
+            const diff = totalFound - systemSales;
+
+            document.getElementById('sumBank').textContent = sumBank.toFixed(2);
+            document.getElementById('sumPostpaid').textContent = sumPostpaid.toFixed(2);
+            document.getElementById('sumCustomer').textContent = sumCust.toFixed(2);
+
+            // New separate updates
+            document.getElementById('sumReturns').textContent = sumReturn.toFixed(2);
+            document.getElementById('sumSuppliers').textContent = sumSupplier.toFixed(2);
+
+            document.getElementById('totalFound').textContent = totalFound.toFixed(2);
+
+            const diffEl = document.getElementById('diffValue');
+            diffEl.textContent = diff.toFixed(2);
+
+            if (diff < 0) { diffEl.className = 'fs-3 fw-bold font-monospace text-danger'; diffEl.textContent += ' ⬇️'; }
+            else if (diff > 0) { diffEl.className = 'fs-3 fw-bold font-monospace text-success'; diffEl.textContent += ' ⬆️'; }
+            else { diffEl.className = 'fs-3 fw-bold font-monospace text-white'; }
+        }
+
+        document.getElementById('systemSales').addEventListener('input', updateUI);
+
+        // --- Helper: Add Row ---
+        function addRow(tbodyId, data, index, fields) {
+            const tbody = document.getElementById(tbodyId);
+            const tr = document.createElement('tr');
+            tr.innerHTML = fields.map(f => `<td>${data[f]}</td>`).join('') +
+                `<td><button class="btn btn-sm btn-outline-danger border-0" onclick="removeItem('${tbodyId}', ${index})"><i class="fas fa-trash"></i></button></td>`;
+            tbody.appendChild(tr);
+        }
+
+        // --- Add Handlers ---
+        // --- Add Handlers ---
+        function addCashItem() {
+            const denomSelect = document.getElementById('cashDenomSelect');
+            const countInput = document.getElementById('cashCountInput');
+
+            const val = parseFloat(denomSelect.value);
+            const qty = parseFloat(countInput.value);
+
+            if (!val || !qty || qty <= 0) {
+                alert('الرجاء اختيار الفئة وإدخال العدد');
+                return;
+            }
+
+            const sub = val * qty;
+            cashItems.push({ val, qty, sub });
+            // Sort (optional)
+            cashItems.sort((a, b) => b.val - a.val);
+
+            renderTable('cashTableBody', cashItems, ['val', 'qty', 'sub']);
+
+            countInput.value = '';
+            document.getElementById('cashDenomSelect').focus(); // Auto focus back
+            updateUI();
+        }
+
+        function addBankItem() {
+            const opEl = document.getElementById('bankOpType');
+            const opType = opEl.value;
+            const opText = opEl.options[opEl.selectedIndex].text;
+
+            const atm = document.getElementById('bankAtmName').value;
+
+            // RADICAL FIX: Read from the NEW UNIQUE ID
+            const bankVal = document.getElementById('input_bank_name_v2').value;
+            const amt = parseFloat(document.getElementById('input_bank_amount_v2').value);
+
+            if (!amt) return;
+
+            bankItems.push({ op: opType, opText: opText, atm: atm || '-', entry_bank_name: bankVal || '-', amount: amt });
+            renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
+
+            // Clear NEW inputs
+            document.getElementById('input_bank_amount_v2').value = '';
+            document.getElementById('bankOpType').focus();
+            updateUI();
+        }
+
+        function addPostpaidItem() {
+            const customer_name = document.getElementById('postpaidName').value;
+            const amt = parseFloat(document.getElementById('postpaidAmount').value);
+            if (!customer_name || !amt) return;
+
+            postpaidItems.push({ customer_name, amount: amt });
+            renderTable('postpaidTableBody', postpaidItems, ['customer_name', 'amount']);
+            document.getElementById('postpaidName').value = ''; document.getElementById('postpaidAmount').value = '';
+            document.getElementById('postpaidName').focus(); // Auto focus back
+            updateUI();
+        }
+
+        function addCustomerReceiptItem() {
+            const customer_name = document.getElementById('custReceiptName').value;
+            const type = document.getElementById('custReceiptType').value;
+            const amt = parseFloat(document.getElementById('custReceiptAmount').value);
+            if (!customer_name || !amt) return;
+
+            custReceiptItems.push({ customer_name, type, amount: amt });
+            renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
+            document.getElementById('custReceiptName').value = ''; document.getElementById('custReceiptAmount').value = '';
+            document.getElementById('custReceiptName').focus(); // Auto focus back
+            updateUI();
+        }
+
+        function addReturnItem() {
+            const num = document.getElementById('returnInv').value;
+            const amt = parseFloat(document.getElementById('returnAmount').value);
+            const note = document.getElementById('returnNote').value;
+            if (!num || !amt) return;
+
+            returnItems.push({ num, amount: amt, note });
+            renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
+            document.getElementById('returnInv').value = ''; document.getElementById('returnAmount').value = ''; document.getElementById('returnNote').value = '';
+            document.getElementById('returnInv').focus(); // Auto focus back
+            updateUI();
+        }
+
+        function addSupplierItem() {
+            const supplier_name = document.getElementById('supplierName').value;
+            const invoice_number = document.getElementById('supplierInv').value;
+            const amt = parseFloat(document.getElementById('supplierAmount').value);
+
+            if (!supplier_name || !amt) return;
+
+            supplierItems.push({ supplier_name, invoice_number, amount: amt });
+            renderTable('supplierTableBody', supplierItems, ['supplier_name', 'invoice_number', 'amount']);
+            document.getElementById('supplierName').value = ''; document.getElementById('supplierAmount').value = '';
+            document.getElementById('supplierInv').value = ''; // Also clear invoice
+            document.getElementById('supplierName').focus(); // Auto focus back
+            updateUI();
+        }
+
+        function removeSupplierItem(idx) {
+            supplierItems.splice(idx, 1);
+            renderTable('supplierTableBody', supplierItems, ['supplier_name', 'invoice_number', 'amount']);
+            updateUI();
+        }
+
+        // --- NEW REMOVE FUNCTIONS ---
+        function removeBankItem(idx) {
+            bankItems.splice(idx, 1);
+            renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
+            updateUI();
+        }
+
+        function removePostpaidItem(idx) {
+            postpaidItems.splice(idx, 1);
+            renderTable('postpaidTableBody', postpaidItems, ['customer_name', 'amount']);
+            updateUI();
+        }
+
+        function removeCustReceiptItem(idx) {
+            custReceiptItems.splice(idx, 1);
+            renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
+            updateUI();
+        }
+
+        function removeReturnItem(idx) {
+            returnItems.splice(idx, 1);
+            renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
+            updateUI();
+        }
+
+        // --- Generic Render & Remove ---
+        function renderTable(id, items, cols) {
+            const tbody = document.getElementById(id);
+            tbody.innerHTML = '';
+            items.forEach((item, idx) => {
+                const tr = document.createElement('tr');
+                let html = '';
+                cols.forEach(c => {
+                    const val = item[c];
+                    if (val === undefined) console.error(`Missing prop ${c} in table ${id}`, item);
+                    html += `<td>${val !== undefined ? val : '-'}</td>`;
+                });
+                // Use specific remove functions
+                let removeFn = '';
+                if (id === 'cashTableBody') removeFn = `removeItem('${id}', ${idx})`; // Keep generic for cash for now
+                else if (id === 'bankTableBody') removeFn = `removeBankItem(${idx})`;
+                else if (id === 'postpaidTableBody') removeFn = `removePostpaidItem(${idx})`;
+                else if (id === 'custReceiptTableBody') removeFn = `removeCustReceiptItem(${idx})`;
+                else if (id === 'returnTableBody') removeFn = `removeReturnItem(${idx})`;
+                else if (id === 'supplierTableBody') removeFn = `removeSupplierItem(${idx})`;
+                else removeFn = `removeItem('${id}', ${idx})`; // Fallback
+
+                html += `<td><i class="fas fa-trash text-danger" style="cursor:pointer" onclick="${removeFn}"></i></td>`;
+                tr.innerHTML = html;
+                tbody.appendChild(tr);
+            });
+        }
+
+        window.removeItem = (tableId, idx) => {
+            if (tableId === 'cashTableBody') cashItems.splice(idx, 1);
+            // The specific remove functions handle other tables now
+            // if (tableId === 'bankTableBody') bankItems.splice(idx, 1);
+            // if (tableId === 'postpaidTableBody') postpaidItems.splice(idx, 1);
+            // if (tableId === 'custReceiptTableBody') custReceiptItems.splice(idx, 1);
+            // if (tableId === 'returnTableBody') returnItems.splice(idx, 1);
+            // if (tableId === 'supplierTableBody') supplierItems.splice(idx, 1);
+
+            // Re-render correct table
+            if (tableId === 'cashTableBody') renderTable(tableId, cashItems, ['val', 'qty', 'sub']);
+            // The specific remove functions handle re-rendering for their tables
+            // if (tableId === 'bankTableBody') renderTable(tableId, bankItems, ['opText', 'atm', 'bank', 'amount']);
+            // if (tableId === 'postpaidTableBody') renderTable(tableId, postpaidItems, ['customer_name', 'amount']);
+            // if (tableId === 'custReceiptTableBody') renderTable(tableId, custReceiptItems, ['customer_name', 'type', 'amount']);
+            // if (tableId === 'returnTableBody') renderTable(tableId, returnItems, ['num', 'amount', 'note']);
+            // if (tableId === 'supplierTableBody') renderTable(tableId, supplierItems, ['supplier_name', 'invoice_number', 'amount']);
+
+            updateUI();
+        };
+
+        // --- Submit ---
+        async function submitFullRequest() {
+            // System sales is optional now, defaulting to 0 if empty
+            const systemSales = parseFloat(document.getElementById('systemSales').value) || 0;
+
+            // Validation removed as per user request
+            // if (systemSales <= 0 && !confirm('مبيعات النظام 0. هل أنت متأكد؟')) return;
+
+            // Gather Cash (Already in cashItems)
+            const totalCash = cashItems.reduce((acc, item) => acc + item.sub, 0);
+
+            const payload = {
+                cashier_id: user.id || 999,
+                system_sales: systemSales,
+                total_cash: totalCash,
+                total_bank: bankItems.reduce((a, b) => a + b.amount, 0),
+                notes: document.getElementById('notes').value,
+
+                // Send Arrays Directly
+                cash_breakdown: cashItems,
+                // Map bank items to backend expected format
+                bank_receipts: bankItems.map(i => ({
+                    operation_type: i.opText,
+                    atm_name: i.atm,
+                    bank_name: i.entry_bank_name,
+                    amount: i.amount
+                })),
+                postpaid_items: postpaidItems.map(i => ({
+                    customer_name: i.customer_name,
+                    amount: i.amount
+                })),
+                customer_receipts: custReceiptItems.map(i => ({
+                    customer_name: i.customer_name,
+                    payment_type: i.type,
+                    amount: i.amount
+                })),
+                return_items: returnItems.map(i => ({
+                    invoice_number: i.num,
+                    amount: i.amount,
+                    note: i.note
+                })),
+                supplier_items: supplierItems.map(i => ({
+                    supplier_name: i.supplier_name,
+                    invoice_number: i.invoice_number,
+                    amount: i.amount
+                }))
+            };
+
+            try {
+                // Show loading state
+                Swal.fire({
+                    title: 'جاري الإرسال...',
+                    text: 'يرجى الانتظار بينما يتم حفظ التصفية',
+                    allowOutsideClick: false,
+                    didOpen: () => {
+                        Swal.showLoading();
+                    }
+                });
+
+                const res = await fetch('/api/reconciliation-requests', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+
+                if (data.success) {
+                    await Swal.fire({
+                        title: 'تم الإرسال بنجاح!',
+                        text: 'تم إرسال طلب التصفية للمراجعة وسيتم تبليغ المسؤول.',
+                        icon: 'success',
+                        confirmButtonText: 'حسناً',
+                        confirmButtonColor: '#198754'
+                    });
+
+                    if (user.role === 'cashier') {
+                        window.location.reload();
+                    } else {
+                        window.location.href = 'index.html';
+                    }
+                } else {
+                    Swal.fire({
+                        title: 'خطأ',
+                        text: data.error,
+                        icon: 'error',
+                        confirmButtonText: 'حاول مرة أخرى'
+                    });
+                }
+            } catch (e) {
+                Swal.fire({
+                    title: 'فشل الاتصال',
+                    text: 'تعذر الاتصال بالخادم. يرجى التحقق من الشبكة وإعادة المحاولة.',
+                    icon: 'error',
+                    confirmButtonText: 'حسناً'
+                });
+            }
+        }
+
+        // --- Keyboard Navigation Setup ---
+        function setupNavigation() {
+            // Helper to chain inputs (Enter -> Next Field)
+            const chain = (id1, id2) => {
+                const el = document.getElementById(id1);
+                if (el) {
+                    el.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            const next = document.getElementById(id2);
+                            if (next) next.focus();
+                        }
+                    });
+                }
+            };
+
+            // Helper to trigger action (Enter -> Action)
+            const trigger = (id, func) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.addEventListener('keydown', (e) => {
+                        if (e.key === 'Enter') {
+                            e.preventDefault();
+                            func();
+                        }
+                    });
+                }
+            };
+
+            // 1. Cash Tab
+            chain('cashDenomSelect', 'cashCountInput');
+            trigger('cashCountInput', addCashItem);
+
+            // 2. Bank Tab (Updated IDs)
+            chain('bankOpType', 'bankAtmName');
+            chain('bankAtmName', 'input_bank_name_v2');
+            chain('input_bank_name_v2', 'input_bank_amount_v2');
+            trigger('input_bank_amount_v2', addBankItem);
+
+            // 3. Postpaid Tab
+            chain('postpaidName', 'postpaidAmount');
+            trigger('postpaidAmount', addPostpaidItem);
+
+            // 4. Customer Receipts Tab
+            chain('custReceiptName', 'custReceiptType');
+            chain('custReceiptType', 'custReceiptAmount');
+            trigger('custReceiptAmount', addCustomerReceiptItem);
+
+            // 5. Returns Tab (Fixed IDs)
+            chain('returnInv', 'returnAmount');
+            chain('returnAmount', 'returnNote');
+            trigger('returnNote', addReturnItem);
+
+            // 6. Suppliers Tab (Fixed IDs)
+            chain('supplierName', 'supplierInv');
+            chain('supplierInvoice', 'supplierAmount'); // Note: supplierInv is correct above, check HTML
+            // Wait, checking HTML for supplier invoice ID. It is 'supplierInv'.
+            // Correction below:
+            chain('supplierInv', 'supplierAmount');
+            trigger('supplierAmount', addSupplierItem);
+        }
+
+        // Initialize Navigation
+        setupNavigation();
+    </script>
+</body>
+
+</html>
