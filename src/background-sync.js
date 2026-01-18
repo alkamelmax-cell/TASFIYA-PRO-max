@@ -49,21 +49,26 @@ function startBackgroundSync(dbManager) {
             let postpaid_sales = [];
             let customer_receipts = []; // reconciliations linked
 
-            // Manual entries (Independent of reconciliations)
-            const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC LIMIT 500').all();
-            const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC LIMIT 500').all();
+            // Manual entries (Independent) - Increase limit
+            const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC LIMIT 2000').all();
+            const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC LIMIT 2000').all();
+
+            // Customer Normal Entries (Sync More History for Ledger) - Independent of Rec Limit
+            // We fetch last 5000 records to ensure we cover old debts
+            const postpaid_sales = db.prepare('SELECT * FROM postpaid_sales ORDER BY id DESC LIMIT 5000').all();
+            const customer_receipts = db.prepare('SELECT * FROM customer_receipts ORDER BY id DESC LIMIT 5000').all();
 
             if (recIdsParams) {
                 cash_receipts = db.prepare(`SELECT * FROM cash_receipts WHERE reconciliation_id IN (${recIdsParams})`).all();
                 bank_receipts = db.prepare(`SELECT * FROM bank_receipts WHERE reconciliation_id IN (${recIdsParams})`).all();
-                postpaid_sales = db.prepare(`SELECT * FROM postpaid_sales WHERE reconciliation_id IN (${recIdsParams})`).all();
-                customer_receipts = db.prepare(`SELECT * FROM customer_receipts WHERE reconciliation_id IN (${recIdsParams})`).all();
+                // postpaid_sales and customer_receipts are now fetched separately above
             }
 
             // Prepare Payload with ALL details
             const payload = {
                 admins, branches, cashiers, accountants, atms, reconciliations,
-                cash_receipts, bank_receipts, postpaid_sales, customer_receipts,
+                cash_receipts, bank_receipts,
+                postpaid_sales, customer_receipts, // Sent independently
                 manual_postpaid_sales, manual_customer_receipts
             };
 
