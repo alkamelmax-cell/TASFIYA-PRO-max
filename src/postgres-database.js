@@ -44,8 +44,8 @@ class PostgresManager {
                 } catch (e) { console.error('PG All Error:', e.message, pgSql); throw e; }
             },
             run: async (...params) => {
+                let finalSql = pgSql; // Move outside try
                 try {
-                    let finalSql = pgSql;
                     const isInsert = finalSql.trim().toUpperCase().startsWith('INSERT');
 
                     if (isInsert && !finalSql.match(/RETURNING/i)) {
