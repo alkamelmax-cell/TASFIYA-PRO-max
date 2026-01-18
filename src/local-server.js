@@ -299,9 +299,23 @@ class LocalWebServer {
 
     async handleGetLookups(res) {
         try {
-            const cashiers = this.dbManager.db.prepare('SELECT id, name FROM cashiers WHERE active = 1').all();
+            const cashiers = this.dbManager.db.prepare(`
+                SELECT 
+                    c.id, 
+                    c.name, 
+                    c.cashier_number, 
+                    c.pin_code,
+                    c.active,
+                    b.branch_name 
+                FROM cashiers c
+                LEFT JOIN branches b ON c.branch_id = b.id
+                WHERE c.active = 1
+            `).all();
+
             const branches = this.dbManager.db.prepare('SELECT id, branch_name as name FROM branches WHERE is_active = 1').all();
-            this.sendJson(res, { success: true, cashiers, branches });
+            const accountants = this.dbManager.db.prepare('SELECT id, name FROM accountants WHERE active = 1').all();
+
+            this.sendJson(res, { success: true, cashiers, branches, accountants });
         } catch (error) {
             this.sendJson(res, { success: false, error: error.message });
         }
