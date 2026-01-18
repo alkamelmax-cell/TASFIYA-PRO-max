@@ -1068,53 +1068,68 @@ class LocalWebServer {
                     throw new Error('Database pool not available');
                 }
 
-                // Helper to sync table using CORRECT PostgreSQL async pattern
+                // Helper to sync table using Optimized Batch INSERT
                 const syncTable = async (table, items, columns, conflictCol = 'id') => {
-                    if (!items || items.length === 0) {
-                        console.log(`⏭️ [SYNC] Skipping ${table} (no items)`);
-                        return;
-                    }
+                    if (!items || items.length === 0) return;
 
-                    console.log(`🔄 [SYNC] Syncing ${table} (${items.length} items)...`);
-
+                    console.log(`🔄 [SYNC] Syncing ${table} (${items.length} items) in batches...`);
                     const cols = columns.map(c => c.name);
                     const updateSets = cols.map(c => `${c} = EXCLUDED.${c}`).join(', ');
 
+                    // Process in batches of 200 to avoid query parameter limits and timeouts
+                    const BATCH_SIZE = 200;
                     let successCount = 0;
                     let errorCount = 0;
 
-                    // Sync each item individually (safe but slower - optimized for correctness)
-                    for (const item of items) {
-                        try {
-                            // Build values array in column order
-                            const values = cols.map(c => {
-                                let val = item[c];
-                                // Serialize objects/arrays to JSON for PostgreSQL
-                                if (typeof val === 'object' && val !== null) return JSON.stringify(val);
-                                // Convert undefined to null
-                                if (val === undefined) return null;
-                                return val;
+                    for (let i = 0; i < items.length; i += BATCH_SIZE) {
+                        const batch = items.slice(i, i + BATCH_SIZE);
+                        const placeholders = [];
+                        const values = [];
+                        let paramCounter = 1;
+
+                        batch.forEach(item => {
+                            const rowParams = [];
+                            cols.forEach(col => {
+                                let val = item[col];
+                                if (typeof val === 'object' && val !== null) val = JSON.stringify(val);
+                                if (val === undefined) val = null;
+                                values.push(val);
+                                rowParams.push(`$${paramCounter++}`);
                             });
+                            placeholders.push(`(${rowParams.join(', ')})`);
+                        });
 
-                            // Generate PostgreSQL placeholders ($1, $2, ...)
-                            const placeholders = values.map((_, i) => `$${i + 1}`).join(', ');
+                        const sql = `
+                        INSERT INTO ${table} (${cols.join(', ')})
+                        VALUES ${placeholders.join(', ')}
+                        ON CONFLICT (${conflictCol}) DO UPDATE SET ${updateSets}
+                    `;
 
-                            const sql = `
-                                INSERT INTO ${table} (${cols.join(', ')})
-                                VALUES (${placeholders})
-                                ON CONFLICT (${conflictCol}) DO UPDATE SET ${updateSets}
-                            `;
-
-                            // **CRITICAL FIX**: Use pool.query() directly
-                            await pool.query(sql, values);
-                            successCount++;
+                        try {
+                            const res = await pool.query(sql, values);
+                            successCount += batch.length; // Approximate (rowCount might differ with upserts)
                         } catch (err) {
-                            errorCount++;
-                            console.error(`❌ [SYNC] Error syncing ${table} item ${item.id || 'unknown'}:`, err.message);
+                            console.error(`❌ [SYNC] Batch Error ${table} (Wait/Retry):`, err.message);
+                            // Fallback: If batch fails, try one-by-one for this batch only
+                            // (Usually caused by specific data issues)
+                            for (const item of batch) {
+                                try {
+                                    const singleVals = cols.map(c => {
+                                        let v = item[c];
+                                        if (typeof v === 'object' && v !== null) return JSON.stringify(v);
+                                        if (v === undefined) return null;
+                                        return v;
+                                    });
+                                    const singlePlaceholders = singleVals.map((_, idx) => `$${idx + 1}`).join(', ');
+                                    await pool.query(`INSERT INTO ${table} (${cols.join(', ')}) VALUES (${singlePlaceholders}) ON CONFLICT (${conflictCol}) DO UPDATE SET ${updateSets}`, singleVals);
+                                    successCount++;
+                                } catch (e) {
+                                    errorCount++;
+                                }
+                            }
                         }
                     }
-
-                    console.log(`✅ [SYNC] ${table}: ${successCount}/${items.length} synced (${errorCount} errors)`);
+                    console.log(`✅ [SYNC] ${table}: Processed ${successCount} items.`);
                 };
 
                 // Sync all tables in dependency order
