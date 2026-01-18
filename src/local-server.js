@@ -479,18 +479,20 @@ class LocalWebServer {
             const paramsSales = [customerName];
             const paramsReceipts = [customerName];
 
-            if (dateFrom) {
+            // Validate dates - ensure they are not empty strings
+            if (dateFrom && dateFrom.trim() !== '') {
                 dateFilterSales += ' AND ps.created_at >= ?';
                 dateFilterReceipts += ' AND cr.created_at >= ?';
                 paramsSales.push(dateFrom);
                 paramsReceipts.push(dateFrom);
             }
-            if (dateTo) {
+            if (dateTo && dateTo.trim() !== '') {
                 dateFilterSales += ' AND ps.created_at <= ?';
-                dateFilterSales += ' AND created_at <= ?';
-                dateFilterReceipts += ' AND created_at <= ?';
-                paramsSales.push(dateTo + ' 23:59:59');
-                paramsReceipts.push(dateTo + ' 23:59:59');
+                dateFilterReceipts += ' AND cr.created_at <= ?';
+                // Add time to end of day
+                const dateToEnd = dateTo.includes(' ') ? dateTo : dateTo + ' 23:59:59';
+                paramsSales.push(dateToEnd);
+                paramsReceipts.push(dateToEnd);
             }
 
             // Get Debits (Sales) - From Reconciliations
@@ -506,10 +508,12 @@ class LocalWebServer {
             FROM postpaid_sales ps 
             LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
             LEFT JOIN cashiers c ON r.cashier_id = c.id
-            WHERE ps.customer_name = ? ${dateFilterSales.replace(/created_at/g, 'ps.created_at')}
+            WHERE ps.customer_name = ? ${dateFilterSales}
         `).all(paramsSales);
 
-            // Get Manual Debits (Sales)
+            // Get Manual Debits (Sales) - Fix field references for manual table
+            // manual table doesn't have ps alias, so remove it from filter
+            const filterSalesManual = dateFilterSales.replace(/ps\./g, '');
             const manualSales = await this.dbManager.db.prepare(`
             SELECT 
                 id, 
@@ -520,7 +524,7 @@ class LocalWebServer {
                 'مسؤول النظام' as cashier_name,
                 NULL as reconciliation_number
             FROM manual_postpaid_sales 
-            WHERE customer_name = ? ${dateFilterSales}
+            WHERE customer_name = ? ${filterSalesManual}
         `).all(paramsSales);
 
 
@@ -538,10 +542,11 @@ class LocalWebServer {
             FROM customer_receipts cr 
             LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
             LEFT JOIN cashiers c ON r.cashier_id = c.id
-            WHERE cr.customer_name = ? ${dateFilterReceipts.replace(/created_at/g, 'cr.created_at')}
+            WHERE cr.customer_name = ? ${dateFilterReceipts}
         `).all(paramsReceipts);
 
-            // Get Manual Credits (Receipts)
+            // Get Manual Credits (Receipts) - Fix field references
+            const filterReceiptsManual = dateFilterReceipts.replace(/cr\./g, '');
             const manualReceipts = await this.dbManager.db.prepare(`
             SELECT 
                 id, 
@@ -553,7 +558,7 @@ class LocalWebServer {
                 'مسؤول النظام' as cashier_name,
                 NULL as reconciliation_number
             FROM manual_customer_receipts 
-            WHERE customer_name = ? ${dateFilterReceipts}
+            WHERE customer_name = ? ${filterReceiptsManual}
         `).all(paramsReceipts);
 
             // Combine and sort
@@ -572,39 +577,52 @@ class LocalWebServer {
     }
     async handleGetCustomersSummary(res) {
         try {
+            // Complex query to get balance (Sales - Receipts) + Manual Entries
             const sql = `
-            SELECT
-            c.name as customer_name,
-                COALESCE(sales.total_debit, 0) as total_debit,
-                COALESCE(receipts.total_credit, 0) as total_credit,
-                (COALESCE(sales.total_debit, 0) - COALESCE(receipts.total_credit, 0)) as balance,
-                MAX(COALESCE(sales.last_date, ''), COALESCE(receipts.last_date, '')) as last_transaction,
-                (COALESCE(sales.count, 0) + COALESCE(receipts.count, 0)) as transaction_count,
-                (
+            SELECT 
+                c.name as customer_name,
+                COALESCE(sales.total_debit, 0) + COALESCE(manual_sales.total_debit, 0) as total_debit,
+                COALESCE(receipts.total_credit, 0) + COALESCE(manual_receipts.total_credit, 0) as total_credit,
+                (COALESCE(sales.total_debit, 0) + COALESCE(manual_sales.total_debit, 0)) - (COALESCE(receipts.total_credit, 0) + COALESCE(manual_receipts.total_credit, 0)) as balance,
+                MAX(COALESCE(sales.last_date, ''), COALESCE(receipts.last_date, ''), COALESCE(manual_sales.last_date, ''), COALESCE(manual_receipts.last_date, '')) as last_transaction,
+                (COALESCE(sales.count, 0) + COALESCE(manual_sales.count, 0) + COALESCE(receipts.count, 0) + COALESCE(manual_receipts.count, 0)) as transaction_count,
+                 (
                     SELECT b.branch_name 
-                        FROM postpaid_sales ps
-                        LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
-                        LEFT JOIN cashiers ca ON r.cashier_id = ca.id
-                        LEFT JOIN branches b ON ca.branch_id = b.id
-                        WHERE ps.customer_name = c.name
-                        ORDER BY ps.created_at DESC
-                        LIMIT 1
-                    ) as branch_name
-            FROM(
+                    FROM postpaid_sales ps
+                    LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id 
+                    LEFT JOIN cashiers ca ON r.cashier_id = ca.id
+                    LEFT JOIN branches b ON ca.branch_id = b.id
+                    WHERE ps.customer_name = c.name 
+                    ORDER BY ps.created_at DESC 
+                    LIMIT 1
+                 ) as branch_name
+            FROM (
                 SELECT DISTINCT customer_name as name FROM postpaid_sales
-                    UNION
-                    SELECT DISTINCT customer_name as name FROM customer_receipts
+                UNION 
+                SELECT DISTINCT customer_name as name FROM customer_receipts
+                UNION
+                SELECT DISTINCT customer_name as name FROM manual_postpaid_sales
+                UNION
+                SELECT DISTINCT customer_name as name FROM manual_customer_receipts
             ) c
-                LEFT JOIN(
-                SELECT customer_name, SUM(amount) as total_debit, MAX(created_at) as last_date, COUNT(*) as count
-                    FROM postpaid_sales GROUP BY customer_name
+            LEFT JOIN (
+                SELECT customer_name, SUM(amount) as total_debit, MAX(created_at) as last_date, COUNT(*) as count 
+                FROM postpaid_sales GROUP BY customer_name
             ) sales ON c.name = sales.customer_name
-                LEFT JOIN(
-                SELECT customer_name, SUM(amount) as total_credit, MAX(created_at) as last_date, COUNT(*) as count
-                    FROM customer_receipts GROUP BY customer_name
+            LEFT JOIN (
+                SELECT customer_name, SUM(amount) as total_debit, MAX(created_at) as last_date, COUNT(*) as count 
+                FROM manual_postpaid_sales GROUP BY customer_name
+            ) manual_sales ON c.name = manual_sales.customer_name
+            LEFT JOIN (
+                SELECT customer_name, SUM(amount) as total_credit, MAX(created_at) as last_date, COUNT(*) as count 
+                FROM customer_receipts GROUP BY customer_name
             ) receipts ON c.name = receipts.customer_name
-                ORDER BY balance DESC
-                `;
+            LEFT JOIN (
+                SELECT customer_name, SUM(amount) as total_credit, MAX(created_at) as last_date, COUNT(*) as count 
+                FROM manual_customer_receipts GROUP BY customer_name
+            ) manual_receipts ON c.name = manual_receipts.customer_name
+            ORDER BY balance DESC
+            `;
 
             const data = await this.dbManager.db.prepare(sql).all();
             this.sendJson(res, { success: true, data });
@@ -630,7 +648,8 @@ class LocalWebServer {
                 WHERE c.active = 1
             `).all();
 
-            const branches = await this.dbManager.db.prepare('SELECT id, branch_name as name FROM branches').all();
+            const branches = await this.dbManager.db.prepare('SELECT id, branch_name as name FROM branches WHERE is_active = 1').all();
+            const accountants = await this.dbManager.db.prepare('SELECT id, name FROM accountants WHERE active = 1').all();
 
             // Get unique locations from ATMs as "accounts"
             const accounts = await this.dbManager.db.prepare("SELECT DISTINCT location as name FROM atms WHERE location IS NOT NULL AND location != '' ORDER BY location").all();
@@ -643,7 +662,7 @@ class LocalWebServer {
                 ORDER BY name
                 `).all();
 
-            this.sendJson(res, { success: true, cashiers, branches, accounts, customers });
+            this.sendJson(res, { success: true, cashiers, branches, accountants, accounts, customers });
         } catch (error) {
             console.error('[Lookups] Error:', error);
             this.sendJson(res, { success: false, error: error.message });
@@ -689,10 +708,14 @@ class LocalWebServer {
 
     async handleGetUsers(res) {
         try {
-            const users = this.dbManager.db.prepare("SELECT id, name, username, role, permissions, active, created_at FROM admins ORDER BY id DESC").all();
+            let users = await this.dbManager.db.prepare("SELECT id, name, username, role, permissions, active, created_at FROM admins ORDER BY id DESC").all();
+
+            // Safety Check
+            if (!users || !Array.isArray(users)) users = [];
+
             users.forEach(u => {
                 if (u.permissions && typeof u.permissions === 'string') {
-                    try { u.permissions = JSON.parse(u.permissions); } catch (e) { }
+                    try { u.permissions = JSON.parse(u.permissions); } catch (e) { u.permissions = []; }
                 }
             });
             this.sendJson(res, { success: true, data: users });
