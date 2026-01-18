@@ -15,6 +15,7 @@ const PDFGenerator = require('./pdf-generator');
 const PrintManager = require('./print-manager');
 const ThermalPrinter80mm = require('./thermal-printer-80mm');
 const LocalWebServer = require('./local-server');
+const { startBackgroundSync } = require('./background-sync');
 
 /**
  * Safe console logging that won't crash on EPIPE errors
@@ -1645,6 +1646,9 @@ app.whenReady().then(() => {
 
     // Initialize automatic backup
     initializeAutoBackup();
+
+    // Start Background Sync to Cloud
+    startBackgroundSync(dbManager);
 
     // Start Local Web Server
     try {
