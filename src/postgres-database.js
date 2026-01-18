@@ -27,30 +27,40 @@ class PostgresManager {
 
     // Adaptor: SQLite (?) to Postgres ($1, $2)
     _prepareWithExecutor(sql, executor) {
+        // Convert ? placeholders to $1, $2, etc
         let paramIndex = 1;
         const pgSql = sql.replace(/\?/g, () => '$' + paramIndex++);
 
+        // Helper to unwrap params
+        const unwrapParams = (args) => {
+            if (args.length === 1 && Array.isArray(args[0])) {
+                return args[0];
+            }
+            return args;
+        };
+
         return {
-            get: async (...params) => {
+            get: async (...args) => {
+                const params = unwrapParams(args);
                 try {
-                    // ROOT FIX: Only pass params array if it's not empty
                     const res = params.length > 0
                         ? await executor.query(pgSql, params)
                         : await executor.query(pgSql);
                     return res.rows[0];
                 } catch (e) { console.error('PG Get Error:', e.message, pgSql, 'Params:', params); throw e; }
             },
-            all: async (...params) => {
+            all: async (...args) => {
+                const params = unwrapParams(args);
                 try {
-                    // ROOT FIX: Only pass params array if it's not empty
                     const res = params.length > 0
                         ? await executor.query(pgSql, params)
                         : await executor.query(pgSql);
                     return res.rows;
                 } catch (e) { console.error('PG All Error:', e.message, pgSql, 'Params:', params); throw e; }
             },
-            run: async (...params) => {
-                let finalSql = pgSql; // Move outside try
+            run: async (...args) => {
+                const params = unwrapParams(args);
+                let finalSql = pgSql;
                 try {
                     const isInsert = finalSql.trim().toUpperCase().startsWith('INSERT');
 
@@ -58,14 +68,13 @@ class PostgresManager {
                         finalSql += ' RETURNING id';
                     }
 
-                    // ROOT FIX: Only pass params array if it's not empty
                     const res = params.length > 0
                         ? await executor.query(finalSql, params)
                         : await executor.query(finalSql);
 
                     let lastId = 0;
                     if (isInsert && res.rows.length > 0) {
-                        lastId = res.rows[0].id; // Postgres usually returns id column
+                        lastId = res.rows[0].id;
                     }
                     return { changes: res.rowCount, lastInsertRowid: lastId };
                 } catch (e) { console.error('PG Run Error:', e.message, finalSql, 'Params:', params); throw e; }
