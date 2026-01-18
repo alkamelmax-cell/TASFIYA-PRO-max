@@ -1,0 +1,495 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>تصفية برو - لوحة القيادة</title>
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Almarai:wght@300;400;700;800&display=swap" rel="stylesheet">
+
+    <!-- Bootstrap RTL -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css">
+
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/custom.css?v=2">
+</head>
+
+<body>
+
+    <!-- Loading Overlay -->
+    <div id="loading" class="loading-overlay"
+        style="display: none; position: fixed; inset: 0; background: rgba(15, 23, 42, 0.9); z-index: 9999; align-items: center; justify-content: center;">
+        <div class="d-flex flex-column align-items-center">
+            <div class="spinner-border text-primary" style="width: 3rem; height: 3rem; border-width: 4px;"
+                role="status"></div>
+            <div class="mt-3 text-white fw-bold">جاري التحميل...</div>
+        </div>
+    </div>
+
+    <!-- Navbar -->
+    <nav class="custom-navbar navbar-layout mb-4">
+        <!-- Brand Section -->
+        <div class="navbar-brand-section">
+            <div class="brand-logo">
+                <i class="fas fa-cube text-primary me-2"></i>تصفية برو
+            </div>
+        </div>
+
+        <!-- Links Section -->
+        <div class="navbar-links-section">
+            <a href="index.html" class="btn btn-sm btn-primary fw-bold text-white px-3 py-2 rounded-pill shadow-sm">
+                <i class="fas fa-home me-1"></i> الرئيسية
+            </a>
+            <a href="request-reconciliation.html"
+                class="btn btn-sm btn-outline-success fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-plus-circle me-1"></i> طلب تصفية
+            </a>
+            <a href="reconciliation-requests.html"
+                class="btn btn-sm btn-outline-warning fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-inbox me-1"></i> الطلبات المعلقة
+            </a>
+            <a href="atm-reports.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-credit-card me-1"></i> تقرير الصراف
+            </a>
+            <a href="customer-ledger.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-book me-1"></i> دفتر العملاء
+            </a>
+            <a href="users-management.html" id="navUsersMgmt"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-users-cog me-1"></i> إدارة المستخدمين
+            </a>
+            <a href="cashiers-management.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-cash-register me-1"></i> إدارة الكاشير
+            </a>
+        </div>
+
+        <!-- User Section -->
+        <div class="dropdown navbar-user-section">
+            <button class="user-profile-btn" type="button" data-bs-toggle="dropdown">
+                <div class="bg-primary rounded-circle d-flex align-items-center justify-content-center"
+                    style="width: 32px; height: 32px;">
+                    <i class="fas fa-user text-white"></i>
+                </div>
+                <span id="userNameDisplay" class="d-none d-md-inline fw-bold font-monospace small">Admin</span>
+                <i class="fas fa-chevron-down small opacity-50"></i>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end bg-card border-secondary shadow-lg mt-2">
+                <li><a class="dropdown-item text-danger d-flex align-items-center gap-2" href="#" onclick="logout()">
+                        <i class="fas fa-sign-out-alt"></i> تسجيل الخروج
+                    </a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container-fluid px-3 px-md-4">
+
+        <!-- Stats Row -->
+        <div class="row g-3 mb-4">
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-clipboard-check icon-wrapper"></i>
+                    <div class="stat-label">التصفيات</div>
+                    <div class="stat-value" id="statsTotalCount">0</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-coins icon-wrapper text-success"></i>
+                    <div class="stat-label">المقبوضات</div>
+                    <div class="stat-value text-success" id="statsTotalReceipts">0</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-chart-line icon-wrapper text-info"></i>
+                    <div class="stat-label">المبيعات</div>
+                    <div class="stat-value text-info" id="statsTotalSales">0</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <!-- Cash Total -->
+                    <i class="fas fa-money-bill-wave icon-wrapper text-success"></i>
+                    <div class="stat-label">المقبوضات النقدية</div>
+                    <div class="stat-value text-success" id="statsTotalCash">0</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="filter-container mb-4">
+            <div class="section-title">
+                <i class="fas fa-search small text-primary"></i>
+                البحث والفلترة
+            </div>
+            <div class="row g-3">
+                <div class="col-6 col-md-3">
+                    <label class="custom-label">من تاريخ</label>
+                    <input type="date" class="custom-input w-100" id="filterDateFrom">
+                </div>
+                <div class="col-6 col-md-3">
+                    <label class="custom-label">إلى تاريخ</label>
+                    <input type="date" class="custom-input w-100" id="filterDateTo">
+                </div>
+                <!-- <div class="col-6 col-md-2">
+                    <label class="custom-label">الفرع</label>
+                    <select class="custom-input form-select w-100" id="filterBranch">
+                        <option value="all">الكل</option>
+                    </select>
+                </div> -->
+                <div class="col-6 col-md-2">
+                    <label class="custom-label">الكاشير</label>
+                    <select class="custom-input form-select w-100" id="filterCashier">
+                        <option value="all">الكل</option>
+                    </select>
+                </div>
+                <div class="col-6 col-md-2">
+                    <label class="custom-label">الحالة</label>
+                    <select class="custom-input form-select w-100" id="filterStatus">
+                        <option value="all">الكل</option>
+                        <option value="completed">مكتملة</option>
+                        <option value="draft">معلقة</option>
+                    </select>
+                </div>
+                <!-- Buttons Row -->
+                <div class="col-12 mt-3">
+                    <div class="d-flex gap-2">
+                        <button class="btn btn-secondary px-3" onclick="loadReconciliations()">
+                            <i class="fas fa-sync-alt"></i>
+                        </button>
+                        <button class="btn btn-primary flex-grow-1 fw-bold" onclick="loadReconciliations()">
+                            بحث
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="pro-card mb-4 min-vh-100">
+            <div class="p-3 border-bottom border-secondary d-flex justify-content-between align-items-center">
+                <div class="section-title mb-0">سجل التصفيات</div>
+                <small class="text-secondary" id="recordCount">0 سجل</small>
+            </div>
+
+            <div class="table-container border-0">
+                <table class="custom-table">
+                    <thead>
+                        <tr>
+                            <th>رقم التصفية</th>
+                            <th>التاريخ</th>
+                            <th>الكاشير</th>
+                            <th class="d-none d-md-table-cell">المحاسب</th>
+                            <th class="text-ltr d-none d-md-table-cell">مبيعات النظام</th>
+                            <th class="text-ltr d-none d-md-table-cell">المقبوض الفعلي</th>
+                            <th class="text-ltr">العجز/الفائض</th>
+                            <th class="text-center-header d-none d-md-table-cell">الحالة</th>
+                            <th class="text-center">اجراءات</th>
+                        </tr>
+                    </thead>
+                    <tbody id="reconciliationsTableBody">
+                        <!-- Rows -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal -->
+    <div class="modal fade" id="detailsModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title fw-bold text-white">تفاصيل التصفية</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body p-4" id="modalBody">
+                    <!-- Dynamic -->
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Auth Check
+        const userStr = localStorage.getItem('user');
+        if (!userStr) {
+            window.location.href = '/login.html';
+        }
+        const user = JSON.parse(userStr || '{}');
+        document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
+
+        // Redirect Cashier Immediately
+        if (user.role === 'cashier') {
+            window.location.href = 'request-reconciliation.html';
+        }
+
+        // Check Permissions
+        const protectedPages = [
+            'atm-reports.html',
+            'customer-ledger.html',
+            'users-management.html',
+            'cashiers-management.html'
+        ];
+
+        if (user.permissions && Array.isArray(user.permissions)) {
+            // New Logic: Check specific permissions
+            protectedPages.forEach(page => {
+                if (!user.permissions.includes(page)) {
+                    const el = document.querySelector(`a[href="${page}"]`);
+                    if (el) el.classList.add('d-none');
+                }
+            });
+        } else if (user.role && user.role !== 'admin') {
+            // Legacy Fallback: Hide all protected for non-admins
+            protectedPages.forEach(page => {
+                const el = document.querySelector(`a[href="${page}"]`);
+                if (el) el.classList.add('d-none');
+            });
+        }
+
+        function logout() {
+            localStorage.removeItem('user');
+            window.location.href = '/login.html';
+        }
+
+        const API_URL = '/api';
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            // Defaults: This Month (Disabled to show all)
+            // const date = new Date();
+            // const firstDay = new Date(date.getFullYear(), date.getMonth(), 1).toISOString().split('T')[0];
+            // const today = new Date().toISOString().split('T')[0];
+
+            // document.getElementById('filterDateFrom').value = firstDay;
+            // document.getElementById('filterDateTo').value = today;
+
+            document.getElementById('filterDateFrom').value = '';
+            document.getElementById('filterDateTo').value = '';
+
+            await loadLookups();
+            loadReconciliations();
+        });
+
+        async function loadLookups() {
+            try {
+                const res = await fetch(`${API_URL}/lookups`);
+                const data = await res.json();
+                if (data.success) {
+                    const cashierSelect = document.getElementById('filterCashier');
+                    data.cashiers.forEach(c => {
+                        const opt = document.createElement('option');
+                        opt.value = c.id;
+                        opt.textContent = c.name;
+                        cashierSelect.appendChild(opt);
+                    });
+                }
+            } catch (e) { console.error(e); }
+        }
+
+        async function loadReconciliations() {
+            const dateFrom = document.getElementById('filterDateFrom').value;
+            const dateTo = document.getElementById('filterDateTo').value;
+            const cashierId = document.getElementById('filterCashier').value;
+            const status = document.getElementById('filterStatus').value;
+
+            const params = new URLSearchParams();
+            if (dateFrom) params.append('dateFrom', dateFrom);
+            if (dateTo) params.append('dateTo', dateTo);
+            if (cashierId) params.append('cashierId', cashierId);
+            if (status) params.append('status', status);
+
+            showLoading(true);
+            try {
+                const res = await fetch(`${API_URL}/reconciliations?${params.toString()}`);
+                const result = await res.json();
+
+                if (result.success) {
+                    renderTable(result.data);
+                    calculateStats(result.data);
+                }
+            } catch (error) {
+                console.error(error);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function renderTable(data) {
+            const tbody = document.getElementById('reconciliationsTableBody');
+            tbody.innerHTML = '';
+            document.getElementById('recordCount').textContent = `${data.length} سجل`;
+
+            if (data.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="9" class="text-center py-5"><div class="text-muted opacity-50"><i class="fas fa-inbox fa-3x mb-3"></i><br>لا توجد بيانات للعرض</div></td></tr>`;
+                return;
+            }
+
+            data.forEach(row => {
+                const surplus = Number(row.surplus_deficit || 0);
+                const surplusClass = surplus >= 0 ? 'text-success' : 'text-danger';
+                const statusBadge = row.status === 'completed'
+                    ? '<div class="status-badge status-completed"><i class="fas fa-check-circle"></i> مكتملة</div>'
+                    : '<div class="status-badge status-pending"><i class="fas fa-clock"></i> معلقة</div>';
+
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td data-label="#" class="text-white fw-bold font-monospace">${row.reconciliation_number || row.id}</td>
+                    <td data-label="التاريخ" class="font-monospace">${new Date(row.reconciliation_date).toLocaleDateString('en-GB')}</td>
+                    <td data-label="الكاشير" class="text-white">${row.cashier_name || '-'}</td>
+                    <td data-label="المحاسب" class="text-white d-none d-md-table-cell">${row.accountant_name || '-'}</td>
+                    <td data-label="إجمالي المقبوضات" class="font-monospace text-success fw-bold text-ltr d-none d-md-table-cell">${formatCurrency(row.total_receipts)}</td>
+                    <td data-label="مبيعات النظام" class="font-monospace text-white text-ltr d-none d-md-table-cell">${formatCurrency(row.system_sales)}</td>
+                    <td data-label="العجز / الفائض" class="${surplusClass} fw-bold font-monospace text-ltr" dir="ltr">${formatCurrency(surplus)}</td>
+                    <td data-label="الحالة" class="text-center-cell d-none d-md-table-cell">${statusBadge}</td>
+                    <td data-label="الإجراء" class="text-center-cell">
+                        <button class="btn btn-primary btn-sm btn-action-mobile" onclick="openDetails(${row.id})">
+                            عرض
+                        </button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function calculateStats(data) {
+            const count = data.length;
+            const totalReceipts = data.reduce((sum, r) => sum + Number(r.total_receipts || 0), 0);
+            const totalSales = data.reduce((sum, r) => sum + Number(r.system_sales || 0), 0);
+            const totalCash = data.reduce((sum, r) => sum + Number(r.cash_total || 0), 0);
+
+            document.getElementById('statsTotalCount').textContent = formatNum(count);
+            document.getElementById('statsTotalReceipts').textContent = formatNum(totalReceipts); // Short format
+            document.getElementById('statsTotalSales').textContent = formatNum(totalSales);
+            document.getElementById('statsTotalCash').textContent = formatNum(totalCash);
+        }
+
+        async function openDetails(id) {
+            showLoading(true);
+            try {
+                const res = await fetch(`${API_URL}/reconciliation/${id}`);
+                const result = await res.json();
+                if (result.success) renderModalContent(result.data);
+                const modal = new bootstrap.Modal(document.getElementById('detailsModal'));
+                modal.show();
+            } catch (error) { console.error(error); }
+            finally { showLoading(false); }
+        }
+
+        function renderModalContent(data) {
+            const rec = data.reconciliation;
+            const cash = data.cashReceipts || [];
+            const bank = data.bankReceipts || [];
+
+            const totalCashAmount = cash.reduce((sum, c) => sum + Number(c.total_amount), 0);
+
+            let html = `
+                <div class="d-flex justify-content-between align-items-center mb-4 px-2">
+                    <div>
+                        <small class="text-secondary d-block">رقم التصفية</small>
+                        <span class="text-white fw-bold">#${rec.reconciliation_number || rec.id}</span>
+                    </div>
+                    <div>
+                        <div class="status-badge ${rec.status === 'completed' ? 'status-completed' : 'status-pending'}">
+                            ${rec.status === 'completed' ? 'مكتملة' : 'مسودة'}
+                        </div>
+                    </div>
+                    <div class="text-end">
+                        <small class="text-secondary d-block">التاريخ</small>
+                        <span class="fw-bold text-white font-monospace">${new Date(rec.reconciliation_date).toLocaleDateString('en-GB')}</span>
+                    </div>
+                </div>
+
+                <!-- Summary Grid -->
+                <div class="summary-grid">
+                    <div class="summary-item">
+                        <label>مبيعات النظام</label>
+                        <div class="value text-primary font-monospace" dir="ltr">${formatCurrency(rec.system_sales).replace(' SAR', '')}</div>
+                    </div>
+                    <div class="summary-item">
+                        <label>إجمالي المقبوضات</label>
+                        <div class="value text-success font-monospace" dir="ltr">${formatCurrency(rec.total_receipts).replace(' SAR', '')}</div>
+                    </div>
+                    <div class="summary-item">
+                        <label>الفرق</label>
+                        <div class="value ${rec.surplus_deficit >= 0 ? 'text-success' : 'text-danger'} font-monospace" dir="ltr">
+                            ${formatCurrency(rec.surplus_deficit).replace(' SAR', '')}
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Cash Details Table -->
+                <h6 class="section-title text-sm mb-3 text-white"><i class="fas fa-money-bill-wave text-success me-2"></i> تفاصيل النقدية</h6>
+                <div class="modal-table">
+                    <table class="w-100">
+                        <thead>
+                            <tr>
+                                <th>الفئة</th>
+                                <th class="text-center">العدد</th>
+                                <th class="text-ltr">القيمة</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${cash.map(c => `
+                                <tr>
+                                    <td>${c.denomination}</td>
+                                    <td class="text-center font-monospace">${c.quantity}</td>
+                                    <td class="font-monospace text-ltr">${formatCurrency(c.total_amount).replace(' SAR', '')}</td>
+                                </tr>
+                            `).join('')}
+                            <tr class="bg-opacity-10" style="background-color: rgba(16, 185, 129, 0.05) !important;">
+                                <td colspan="2" class="fw-bold text-success">إجمالي الكاش</td>
+                                <td class="text-success fw-bold font-monospace text-ltr">${formatCurrency(totalCashAmount).replace(' SAR', '')}</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Bank Details -->
+                <h6 class="section-title text-sm mb-3 mt-4 text-white"><i class="fas fa-credit-card text-warning me-2"></i> عمليات الشبكة</h6>
+                <div class="d-flex flex-column gap-2">
+                    ${bank.map(b => `
+                        <div class="d-flex justify-content-between align-items-center p-3 rounded" style="background-color: #0f172a; border: 1px solid #334155;">
+                            <div class="d-flex align-items-center gap-3">
+                                <div class="bg-warning bg-opacity-10 p-2 rounded text-warning"><i class="fas fa-credit-card"></i></div>
+                                <div>
+                                    <div class="fw-bold text-white small">${b.operation_type || 'بطاقة'}</div>
+                                    <small class="text-secondary opacity-75" style="font-size: 0.75rem">${b.atm_name || '-'}</small>
+                                </div>
+                            </div>
+                            <div class="font-monospace fw-bold text-white text-ltr">${formatCurrency(b.amount).replace(' SAR', '')}</div>
+                        </div>
+                    `).join('')}
+                    ${bank.length === 0 ? '<div class="text-center py-3 text-muted small border border-dashed border-secondary rounded">لا توجد عمليات شبكة</div>' : ''}
+                </div>
+            `;
+
+            document.getElementById('modalBody').innerHTML = html;
+        }
+
+        function formatCurrency(val) {
+            return Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function formatNum(val) {
+            // Compact format for cards (e.g. 1.2k) if needed, currently full number
+            return Number(val || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'flex' : 'none';
+        }
+    </script>
+</body>
+
+</html>

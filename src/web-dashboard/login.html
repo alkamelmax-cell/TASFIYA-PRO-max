@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تصفية برو - تسجيل الدخول</title>
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="css/custom.css">
+
+    <style>
+        body {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            width: 100vw;
+            margin: 0;
+            padding: 0;
+            padding: 1rem;
+            background: #020617;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Abstract Background blobs */
+        .blob {
+            position: absolute;
+            border-radius: 50%;
+            filter: blur(80px);
+            z-index: 0;
+            animation: float 20s infinite alternate;
+        }
+
+        .blob-1 {
+            top: -10%;
+            right: -10%;
+            width: 500px;
+            height: 500px;
+            background: rgba(59, 130, 246, 0.2);
+            animation-delay: 0s;
+        }
+
+        .blob-2 {
+            bottom: -10%;
+            left: -10%;
+            width: 400px;
+            height: 400px;
+            background: rgba(16, 185, 129, 0.15);
+            animation-delay: -5s;
+        }
+
+        .blob-3 {
+            top: 40%;
+            left: 40%;
+            width: 300px;
+            height: 300px;
+            background: rgba(245, 158, 11, 0.1);
+            animation-delay: -10s;
+        }
+
+        @keyframes float {
+            0% {
+                transform: translate(0, 0) rotate(0deg);
+            }
+
+            100% {
+                transform: translate(50px, 50px) rotate(20deg);
+            }
+        }
+
+        .login-card {
+            width: 100%;
+            max-width: 420px;
+            padding: 3rem 2rem;
+            margin: 0 auto;
+            border-radius: 24px;
+            background: rgba(30, 41, 59, 0.4);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+            position: relative;
+            z-index: 10;
+        }
+
+        @media (max-width: 576px) {
+            .login-card {
+                padding: 2rem 1.5rem;
+                max-width: 100%;
+            }
+
+            .logo-area {
+                width: 60px;
+                height: 60px;
+                font-size: 1.5rem;
+                margin-bottom: 1rem;
+            }
+
+            h3 {
+                font-size: 1.5rem;
+            }
+
+            .btn-login {
+                height: 48px;
+                font-size: 1rem;
+            }
+        }
+
+        .logo-area {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 1.5rem;
+            background: linear-gradient(135deg, var(--primary) 0%, #2563eb 100%);
+            border-radius: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 0 30px var(--primary-glow);
+            font-size: 2rem;
+            color: white;
+            transform: rotate(-10deg);
+        }
+
+        .form-floating>.form-control {
+            background: rgba(15, 23, 42, 0.6);
+            border: 1px solid rgba(255, 255, 255, 0.05);
+            color: white;
+            border-radius: 12px;
+        }
+
+        .form-floating>.form-control:focus {
+            background: rgba(15, 23, 42, 0.8);
+            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
+            border-color: var(--primary);
+        }
+
+        .form-floating>label {
+            color: #94a3b8;
+        }
+
+        .form-floating>.form-control:focus~label {
+            color: var(--primary);
+        }
+
+        .btn-login {
+            background: linear-gradient(90deg, var(--primary) 0%, #2563eb 100%);
+            border: none;
+            height: 54px;
+            font-size: 1.1rem;
+            font-weight: 700;
+            border-radius: 14px;
+            margin-top: 1rem;
+            box-shadow: 0 10px 25px -5px rgba(37, 99, 235, 0.4);
+            transition: 0.3s;
+        }
+
+        .btn-login:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 15px 30px -5px rgba(37, 99, 235, 0.6);
+        }
+
+        /* Tabs Styling */
+        .nav-pills .nav-link {
+            color: #94a3b8;
+            border-radius: 12px;
+            padding: 0.75rem 1rem;
+            font-weight: 600;
+            transition: 0.3s;
+        }
+
+        .nav-pills .nav-link.active {
+            background-color: var(--primary);
+            color: white;
+            box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
+        }
+
+        .nav-pills .nav-link:hover:not(.active) {
+            background-color: rgba(255, 255, 255, 0.05);
+            color: white;
+        }
+    </style>
+</head>
+
+<body>
+
+    <!-- Background Blobs -->
+    <div class="blob blob-1"></div>
+    <div class="blob blob-2"></div>
+    <div class="blob blob-3"></div>
+
+    <div class="login-card text-center">
+        <div class="logo-area">
+            <i class="fas fa-cube"></i>
+        </div>
+
+        <h3 class="fw-bold mb-4 text-white">تصفية برو</h3>
+
+        <ul class="nav nav-pills mb-4 justify-content-center bg-black bg-opacity-25 p-1 rounded-4" id="loginTypeTab"
+            role="tablist">
+            <li class="nav-item flex-grow-1" role="presentation">
+                <button class="nav-link w-100 active" id="admin-tab" data-bs-toggle="pill" data-bs-target="#admin-login"
+                    type="button" role="tab">
+                    <i class="fas fa-user-shield me-2"></i>الإدارة
+                </button>
+            </li>
+            <li class="nav-item flex-grow-1" role="presentation">
+                <button class="nav-link w-100" id="cashier-tab" data-bs-toggle="pill" data-bs-target="#cashier-login"
+                    type="button" role="tab" onclick="loadCashiers()">
+                    <i class="fas fa-cash-register me-2"></i>الكاشير
+                </button>
+            </li>
+        </ul>
+
+        <div class="tab-content" id="loginTabContent">
+            <!-- Admin Login -->
+            <div class="tab-pane fade show active" id="admin-login" role="tabpanel">
+                <form id="loginForm">
+                    <div class="form-floating mb-3 text-start">
+                        <input type="text" class="form-control" id="username" placeholder="اسم المستخدم" required>
+                        <label for="username">اسم المستخدم</label>
+                    </div>
+
+                    <div class="form-floating mb-4 text-start">
+                        <input type="password" class="form-control" id="password" placeholder="كلمة المرور" required>
+                        <label for="password">كلمة المرور</label>
+                    </div>
+
+                    <button type="submit" class="btn btn-primary btn-login w-100">
+                        دخول النظام <i class="fas fa-arrow-left ms-2"></i>
+                    </button>
+                </form>
+            </div>
+
+            <!-- Cashier Login -->
+            <div class="tab-pane fade" id="cashier-login" role="tabpanel">
+                <form id="cashierLoginForm">
+                    <div class="form-floating mb-3 text-start">
+                        <select class="form-select" id="cashierSelect" required>
+                            <option value="" disabled selected>اختر الكاشير...</option>
+                        </select>
+                        <label for="cashierSelect">اسم الكاشير</label>
+                    </div>
+
+                    <div class="form-floating mb-4 text-start">
+                        <input type="password" class="form-control font-monospace text-center fs-4" id="cashierPin"
+                            placeholder="رمز الدخول" required maxlength="6" inputmode="numeric">
+                        <label for="cashierPin">رمز الدخول (PIN)</label>
+                    </div>
+
+                    <button type="submit" class="btn btn-success btn-login w-100"
+                        style="background: linear-gradient(90deg, #059669 0%, #10b981 100%); box-shadow: 0 10px 25px -5px rgba(16, 185, 129, 0.4);">
+                        دخول الكاشير <i class="fas fa-sign-in-alt ms-2"></i>
+                    </button>
+                </form>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Admin Login
+        document.getElementById('loginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+            await performLogin('/api/login', { username, password }, document.querySelector('#admin-login .btn-login'), '/');
+        });
+
+        // Cashier Login
+        document.getElementById('cashierLoginForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const cashierId = document.getElementById('cashierSelect').value;
+            const pin = document.getElementById('cashierPin').value;
+            // Cashier Redirects directly to request reconciliation page
+            await performLogin('/api/cashier-login', { cashierId, pin }, document.querySelector('#cashier-login .btn-login'), '/request-reconciliation.html');
+        });
+
+        async function performLogin(url, body, btn, redirectUrl) {
+            const originalContent = btn.innerHTML;
+            btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> جاري التحقق...';
+            btn.disabled = true;
+
+            try {
+                const response = await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    localStorage.setItem('user', JSON.stringify(data.user));
+                    window.location.href = redirectUrl;
+                } else {
+                    alert('خطأ: ' + data.error);
+                }
+            } catch (error) {
+                alert('فشل الاتصال بالخادم');
+                console.error(error);
+            } finally {
+                btn.innerHTML = originalContent;
+                btn.disabled = false;
+            }
+        }
+
+        let cashiersLoaded = false;
+        async function loadCashiers() {
+            if (cashiersLoaded) return;
+            try {
+                const res = await fetch('/api/lookups');
+                const data = await res.json();
+                if (data.success && data.cashiers) {
+                    const select = document.getElementById('cashierSelect');
+                    data.cashiers.forEach(c => {
+                        const opt = document.createElement('option');
+                        opt.value = c.id;
+                        opt.textContent = c.name;
+                        select.appendChild(opt);
+                    });
+                    cashiersLoaded = true;
+                }
+            } catch (e) {
+                console.error('Failed to load cashiers', e);
+            }
+        }
+
+        if (localStorage.getItem('user')) {
+            // Redirect based on role
+            const u = JSON.parse(localStorage.getItem('user'));
+            if (u.role === 'cashier') window.location.href = '/request-reconciliation.html';
+            else window.location.href = '/';
+        }
+    </script>
+</body>
+
+</html>

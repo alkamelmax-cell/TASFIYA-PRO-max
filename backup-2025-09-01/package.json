@@ -1,0 +1,136 @@
+{
+  "_comment": "===================================================",
+  "_copyright": "🧾 تطبيق: تصفية برو | 🛠️ المطور: محمد أمين الكامل | 🗓️ سنة: 2025 | 📌 جميع الحقوق محفوظة | يمنع الاستخدام أو التعديل دون إذن كتابي",
+  "_comment2": "===================================================",
+  "name": "casher",
+  "version": "4.0.0",
+  "description": "تصفية برو - Professional Reconciliation System with Time Range Filter & Notes Support v4.0.0",
+  "main": "src/main.js",
+  "scripts": {
+    "start": "cross-env NODE_ENV=production electron .",
+    "dev": "cross-env NODE_ENV=development electron . --dev",
+    "build": "cross-env NODE_ENV=production electron-builder --config electron-builder.config.js",
+    "build-win": "cross-env NODE_ENV=production electron-builder --win --config electron-builder.config.js",
+    "dist": "npm run build-win",
+    "build-app": "cross-env NODE_ENV=production node build.js",
+    "prepare-build": "npm install && npx electron-rebuild",
+    "full-build": "npm run prepare-build && npm run build-app",
+    "test-build": "cross-env NODE_ENV=production electron-builder --dir --config electron-builder.config.js",
+    "analyze-build": "node scripts/build-analyzer.js",
+    "build-and-analyze": "npm run build && npm run analyze-build",
+    "test-solution": "node scripts/test-solution.js",
+    "verify-fix": "npm run test-solution && npm run analyze-build",
+    "build-final": "cross-env NODE_ENV=production electron-builder --config electron-builder-final.config.js",
+    "build-final-portable": "cross-env NODE_ENV=production electron-builder --win portable --config electron-builder-final.config.js",
+    "build-final-installer": "cross-env NODE_ENV=production electron-builder --win nsis --config electron-builder-final.config.js",
+    "build-final-all": "cross-env NODE_ENV=production electron-builder --win --config electron-builder-final.config.js",
+  "clean-dist": "rmdir /s /q dist-final-v4.0.0 2>nul || echo Directory cleaned",
+  "clean-old-dist": "rmdir /s /q dist-v4.0.0 2>nul || echo Old directory cleaned",
+    "prepare-final": "npm run clean-old-dist && npm run clean-dist && npm install",
+    "release-final": "npm run prepare-final && npm run build-final-all"
+  },
+  "keywords": [
+    "cashier",
+    "reconciliation",
+    "arabic",
+    "accounting"
+  ],
+  "author": "محمد أمين الكامل",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^12.2.0",
+    "bootstrap": "^5.3.7",
+    "dexie": "^4.0.11",
+    "exceljs": "^4.4.0",
+    "idb": "^8.0.3",
+    "localforage": "^1.10.0",
+    "nodemailer": "^7.0.5",
+    "puppeteer": "^24.14.0",
+    "sweetalert2": "^11.22.2"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "electron": "^37.2.3",
+    "electron-builder": "^26.0.12",
+    "electron-rebuild": "^3.2.9",
+    "rcedit": "^4.0.1"
+  },
+  "build": {
+    "appId": "com.tasfiyapro.reconciliation",
+    "productName": "تصفية برو - Tasfiya Pro",
+    "copyright": "© 2025 محمد أمين الكامل - جميع الحقوق محفوظة",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "!src/**/*-test.js",
+      "!src/**/*-diagnostic.js",
+      "!src/**/*-verification.js",
+      "!src/test-functions.js",
+      "!test-*.html",
+      "!*-test.html",
+      "!*-fix.html",
+      "!*SUMMARY.md",
+      "!*DOCUMENTATION.md",
+      "!*REPORT.md",
+      "assets/**/*",
+      "!assets/create-icon.html",
+      "!assets/tasfiya-pro-icon.svg",
+      "!create-icon-for-build.html",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "assets",
+        "to": "assets",
+        "filter": [
+          "**/*",
+          "!create-icon.html",
+          "!tasfiya-pro-icon.svg"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "assets/icon.ico",
+      "requestedExecutionLevel": "asInvoker",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "publisherName": "محمد أمين الكامل",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "تصفية برو",
+      "deleteAppDataOnUninstall": false,
+      "displayLanguageSelector": false,
+      "language": "1025",
+      "include": "installer.nsh"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.${ext}"
+    },
+    "compression": "maximum",
+    "npmRebuild": false,
+    "nodeGypRebuild": false
+  }
+}

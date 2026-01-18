@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تصفية برو - إدارة المستخدمين</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="css/custom.css?v=6" rel="stylesheet">
+    <style>
+        .page-header {
+            background: var(--bg-card);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius);
+            padding: 1.25rem 1.5rem;
+            margin-bottom: 1.5rem;
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            box-shadow: var(--shadow-md);
+        }
+
+        .users-table th,
+        .users-table td {
+            vertical-align: middle;
+            color: var(--text-primary);
+            border-color: var(--glass-border);
+        }
+
+        .toolbar {
+            background: var(--bg-card);
+            border: 1px solid var(--glass-border);
+            border-radius: var(--radius);
+            padding: .75rem 1rem;
+            margin-bottom: 1rem;
+            display: flex;
+            gap: .5rem;
+            align-items: center;
+        }
+
+        .toolbar .form-control {
+            height: 44px;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Navbar -->
+    <!-- Navbar -->
+    <nav class="custom-navbar navbar-layout mb-4">
+        <!-- Brand Section -->
+        <div class="navbar-brand-section">
+            <div class="brand-logo">
+                <i class="fas fa-cube text-primary me-2"></i>تصفية برو
+            </div>
+        </div>
+
+        <!-- Links Section -->
+        <div class="navbar-links-section">
+            <a href="index.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-home me-1"></i> الرئيسية
+            </a>
+            <a href="atm-reports.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-credit-card me-1"></i> تقرير الصراف
+            </a>
+            <a href="customer-ledger.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-book me-1"></i> دفتر العملاء
+            </a>
+            <a href="users-management.html" id="navUsersMgmt"
+                class="btn btn-sm btn-primary fw-bold text-white px-3 py-2 rounded-pill shadow-sm">
+                <i class="fas fa-users-cog me-1"></i> إدارة المستخدمين
+            </a>
+            <a href="cashiers-management.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-cash-register me-1"></i> إدارة الكاشير
+            </a>
+        </div>
+
+        <!-- User Section -->
+        <div class="dropdown navbar-user-section">
+            <button class="user-profile-btn" type="button" data-bs-toggle="dropdown">
+                <div class="bg-primary rounded-circle d-flex align-items-center justify-content-center"
+                    style="width: 32px; height: 32px;">
+                    <i class="fas fa-user text-white"></i>
+                </div>
+                <span id="userNameDisplay" class="d-none d-md-inline fw-bold font-monospace small">Admin</span>
+                <i class="fas fa-chevron-down small opacity-50"></i>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end bg-card border-secondary shadow-lg mt-2">
+                <li><a class="dropdown-item text-danger d-flex align-items-center gap-2" href="#" onclick="logout()">
+                        <i class="fas fa-sign-out-alt"></i> تسجيل الخروج
+                    </a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container py-4">
+        <div class="page-header d-flex justify-content-between align-items-center">
+            <div>
+                <h4 class="mb-1 text-white fw-bold"><i class="fas fa-users-cog me-2 text-primary"></i>إدارة المستخدمين
+                </h4>
+                <p class="mb-0 text-secondary small">حدد الصفحات التي يمكن لكل مستخدم الوصول إليها</p>
+            </div>
+            <button class="btn btn-primary px-4 rounded-pill" onclick="openUserModal()">
+                <i class="fas fa-plus me-2"></i>مستخدم جديد
+            </button>
+        </div>
+
+        <div class="toolbar">
+            <div class="input-group flex-grow-1">
+                <span class="input-group-text bg-transparent border-0 text-secondary"><i
+                        class="fas fa-search"></i></span>
+                <input id="userSearch" type="text" class="form-control custom-input"
+                    placeholder="بحث بالاسم أو اسم المستخدم">
+            </div>
+            <button class="btn btn-secondary btn-icon" id="refreshUsers" title="تحديث"><i
+                    class="fas fa-rotate"></i></button>
+        </div>
+
+        <div class="pro-card">
+            <div class="card-body p-0">
+                <div class="table-responsive">
+                    <table class="custom-table table-hover mb-0 users-table align-middle">
+                        <thead>
+                            <tr>
+                                <th class="py-3 px-4">#</th>
+                                <th class="py-3">الاسم</th>
+                                <th class="py-3">اسم المستخدم</th>
+                                <th class="py-3">الصلاحيات (الصفحات)</th>
+                                <th class="py-3 text-center">الإجراءات</th>
+                            </tr>
+                        </thead>
+                        <tbody id="usersTableBody">
+                            <!-- Populated via JS -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- User Modal -->
+    <div class="modal fade" id="userModal" tabindex="-1">
+        <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable modal-fullscreen-sm-down">
+            <div class="modal-content">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title text-white" id="userModalTitle">مستخدم جديد</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="userForm">
+                        <input type="hidden" id="userId">
+                        <div class="mb-3">
+                            <label class="form-label text-secondary">الاسم الكامل</label>
+                            <input type="text" class="form-control custom-input" id="userName" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label text-secondary">اسم المستخدم (للدخول)</label>
+                            <input type="text" class="form-control custom-input" id="userLogin" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label text-secondary">كلمة المرور</label>
+                            <input type="password" class="form-control custom-input" id="userPassword"
+                                placeholder="اتركها فارغة إذا لم ترد التغيير (في التعديل)">
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label text-secondary fw-bold mb-2">الصلاحيات (الصفحات المسموحة)</label>
+                            <div class="bg-black bg-opacity-25 p-3 rounded border border-secondary">
+                                <div class="form-check mb-2">
+                                    <input class="form-check-input permission-check" type="checkbox"
+                                        value="atm-reports.html" id="perm_atm">
+                                    <label class="form-check-label text-white" for="perm_atm">تقرير الصراف</label>
+                                </div>
+                                <div class="form-check mb-2">
+                                    <input class="form-check-input permission-check" type="checkbox"
+                                        value="customer-ledger.html" id="perm_ledger">
+                                    <label class="form-check-label text-white" for="perm_ledger">دفتر العملاء</label>
+                                </div>
+                                <div class="form-check border-top border-secondary pt-2 mt-2">
+                                    <input class="form-check-input permission-check" type="checkbox"
+                                        value="users-management.html" id="perm_users">
+                                    <label class="form-check-label text-warning" for="perm_users">إدارة المستخدمين (Full
+                                        Admin)</label>
+                                </div>
+                            </div>
+                            <div class="form-text text-white-50 small mt-2">
+                                * الصفحة الرئيسية متاحة للجميع افتراضياً.
+                            </div>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="button" class="btn btn-primary" onclick="saveUser()">حفظ</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Scripts -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const API_URL = '/api';
+
+        let USERS_CACHE = [];
+
+        // Auth Check
+        const userStr = localStorage.getItem('user');
+        if (!userStr) window.location.href = '/login.html';
+        const user = JSON.parse(userStr || '{}');
+        document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
+
+        // Strict Protection: Only users with 'users-management.html' in permissions can verify here.
+        // Fallback to role 'admin' for legacy users.
+        const isAdmin = (user.role === 'admin') || (user.permissions && user.permissions.includes('users-management.html'));
+        if (!isAdmin) {
+            alert('ليس لديك صلاحية للوصول لهذه الصفحة');
+            window.location.href = 'index.html';
+        }
+
+        const userModal = new bootstrap.Modal(document.getElementById('userModal'));
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadUsers();
+            const search = document.getElementById('userSearch');
+            if (search) search.addEventListener('input', () => renderUsers(sortUsers(applyFilter())));
+            const btn = document.getElementById('refreshUsers');
+            if (btn) btn.addEventListener('click', () => loadUsers());
+        });
+
+        async function loadUsers() {
+            try {
+                const res = await fetch(`${API_URL}/users`);
+                const result = await res.json();
+
+                if (result.success) {
+                    USERS_CACHE = result.data;
+                    renderUsers(sortUsers(applyFilter()));
+                } else {
+                    console.error(result.error);
+                }
+            } catch (error) {
+                console.error(error);
+            }
+        }
+
+        function applyFilter() {
+            const q = (document.getElementById('userSearch')?.value || '').trim().toLowerCase();
+            if (!q) return USERS_CACHE;
+            return USERS_CACHE.filter(u =>
+                (u.name || '').toLowerCase().includes(q) ||
+                (u.username || '').toLowerCase().includes(q)
+            );
+        }
+
+        function sortUsers(arr) {
+            return [...arr].sort((a, b) => {
+                const an = (a.name || '').toString();
+                const bn = (b.name || '').toString();
+                const cmp = an.localeCompare(bn, 'ar', { sensitivity: 'base' });
+                if (cmp !== 0) return cmp;
+                return (a.username || '').localeCompare((b.username || ''), 'en', { sensitivity: 'base' });
+            });
+        }
+
+        function renderUsers(users) {
+            const tbody = document.getElementById('usersTableBody');
+            tbody.innerHTML = '';
+
+            users.forEach((u, index) => {
+                const tr = document.createElement('tr');
+
+                // Format permissions: compact view for multi-permissions
+                let permsDisplay = '<span class="text-secondary small">الرئيسية فقط</span>';
+                const labelsMap = {
+                    'atm-reports.html': 'تقرير الصراف',
+                    'customer-ledger.html': 'دفتر العملاء',
+                    'users-management.html': 'إدارة المستخدمين'
+                };
+                if (u.permissions && Array.isArray(u.permissions) && u.permissions.length > 0) {
+                    if (u.permissions.length > 1) {
+                        const fullList = u.permissions.map(p => labelsMap[p] || p).join('، ');
+                        permsDisplay = `<span class="badge bg-secondary bg-opacity-50" title="${fullList}">صلاحيات متعددة (${u.permissions.length})</span>`;
+                    } else {
+                        const p = u.permissions[0];
+                        let label = labelsMap[p] || p;
+                        if (p === 'users-management.html') label = '<span class="text-warning">إدارة المستخدمين</span>';
+                        permsDisplay = `<span class="badge bg-secondary bg-opacity-50 me-1">${label}</span>`;
+                    }
+                } else if (!u.permissions && u.role === 'admin') {
+                    permsDisplay = '<span class="badge bg-danger">مشرف (كامل الصلاحيات)</span>';
+                }
+
+                tr.innerHTML = `
+                    <td class="px-4 text-secondary">${index + 1}</td>
+                    <td class="fw-bold text-white">${u.name}</td>
+                    <td class="font-monospace text-info">${u.username}</td>
+                    <td>${permsDisplay}</td>
+                    <td class="text-center">
+                        <button class="btn btn-sm btn-outline-info me-1" onclick='editUser(${JSON.stringify(u)})'>
+                            <i class="fas fa-edit"></i>
+                        </button>
+                        <button class="btn btn-sm btn-outline-danger" onclick="deleteUser(${u.id})">
+                            <i class="fas fa-trash"></i>
+                        </button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function openUserModal() {
+            document.getElementById('userForm').reset();
+            document.getElementById('userId').value = '';
+            document.getElementById('userModalTitle').textContent = 'مستخدم جديد';
+            // Uncheck all
+            document.querySelectorAll('.permission-check').forEach(cb => cb.checked = false);
+            userModal.show();
+        }
+
+        function editUser(u) {
+            document.getElementById('userId').value = u.id;
+            document.getElementById('userName').value = u.name;
+            document.getElementById('userLogin').value = u.username;
+            document.getElementById('userPassword').value = '';
+
+            // Set Checkboxes
+            document.querySelectorAll('.permission-check').forEach(cb => cb.checked = false);
+            if (u.permissions && Array.isArray(u.permissions)) {
+                u.permissions.forEach(p => {
+                    const cb = document.querySelector(`.permission-check[value="${p}"]`);
+                    if (cb) cb.checked = true;
+                });
+            } else if (u.role === 'admin') {
+                // Legacy admin - check all
+                document.querySelectorAll('.permission-check').forEach(cb => cb.checked = true);
+            }
+
+            document.getElementById('userModalTitle').textContent = 'تعديل المستخدم وصلاحياته';
+            userModal.show();
+        }
+
+        async function saveUser() {
+            const id = document.getElementById('userId').value;
+            const name = document.getElementById('userName').value;
+            const username = document.getElementById('userLogin').value;
+            const password = document.getElementById('userPassword').value;
+
+            // Collect Permissions
+            const permissions = [];
+            document.querySelectorAll('.permission-check:checked').forEach(cb => {
+                permissions.push(cb.value);
+            });
+
+            // Determine Role (for backward compatibility)
+            // If they have 'users-management.html', let's call them 'admin', otherwise 'user'
+            const role = permissions.includes('users-management.html') ? 'admin' : 'user';
+
+            if (!name || !username) {
+                alert('الرجاء تعبئة البيانات الأساسية');
+                return;
+            }
+
+            const payload = { id, name, username, password, role, permissions };
+
+            try {
+                const res = await fetch(`${API_URL}/users`, {
+                    method: 'POST',
+                    body: JSON.stringify(payload)
+                });
+                const result = await res.json();
+
+                if (result.success) {
+                    userModal.hide();
+                    loadUsers();
+                } else {
+                    alert('خطأ: ' + result.error);
+                }
+            } catch (error) {
+                console.error(error);
+                alert('حدث خطأ أثناء الحفظ');
+            }
+        }
+
+        async function deleteUser(id) {
+            if (!confirm('هل أنت متأكد من حذف هذا المستخدم؟')) return;
+
+            try {
+                const res = await fetch(`${API_URL}/users/${id}`, { method: 'DELETE' });
+                const result = await res.json();
+                if (result.success) {
+                    loadUsers();
+                } else {
+                    alert('خطأ: ' + result.error);
+                }
+            } catch (error) {
+                alert('حدث خطأ أثناء الحذف');
+            }
+        }
+
+        function logout() {
+            localStorage.removeItem('user');
+            window.location.href = '/login.html';
+        }
+    </script>
+</body>
+
+</html>

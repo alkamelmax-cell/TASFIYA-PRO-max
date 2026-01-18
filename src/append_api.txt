@@ -1,0 +1,80 @@
+
+// ============================================
+// EXPOSED API FOR RECONCILIATION REQUESTS
+// ============================================
+
+window.appAPI = {
+    navigateToNewReconciliation: () => {
+        const menuItem = document.querySelector('.menu-item[data-section="reconciliation"]');
+        if (menuItem) menuItem.click();
+    },
+
+    resetReconciliationForm: async () => {
+         // Reset arrays
+         bankReceipts = [];
+         cashReceipts = [];
+         postpaidSales = [];
+         customerReceipts = [];
+         returnInvoices = [];
+         suppliers = [];
+         
+         // Update UI
+         updateBankReceiptsTable();
+         updateCashReceiptsTable();
+         updatePostpaidSalesTable();
+         updateCustomerReceiptsTable();
+         updateReturnInvoicesTable();
+         updateSuppliersTable();
+         updateSummary();
+
+         document.getElementById('systemSales').value = '';
+         document.getElementById('filterNotes').value = '';
+         
+         // If current reconciliation exists locally but not saved, clear it
+         if (currentReconciliation && !currentReconciliation.id) {
+             currentReconciliation = null;
+         }
+    },
+    
+    setSystemSales: (amount) => {
+        const el = document.getElementById('systemSales');
+        if (el) {
+            el.value = amount;
+            // Trigger input event
+            el.dispatchEvent(new Event('input'));
+        }
+    },
+    
+    setNotes: (notes) => {
+        const el = document.getElementById('filterNotes');
+        if (el) el.value = notes;
+    },
+
+    addCashReceipt: (val, qty) => {
+        const total = val * qty;
+        cashReceipts.push({
+            id: Date.now() + Math.floor(Math.random() * 1000),
+            denomination: val,
+            quantity: qty,
+            total_amount: total
+        });
+        updateCashReceiptsTable();
+    },
+
+    addBankReceipt: (amount) => {
+        bankReceipts.push({
+             id: Date.now() + Math.floor(Math.random() * 1000),
+             operation_type: 'settlement',
+             atm_name: 'من طلب التصفية',
+             bank_name: '-',
+             amount: parseFloat(amount)
+        });
+        updateBankReceiptsTable();
+    },
+    
+    updateSummary: () => {
+        if (typeof updateSummary === 'function') updateSummary();
+    }
+};
+
+console.log('✅ AppAPI exposed for external modules');

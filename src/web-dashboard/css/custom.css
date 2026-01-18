@@ -1,0 +1,1344 @@
+/* Premium Dark Glass Theme */
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800&family=IBM+Plex+Sans+Arabic:wght@300;400;600;700&display=swap');
+
+:root {
+    /* Backgrounds */
+    --bg-main: #212E40;
+    /* Custom dark blue */
+    --bg-deeper: #1a2332;
+    /* Darker shade of #212E40 */
+
+    /* Glass Components */
+    /* Dark Blue Glass backgrounds */
+    --bg-card: rgba(33, 46, 64, 0.78);
+    /* #212E40 with transparency */
+    --bg-card-hover: rgba(33, 46, 64, 0.95);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-shine: rgba(255, 255, 255, 0.03);
+
+    /* Text */
+    --text-primary: #f8fafc;
+    /* Slate 50 */
+    --text-secondary: #94a3b8;
+    /* Slate 400 */
+    --text-muted: #64748b;
+    /* Slate 500 */
+
+    /* Brand Colors - Indigo/Violet Vibe */
+    --primary: #6366f1;
+    /* Indigo 500 */
+    --primary-dark: #4f46e5;
+    /* Indigo 600 */
+    --primary-glow: rgba(99, 102, 241, 0.5);
+
+    /* Brighter Success/Danger */
+    --success: #22c55e;
+    /* Green 500 brighter */
+    --success-glow: rgba(34, 197, 94, 0.55);
+
+    --danger: #f43f5e;
+    /* Rose 500 brighter */
+    --warning: #f59e0b;
+    /* Amber 500 */
+
+    /* Design Tokens */
+    --radius: 20px;
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    --shadow-glow: 0 0 20px var(--primary-glow);
+
+    --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --border-color: rgba(255, 255, 255, 0.08);
+    --bg-dark: var(--bg-deeper);
+    --primary-hover: #5153e8;
+    /* Button Palette */
+    --btn-primary: #6366f1;
+    --btn-primary-hover: #5457ec;
+    --btn-primary-focus: rgba(99, 102, 241, 0.35);
+
+    --btn-secondary: #64748b;
+    --btn-secondary-hover: #5b6b81;
+    --btn-secondary-focus: rgba(100, 116, 139, 0.35);
+
+    --btn-success: #10b981;
+    --btn-success-hover: #0fa372;
+    --btn-success-focus: rgba(16, 185, 129, 0.35);
+
+    --btn-danger: #ef4444;
+    --btn-danger-hover: #dc3b3b;
+    --btn-danger-focus: rgba(239, 68, 68, 0.35);
+
+    --btn-warning: #f59e0b;
+    --btn-warning-hover: #e38f06;
+    --btn-warning-focus: rgba(245, 158, 11, 0.35);
+
+    --btn-info: #0ea5e9;
+    --btn-info-hover: #0c96d3;
+    --btn-info-focus: rgba(14, 165, 233, 0.35);
+}
+
+body {
+    background-color: var(--bg-main);
+    background-image:
+        radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.1) 0%, transparent 40%),
+        radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 40%);
+    color: var(--text-primary);
+    font-family: 'IBM Plex Sans Arabic', 'Cairo', system-ui, -apple-system, Segoe UI, Roboto, 'Almarai', sans-serif;
+    font-weight: 400;
+    direction: rtl;
+    min-height: 100vh;
+    padding-bottom: 2rem;
+    overflow-x: hidden;
+}
+
+
+/* Premium Glass Cards */
+.custom-navbar,
+.pro-card,
+.filter-container,
+.stat-box,
+.card {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: var(--shadow-md);
+    border-radius: var(--radius);
+    transition: var(--transition);
+}
+
+/* Hover Effects */
+.stat-box:hover,
+.pro-card:hover {
+    background: var(--bg-card-hover) !important;
+    transform: translateY(-3px);
+    border-color: rgba(99, 102, 241, 0.3);
+    box-shadow: var(--shadow-lg), var(--shadow-glow);
+}
+
+/* Navbar Grid Layout */
+.navbar-layout {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    padding: 1rem;
+    width: 100%;
+}
+
+.navbar-brand-section {
+    justify-self: start;
+    display: flex;
+    align-items: center;
+}
+
+.navbar-links-section {
+    justify-self: center;
+    display: flex;
+    gap: 0.5rem;
+}
+
+.navbar-user-section {
+    justify-self: end;
+}
+
+/* Mobile Navbar */
+@media (max-width: 768px) {
+    .navbar-layout {
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto auto;
+        gap: 1rem;
+        padding: 0.5rem;
+    }
+
+    .navbar-links-section {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        width: 100%;
+        justify-content: center;
+    }
+
+    .navbar-brand-section {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .navbar-user-section {
+        grid-column: 2;
+        grid-row: 1;
+    }
+}
+
+/* Old navbar styles override/cleanup if needed */
+.custom-navbar {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border-color);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    padding: 1rem 1.5rem;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    margin-bottom: 2rem;
+}
+
+.brand-logo {
+    font-weight: 800;
+    font-size: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    text-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+}
+
+.user-profile-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    border-radius: 50px;
+    padding: 0.5rem 1.2rem;
+    transition: 0.3s;
+}
+
+.user-profile-btn:hover {
+    background: rgba(59, 130, 246, 0.2);
+    border-color: var(--primary);
+    box-shadow: 0 0 15px var(--primary-glow);
+}
+
+.stat-box {
+    padding: 1.5rem;
+    position: relative;
+    overflow: hidden;
+    height: 100%;
+    transition: transform 0.3s, box-shadow 0.3s;
+}
+
+.stat-box::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100%;
+    background: linear-gradient(to bottom, rgba(255, 255, 255, 0.03), transparent);
+    pointer-events: none;
+}
+
+.stat-box:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4), 0 0 20px rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.3);
+}
+
+.stat-box .icon-wrapper {
+    position: absolute;
+    top: -15px;
+    left: -15px;
+    font-size: 6rem;
+    opacity: 0.05;
+    transform: rotate(15deg);
+    transition: 0.5s;
+    background: radial-gradient(circle, #fff, transparent);
+    background-clip: text;
+    -webkit-background-clip: text;
+}
+
+.stat-box:hover .icon-wrapper {
+    opacity: 0.1;
+    transform: rotate(0deg) scale(1.1);
+    left: -5px;
+}
+
+.stat-label {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    position: relative;
+    z-index: 2;
+}
+
+.stat-value {
+    color: white;
+    font-size: 1.7rem;
+    font-weight: 800;
+    font-family: 'Cairo', 'IBM Plex Sans Arabic', system-ui, sans-serif;
+    letter-spacing: 0.2px;
+    position: relative;
+    z-index: 2;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    white-space: nowrap;
+    direction: ltr;
+    text-align: right;
+    display: block;
+}
+
+
+
+.filter-container {
+    padding: 1.5rem;
+}
+
+/* Inputs */
+/* Inputs - Modern Glass */
+.custom-input,
+.form-control,
+.form-select {
+    background-color: rgba(33, 46, 64, 0.5) !important;
+    /* Semi-transparent dark */
+    border: 1px solid var(--glass-border) !important;
+    color: var(--text-primary) !important;
+    border-radius: 12px;
+    height: 48px;
+    padding: 0 1rem;
+    transition: var(--transition);
+}
+
+.custom-input:focus,
+.form-control:focus,
+.form-select:focus {
+    background-color: rgba(33, 46, 64, 0.9) !important;
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15) !important;
+    outline: none;
+}
+
+.custom-input::placeholder {
+    color: var(--text-muted);
+    opacity: 0.7;
+}
+
+/* Fix for Select dropdown specificaly */
+select.custom-input,
+select.form-select {
+    padding-top: 0;
+    padding-bottom: 0;
+    background-position: left 0.75rem center;
+    /* Move arrow to left for RTL */
+}
+
+/* Fix for Date inputs */
+input[type="date"].custom-input {
+    line-height: normal;
+    /* Date inputs need normal line height usually */
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
+}
+
+.custom-input:focus,
+.form-control:focus,
+.form-select:focus {
+    background-color: #212E40 !important;
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+    outline: none;
+}
+
+/* Search Button */
+.btn-search {
+    background-color: var(--primary);
+    border: none;
+    border-radius: 12px;
+    color: white;
+    font-weight: 700;
+    box-shadow: none;
+    height: 40px;
+    transition: 0.2s;
+}
+
+.btn-search:hover {
+    transform: scale(1.02);
+    box-shadow: 0 6px 20px rgba(37, 99, 235, 0.6);
+}
+
+/* Table - The exact look */
+.pro-card {
+    overflow: hidden;
+    position: relative;
+}
+
+/* Modern Table Design */
+.custom-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.custom-table th {
+    background: rgba(33, 46, 64, 0.4) !important;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 700;
+    padding: 1.25rem 1rem;
+    border-bottom: 1px solid var(--glass-border);
+    white-space: nowrap;
+    text-align: right;
+    /* Ensure RTL alignment */
+}
+
+.custom-table td {
+    padding: 1rem;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--glass-border);
+    vertical-align: middle;
+    text-align: right;
+    /* Ensure RTL alignment */
+}
+
+.custom-table tbody tr {
+    transition: transform 0.2s, background-color 0.2s;
+}
+
+.custom-table tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.03) !important;
+    transform: scale(1);
+    /* Ensure stacking context */
+    position: relative;
+    z-index: 5;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+/* Specific Column Alignments */
+.custom-table th:first-child,
+.custom-table td:first-child {
+    text-align: right;
+    padding-right: 1.5rem;
+}
+
+.custom-table th:last-child,
+.custom-table td:last-child {
+    text-align: center;
+}
+
+/* Center numeric columns for better look */
+.custom-table th.text-center,
+.custom-table td.text-center,
+.custom-table th.text-center-header,
+.custom-table td.text-center-cell {
+    text-align: center !important;
+}
+
+/* LTR Columns (like English Text) */
+.custom-table th.text-ltr,
+.custom-table td.text-ltr {
+    direction: ltr;
+    /* Just direction, keep alignment inherited (Right) unless overridden */
+    text-align: right;
+}
+
+/* Monospace Numbers (Prices/IDs) */
+.custom-table td.font-monospace {
+    font-family: 'Cairo', 'IBM Plex Sans Arabic', 'Segoe UI', Consolas, monospace;
+    letter-spacing: 0.3px;
+    direction: ltr;
+    text-align: right;
+}
+
+/* Explicit Left Align if needed */
+.text-left {
+    text-align: left !important;
+}
+
+.custom-table thead th {
+    background-color: rgba(33, 46, 64, 0.95);
+    /* Dark blue header */
+    color: var(--text-secondary);
+    font-weight: 800;
+    font-size: 0.9rem;
+    padding: 1rem;
+    border-bottom: 2px solid var(--border-color);
+    white-space: nowrap;
+}
+
+.custom-table tbody tr {
+    background-color: var(--bg-card);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    transition: background 0.2s;
+}
+
+.custom-table tbody tr:hover {
+    background-color: rgba(59, 130, 246, 0.05) !important;
+}
+
+.custom-table tbody td {
+    padding: 1rem;
+    color: #fff;
+    vertical-align: middle;
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+/* Columns Specifics */
+.text-center-header,
+.text-center-cell {
+    text-align: center !important;
+}
+
+.text-ltr {
+    text-align: left;
+    direction: ltr;
+}
+
+/* The Green Numbers */
+.text-success {
+    color: #22c55e !important;
+    /* brighter green */
+    font-weight: 700 !important;
+}
+
+.text-danger {
+    color: #f43f5e !important;
+    /* brighter red */
+    font-weight: 700;
+}
+
+/* Typography tuning for readability */
+.section-title {
+    font-size: 1.05rem;
+    font-weight: 800;
+}
+
+.custom-table th {
+    font-weight: 800;
+    letter-spacing: 0.2px;
+}
+
+.custom-table td {
+    font-weight: 600;
+    letter-spacing: 0.1px;
+}
+
+.custom-input,
+.form-control,
+.form-select {
+    font-size: 0.95rem;
+}
+
+.btn {
+    font-weight: 700;
+}
+
+.text-danger {
+    color: #f87171 !important;
+    font-weight: 700;
+}
+
+.text-white {
+    color: #fff !important;
+}
+
+/* Status Badge - Rounded capsule */
+.status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 50px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.status-completed {
+    background-color: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border: none;
+    box-shadow: none;
+}
+
+.status-pending {
+    background-color: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border: none;
+}
+
+/* Action Button "عرض" - Blue Button */
+.btn-action-blue {
+    background-color: var(--primary);
+    color: white;
+    padding: 4px 16px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: none;
+    transition: background 0.2s;
+    text-decoration: none;
+    display: inline-block;
+}
+
+.btn-action-blue:hover {
+    background-color: var(--primary-hover);
+    color: white;
+    transform: none;
+}
+
+.btn-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: 0.2s;
+}
+
+.btn-icon:hover {
+    background: var(--primary);
+    color: white;
+    box-shadow: 0 0 15px var(--primary-glow);
+    transform: scale(1.1);
+}
+
+/* ================= Mobile View ================= */
+/* ================= Mobile View ================= */
+@media (max-width: 768px) {
+
+    /* Users Management: compact layout on mobile (no horizontal scroll) */
+    .users-table {
+        width: 100% !important;
+    }
+
+    /* Hide index column to save space */
+    .users-table th:first-child,
+    .users-table td:first-child {
+        display: none;
+    }
+
+    /* Allow wrapping inside cells to avoid overflow */
+    .users-table th,
+    .users-table td {
+        white-space: normal;
+    }
+
+    /* Name column */
+    .users-table th:nth-child(2),
+    .users-table td:nth-child(2) {
+        max-width: 40vw;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* Username column */
+    .users-table th:nth-child(3),
+    .users-table td:nth-child(3) {
+        max-width: 30vw;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        direction: ltr;
+    }
+
+    /* Permissions: smaller badges and wrap */
+    .users-table td:nth-child(4) .badge {
+        font-size: 0.7rem;
+        padding: 4px 6px;
+        margin-bottom: 4px;
+    }
+
+    /* Actions column: fixed narrow width */
+    .users-table th:last-child,
+    .users-table td:last-child {
+        width: 90px !important;
+        text-align: center !important;
+        white-space: nowrap;
+    }
+
+    .users-table .btn {
+        padding: 4px 8px;
+    }
+
+    .users-table .btn i {
+        font-size: 0.85rem;
+    }
+
+    .nav-bar-container {
+        padding: 10px 0;
+    }
+
+    .stat-box {
+        padding: 15px;
+        margin-bottom: 5px;
+    }
+
+    .stat-value {
+        font-size: 1.25rem;
+    }
+
+    /* Mobile Table Professional Layout */
+    .custom-table {
+        table-layout: fixed;
+        width: 100%;
+    }
+
+    .custom-table th {
+        padding: 5px 1px !important;
+        font-size: 0.65rem !important;
+        white-space: normal;
+        /* Allow headers to wrap */
+        vertical-align: bottom;
+        text-align: center;
+        line-height: 1.1;
+    }
+
+    .custom-table td {
+        padding: 8px 1px !important;
+        font-size: 0.7rem !important;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        vertical-align: middle;
+        text-align: center;
+    }
+
+    /* Column Widths (Visible Columns Only) */
+    /* 1: ID, 2: Date, 3: Cashier, 7: Diff, 9: Action */
+
+    .custom-table th:nth-child(1),
+    .custom-table td:nth-child(1) {
+        width: 14% !important;
+    }
+
+    .custom-table th:nth-child(2),
+    .custom-table td:nth-child(2) {
+        width: 26% !important;
+    }
+
+    .custom-table th:nth-child(3),
+    .custom-table td:nth-child(3) {
+        width: 18% !important;
+    }
+
+    .custom-table th:nth-child(7),
+    .custom-table td:nth-child(7) {
+        width: 27% !important;
+    }
+
+    .custom-table th:last-child,
+    .custom-table td:last-child {
+        width: 15% !important;
+    }
+
+    /* اجراءات */
+
+    /* Cashier */
+
+    /* Compact Mobile Action Button */
+    .btn-action-mobile {
+        padding: 2px 8px !important;
+        font-size: 0.65rem !important;
+        width: auto !important;
+        min-width: 45px;
+        height: auto;
+        line-height: normal;
+        margin: 0 auto;
+        display: inline-block;
+        border-radius: 6px;
+    }
+
+    /* Force center alignment for ID and Surplus columns to override ltr/rtl offsets */
+    .custom-table th:nth-child(1),
+    .custom-table td:nth-child(1),
+    .custom-table th:nth-child(7),
+    .custom-table td:nth-child(7) {
+        text-align: center !important;
+        vertical-align: middle !important;
+    }
+
+    /* Truncate Cashier Name on Mobile */
+    .custom-table td:nth-child(3) {
+        max-width: 70px;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    /* Force specific column widths if needed, or let them flow */
+    .custom-table th:first-child,
+    .custom-table td:first-child {
+        /* Name column */
+        max-width: 120px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .status-badge {
+        font-size: 0.7rem;
+        padding: 2px 8px;
+    }
+
+    /* ATM Table Mobile Layout (3 Columns: Date, Type, Amount) */
+    /* Target specific columns by index (2, 3, 6) */
+
+    /* Date (2) */
+    .atm-table.custom-table th:nth-child(2),
+    .atm-table.custom-table td:nth-child(2) {
+        width: 22% !important;
+        text-align: center !important;
+        padding-right: 2px !important;
+        font-size: 0.85rem !important;
+        /* Larger */
+        font-family: 'Tajawal', sans-serif;
+    }
+
+    /* Type (3) */
+    .atm-table.custom-table th:nth-child(3),
+    .atm-table.custom-table td:nth-child(3) {
+        width: 15% !important;
+        text-align: center !important;
+        padding: 4px !important;
+    }
+
+    /* Device (4) */
+    .atm-table.custom-table th:nth-child(4),
+    .atm-table.custom-table td:nth-child(4) {
+        width: 38% !important;
+        display: table-cell !important;
+        text-align: center !important;
+        white-space: normal !important;
+    }
+
+    /* Bigger bold number in Device */
+    .atm-table.custom-table td:nth-child(4) b {
+        font-size: 1rem !important;
+        font-family: 'Tajawal', sans-serif;
+    }
+
+    /* Amount (6) */
+    .atm-table.custom-table th:nth-child(6),
+    .atm-table.custom-table td:nth-child(6) {
+        width: 25% !important;
+        text-align: right !important;
+        direction: ltr;
+        padding-right: 5px !important;
+        font-weight: 800;
+        font-size: 1rem !important;
+        /* Larger Amount */
+        font-family: 'Tajawal', sans-serif;
+    }
+
+    /* ================= Customer Ledger Table (Mobile) ================= */
+    /* 1: Name, 5: Balance, 8: Actions */
+
+    .customer-table.custom-table th:nth-child(1),
+    .customer-table.custom-table td:nth-child(1) {
+        width: 45% !important;
+        text-align: right !important;
+        padding-right: 8px !important;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-weight: bold;
+    }
+
+    .customer-table.custom-table th:nth-child(5),
+    .customer-table.custom-table td:nth-child(5) {
+        width: 30% !important;
+        text-align: center !important;
+        color: #0ea5e9 !important;
+        /* Sky Blue */
+        font-family: 'Segoe UI', monospace;
+        font-weight: 700;
+        direction: ltr;
+    }
+
+    .customer-table.custom-table th:nth-child(8),
+    .customer-table.custom-table td:nth-child(8) {
+        width: 25% !important;
+        text-align: center !important;
+    }
+
+    /* ================= Detailed Ledger Table (Mobile) ================= */
+    /* 1: #, 2: Date, 3: Type, 4: Statement(Hidden), 5: Debit, 6: Credit, 7: Balance */
+
+    .ledger-details-table.custom-table th:nth-child(1),
+    .ledger-details-table.custom-table td:nth-child(1) {
+        width: 10% !important;
+        text-align: center !important;
+    }
+
+    .ledger-details-table.custom-table th:nth-child(2),
+    .ledger-details-table.custom-table td:nth-child(2) {
+        width: 22% !important;
+        /* Date */
+        font-size: 0.65rem !important;
+        font-family: 'Segoe UI', monospace;
+        letter-spacing: -0.5px;
+        text-align: center !important;
+    }
+
+    .ledger-details-table.custom-table th:nth-child(3),
+    .ledger-details-table.custom-table td:nth-child(3) {
+        width: 20% !important;
+        /* Type */
+        text-align: center !important;
+    }
+
+    .ledger-details-table.custom-table th:nth-child(5),
+    /* Debit */
+    .ledger-details-table.custom-table td:nth-child(5),
+    .ledger-details-table.custom-table th:nth-child(6),
+    /* Credit */
+    .ledger-details-table.custom-table td:nth-child(6) {
+        width: 16% !important;
+        text-align: center !important;
+        font-family: 'Segoe UI', monospace;
+        font-size: 0.7rem !important;
+        direction: ltr;
+        padding: 4px 1px !important;
+    }
+
+    .ledger-details-table.custom-table th:nth-child(7),
+    /* Balance */
+    .ledger-details-table.custom-table td:nth-child(7) {
+        width: 16% !important;
+        text-align: center !important;
+        font-weight: bold;
+        color: #0ea5e9 !important;
+        font-family: 'Segoe UI', monospace;
+        direction: ltr;
+        padding: 4px 1px !important;
+    }
+
+    /* Ensure horizontal scroll if needed, though we hid columns */
+    .table-container {
+        overflow-x: auto;
+    }
+}
+
+/* ================= Modal Improvement ================= */
+.modal-content {
+    background-color: #1e293b;
+    /* Dark Slate to match card */
+    border: 1px solid #334155;
+    border-radius: 16px;
+    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+}
+
+.modal-header {
+    background-color: #0f172a;
+    border-bottom: 1px solid #334155;
+    padding: 1.5rem;
+    border-top-left-radius: 16px;
+    border-top-right-radius: 16px;
+}
+
+.modal-title {
+    font-weight: 700;
+    color: white;
+}
+
+.btn-close-white {
+    filter: invert(1) grayscale(100%) brightness(200%);
+}
+
+/* Summary Grid */
+.summary-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    background-color: #0f172a;
+    padding: 1.5rem;
+    border-radius: 12px;
+    border: 1px solid #334155;
+    margin-bottom: 1.5rem;
+    text-align: center;
+}
+
+.summary-item label {
+    display: block;
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    margin-bottom: 0.5rem;
+}
+
+.summary-item .value {
+    font-size: 1.35rem;
+    font-weight: 800;
+    font-family: 'Cairo', 'IBM Plex Sans Arabic', system-ui, sans-serif;
+}
+
+/* Modal Tables */
+.modal-table {
+    width: 100%;
+    border: 1px solid #334155;
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 1rem;
+}
+
+.modal-table th {
+    background-color: rgba(13, 40, 73, 0.95);
+    color: var(--text-secondary);
+    font-weight: 600;
+    padding: 0.8rem;
+    text-align: right;
+}
+
+.modal-table td {
+    background-color: rgba(15, 46, 83, 0.85);
+    border-top: 1px solid rgba(148, 163, 184, 0.15);
+    padding: 0.8rem;
+    color: white;
+    vertical-align: middle;
+}
+
+.modal-table tr:last-child td {
+    border-bottom: none;
+}
+
+.modal-body {
+    color: #e2e8f0;
+}
+
+.detail-amount-box {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 16px;
+    padding: 1rem;
+    text-align: center;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-dark);
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* ==================== Animations & Final Touches ==================== */
+@keyframes float-up {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.custom-navbar {
+    animation: float-up 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.stat-box {
+    animation: float-up 0.6s backwards;
+}
+
+.stat-box:nth-child(1) {
+    animation-delay: 0.1s;
+}
+
+.stat-box:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.stat-box:nth-child(3) {
+    animation-delay: 0.2s;
+}
+
+.stat-box:nth-child(4) {
+    animation-delay: 0.25s;
+}
+
+.filter-container {
+    animation: float-up 0.6s 0.3s backwards;
+}
+
+.pro-card {
+    animation: float-up 0.8s 0.4s backwards;
+}
+
+.custom-table tbody tr {
+    opacity: 0;
+    animation: float-up 0.5s ease-out forwards;
+}
+
+.custom-table tbody tr:nth-child(1) {
+    animation-delay: 0.1s;
+}
+
+.custom-table tbody tr:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.custom-table tbody tr:nth-child(3) {
+    animation-delay: 0.2s;
+}
+
+.custom-table tbody tr:nth-child(4) {
+    animation-delay: 0.25s;
+}
+
+.custom-table tbody tr:nth-child(5) {
+    animation-delay: 0.3s;
+}
+
+.custom-table tbody tr:nth-child(6) {
+    animation-delay: 0.35s;
+}
+
+.custom-table tbody tr:nth-child(7) {
+    animation-delay: 0.4s;
+}
+
+.custom-table tbody tr:nth-child(8) {
+    animation-delay: 0.45s;
+}
+
+.custom-table tbody tr:nth-child(9) {
+    animation-delay: 0.5s;
+}
+
+.custom-table tbody tr:nth-child(10) {
+    animation-delay: 0.55s;
+}
+
+/* Utility and UI Enhancements */
+.bg-card {
+    background: var(--bg-card) !important;
+}
+
+.hover-bg-primary:hover {
+    background: var(--primary) !important;
+    border-color: var(--primary) !important;
+    color: #fff !important;
+    box-shadow: 0 0 15px var(--primary-glow) !important;
+}
+
+/* Dropdown Glass style */
+.dropdown-menu {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--glass-border) !important;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.dropdown-menu .dropdown-item {
+    color: var(--text-primary);
+}
+
+.dropdown-menu .dropdown-item:hover {
+    background: rgba(99, 102, 241, 0.12);
+    color: #fff;
+}
+
+/* Section Titles */
+.section-title {
+    color: var(--text-secondary);
+    font-weight: 800;
+    letter-spacing: .5px;
+}
+
+/* Buttons - Professional System */
+.btn {
+    --btn-bg: var(--btn-secondary);
+    --btn-bg-hover: var(--btn-secondary-hover);
+    --btn-focus: var(--btn-secondary-focus);
+    --btn-color: #fff;
+    --btn-border: transparent;
+
+    background: var(--btn-bg);
+    color: var(--btn-color);
+    border: 1px solid var(--btn-border);
+    border-radius: 12px;
+    padding: 0.6rem 1rem;
+    line-height: 1.1;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    transition: transform .15s ease, box-shadow .2s ease, background-color .2s ease, border-color .2s ease;
+}
+
+.btn:hover {
+    background: var(--btn-bg-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 10px 18px -8px rgba(0, 0, 0, .4);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.btn:focus {
+    box-shadow: 0 0 0 4px var(--btn-focus) !important;
+    outline: none !important;
+}
+
+.btn:disabled,
+.btn.disabled {
+    opacity: .65;
+    cursor: not-allowed;
+    filter: saturate(.7);
+}
+
+/* Solid variants */
+.btn-primary {
+    --btn-bg: var(--btn-primary);
+    --btn-bg-hover: var(--btn-primary-hover);
+    --btn-focus: var(--btn-primary-focus);
+    --btn-border: var(--btn-primary);
+}
+
+.btn-secondary {
+    --btn-bg: var(--btn-secondary);
+    --btn-bg-hover: var(--btn-secondary-hover);
+    --btn-focus: var(--btn-secondary-focus);
+    --btn-border: var(--btn-secondary);
+}
+
+.btn-success {
+    --btn-bg: var(--btn-success);
+    --btn-bg-hover: var(--btn-success-hover);
+    --btn-focus: var(--btn-success-focus);
+    --btn-border: var(--btn-success);
+}
+
+.btn-danger {
+    --btn-bg: var(--btn-danger);
+    --btn-bg-hover: var(--btn-danger-hover);
+    --btn-focus: var(--btn-danger-focus);
+    --btn-border: var(--btn-danger);
+}
+
+.btn-warning {
+    --btn-bg: var(--btn-warning);
+    --btn-bg-hover: var(--btn-warning-hover);
+    --btn-focus: var(--btn-warning-focus);
+    --btn-border: var(--btn-warning);
+    color: #1f2937;
+}
+
+.btn-info {
+    --btn-bg: var(--btn-info);
+    --btn-bg-hover: var(--btn-info-hover);
+    --btn-focus: var(--btn-info-focus);
+    --btn-border: var(--btn-info);
+}
+
+/* Outline variants */
+.btn-outline-primary,
+.btn-outline-secondary,
+.btn-outline-success,
+.btn-outline-danger,
+.btn-outline-warning,
+.btn-outline-info {
+    background: transparent;
+    color: var(--btn-bg);
+    border-color: var(--btn-bg);
+}
+
+.btn-outline-primary {
+    --btn-bg: var(--btn-primary);
+}
+
+.btn-outline-secondary {
+    --btn-bg: var(--btn-secondary);
+}
+
+.btn-outline-success {
+    --btn-bg: var(--btn-success);
+}
+
+.btn-outline-danger {
+    --btn-bg: var(--btn-danger);
+}
+
+.btn-outline-warning {
+    --btn-bg: var(--btn-warning);
+    color: var(--btn-warning);
+}
+
+.btn-outline-info {
+    --btn-bg: var(--btn-info);
+}
+
+.btn-outline-primary:hover,
+.btn-outline-secondary:hover,
+.btn-outline-success:hover,
+.btn-outline-danger:hover,
+.btn-outline-warning:hover,
+.btn-outline-info:hover {
+    background: var(--btn-bg);
+    color: #fff;
+}
+
+/* Ghost variant */
+.btn-ghost {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.btn-ghost:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+/* Icon buttons */
+.btn-icon {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-icon i {
+    font-size: 1rem;
+}
+
+/* Sizes */
+.btn-sm {
+    padding: 0.45rem 0.75rem;
+    border-radius: 10px;
+    font-weight: 700;
+}
+
+.btn-lg {
+    padding: 0.85rem 1.25rem;
+    border-radius: 14px;
+    font-weight: 800;
+}
+
+/* Navbar buttons */
+.custom-navbar .btn {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.custom-navbar .btn.btn-primary {
+    background: var(--btn-primary);
+    border-color: var(--btn-primary);
+}
+
+.custom-navbar .btn:hover {
+    border-color: var(--btn-primary);
+    box-shadow: 0 0 12px var(--primary-glow);
+}
+
+/* Table container safety */
+.table-container {
+    overflow-x: auto;
+}
+
+/* Scrollbar track fix to use defined var */
+::-webkit-scrollbar-track {
+    background: var(--bg-dark);
+}

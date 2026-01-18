@@ -1,0 +1,1793 @@
+/*
+===================================================
+🧾 تطبيق: تصفية برو
+🛠️ المطور: محمد أمين الكامل
+🗓️ سنة: 2025
+📌 جميع الحقوق محفوظة
+يمنع الاستخدام أو التعديل دون إذن كتابي
+===================================================
+*/
+
+/* Arabic RTL Styling for Tasfiya Pro */
+
+* {
+    font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+}
+
+/* SweetAlert2 RTL Customization */
+.rtl-popup {
+    direction: rtl !important;
+    text-align: right !important;
+    font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif !important;
+}
+
+.rtl-title {
+    direction: rtl !important;
+    text-align: right !important;
+    font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif !important;
+    font-weight: 600 !important;
+}
+
+.rtl-content {
+    direction: rtl !important;
+    text-align: right !important;
+    font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif !important;
+}
+
+.rtl-toast {
+    direction: rtl !important;
+    text-align: right !important;
+    font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif !important;
+}
+
+/* SweetAlert2 button customization for RTL */
+.swal2-popup .swal2-actions {
+    flex-direction: row-reverse !important;
+}
+
+.swal2-popup .swal2-actions button {
+    margin: 0 0.3125em !important;
+}
+
+body {
+    direction: rtl;
+    text-align: right;
+    background-color: #f8f9fa;
+    margin: 0;
+    padding: 0;
+}
+
+/* Login Screen Styles */
+.login-container {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+}
+
+.login-card {
+    background: white;
+    padding: 2rem;
+    border-radius: 15px;
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
+    width: 100%;
+    max-width: 400px;
+}
+
+.login-header h2 {
+    color: #333;
+    font-weight: 600;
+}
+
+.login-header p {
+    color: #666;
+    margin-bottom: 1.5rem;
+}
+
+/* Main Application Layout */
+#mainApp {
+    display: flex;
+    height: 100vh;
+}
+
+/* Sidebar Styles */
+.sidebar {
+    width: 280px;
+    background: linear-gradient(180deg, #2c3e50 0%, #34495e 100%);
+    color: white;
+    position: fixed;
+    height: 100vh;
+    overflow-y: auto;
+    z-index: 1000;
+    transition: transform 0.3s ease, opacity 0.3s ease;
+    transform: translateX(0);
+}
+
+/* Sidebar collapsed state */
+.sidebar.collapsed {
+    transform: translateX(100%);
+    opacity: 0;
+    pointer-events: none;
+}
+
+/* Prevent sidebar from affecting layout when collapsed */
+.sidebar.collapsed + .main-content {
+    margin-right: 0;
+    width: 100%;
+}
+
+.sidebar-header {
+    padding: 1.5rem;
+    padding-top: 3rem; /* مساحة إضافية لزر التبديل في الأعلى */
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    position: relative; /* لاحتواء زر التبديل المطلق */
+}
+
+.sidebar-header h4 {
+    margin: 0 0 1rem 0;
+    font-weight: 600;
+    color: #ecf0f1;
+}
+
+.user-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-size: 0.9rem;
+}
+
+.sidebar-menu {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.sidebar-menu li {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+.menu-item {
+    display: block;
+    padding: 1rem 1.5rem;
+    color: #bdc3c7;
+    text-decoration: none;
+    transition: all 0.3s ease;
+}
+
+.menu-item:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+    color: white;
+    text-decoration: none;
+}
+
+.menu-item.active {
+    background-color: #3498db;
+    color: white;
+}
+
+.menu-item .icon {
+    margin-left: 0.5rem;
+    font-size: 1.1rem;
+}
+
+/* Main Content Styles */
+.main-content {
+    margin-right: 280px;
+    padding: 2rem;
+    width: calc(100% - 280px);
+    min-height: 100vh;
+    background-color: #f8f9fa;
+    transition: margin-right 0.3s ease, width 0.3s ease;
+    position: relative;
+}
+
+/* Main content when sidebar is collapsed */
+.main-content.expanded {
+    margin-right: 0;
+    width: 100%;
+}
+
+/* Sidebar Toggle Button */
+.sidebar-toggle-btn {
+    position: absolute;
+    top: 15px;
+    right: 15px; /* في الزاوية اليمنى العلوية من الشريط الجانبي */
+    z-index: 1002;
+    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    color: white;
+    border: none;
+    border-radius: 6px;
+    width: 32px;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(231, 76, 60, 0.3);
+    transition: all 0.3s ease;
+    font-size: 14px;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+.sidebar-toggle-btn:hover {
+    background: linear-gradient(135deg, #ec7063, #e74c3c);
+    transform: scale(1.05);
+    box-shadow: 0 4px 12px rgba(231, 76, 60, 0.4);
+}
+
+.sidebar-toggle-btn:active {
+    transform: translateY(0);
+    box-shadow: 0 2px 8px rgba(52, 152, 219, 0.3);
+}
+
+/* Toggle icon animation */
+.toggle-icon {
+    transition: transform 0.3s ease;
+    font-style: normal;
+}
+
+.sidebar-toggle-btn.collapsed .toggle-icon {
+    transform: rotate(0deg);
+}
+
+/* Icon content based on state */
+.sidebar-toggle-btn:not(.collapsed) .toggle-icon::before {
+    content: "☰";
+}
+
+.sidebar-toggle-btn.collapsed .toggle-icon::before {
+    content: "→";
+}
+
+/* Smooth transition for toggle button when state changes */
+.sidebar-toggle-btn.collapsed {
+    background: linear-gradient(135deg, #27ae60, #229954);
+    box-shadow: 0 4px 12px rgba(39, 174, 96, 0.3);
+}
+
+.sidebar-toggle-btn.collapsed:hover {
+    background: linear-gradient(135deg, #229954, #1e8449);
+    box-shadow: 0 6px 16px rgba(39, 174, 96, 0.4);
+}
+
+/* Fixed Sidebar Toggle Button (appears when sidebar is collapsed) */
+.fixed-sidebar-toggle-btn {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    z-index: 1003; /* أعلى من الشريط الجانبي */
+    background: linear-gradient(135deg, #27ae60, #229954);
+    color: white;
+    border: none;
+    border-radius: 8px;
+    width: 45px;
+    height: 45px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    box-shadow: 0 4px 12px rgba(39, 174, 96, 0.3);
+    transition: all 0.3s ease;
+    font-size: 18px;
+    user-select: none;
+    -webkit-user-select: none;
+    -moz-user-select: none;
+    -ms-user-select: none;
+}
+
+.fixed-sidebar-toggle-btn:hover {
+    background: linear-gradient(135deg, #229954, #1e8449);
+    transform: scale(1.05);
+    box-shadow: 0 6px 16px rgba(39, 174, 96, 0.4);
+}
+
+.fixed-sidebar-toggle-btn:active {
+    transform: scale(0.95);
+    box-shadow: 0 2px 8px rgba(39, 174, 96, 0.3);
+}
+
+.fixed-sidebar-toggle-btn .toggle-icon::before {
+    content: "→"; /* سهم لإظهار القائمة */
+}
+
+/* Hide fixed button when sidebar is visible */
+.fixed-sidebar-toggle-btn.hidden {
+    display: none !important;
+}
+
+.content-section {
+    display: none;
+}
+
+.content-section.active {
+    display: block;
+}
+
+.section-title {
+    color: #2c3e50;
+    margin-bottom: 1.5rem;
+    font-weight: 600;
+    border-bottom: 3px solid #3498db;
+    padding-bottom: 0.5rem;
+}
+
+/* Card Styles */
+.card {
+    border: none;
+    border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.1);
+    margin-bottom: 1.5rem;
+}
+
+/* Reconciliation Number Input Group Style */
+#reconciliation-section .input-group {
+    width: 80%;
+}
+
+#reconciliation-section #recallReconciliationNumber {
+    min-width: 120px;
+}
+
+.card-header {
+    background: linear-gradient(135deg, #3498db, #2980b9);
+    color: white;
+    border-radius: 10px 10px 0 0 !important;
+    border: none;
+    font-weight: 600;
+}
+
+.card-header h5 {
+    margin: 0;
+    font-size: 1.1rem;
+}
+
+/* Form Styles */
+.form-label {
+    font-weight: 600;
+    color: #2c3e50;
+    margin-bottom: 0.5rem;
+}
+
+.form-control, .form-select {
+    border: 2px solid #e9ecef;
+    border-radius: 8px;
+    padding: 0.75rem;
+    transition: border-color 0.3s ease;
+}
+
+.form-control:focus, .form-select:focus {
+    border-color: #3498db;
+    box-shadow: 0 0 0 0.2rem rgba(52, 152, 219, 0.25);
+}
+
+/* Button Styles */
+.btn {
+    border-radius: 8px;
+    padding: 0.75rem 1.5rem;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+.btn-primary {
+    background: linear-gradient(135deg, #3498db, #2980b9);
+    border: none;
+}
+
+.btn-primary:hover {
+    background: linear-gradient(135deg, #2980b9, #21618c);
+    transform: translateY(-2px);
+}
+
+.btn-success {
+    background: linear-gradient(135deg, #27ae60, #229954);
+    border: none;
+}
+
+.btn-success:hover {
+    background: linear-gradient(135deg, #229954, #1e8449);
+    transform: translateY(-2px);
+}
+
+.btn-danger {
+    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    border: none;
+}
+
+.btn-danger:hover {
+    background: linear-gradient(135deg, #c0392b, #a93226);
+    transform: translateY(-2px);
+}
+
+/* Table Styles */
+.table {
+    background: white;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+.table thead th {
+    background: linear-gradient(135deg, #34495e, #2c3e50);
+    color: white;
+    border: none;
+    font-weight: 600;
+    padding: 1rem;
+}
+
+.table tbody td {
+    padding: 1rem;
+    vertical-align: middle;
+    border-color: #e9ecef;
+}
+
+.table-striped tbody tr:nth-of-type(odd) {
+    background-color: rgba(52, 152, 219, 0.05);
+}
+
+.table-info {
+    background-color: rgba(52, 152, 219, 0.1) !important;
+}
+
+.table-info th {
+    font-weight: 700;
+    color: #2c3e50;
+}
+
+/* Alert Styles */
+.alert {
+    border: none;
+    border-radius: 8px;
+    padding: 1rem 1.5rem;
+}
+
+.alert-danger {
+    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    color: white;
+}
+
+.alert-info {
+    background: linear-gradient(135deg, #3498db, #2980b9);
+    color: white;
+}
+
+.alert-success {
+    background: linear-gradient(135deg, #27ae60, #229954);
+    color: white;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+    .sidebar {
+        width: 100%;
+        height: auto;
+        position: relative;
+        transform: none;
+        opacity: 1;
+    }
+
+    .sidebar.collapsed {
+        display: none;
+    }
+
+    .main-content {
+        margin-right: 0;
+        width: 100%;
+    }
+
+    .main-content.expanded {
+        margin-right: 0;
+        width: 100%;
+    }
+
+    .sidebar-toggle-btn {
+        top: 10px;
+        right: 10px; /* في الزاوية اليمنى العلوية للشريط الجانبي */
+        width: 28px;
+        height: 28px;
+        font-size: 12px;
+    }
+
+    .sidebar-header {
+        padding-top: 2.5rem; /* مساحة أقل في الشاشات الصغيرة */
+    }
+
+    .fixed-sidebar-toggle-btn {
+        top: 10px;
+        right: 10px;
+        width: 40px;
+        height: 40px;
+        font-size: 16px;
+    }
+
+    .login-card {
+        margin: 1rem;
+        padding: 1.5rem;
+    }
+}
+
+/* Utility Classes */
+.text-currency {
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+    color: #27ae60;
+}
+
+.text-deficit {
+    color: #e74c3c;
+    font-weight: bold;
+}
+
+.text-surplus {
+    color: #27ae60;
+    font-weight: bold;
+}
+
+/* Summary Section Styles */
+.summary-item {
+    margin-bottom: 1rem;
+    padding: 0.75rem;
+    background: rgba(52, 152, 219, 0.05);
+    border-radius: 8px;
+    border-right: 4px solid #3498db;
+}
+
+.summary-item .form-label {
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+    color: #2c3e50;
+}
+
+.summary-value {
+    font-size: 1.2rem;
+    font-weight: 700;
+    padding: 0.5rem;
+    background: white;
+    border-radius: 6px;
+    border: 2px solid #e9ecef;
+    text-align: center;
+}
+
+.summary-value.text-currency {
+    background: linear-gradient(135deg, #d5f4e6, #f0f9ff);
+    border-color: #27ae60;
+}
+
+.summary-item button {
+    width: 100%;
+    margin-top: 0.5rem;
+}
+
+/* Status indicators */
+.status-balanced {
+    background: linear-gradient(135deg, #3498db, #2980b9);
+    color: white;
+}
+
+.status-surplus {
+    background: linear-gradient(135deg, #27ae60, #229954);
+    color: white;
+}
+
+.status-deficit {
+    background: linear-gradient(135deg, #e74c3c, #c0392b);
+    color: white;
+}
+
+/* Print button special styling */
+.btn-print {
+    background: linear-gradient(135deg, #8e44ad, #7d3c98);
+    border: none;
+    color: white;
+    font-size: 1.1rem;
+    padding: 1rem 2rem;
+}
+
+.btn-print:hover {
+    background: linear-gradient(135deg, #7d3c98, #6c3483);
+    transform: translateY(-2px);
+}
+
+.btn-outline-print {
+    border: 2px solid #8e44ad;
+    color: #8e44ad;
+    background: transparent;
+    font-size: 1.1rem;
+    padding: 1rem 2rem;
+    transition: all 0.3s ease;
+}
+
+.btn-outline-print:hover {
+    background: #8e44ad;
+    color: white;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 15px rgba(142, 68, 173, 0.4);
+}
+
+/* Loading Spinner */
+.spinner-border-sm {
+    width: 1rem;
+    height: 1rem;
+}
+
+/* Custom Scrollbar */
+.sidebar::-webkit-scrollbar {
+    width: 6px;
+}
+
+.sidebar::-webkit-scrollbar-track {
+    background: rgba(255, 255, 255, 0.1);
+}
+
+.sidebar::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.3);
+    border-radius: 3px;
+}
+
+.sidebar::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.5);
+}
+
+/* Edit Modal Enhancements */
+.edit-modal-section {
+    transition: all 0.3s ease;
+    border-radius: 8px;
+    margin-bottom: 1rem;
+}
+
+.edit-modal-section:hover {
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+    transform: translateY(-2px);
+}
+
+.edit-modal-section .card-header {
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+    border-bottom: 2px solid #dee2e6;
+}
+
+.edit-modal-section .card-header h6 {
+    margin: 0;
+    font-weight: 600;
+    color: #495057;
+}
+
+/* Amount input styling */
+.amount-input {
+    text-align: left;
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+}
+
+.amount-input.is-valid {
+    background-color: #f8fff8;
+    border-color: #28a745;
+}
+
+.amount-input.is-invalid {
+    background-color: #fff8f8;
+    border-color: #dc3545;
+}
+
+/* Total display styling */
+.total-display {
+    background: linear-gradient(135deg, #e3f2fd 0%, #bbdefb 100%);
+    padding: 0.75rem;
+    border-radius: 6px;
+    border: 1px solid #2196f3;
+    font-weight: bold;
+    text-align: center;
+    margin-top: 0.5rem;
+}
+
+.total-display.positive {
+    background: linear-gradient(135deg, #e8f5e8 0%, #c8e6c9 100%);
+    border-color: #4caf50;
+    color: #2e7d32;
+}
+
+.total-display.negative {
+    background: linear-gradient(135deg, #ffebee 0%, #ffcdd2 100%);
+    border-color: #f44336;
+    color: #c62828;
+}
+
+.total-display.neutral {
+    background: linear-gradient(135deg, #f3e5f5 0%, #e1bee7 100%);
+    border-color: #9c27b0;
+    color: #6a1b9a;
+}
+
+/* Button enhancements */
+.btn-edit-action {
+    transition: all 0.2s ease;
+    border-radius: 6px;
+    font-weight: 500;
+}
+
+.btn-edit-action:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+/* Table row hover effects */
+.edit-table tbody tr {
+    transition: background-color 0.2s ease;
+}
+
+.edit-table tbody tr:hover {
+    background-color: #f8f9fa;
+    cursor: pointer;
+}
+
+/* Modal animation */
+.modal.fade .modal-dialog {
+    transition: transform 0.3s ease-out;
+    transform: translate(0, -50px);
+}
+
+.modal.show .modal-dialog {
+    transform: none;
+}
+
+/* Loading spinner for edit operations */
+.edit-loading {
+    display: inline-block;
+    width: 20px;
+    height: 20px;
+    border: 3px solid #f3f3f3;
+    border-top: 3px solid #007bff;
+    border-radius: 50%;
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
+}
+
+/* Progress indicator */
+.progress-indicator {
+    height: 4px;
+    background: linear-gradient(90deg, #28a745 0%, #ffc107 50%, #dc3545 100%);
+    border-radius: 2px;
+    margin-bottom: 1rem;
+}
+
+/* Enhanced Reports Styles */
+
+.btn-group .btn {
+    margin-right: 2px;
+}
+
+.btn-group .btn:last-child {
+    margin-right: 0;
+}
+
+/* Enhanced Reports Styles */
+.summary-card {
+    transition: transform 0.2s ease-in-out;
+    border-radius: 10px;
+    overflow: hidden;
+}
+
+.summary-card:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+}
+
+.table-hover tbody tr:hover {
+    background-color: rgba(0,123,255,0.1);
+}
+
+
+
+/* Reports chart containers */
+.card canvas {
+    max-width: 100%;
+    height: auto;
+}
+
+/* Enhanced pagination */
+.pagination .page-link {
+    color: #007bff;
+    border: 1px solid #dee2e6;
+    border-radius: 6px;
+    margin: 0 2px;
+}
+
+.pagination .page-item.active .page-link {
+    background-color: #007bff;
+    border-color: #007bff;
+}
+
+.pagination .page-item.disabled .page-link {
+    color: #6c757d;
+    background-color: #fff;
+    border-color: #dee2e6;
+}
+
+
+
+/* Enhanced filter section */
+.card-header h5 {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.card-header .icon {
+    font-size: 1.2rem;
+}
+
+/* Print styles */
+.print-only {
+    display: none;
+}
+
+@media print {
+    .no-print {
+        display: none !important;
+    }
+
+    .print-only {
+        display: block !important;
+    }
+
+    body {
+        margin: 0;
+        padding: 20px;
+        font-size: 14px !important; /* تكبير الخط الأساسي للطباعة */
+        line-height: 1.4 !important; /* تحسين المسافة بين الأسطر */
+    }
+
+    .container-fluid {
+        max-width: none;
+        padding: 0;
+    }
+
+    /* تحسين وضوح النصوص في الطباعة */
+    table, th, td, p, div, span {
+        font-size: inherit !important;
+        color: #000 !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+    }
+
+    /* تحسين الجداول في الطباعة */
+    table {
+        border-collapse: collapse !important;
+        width: 100% !important;
+    }
+
+    th, td {
+        border: 1px solid #000 !important;
+        padding: 8px !important;
+        text-align: right !important;
+    }
+
+    /* تحسين العناوين في الطباعة */
+    h1, h2, h3, h4, h5, h6 {
+        font-weight: bold !important;
+        margin-bottom: 10px !important;
+        page-break-after: avoid !important;
+    }
+}
+
+/* Non-colored print styles - Applied when colored printing is disabled */
+.non-colored-print {
+    @media print {
+        * {
+            color: #000000 !important;
+            background-color: transparent !important;
+            background-image: none !important;
+            border-color: #000000 !important;
+            text-shadow: none !important;
+            box-shadow: none !important;
+        }
+
+        /* Headers and titles */
+        h1, h2, h3, h4, h5, h6,
+        .header, .title, .company-name, .report-title,
+        .section-title, .table-header {
+            color: #000000 !important;
+            background: transparent !important;
+        }
+
+        /* Table elements */
+        table, th, td, tr {
+            color: #000000 !important;
+            background: transparent !important;
+            border-color: #000000 !important;
+        }
+
+        /* Status indicators and badges */
+        .badge, .status-balanced, .status-surplus, .status-deficit,
+        .badge-excellent, .badge-very-good, .badge-good,
+        .badge-acceptable, .badge-needs-improvement,
+        .bg-success, .bg-warning, .bg-danger, .bg-info, .bg-primary,
+        .text-success, .text-warning, .text-danger, .text-info, .text-primary {
+            color: #000000 !important;
+            background: transparent !important;
+            border: 1px solid #000000 !important;
+        }
+
+        /* Summary and totals */
+        .summary-item, .total-amount, .balance-info,
+        .reconciliation-summary, .section-summary, .summary {
+            color: #000000 !important;
+            background: transparent !important;
+        }
+
+        /* Currency and monetary values */
+        .currency, .money, .amount, .price, .value, .cost,
+        .text-currency, .summary-value, .total-amount, .balance-amount,
+        .info-value, .financial-value, .monetary-display {
+            color: #000000 !important;
+            background: transparent !important;
+            font-weight: bold !important;
+        }
+
+        /* Dates and references */
+        .date, .datetime, .timestamp, .reference, .reference-number,
+        .id, .number, .code, .serial, .transaction-id {
+            color: #000000 !important;
+            background: transparent !important;
+        }
+
+        /* Status and balance indicators */
+        .balance, .deficit, .surplus, .status, .state,
+        .positive, .negative, .neutral, .balanced,
+        .text-deficit, .text-surplus {
+            color: #000000 !important;
+            background: transparent !important;
+            border: 1px solid #000000 !important;
+        }
+
+        /* Special elements */
+        .star-rating, .rating-stars, .performance-badge {
+            color: #000000 !important;
+            text-shadow: none !important;
+            background: transparent !important;
+        }
+
+        /* Footer and page info */
+        .footer, .page-footer, .print-date, .page-number,
+        .copyright, .watermark {
+            color: #000000 !important;
+            background: transparent !important;
+        }
+
+        /* Borders and lines */
+        hr, .divider, .separator, .line {
+            border-color: #000000 !important;
+            background-color: #000000 !important;
+        }
+
+        /* Form elements in print */
+        input, select, textarea, .form-control, .form-select {
+            color: #000000 !important;
+            background: transparent !important;
+            border-color: #000000 !important;
+        }
+
+        /* Ensure all text is black */
+        p, span, div, label, strong, em, i, b, small, code,
+        .text, .content, .description, .note, .comment {
+            color: #000000 !important;
+        }
+
+        /* Override any gradient backgrounds */
+        .gradient, .bg-gradient, [style*="gradient"] {
+            background: transparent !important;
+            background-image: none !important;
+        }
+
+        /* SPECIFIC SELECTORS FOR IDENTIFIED PROBLEMATIC ELEMENTS */
+
+        /* Section headers and titles - المبيعات الآجلة، الموردين، عناوين الجداول */
+        .section-title, .report-section-title, .table-section-title,
+        .section h3, .section h4, .section h5,
+        .info-group h4, .summary h3, .section-header {
+            color: #000000 !important;
+            background: transparent !important;
+            font-weight: bold !important;
+        }
+
+        /* Total amounts and financial summaries - إجمالي المقبوضات، إجمالي المبيعات */
+        .summary-row, .summary-row span, .summary-label,
+        .total-label, .grand-total, .summary-value,
+        .info-value, .financial-summary, .amount-summary,
+        .total-receipts, .system-sales, .surplus-deficit {
+            color: #000000 !important;
+            background: transparent !important;
+            font-weight: bold !important;
+        }
+
+        /* Status indicators and reconciliation status - حالة التصفية، مؤشرات الحالة */
+        .status-text, .reconciliation-status, .status-indicator,
+        .text-success, .text-danger, .text-warning, .text-info,
+        .text-muted, .status-badge, .completion-status,
+        .reconciliation-state, .process-status {
+            color: #000000 !important;
+            background: transparent !important;
+            border: 1px solid #000000 !important;
+        }
+
+        /* Table headers and column headers - رؤوس الأعمدة */
+        th, thead th, .table-header, .column-header,
+        table thead tr th, .data-table th, .report-table th {
+            color: #000000 !important;
+            background: transparent !important;
+            font-weight: bold !important;
+            border: 1px solid #000000 !important;
+        }
+
+        /* Info labels and values */
+        .info-label, .info-item span, .label-text,
+        .field-label, .data-label, .report-label {
+            color: #000000 !important;
+            background: transparent !important;
+        }
+
+        /* Override any colored text classes */
+        [class*="text-"], [class*="bg-"], [style*="color"] {
+            color: #000000 !important;
+            background: transparent !important;
+        }
+    }
+}
+
+/* Responsive enhancements */
+@media (max-width: 768px) {
+    .btn-group {
+        flex-direction: column;
+    }
+
+    .btn-group .btn {
+        margin-bottom: 5px;
+        margin-right: 0;
+    }
+
+    .table-responsive {
+        font-size: 0.875rem;
+    }
+
+    .card-header {
+        flex-direction: column;
+        gap: 1rem;
+    }
+
+    .card-header .btn-group {
+        width: 100%;
+    }
+
+    .card-header .btn-group .btn {
+        flex: 1;
+    }
+}
+
+/* ========================================
+   CASHIER PERFORMANCE COMPARISON STYLES
+   ======================================== */
+
+.performance-card {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+    border-radius: 12px;
+    overflow: hidden;
+}
+
+.performance-card:hover {
+    transform: translateY(-3px);
+    box-shadow: 0 6px 20px rgba(0,0,0,0.15);
+}
+
+.badge-excellent {
+    background: linear-gradient(45deg, #ffd700, #ffed4e);
+    color: #333;
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 20px;
+}
+
+.badge-very-good {
+    background: linear-gradient(45deg, #28a745, #20c997);
+    color: white;
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 20px;
+}
+
+.badge-good {
+    background: linear-gradient(45deg, #17a2b8, #6f42c1);
+    color: white;
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 20px;
+}
+
+.badge-acceptable {
+    background: linear-gradient(45deg, #ffc107, #fd7e14);
+    color: #333;
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 20px;
+}
+
+.badge-needs-improvement {
+    background: linear-gradient(45deg, #dc3545, #e83e8c);
+    color: white;
+    font-weight: 600;
+    padding: 0.5rem 0.75rem;
+    border-radius: 20px;
+}
+
+/* Purple badge for transfer operations */
+.bg-purple {
+    background-color: #6f42c1 !important;
+}
+
+.star-rating {
+    font-size: 1.3em;
+    letter-spacing: 3px;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+
+.performance-progress {
+    height: 10px;
+    border-radius: 5px;
+    overflow: hidden;
+    background-color: #e9ecef;
+    margin: 0.25rem 0;
+}
+
+.performance-metric {
+    background: rgba(255,255,255,0.1);
+    border-radius: 8px;
+    padding: 12px;
+    margin: 8px 0;
+    backdrop-filter: blur(10px);
+}
+
+.cashier-ranking-item {
+    transition: all 0.3s ease;
+    border-radius: 8px;
+    margin-bottom: 0.5rem;
+}
+
+.cashier-ranking-item:hover {
+    background-color: rgba(0,123,255,0.1);
+    transform: translateX(5px);
+}
+
+
+
+.performance-summary-card {
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    border: none;
+    color: white;
+    border-radius: 12px;
+    transition: transform 0.2s ease;
+}
+
+.performance-summary-card:hover {
+    transform: translateY(-2px);
+}
+
+.performance-loading {
+    min-height: 250px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+    border-radius: 12px;
+    margin: 2rem 0;
+}
+
+.performance-results {
+    animation: fadeInUp 0.6s ease-out;
+}
+
+@keyframes fadeInUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.performance-filter-card {
+    background: linear-gradient(135deg, #ffffff 0%, #f8f9fa 100%);
+    border: 1px solid #e9ecef;
+    border-radius: 12px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+}
+
+.performance-filter-card .card-header {
+    background: linear-gradient(135deg, #6c757d 0%, #495057 100%);
+    border-radius: 12px 12px 0 0;
+}
+
+/* Responsive adjustments for performance comparison */
+@media (max-width: 768px) {
+    .performance-card {
+        margin-bottom: 1.5rem;
+    }
+
+    .cashier-ranking-list {
+        font-size: 0.9em;
+    }
+
+    .performance-summary-card h4 {
+        font-size: 1.1em;
+    }
+
+    .star-rating {
+        font-size: 1.1em;
+        letter-spacing: 2px;
+    }
+
+    .performance-loading {
+        min-height: 200px;
+        margin: 1rem 0;
+    }
+}
+
+@media (max-width: 576px) {
+    .performance-card .card-body {
+        padding: 1rem;
+    }
+
+    .performance-card .row.text-center {
+        font-size: 0.9em;
+    }
+
+    .badge-excellent,
+    .badge-very-good,
+    .badge-good,
+    .badge-acceptable,
+    .badge-needs-improvement {
+        font-size: 0.8em;
+        padding: 0.4rem 0.6rem;
+    }
+}
+
+/* Print styles for performance comparison */
+@media print {
+    .performance-card {
+        break-inside: avoid;
+        margin-bottom: 15px;
+        box-shadow: none;
+        border: 1px solid #ddd;
+    }
+
+    .star-rating {
+        color: #000 !important;
+        text-shadow: none;
+    }
+
+    .badge-excellent,
+    .badge-very-good,
+    .badge-good,
+    .badge-acceptable,
+    .badge-needs-improvement {
+        background: #f8f9fa !important;
+        color: #000 !important;
+        border: 1px solid #ddd;
+    }
+
+    .performance-loading,
+    .btn {
+        display: none !important;
+    }
+
+    .performance-results {
+        animation: none;
+    }
+}
+
+
+
+
+
+/* Ensure main app has proper layout with footer */
+#mainApp {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+}
+
+#mainContent {
+    flex: 1;
+    margin-bottom: 0;
+}
+
+/* ========================================
+   SETTINGS TABS STYLES
+   ======================================== */
+
+/* Settings tabs container */
+.settings-tabs-container {
+    background: white;
+    border-radius: 15px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    overflow: hidden;
+}
+
+/* Settings tabs header */
+.settings-tabs-container .card-header {
+    background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+    border-bottom: 3px solid #3498db;
+    padding: 0;
+}
+
+/* Navigation tabs styling */
+.settings-tabs-container .nav-tabs {
+    border-bottom: none;
+    background: transparent;
+    margin: 0;
+}
+
+/* Individual tab styling */
+.settings-tabs-container .nav-tabs .nav-link {
+    background: transparent;
+    border: none;
+    color: #bdc3c7;
+    font-weight: 600;
+    font-size: 0.95rem;
+    padding: 1rem 1.5rem;
+    margin: 0;
+    border-radius: 0;
+    transition: all 0.3s ease;
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* Tab hover effect */
+.settings-tabs-container .nav-tabs .nav-link:hover {
+    background: rgba(255,255,255,0.1);
+    color: #ecf0f1;
+    transform: translateY(-2px);
+}
+
+/* Active tab styling */
+.settings-tabs-container .nav-tabs .nav-link.active {
+    background: linear-gradient(135deg, #3498db 0%, #2980b9 100%);
+    color: white;
+    box-shadow: 0 2px 10px rgba(52,152,219,0.3);
+    border-radius: 8px 8px 0 0;
+    margin-top: 5px;
+}
+
+/* Tab icons */
+.settings-tabs-container .nav-tabs .nav-link .icon {
+    font-size: 1.1rem;
+    opacity: 0.8;
+}
+
+.settings-tabs-container .nav-tabs .nav-link.active .icon {
+    opacity: 1;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.2);
+}
+
+/* Tab content area */
+.settings-tabs-container .card-body {
+    background: #f8f9fa;
+    padding: 2rem;
+    min-height: 500px;
+}
+
+/* Tab pane styling */
+.settings-tabs-container .tab-pane {
+    background: white;
+    border-radius: 10px;
+    padding: 2rem;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.05);
+}
+
+/* Responsive adjustments for settings tabs */
+@media (max-width: 768px) {
+    .settings-tabs-container .nav-tabs {
+        flex-direction: column;
+    }
+
+    .settings-tabs-container .nav-tabs .nav-link {
+        text-align: center;
+        border-radius: 0;
+        margin: 0;
+        padding: 0.75rem 1rem;
+        font-size: 0.9rem;
+    }
+
+    .settings-tabs-container .nav-tabs .nav-link.active {
+        border-radius: 0;
+        margin-top: 0;
+    }
+
+    .settings-tabs-container .card-body {
+        padding: 1rem;
+    }
+
+    .settings-tabs-container .tab-pane {
+        padding: 1rem;
+    }
+}
+
+/* Enhanced contrast for better accessibility */
+.settings-tabs-container .nav-tabs .nav-link:focus {
+    outline: 2px solid #3498db;
+    outline-offset: 2px;
+}
+
+/* Additional visual improvements */
+.settings-tabs-container .nav-tabs .nav-link::before {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 50%;
+    width: 0;
+    height: 3px;
+    background: #3498db;
+    transition: all 0.3s ease;
+    transform: translateX(-50%);
+}
+
+.settings-tabs-container .nav-tabs .nav-link.active::before {
+    width: 80%;
+}
+
+/* ========================================
+   POSTPAID SALES REPORT STYLES
+   ======================================== */
+
+/* Postpaid sales report card styling */
+#postpaidSalesReportResultsCard {
+    border: none;
+    border-radius: 15px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.1);
+    margin-top: 2rem;
+    overflow: hidden;
+    animation: slideInUp 0.5s ease-out;
+}
+
+/* Animation for report results */
+@keyframes slideInUp {
+    from {
+        opacity: 0;
+        transform: translateY(30px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* Postpaid sales report header */
+#postpaidSalesReportResultsCard .card-header {
+    background: linear-gradient(135deg, #e91e63 0%, #ad1457 100%);
+    color: white;
+    border-bottom: 3px solid #f06292;
+    padding: 1.25rem 1.5rem;
+}
+
+#postpaidSalesReportResultsCard .card-header h5 {
+    margin: 0;
+    font-weight: 600;
+    font-size: 1.2rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* Export/Print buttons in header */
+#postpaidSalesReportResultsCard .card-header .btn-group .btn {
+    border: 2px solid rgba(255,255,255,0.3);
+    color: white;
+    font-weight: 600;
+    transition: all 0.3s ease;
+    backdrop-filter: blur(10px);
+}
+
+#postpaidSalesReportResultsCard .card-header .btn-group .btn:hover {
+    background: rgba(255,255,255,0.2);
+    border-color: rgba(255,255,255,0.6);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+}
+
+/* Summary statistics cards */
+#postpaidSalesReportSummary .card {
+    border: none;
+    border-radius: 12px;
+    transition: all 0.3s ease;
+    overflow: hidden;
+    position: relative;
+}
+
+#postpaidSalesReportSummary .card::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 4px;
+    background: linear-gradient(90deg, transparent, rgba(255,255,255,0.3), transparent);
+    animation: shimmer 2s infinite;
+}
+
+@keyframes shimmer {
+    0% { transform: translateX(-100%); }
+    100% { transform: translateX(100%); }
+}
+
+#postpaidSalesReportSummary .card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 25px rgba(0,0,0,0.15);
+}
+
+#postpaidSalesReportSummary .card-body {
+    padding: 1.5rem;
+}
+
+#postpaidSalesReportSummary .card h4 {
+    font-size: 2rem;
+    font-weight: 700;
+    margin-bottom: 0.5rem;
+    text-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+#postpaidSalesReportSummary .card p {
+    font-size: 0.9rem;
+    font-weight: 600;
+    margin: 0;
+    opacity: 0.9;
+}
+
+/* Postpaid sales table styling */
+#postpaidSalesReportTable {
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.08);
+    background: white;
+}
+
+#postpaidSalesReportTable thead th {
+    background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%);
+    color: white;
+    font-weight: 600;
+    text-align: center;
+    padding: 1rem 0.75rem;
+    border: none;
+    font-size: 0.95rem;
+    position: relative;
+}
+
+#postpaidSalesReportTable thead th::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: linear-gradient(90deg, #e91e63, #f06292, #e91e63);
+}
+
+#postpaidSalesReportTable tbody td {
+    padding: 1rem 0.75rem;
+    vertical-align: middle;
+    border-color: #e9ecef;
+    transition: background-color 0.2s ease;
+}
+
+#postpaidSalesReportTable tbody tr:hover {
+    background-color: rgba(233, 30, 99, 0.05);
+    transform: scale(1.01);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+
+#postpaidSalesReportTable tbody tr:nth-child(even) {
+    background-color: rgba(248, 249, 250, 0.8);
+}
+
+#postpaidSalesReportTable tbody tr:nth-child(even):hover {
+    background-color: rgba(233, 30, 99, 0.08);
+}
+
+/* Amount column styling */
+#postpaidSalesReportTable .text-end {
+    font-family: 'Courier New', monospace;
+    font-weight: bold;
+    color: #27ae60;
+    font-size: 1.05rem;
+}
+
+/* Pagination styling for postpaid sales */
+#postpaidSalesReportPagination .page-link {
+    color: #e91e63;
+    border: 2px solid #f8d7da;
+    border-radius: 8px;
+    margin: 0 3px;
+    padding: 0.5rem 0.75rem;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+#postpaidSalesReportPagination .page-link:hover {
+    background-color: #e91e63;
+    border-color: #e91e63;
+    color: white;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(233, 30, 99, 0.3);
+}
+
+#postpaidSalesReportPagination .page-item.active .page-link {
+    background: linear-gradient(135deg, #e91e63, #ad1457);
+    border-color: #e91e63;
+    color: white;
+    box-shadow: 0 4px 12px rgba(233, 30, 99, 0.4);
+}
+
+#postpaidSalesReportPagination .page-item.disabled .page-link {
+    color: #6c757d;
+    background-color: #f8f9fa;
+    border-color: #dee2e6;
+    opacity: 0.6;
+}
+
+/* Pagination info styling */
+#postpaidSalesReportPaginationInfo {
+    color: #6c757d;
+    font-weight: 600;
+    font-size: 0.9rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+#postpaidSalesReportPaginationInfo::before {
+    content: "📊";
+    font-size: 1.1rem;
+}
+
+/* Filter section enhancements */
+.card-header h5 {
+    text-shadow: 0 1px 2px rgba(0,0,0,0.1);
+}
+
+/* Clear filters button styling */
+#clearPostpaidSalesFiltersBtn {
+    background: linear-gradient(135deg, #6c757d, #495057);
+    border: none;
+    color: white;
+    transition: all 0.3s ease;
+}
+
+#clearPostpaidSalesFiltersBtn:hover {
+    background: linear-gradient(135deg, #495057, #343a40);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(108, 117, 125, 0.3);
+}
+
+/* Generate report button styling */
+#generatePostpaidSalesReportBtn {
+    background: linear-gradient(135deg, #e91e63, #ad1457);
+    border: none;
+    color: white;
+    font-weight: 600;
+    transition: all 0.3s ease;
+}
+
+#generatePostpaidSalesReportBtn:hover {
+    background: linear-gradient(135deg, #ad1457, #880e4f);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(233, 30, 99, 0.4);
+}
+
+/* Loading state for generate button */
+#generatePostpaidSalesReportBtn:disabled {
+    background: linear-gradient(135deg, #6c757d, #495057);
+    cursor: not-allowed;
+    transform: none;
+    box-shadow: none;
+}
+
+/* Responsive adjustments for postpaid sales report */
+@media (max-width: 768px) {
+    #postpaidSalesReportResultsCard .card-header {
+        flex-direction: column;
+        gap: 1rem;
+        text-align: center;
+    }
+
+    #postpaidSalesReportResultsCard .card-header .btn-group {
+        width: 100%;
+        flex-direction: column;
+    }
+
+    #postpaidSalesReportResultsCard .card-header .btn-group .btn {
+        margin-bottom: 0.5rem;
+        border-radius: 8px;
+    }
+
+    #postpaidSalesReportSummary {
+        margin-bottom: 2rem;
+    }
+
+    #postpaidSalesReportSummary .card {
+        margin-bottom: 1rem;
+    }
+
+    #postpaidSalesReportTable {
+        font-size: 0.85rem;
+    }
+
+    #postpaidSalesReportTable thead th,
+    #postpaidSalesReportTable tbody td {
+        padding: 0.5rem 0.25rem;
+    }
+
+    #postpaidSalesReportPagination {
+        justify-content: center;
+        flex-wrap: wrap;
+    }
+
+    #postpaidSalesReportPagination .page-link {
+        margin: 2px;
+        padding: 0.4rem 0.6rem;
+        font-size: 0.85rem;
+    }
+}
+
+/* Print styles for postpaid sales report */
+@media print {
+    #postpaidSalesReportResultsCard {
+        box-shadow: none;
+        border: 1px solid #ddd;
+        margin: 0;
+        animation: none;
+    }
+
+    #postpaidSalesReportResultsCard .card-header {
+        background: #f8f9fa !important;
+        color: #333 !important;
+        border-bottom: 2px solid #ddd;
+    }
+
+    #postpaidSalesReportResultsCard .card-header .btn-group {
+        display: none !important;
+    }
+
+    #postpaidSalesReportSummary .card {
+        break-inside: avoid;
+        box-shadow: none;
+        border: 1px solid #ddd;
+        margin-bottom: 10px;
+    }
+
+    #postpaidSalesReportTable {
+        box-shadow: none;
+        border: 1px solid #ddd;
+    }
+
+    #postpaidSalesReportTable thead th {
+        background: #f8f9fa !important;
+        color: #333 !important;
+    }
+
+    #postpaidSalesReportPagination,
+    #postpaidSalesReportPaginationInfo {
+        display: none !important;
+    }
+
+    .no-print {
+        display: none !important;
+    }
+}
