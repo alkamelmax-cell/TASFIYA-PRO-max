@@ -1413,3 +1413,26 @@ input[type="date"].custom-input {
 ::-webkit-scrollbar-track {
     background: var(--bg-dark);
 }
+
+/* ==========================================================================
+   RADICAL TABLE FIXES - ATM REPORTS
+   ========================================================================== */
+.atm-table th,
+.atm-table td {
+    text-align: center !important;
+    vertical-align: middle !important;
+}
+
+/* Optional: If you want the Amount to be strictly LTR but centered in cell */
+.atm-table td.text-ltr {
+    direction: ltr !important;
+    display: table-cell !important;
+    /* Ensure it stays a cell */
+    unicode-bidi: embed;
+}
+
+/* Ensure badges inside table are centered */
+.atm-table .badge {
+    display: inline-block !important;
+    vertical-align: middle !important;
+}
