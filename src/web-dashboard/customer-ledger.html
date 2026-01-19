@@ -30,8 +30,29 @@
         }
 
         /* Mobile Optimization for Ledger Details */
+        /* Mobile Optimization for Ledger Details */
         @media (max-width: 768px) {
 
+            /* 1. CUSTOMER LIST TABLE: Force hide secondary columns */
+            /* Column 2: Branch */
+            .customer-table th:nth-child(2),
+            #customersSummaryTableBody td:nth-child(2),
+            /* Column 3: Debit */
+            .customer-table th:nth-child(3),
+            #customersSummaryTableBody td:nth-child(3),
+            /* Column 4: Credit */
+            .customer-table th:nth-child(4),
+            #customersSummaryTableBody td:nth-child(4),
+            /* Column 6: Last Trans */
+            .customer-table th:nth-child(6),
+            #customersSummaryTableBody td:nth-child(6),
+            /* Column 7: Count */
+            .customer-table th:nth-child(7),
+            #customersSummaryTableBody td:nth-child(7) {
+                display: none !important;
+            }
+
+            /* 2. LEDGER DETAILS TABLE */
             /* Hide non-essential columns in Details Table */
             .ledger-details-table th:nth-child(1),
             /* # */
@@ -46,7 +67,8 @@
             .custom-table th,
             .custom-table td {
                 padding: 0.5rem 0.2rem !important;
-                font-size: 0.85rem !important;
+                font-size: 0.8rem !important;
+                /* Smaller font */
             }
         }
     </style>
