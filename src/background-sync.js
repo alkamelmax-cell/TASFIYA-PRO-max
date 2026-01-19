@@ -169,10 +169,17 @@ class BackgroundSync {
 
                 db.transaction(() => {
                     requests.forEach(r => {
-                        const details = typeof r.details === 'object' ? JSON.stringify(r.details) : r.details_json;
+                        let details = '{}';
+                        if (r.details && typeof r.details === 'object') {
+                            details = JSON.stringify(r.details);
+                        } else if (r.details_json) {
+                            details = r.details_json;
+                        }
 
-                        // IMPORTANT: For pull sync, we trust the Web ID.
-                        // Ensure local DB has this table with compatible schema.
+                        // Debug log for first item
+                        if (requests.indexOf(r) === 0) {
+                            console.log(`🔍 [SYNC] Processing request ${r.id}, details valid? ${details.length > 5}`);
+                        }
 
                         if (existingIds.includes(r.id)) {
                             updateStmt.run(r.status, r.notes, details, r.id);
