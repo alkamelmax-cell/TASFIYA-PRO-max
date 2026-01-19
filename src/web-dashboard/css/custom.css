@@ -882,81 +882,128 @@ input[type="date"].custom-input {
     overflow-x: auto;
 }
 
-/* ================= Modal Improvement ================= */
+/* ================= Modal: Glassmorphism & Animations ================= */
+
+/* Modal Fade-in Animation */
+.modal.fade .modal-dialog {
+    transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease-out;
+    transform: scale(0.9) translateY(-20px);
+}
+
+.modal.show .modal-dialog {
+    transform: scale(1) translateY(0);
+}
+
+/* Glassmorphism Modal */
 .modal-content {
-    background-color: #1e293b;
-    /* Dark Slate to match card */
-    border: 1px solid #334155;
-    border-radius: 16px;
-    box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
+    background: rgba(30, 41, 59, 0.75) !important;
+    /* Semi-transparent */
+    backdrop-filter: blur(25px) saturate(180%);
+    -webkit-backdrop-filter: blur(25px) saturate(180%);
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 20px;
+    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.6),
+        0 0 0 1px rgba(255, 255, 255, 0.1) inset;
+    overflow: hidden;
+}
+
+/* Modal Backdrop - Lighter to see through */
+.modal-backdrop.show {
+    opacity: 0.5 !important;
 }
 
 .modal-header {
-    background-color: #0f172a;
-    border-bottom: 1px solid #334155;
+    background: rgba(15, 23, 42, 0.5);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
     padding: 1.5rem;
-    border-top-left-radius: 16px;
-    border-top-right-radius: 16px;
+    border-top-left-radius: 20px;
+    border-top-right-radius: 20px;
 }
 
 .modal-title {
     font-weight: 700;
     color: white;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
 }
 
 .btn-close-white {
     filter: invert(1) grayscale(100%) brightness(200%);
 }
 
-/* Summary Grid */
+/* Summary Grid - Improved */
 .summary-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
     gap: 1rem;
-    background-color: #0f172a;
+    background: rgba(15, 23, 42, 0.4);
+    backdrop-filter: blur(10px);
     padding: 1.5rem;
     border-radius: 12px;
-    border: 1px solid #334155;
+    border: 1px solid rgba(255, 255, 255, 0.1);
     margin-bottom: 1.5rem;
     text-align: center;
 }
 
 .summary-item label {
     display: block;
-    color: var(--text-secondary);
-    font-size: 0.9rem;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.85rem;
     margin-bottom: 0.5rem;
+    font-weight: 600;
 }
 
 .summary-item .value {
-    font-size: 1.35rem;
+    font-size: 1.4rem;
     font-weight: 800;
     font-family: 'Cairo', 'IBM Plex Sans Arabic', system-ui, sans-serif;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
-/* Modal Tables */
+/* Modal Tables - Fixed Alignment */
 .modal-table {
     width: 100%;
-    border: 1px solid #334155;
+    border: 1px solid rgba(255, 255, 255, 0.1);
     border-radius: 8px;
     overflow: hidden;
     margin-bottom: 1rem;
+    background: rgba(15, 23, 42, 0.3);
 }
 
 .modal-table th {
-    background-color: rgba(13, 40, 73, 0.95);
-    color: var(--text-secondary);
-    font-weight: 600;
-    padding: 0.8rem;
-    text-align: right;
+    background: rgba(15, 23, 42, 0.6);
+    color: rgba(255, 255, 255, 0.8);
+    font-weight: 700;
+    padding: 12px;
+    text-align: center !important;
+    /* Fix alignment */
+    font-size: 0.85rem;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.2);
 }
 
 .modal-table td {
-    background-color: rgba(15, 46, 83, 0.85);
-    border-top: 1px solid rgba(148, 163, 184, 0.15);
-    padding: 0.8rem;
+    background: rgba(30, 41, 59, 0.3);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 12px;
     color: white;
+    text-align: center !important;
+    /* Fix alignment */
     vertical-align: middle;
+    font-size: 0.9rem;
+}
+
+/* Table text alignment by column type */
+.modal-table th:first-child,
+.modal-table td:first-child {
+    text-align: right !important;
+    /* اسم الفئة */
+}
+
+.modal-table th:last-child,
+.modal-table td:last-child {
+    text-align: left !important;
+    /* القيمة بالـ LTR */
+    direction: ltr;
+    font-family: 'Cairo', monospace;
 }
 
 .modal-table tr:last-child td {
