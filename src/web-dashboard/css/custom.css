@@ -652,199 +652,199 @@ input[type="date"].custom-input {
         /* Allow cards to show outside */
     }
 
-    .custom-table,
-    .custom-table tbody,
-    .custom-table tr,
-    .custom-table td {
-        display: block;
-        /* Make everything block */
-        width: 100%;
-    }
-
     .custom-table thead {
         display: none;
-        /* Hide Header */
     }
 
+    /* Default Card for Mobile (Generic) */
     .custom-table tr {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
         background: var(--bg-card);
-        /* Card Background */
-        margin-bottom: 1rem;
-        border-radius: 12px;
-        /* Rounded Cards */
+        margin-bottom: 0.75rem;
+        border-radius: 16px;
         border: 1px solid var(--glass-border);
         box-shadow: var(--shadow-sm);
-        padding: 1rem;
+        padding: 0.8rem 1rem;
         position: relative;
     }
 
-    .custom-table td {
-        text-align: right !important;
-        padding: 0.4rem 0 !important;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        /* Separator */
-        display: flex;
-        justify-content: space-between;
+    /* ATM Table: Compact Grid Layout */
+    .atm-table tr {
+        display: grid;
+        grid-template-columns: 1fr auto;
+        /* Details | Amount */
+        grid-template-rows: auto auto auto;
+        /* Device | Type | Date */
+        gap: 0.2rem 1rem;
         align-items: center;
-        font-size: 0.9rem !important;
-        width: 100% !important;
-        /* Full width */
-        max-width: none !important;
-        white-space: normal !important;
-        /* Wrap text */
-        overflow: visible !important;
+    }
+
+    .custom-table td {
+        display: block !important;
+        border: none !important;
+        padding: 0 !important;
+        width: auto !important;
+        background: transparent !important;
     }
 
     .custom-table td::before {
-        content: attr(data-label);
-        /* Use Label from HTML */
-        font-weight: 700;
+        display: none;
+    }
+
+    /* --- ATM Specific Cells --- */
+
+    /* 1. Device: Top Right (Main Title) */
+    .atm-table td[data-label="الجهاز"] {
+        grid-column: 1 / 2;
+        grid-row: 1 / 2;
+        text-align: right !important;
+        font-weight: 800;
+        font-size: 0.95rem;
+        /* Compact */
+        color: white;
+        margin-bottom: 0.1rem;
+    }
+
+    /* 2. Amount: Top Left (Highlight) */
+    .atm-table td[data-label="المبلغ"] {
+        grid-column: 2 / 3;
+        grid-row: 1 / 3;
+        /* Span 2 rows */
+        text-align: left !important;
+        font-size: 1.2rem !important;
+        font-weight: 800;
+        color: #34d399 !important;
+        font-family: 'Cairo', sans-serif;
+        align-self: center;
+        direction: ltr;
+    }
+
+    /* 3. Type: Row 2 Right (Details) */
+    .atm-table td[data-label="نوع العملية"] {
+        grid-column: 1 / 2;
+        grid-row: 2 / 3;
+        text-align: right !important;
+    }
+
+    .atm-table td[data-label="نوع العملية"] .badge {
+        font-size: 0.65rem !important;
+        padding: 3px 6px;
+        border-radius: 6px;
+        font-weight: normal;
+    }
+
+    /* 4. Date: Row 3 Right (Subtext) */
+    .atm-table td[data-label="التاريخ"] {
+        grid-column: 1 / 2;
+        grid-row: 3 / 4;
+        text-align: right !important;
+        font-size: 0.7rem !important;
         color: var(--text-secondary);
-        font-size: 0.8rem;
-        margin-left: 1rem;
+        font-family: 'IBM Plex Sans Arabic', sans-serif;
+        margin-top: 0.2rem;
     }
 
-    .custom-table td:last-child {
-        border-bottom: none;
+    /* Hide extraneous cells ONLY in ATM table */
+    .atm-table td:not([data-label="الجهاز"]):not([data-label="المبلغ"]):not([data-label="نوع العملية"]):not([data-label="التاريخ"]) {
+        display: none !important;
     }
 
-    /* Adjust badges/buttons in card view */
-    .custom-table td .btn {
-        width: 100%;
-        margin-top: 0.5rem;
+    /* ATM Reports Special Overrides Reset */
+    .atm-table.custom-table th,
+    .atm-table.custom-table td {
+        width: auto !important;
+        /* Reset specific widths */
     }
 
-    /* ATM Reports Specific Overrides */
-    .atm-table td {
-        /* Custom layout for ATM cards if needed */
+    /* ================= Customer Ledger Table (Mobile) ================= */
+    /* 1: Name, 5: Balance, 8: Actions */
+
+    .customer-table.custom-table th:nth-child(1),
+    .customer-table.custom-table td:nth-child(1) {
+        width: 45% !important;
+        text-align: right !important;
+        padding-right: 8px !important;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        font-weight: bold;
     }
 
-}
-}
+    .customer-table.custom-table th:nth-child(5),
+    .customer-table.custom-table td:nth-child(5) {
+        width: 30% !important;
+        text-align: center !important;
+        color: #0ea5e9 !important;
+        /* Sky Blue */
+        font-family: 'Segoe UI', monospace;
+        font-weight: 700;
+        direction: ltr;
+    }
 
-/* Type (3) */
-.atm-table.custom-table th:nth-child(3),
-.atm-table.custom-table td:nth-child(3) {
-    width: 15% !important;
-    text-align: center !important;
-    padding: 4px !important;
-}
+    .customer-table.custom-table th:nth-child(8),
+    .customer-table.custom-table td:nth-child(8) {
+        width: 25% !important;
+        text-align: center !important;
+    }
 
-/* Device (4) */
-.atm-table.custom-table th:nth-child(4),
-.atm-table.custom-table td:nth-child(4) {
-    width: 38% !important;
-    display: table-cell !important;
-    text-align: center !important;
-    white-space: normal !important;
-}
+    /* ================= Detailed Ledger Table (Mobile) ================= */
+    /* 1: #, 2: Date, 3: Type, 4: Statement(Hidden), 5: Debit, 6: Credit, 7: Balance */
 
-/* Bigger bold number in Device */
-.atm-table.custom-table td:nth-child(4) b {
-    font-size: 1rem !important;
-    font-family: 'Tajawal', sans-serif;
-}
+    .ledger-details-table.custom-table th:nth-child(1),
+    .ledger-details-table.custom-table td:nth-child(1) {
+        width: 10% !important;
+        text-align: center !important;
+    }
 
-/* Amount (6) */
-.atm-table.custom-table th:nth-child(6),
-.atm-table.custom-table td:nth-child(6) {
-    width: 25% !important;
-    text-align: right !important;
-    direction: ltr;
-    padding-right: 5px !important;
-    font-weight: 800;
-    font-size: 1rem !important;
-    /* Larger Amount */
-    font-family: 'Tajawal', sans-serif;
-}
+    .ledger-details-table.custom-table th:nth-child(2),
+    .ledger-details-table.custom-table td:nth-child(2) {
+        width: 22% !important;
+        /* Date */
+        font-size: 0.65rem !important;
+        font-family: 'Segoe UI', monospace;
+        letter-spacing: -0.5px;
+        text-align: center !important;
+    }
 
-/* ================= Customer Ledger Table (Mobile) ================= */
-/* 1: Name, 5: Balance, 8: Actions */
+    .ledger-details-table.custom-table th:nth-child(3),
+    .ledger-details-table.custom-table td:nth-child(3) {
+        width: 20% !important;
+        /* Type */
+        text-align: center !important;
+    }
 
-.customer-table.custom-table th:nth-child(1),
-.customer-table.custom-table td:nth-child(1) {
-    width: 45% !important;
-    text-align: right !important;
-    padding-right: 8px !important;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    font-weight: bold;
-}
+    .ledger-details-table.custom-table th:nth-child(5),
+    /* Debit */
+    .ledger-details-table.custom-table td:nth-child(5),
+    .ledger-details-table.custom-table th:nth-child(6),
+    /* Credit */
+    .ledger-details-table.custom-table td:nth-child(6) {
+        width: 16% !important;
+        text-align: center !important;
+        font-family: 'Segoe UI', monospace;
+        font-size: 0.7rem !important;
+        direction: ltr;
+        padding: 4px 1px !important;
+    }
 
-.customer-table.custom-table th:nth-child(5),
-.customer-table.custom-table td:nth-child(5) {
-    width: 30% !important;
-    text-align: center !important;
-    color: #0ea5e9 !important;
-    /* Sky Blue */
-    font-family: 'Segoe UI', monospace;
-    font-weight: 700;
-    direction: ltr;
-}
+    .ledger-details-table.custom-table th:nth-child(7),
+    /* Balance */
+    .ledger-details-table.custom-table td:nth-child(7) {
+        width: 16% !important;
+        text-align: center !important;
+        font-weight: bold;
+        color: #0ea5e9 !important;
+        font-family: 'Segoe UI', monospace;
+        direction: ltr;
+        padding: 4px 1px !important;
+    }
 
-.customer-table.custom-table th:nth-child(8),
-.customer-table.custom-table td:nth-child(8) {
-    width: 25% !important;
-    text-align: center !important;
-}
-
-/* ================= Detailed Ledger Table (Mobile) ================= */
-/* 1: #, 2: Date, 3: Type, 4: Statement(Hidden), 5: Debit, 6: Credit, 7: Balance */
-
-.ledger-details-table.custom-table th:nth-child(1),
-.ledger-details-table.custom-table td:nth-child(1) {
-    width: 10% !important;
-    text-align: center !important;
-}
-
-.ledger-details-table.custom-table th:nth-child(2),
-.ledger-details-table.custom-table td:nth-child(2) {
-    width: 22% !important;
-    /* Date */
-    font-size: 0.65rem !important;
-    font-family: 'Segoe UI', monospace;
-    letter-spacing: -0.5px;
-    text-align: center !important;
-}
-
-.ledger-details-table.custom-table th:nth-child(3),
-.ledger-details-table.custom-table td:nth-child(3) {
-    width: 20% !important;
-    /* Type */
-    text-align: center !important;
-}
-
-.ledger-details-table.custom-table th:nth-child(5),
-/* Debit */
-.ledger-details-table.custom-table td:nth-child(5),
-.ledger-details-table.custom-table th:nth-child(6),
-/* Credit */
-.ledger-details-table.custom-table td:nth-child(6) {
-    width: 16% !important;
-    text-align: center !important;
-    font-family: 'Segoe UI', monospace;
-    font-size: 0.7rem !important;
-    direction: ltr;
-    padding: 4px 1px !important;
-}
-
-.ledger-details-table.custom-table th:nth-child(7),
-/* Balance */
-.ledger-details-table.custom-table td:nth-child(7) {
-    width: 16% !important;
-    text-align: center !important;
-    font-weight: bold;
-    color: #0ea5e9 !important;
-    font-family: 'Segoe UI', monospace;
-    direction: ltr;
-    padding: 4px 1px !important;
-}
-
-/* Ensure horizontal scroll if needed, though we hid columns */
-.table-container {
-    overflow-x: auto;
-}
+    /* Ensure horizontal scroll if needed, though we hid columns */
+    .table-container {
+        overflow-x: auto;
+    }
 }
 
 /* ================= Modal Improvement ================= */
