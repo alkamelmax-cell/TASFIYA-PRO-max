@@ -636,25 +636,54 @@ input[type="date"].custom-input {
 @media (max-width: 768px) {
 
     /* Navbar: Adaptive Wrapping */
+    /* Navbar: Mobile Professional Layout */
     .navbar-layout {
-        display: flex;
-        flex-direction: column;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        /* Two columns for top row */
+        grid-template-areas:
+            "brand user"
+            "links links";
         gap: 1rem;
         padding: 0.8rem;
     }
 
+    /* Top Row Alignment */
+    .navbar-brand-section {
+        grid-area: brand;
+        justify-self: start;
+    }
+
+    .navbar-user-section {
+        grid-area: user;
+        justify-self: end;
+    }
+
+    /* Links: Multi-row Grid */
     .navbar-links-section {
+        grid-area: links;
         display: flex;
-        flex-wrap: nowrap;
-        /* Restore scrolling row */
-        justify-content: flex-start;
-        width: 100%;
+        flex-wrap: wrap;
+        /* Allow wrapping to new lines */
+        justify-content: center;
+        /* Center the buttons */
         gap: 0.5rem;
-        overflow-x: auto;
-        padding-bottom: 2px;
-        -webkit-overflow-scrolling: touch;
-        scrollbar-width: none;
-        /* Hide Scrollbar */
+        width: 100%;
+        overflow-x: visible;
+        /* Disable scroll */
+        padding-bottom: 0;
+    }
+
+    /* Make buttons expand to fill space nicely */
+    .navbar-links-section .btn {
+        flex: 1 0 auto;
+        /* Grow to fill space */
+        text-align: center;
+        min-width: 30%;
+        /* Ensure ~3 buttons per row */
+        max-width: 48%;
+        /* Never more than 2 per row if nice, or let them flow */
+        padding: 0.5rem !important;
     }
 
     .navbar-links-section::-webkit-scrollbar {
