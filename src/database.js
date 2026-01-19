@@ -368,22 +368,38 @@ class DatabaseManager {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         reconciliation_id INTEGER NOT NULL,
         supplier_name TEXT NOT NULL,
+        invoice_number TEXT,
         amount DECIMAL(10,2) NOT NULL,
+        notes TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE
       )
     `);
 
+    // Reconciliation Requests (Synced from Web)
+    this.db.exec(`
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS reconciliation_requests(
+      id INTEGER PRIMARY KEY,
+      cashier_id INTEGER,
+      status TEXT DEFAULT 'pending',
+      notes TEXT,
+      details_json TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+      `);
+
     // Settings table
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS settings (
+      CREATE TABLE IF NOT EXISTS settings(
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         key TEXT UNIQUE NOT NULL,
         value TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
       )
-    `);
+      `);
 
     console.log('All database tables created successfully');
 
@@ -492,7 +508,7 @@ class DatabaseManager {
         // Get the max reconciliation_number
         const maxRecord = this.db.prepare(`
           SELECT MAX(reconciliation_number) as max_num FROM reconciliations
-        `).get();
+      `).get();
 
         let nextNumber = (maxRecord.max_num || 0) + 1;
 
@@ -501,12 +517,12 @@ class DatabaseManager {
           this.db.prepare(`
             UPDATE reconciliations 
             SET reconciliation_number = ?
-            WHERE id = ?
-          `).run(nextNumber, rec.id);
+      WHERE id = ?
+        `).run(nextNumber, rec.id);
           nextNumber++;
         }
 
-        console.log(`✅ [DB] تم إصلاح ${completedReconciliations.length} تصفية مكتملة`);
+        console.log(`✅[DB] تم إصلاح ${ completedReconciliations.length } تصفية مكتملة`);
       } else {
         console.log('✅ [DB] جميع التصفيات المكتملة لديها أرقام');
       }
@@ -551,24 +567,24 @@ class DatabaseManager {
 
         // Create new table with nullable atm_id
         this.db.exec(`
-          CREATE TABLE bank_receipts_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            reconciliation_id INTEGER NOT NULL,
-            operation_type TEXT NOT NULL,
-            atm_id INTEGER,
-            amount DECIMAL(10,2) NOT NULL,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE,
-            FOREIGN KEY (atm_id) REFERENCES atms(id)
-          )
-        `);
+          CREATE TABLE bank_receipts_new(
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          reconciliation_id INTEGER NOT NULL,
+          operation_type TEXT NOT NULL,
+          atm_id INTEGER,
+          amount DECIMAL(10, 2) NOT NULL,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY(reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE,
+          FOREIGN KEY(atm_id) REFERENCES atms(id)
+        )
+      `);
 
         // Copy existing data
         this.db.exec(`
-          INSERT INTO bank_receipts_new (id, reconciliation_id, operation_type, atm_id, amount, created_at)
+          INSERT INTO bank_receipts_new(id, reconciliation_id, operation_type, atm_id, amount, created_at)
           SELECT id, reconciliation_id, operation_type, atm_id, amount, created_at
           FROM bank_receipts
-        `);
+      `);
 
         // Drop old table and rename new one
         this.db.exec(`DROP TABLE bank_receipts`);
@@ -633,8 +649,8 @@ class DatabaseManager {
       const adminCount = this.db.prepare('SELECT COUNT(*) as count FROM admins').get();
       if (adminCount.count === 0) {
         this.db.prepare(`
-          INSERT INTO admins (name, username, password) 
-          VALUES (?, ?, ?)
+          INSERT INTO admins(name, username, password) 
+          VALUES(?, ?, ?)
         `).run('المدير العام', 'admin', 'admin123');
         console.log('Default admin created');
       }
@@ -643,8 +659,8 @@ class DatabaseManager {
       const branchCount = this.db.prepare('SELECT COUNT(*) as count FROM branches').get();
       if (branchCount.count === 0) {
         this.db.prepare(`
-          INSERT INTO branches (branch_name, branch_address, branch_phone, is_active)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO branches(branch_name, branch_address, branch_phone, is_active)
+          VALUES(?, ?, ?, ?)
         `).run('الفرع الرئيسي', 'الرياض - حي الملك فهد', '011-1234567', 1);
         console.log('Default branch created');
       }
@@ -655,8 +671,8 @@ class DatabaseManager {
         // Get the default branch ID
         const defaultBranch = this.db.prepare('SELECT id FROM branches ORDER BY id LIMIT 1').get();
         this.db.prepare(`
-          INSERT INTO cashiers (name, cashier_number, branch_id)
-          VALUES (?, ?, ?)
+          INSERT INTO cashiers(name, cashier_number, branch_id)
+          VALUES(?, ?, ?)
         `).run('كاشير 1', '001', defaultBranch ? defaultBranch.id : null);
         console.log('Default cashier created');
       }
@@ -665,8 +681,8 @@ class DatabaseManager {
       const accountantCount = this.db.prepare('SELECT COUNT(*) as count FROM accountants').get();
       if (accountantCount.count === 0) {
         this.db.prepare(`
-          INSERT INTO accountants (name) 
-          VALUES (?)
+          INSERT INTO accountants(name) 
+          VALUES(?)
         `).run('محاسب 1');
         console.log('Default accountant created');
       }
@@ -679,8 +695,8 @@ class DatabaseManager {
         const branchId = defaultBranch ? defaultBranch.id : 1;
 
         this.db.prepare(`
-          INSERT INTO atms (name, bank_name, location, branch_id)
-          VALUES (?, ?, ?, ?)
+          INSERT INTO atms(name, bank_name, location, branch_id)
+          VALUES(?, ?, ?, ?)
         `).run('جهاز 1', 'البنك الأهلي', 'الفرع الرئيسي', branchId);
         console.log('Default ATM created');
       }
@@ -695,7 +711,7 @@ class DatabaseManager {
       ];
 
       const insertSetting = this.db.prepare(`
-        INSERT OR IGNORE INTO settings (key, value) VALUES (?, ?)
+        INSERT OR IGNORE INTO settings(key, value) VALUES(?, ?)
       `);
 
       settingsData.forEach(([key, value]) => {
@@ -715,7 +731,7 @@ class DatabaseManager {
       ];
 
       const insertSystemSetting = this.db.prepare(`
-        INSERT OR IGNORE INTO system_settings (category, setting_key, setting_value) VALUES (?, ?, ?)
+        INSERT OR IGNORE INTO system_settings(category, setting_key, setting_value) VALUES(?, ?, ?)
       `);
 
       systemSettingsData.forEach(([category, key, value]) => {
@@ -773,7 +789,7 @@ class DatabaseManager {
 
       if (isNaN(numericId) || numericId <= 0) {
         console.error('❌ [DB] معرف التصفية غير صحيح:', reconciliationId, 'تم تحويله إلى:', numericId);
-        throw new Error(`معرف التصفية غير صحيح: ${reconciliationId}`);
+        throw new Error(`معرف التصفية غير صحيح: ${ reconciliationId }`);
       }
 
       console.log('✅ [DB] معرف التصفية صحيح:', numericId);
@@ -796,10 +812,10 @@ class DatabaseManager {
           LEFT JOIN accountants a ON r.accountant_id = a.id
           LEFT JOIN branches b ON c.branch_id = b.id
           WHERE r.id = ?
-        `, [numericId]);
+      `, [numericId]);
       } catch (sqlError) {
         console.error('❌ [DB] خطأ في استعلام SQL:', sqlError);
-        throw new Error(`خطأ في قاعدة البيانات: ${sqlError.message}`);
+        throw new Error(`خطأ في قاعدة البيانات: ${ sqlError.message }`);
       }
 
       if (!reconciliation) {
@@ -808,9 +824,9 @@ class DatabaseManager {
         // Check if reconciliation exists at all
         const exists = this.get('SELECT COUNT(*) as count FROM reconciliations WHERE id = ?', [numericId]);
         if (exists && exists.count === 0) {
-          throw new Error(`التصفية رقم ${numericId} غير موجودة في قاعدة البيانات`);
+          throw new Error(`التصفية رقم ${ numericId } غير موجودة في قاعدة البيانات`);
         } else {
-          throw new Error(`خطأ في تحميل التصفية رقم ${numericId}`);
+          throw new Error(`خطأ في تحميل التصفية رقم ${ numericId }`);
         }
       }
 
@@ -844,14 +860,14 @@ class DatabaseManager {
         console.log('💳 [DB] تحميل المقبوضات البنكية...');
         bankReceipts = this.query(`
           SELECT br.*, atm.name as atm_name, atm.bank_name, atm.location as atm_location,
-                 b.branch_name as atm_branch_name
+      b.branch_name as atm_branch_name
           FROM bank_receipts br
           LEFT JOIN atms atm ON br.atm_id = atm.id
           LEFT JOIN branches b ON atm.branch_id = b.id
           WHERE br.reconciliation_id = ?
-          ORDER BY br.created_at
-        `, [numericId]) || [];
-        console.log(`✅ [DB] تم تحميل ${bankReceipts.length} مقبوضة بنكية`);
+      ORDER BY br.created_at
+      `, [numericId]) || [];
+        console.log(`✅[DB] تم تحميل ${ bankReceipts.length } مقبوضة بنكية`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل المقبوضات البنكية:', error.message);
         bankReceipts = [];
@@ -862,9 +878,9 @@ class DatabaseManager {
         cashReceipts = this.query(`
           SELECT * FROM cash_receipts
           WHERE reconciliation_id = ?
-          ORDER BY denomination DESC
-        `, [numericId]) || [];
-        console.log(`✅ [DB] تم تحميل ${cashReceipts.length} مقبوضة نقدية`);
+      ORDER BY denomination DESC
+      `, [numericId]) || [];
+        console.log(`✅[DB] تم تحميل ${ cashReceipts.length } مقبوضة نقدية`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل المقبوضات النقدية:', error.message);
         cashReceipts = [];
@@ -875,9 +891,9 @@ class DatabaseManager {
         postpaidSales = this.query(`
           SELECT * FROM postpaid_sales
           WHERE reconciliation_id = ?
-          ORDER BY created_at
-        `, [numericId]) || [];
-        console.log(`✅ [DB] تم تحميل ${postpaidSales.length} مبيعة آجلة`);
+      ORDER BY created_at
+      `, [numericId]) || [];
+        console.log(`✅[DB] تم تحميل ${ postpaidSales.length } مبيعة آجلة`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل المبيعات الآجلة:', error.message);
         postpaidSales = [];
@@ -888,9 +904,9 @@ class DatabaseManager {
         customerReceipts = this.query(`
           SELECT * FROM customer_receipts
           WHERE reconciliation_id = ?
-          ORDER BY created_at
-        `, [numericId]) || [];
-        console.log(`✅ [DB] تم تحميل ${customerReceipts.length} مقبوضة عميل`);
+      ORDER BY created_at
+      `, [numericId]) || [];
+        console.log(`✅[DB] تم تحميل ${ customerReceipts.length } مقبوضة عميل`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل مقبوضات العملاء:', error.message);
         customerReceipts = [];
@@ -901,9 +917,9 @@ class DatabaseManager {
         returnInvoices = this.query(`
           SELECT * FROM return_invoices
           WHERE reconciliation_id = ?
-          ORDER BY created_at
-        `, [numericId]) || [];
-        console.log(`✅ [DB] تم تحميل ${returnInvoices.length} فاتورة مرتجع`);
+      ORDER BY created_at
+      `, [numericId]) || [];
+        console.log(`✅[DB] تم تحميل ${ returnInvoices.length } فاتورة مرتجع`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل فواتير المرتجع:', error.message);
         returnInvoices = [];
@@ -914,9 +930,9 @@ class DatabaseManager {
         suppliers = this.query(`
           SELECT * FROM suppliers
           WHERE reconciliation_id = ?
-          ORDER BY created_at
-        `, [numericId]) || [];
-        console.log(`✅ [DB] تم تحميل ${suppliers.length} مورد`);
+      ORDER BY created_at
+      `, [numericId]) || [];
+        console.log(`✅[DB] تم تحميل ${ suppliers.length } مورد`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل الموردين:', error.message);
         suppliers = [];
@@ -967,13 +983,13 @@ class DatabaseManager {
 
       // Enhanced error handling
       if (error.code === 'SQLITE_ERROR') {
-        throw new Error(`خطأ في قاعدة البيانات: ${error.message}`);
+        throw new Error(`خطأ في قاعدة البيانات: ${ error.message }`);
       } else if (error.message && error.message.includes('no such table')) {
         throw new Error('جدول قاعدة البيانات غير موجود');
       } else if (error.message && error.message.includes('no such column')) {
         throw new Error('عمود قاعدة البيانات غير موجود');
       } else {
-        throw new Error(`خطأ في تحميل بيانات التصفية: ${error.message}`);
+        throw new Error(`خطأ في تحميل بيانات التصفية: ${ error.message }`);
       }
     }
   }
@@ -984,7 +1000,7 @@ class DatabaseManager {
       return this.run(`
         UPDATE reconciliations
         SET system_sales = ?, total_receipts = ?, surplus_deficit = ?, status = ?,
-            updated_at = CURRENT_TIMESTAMP, last_modified_date = CURRENT_TIMESTAMP
+      updated_at = CURRENT_TIMESTAMP, last_modified_date = CURRENT_TIMESTAMP
         WHERE id = ?
       `, [systemSales, totalReceipts, surplusDeficit, status, reconciliationId]);
     } catch (error) {
@@ -1002,7 +1018,7 @@ class DatabaseManager {
           SELECT MAX(reconciliation_number) as max_number
           FROM reconciliations
           WHERE reconciliation_number IS NOT NULL AND status = 'completed'
-        `).get();
+      `).get();
 
         const maxNum = result && result.max_number ? result.max_number : 0;
         let nextNum = maxNum + 1;
@@ -1013,7 +1029,7 @@ class DatabaseManager {
             SELECT COUNT(*) as count
             FROM reconciliations 
             WHERE reconciliation_number = ? AND status = 'completed'
-          `).get(nextNum);
+      `).get(nextNum);
 
           if (exists.count === 0) break;
           console.warn(`���️ [DB] الرقم ${nextNum} مستخدم بالفعل في تصفية مكتملة، جاري تجربة الرقم التالي`);
