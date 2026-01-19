@@ -895,16 +895,20 @@ input[type="date"].custom-input {
 }
 
 /* Glassmorphism Modal */
-.modal-content {
+/* Glassmorphism Modal - Force persistent transparency */
+.modal-content,
+.modal.show .modal-content,
+.modal.fade.show .modal-content {
     background: rgba(30, 41, 59, 0.75) !important;
-    /* Semi-transparent */
-    backdrop-filter: blur(25px) saturate(180%);
-    -webkit-backdrop-filter: blur(25px) saturate(180%);
-    border: 1px solid rgba(255, 255, 255, 0.18);
-    border-radius: 20px;
+    background-color: rgba(30, 41, 59, 0.75) !important;
+    /* Override any bg-color */
+    backdrop-filter: blur(25px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(25px) saturate(180%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.18) !important;
+    border-radius: 20px !important;
     box-shadow: 0 25px 50px rgba(0, 0, 0, 0.6),
-        0 0 0 1px rgba(255, 255, 255, 0.1) inset;
-    overflow: hidden;
+        0 0 0 1px rgba(255, 255, 255, 0.1) inset !important;
+    overflow: hidden !important;
 }
 
 /* Modal Backdrop - Lighter to see through */
