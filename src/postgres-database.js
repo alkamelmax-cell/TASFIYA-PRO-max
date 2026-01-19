@@ -35,9 +35,22 @@ class PostgresManager {
 
             // Ensure username is UNIQUE for admins (Critical for Sync ON CONFLICT logic)
             try {
+                // First, remove any duplicate usernames (keep the one with highest ID = latest)
+                await client.query(`
+                    DELETE FROM admins a 
+                    USING admins b 
+                    WHERE a.id < b.id AND a.username = b.username
+                `);
+                console.log('[DB] Cleaned up duplicate usernames');
+                
+                // Now add UNIQUE constraint
                 await client.query('ALTER TABLE admins ADD CONSTRAINT admins_username_key UNIQUE (username)');
+                console.log('✅ [DB] Added UNIQUE constraint on admins.username');
             } catch (e) {
                 // Ignore if constraint already exists
+                if (!e.message.includes('already exists')) {
+                    console.log('[DB] Username constraint note:', e.message);
+                }
             }
 
             client.release();

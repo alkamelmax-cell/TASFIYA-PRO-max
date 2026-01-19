@@ -27,6 +27,7 @@
     "exceljs": "^4.4.0",
     "idb": "^8.0.3",
     "localforage": "^1.10.0",
+    "node-fetch": "^2.7.0",
     "nodemailer": "^7.0.5",
     "pg": "^8.17.1",
     "puppeteer": "^24.14.0",
