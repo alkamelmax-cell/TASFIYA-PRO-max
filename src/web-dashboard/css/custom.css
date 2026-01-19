@@ -916,32 +916,32 @@ input[type="date"].custom-input {
 
 /* Glassmorphism Modal */
 /* Glassmorphism Modal - Force persistent transparency */
+/* Glassmorphism Modal - Force persistent transparency (NUCLEAR OPTION) */
 .modal-content,
-.modal.show .modal-content,
-.modal.fade.show .modal-content {
-    background: rgba(30, 41, 59, 0.75) !important;
-    background-color: rgba(30, 41, 59, 0.75) !important;
-    /* Override any bg-color */
-    backdrop-filter: blur(25px) saturate(180%) !important;
-    -webkit-backdrop-filter: blur(25px) saturate(180%) !important;
-    border: 1px solid rgba(255, 255, 255, 0.18) !important;
-    border-radius: 20px !important;
-    box-shadow: 0 25px 50px rgba(0, 0, 0, 0.6),
-        0 0 0 1px rgba(255, 255, 255, 0.1) inset !important;
-    overflow: hidden !important;
+.modal-dialog .modal-content,
+.modal.show .modal-dialog .modal-content {
+    background: rgba(30, 41, 59, 0.65) !important;
+    /* Slightly more transparent */
+    background-color: rgba(30, 41, 59, 0.65) !important;
+    backdrop-filter: blur(20px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05) inset, 0 25px 50px -12px rgba(0, 0, 0, 0.8) !important;
+    color: white !important;
 }
 
-/* Modal Backdrop - Lighter to see through */
-.modal-backdrop.show {
-    opacity: 0.5 !important;
+/* Ensure children don't block opacity */
+.modal-header,
+.modal-body,
+.modal-footer {
+    background: transparent !important;
+    background-color: transparent !important;
+    border-color: rgba(255, 255, 255, 0.1) !important;
 }
 
 .modal-header {
-    background: rgba(15, 23, 42, 0.5);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
     padding: 1.5rem;
-    border-top-left-radius: 20px;
-    border-top-right-radius: 20px;
 }
 
 .modal-title {
