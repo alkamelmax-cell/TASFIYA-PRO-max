@@ -1109,7 +1109,7 @@ class LocalWebServer {
                             const res = await pool.query(sql, values);
                             successCount += batch.length; // Approximate (rowCount might differ with upserts)
                         } catch (err) {
-                            console.error(`❌ [SYNC] Batch Error ${table} (Wait/Retry):`, err.message);
+                            console.error(`❌ [SYNC] Batch Error ${table}:`, err.message);
                             // Fallback: If batch fails, try one-by-one for this batch only
                             // (Usually caused by specific data issues)
                             for (const item of batch) {
@@ -1125,6 +1125,9 @@ class LocalWebServer {
                                     successCount++;
                                 } catch (e) {
                                     errorCount++;
+                                    if (table === 'admins') {
+                                        console.error(`❌ [SYNC] Admin insert failed:`, e.message, 'Data:', item);
+                                    }
                                 }
                             }
                         }
