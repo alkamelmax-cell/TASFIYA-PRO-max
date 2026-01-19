@@ -146,28 +146,6 @@ class LocalWebServer {
                 else if (pathname === '/api/sync/users' && req.method === 'POST') {
                     await this.handleSyncUsers(req, res);
                 }
-                // TEMPORARY DEBUG ENDPOINT
-                else if (pathname === '/api/debug/admins') {
-                    try {
-                        const pool = this.dbManager.pool || this.dbManager.db.pool;
-                        const countResult = await pool.query('SELECT COUNT(*) as count FROM admins');
-                        const sampleResult = await pool.query('SELECT id, username, name, role FROM admins LIMIT 10');
-                        const constraintsResult = await pool.query(`
-                            SELECT conname, contype 
-                            FROM pg_constraint 
-                            WHERE conrelid = 'admins'::regclass
-                        `);
-
-                        this.sendJson(res, {
-                            success: true,
-                            count: countResult.rows[0].count,
-                            sample: sampleResult.rows,
-                            constraints: constraintsResult.rows
-                        });
-                    } catch (e) {
-                        this.sendJson(res, { success: false, error: e.message });
-                    }
-                }
                 else {
                     res.writeHead(404, { 'Content-Type': 'text/plain' });
                     res.end('Not Found');

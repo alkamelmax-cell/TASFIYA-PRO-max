@@ -240,10 +240,13 @@
                 console.log('👥 [USERS] API Response:', result); // Debugging
 
                 if (result.success) {
-                    if (Array.isArray(result.data)) {
-                        USERS_CACHE = result.data;
+                    // FIX: Server might return 'users' or 'data' key
+                    const usersData = result.users || result.data;
+
+                    if (Array.isArray(usersData)) {
+                        USERS_CACHE = usersData;
                     } else {
-                        console.error('❌ [USERS] Invalid data format (not array):', result.data);
+                        console.error('❌ [USERS] Invalid data format (not array):', usersData);
                         USERS_CACHE = [];
                     }
                     renderUsers(sortUsers(applyFilter()));
