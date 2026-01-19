@@ -100,14 +100,14 @@ function renderCustomersTable(data) {
         const branchName = row.branch_name || 'اسواق العواجي - الفرع الرئيسي';
 
         tr.innerHTML = `
-            <td class="fw-bold text-white">${row.customer_name}</td>
-            <td class="small text-secondary d-none d-md-table-cell">${branchName}</td>
-            <td class="text-danger fw-bold text-ltr d-none d-md-table-cell">${formatCurrency(row.total_debit)}</td>
-            <td class="text-success fw-bold text-ltr d-none d-md-table-cell">${formatCurrency(row.total_credit)}</td>
-            <td class="text-center">${formatCurrency(row.balance)}</td>
-            <td class="d-none d-md-table-cell">${row.last_transaction ? new Date(row.last_transaction).toLocaleDateString('en-GB') : '-'}</td>
-            <td class="d-none d-md-table-cell">${row.transaction_count}</td>
-            <td class="text-center">
+            <td class="fw-bold text-white text-center" style="text-align: center !important;">${row.customer_name}</td>
+            <td class="small text-secondary d-none d-md-table-cell text-center" style="text-align: center !important;">${branchName}</td>
+            <td class="text-danger fw-bold text-ltr d-none d-md-table-cell text-center" style="text-align: center !important;">${formatCurrency(row.total_debit)}</td>
+            <td class="text-success fw-bold text-ltr d-none d-md-table-cell text-center" style="text-align: center !important;">${formatCurrency(row.total_credit)}</td>
+            <td class="text-center" style="text-align: center !important;">${formatCurrency(row.balance)}</td>
+            <td class="d-none d-md-table-cell text-center" style="text-align: center !important;">${row.last_transaction ? new Date(row.last_transaction).toLocaleDateString('en-GB') : '-'}</td>
+            <td class="d-none d-md-table-cell text-center" style="text-align: center !important;">${row.transaction_count}</td>
+            <td class="text-center" style="text-align: center !important;">
                 <button class="btn btn-sm btn-primary btn-action-mobile" onclick="viewCustomerStatement('${row.customer_name}')">
                     <i class="fas fa-file-invoice me-1"></i> كشف
                 </button>
@@ -206,16 +206,16 @@ function renderLedgerTable(data) {
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td class="text-white text-center">${data.length - index}</td>
-            <td class="text-center">${new Date(row.created_at).toLocaleDateString('en-GB')}</td>
-            <td class="text-center">
+            <td class="text-white text-center" style="text-align: center !important;">${data.length - index}</td>
+            <td class="text-center" style="text-align: center !important;">${new Date(row.created_at).toLocaleDateString('en-GB')}</td>
+            <td class="text-center" style="text-align: center !important;">
                 <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}">${row.type}</span>
                 <div class="small text-secondary mt-1 text-nowrap" style="font-size: 0.65rem; opacity: 0.8;">${cashierDisplay}</div>
             </td>
             <td class="d-none">${row.description || '-'}</td>
-            <td class="text-danger font-monospace text-ltr text-center">${debit > 0 ? formatCurrency(debit) : '-'}</td>
-            <td class="text-success font-monospace text-ltr text-center">${credit > 0 ? formatCurrency(credit) : '-'}</td>
-            <td class="text-info font-monospace text-ltr fw-bold text-center">${formatCurrency(row.currentBalance)}</td>
+            <td class="text-danger font-monospace text-ltr text-center" style="text-align: center !important;">${debit > 0 ? formatCurrency(debit) : '-'}</td>
+            <td class="text-success font-monospace text-ltr text-center" style="text-align: center !important;">${credit > 0 ? formatCurrency(credit) : '-'}</td>
+            <td class="text-info font-monospace text-ltr fw-bold text-center" style="text-align: center !important;">${formatCurrency(row.currentBalance)}</td>
         `;
         tbody.appendChild(tr);
     });
