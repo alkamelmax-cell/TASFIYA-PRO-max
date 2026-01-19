@@ -702,6 +702,31 @@ input[type="date"].custom-input {
         font-size: 0.7rem !important;
         padding: 4px 8px !important;
     }
+
+    /* HIDE unwanted columns in mobile (columns 4,5,6,8) */
+    /* Column 4: المحاسب */
+    .custom-table thead th:nth-child(4),
+    .custom-table tbody td:nth-child(4) {
+        display: none !important;
+    }
+
+    /* Column 5: مبيعات النظام */
+    .custom-table thead th:nth-child(5),
+    .custom-table tbody td:nth-child(5) {
+        display: none !important;
+    }
+
+    /* Column 6: المقبوض الفعلي */
+    .custom-table thead th:nth-child(6),
+    .custom-table tbody td:nth-child(6) {
+        display: none !important;
+    }
+
+    /* Column 8: الحالة */
+    .custom-table thead th:nth-child(8),
+    .custom-table tbody td:nth-child(8) {
+        display: none !important;
+    }
 }
 
 .custom-table td {
