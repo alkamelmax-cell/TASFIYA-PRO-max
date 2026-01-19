@@ -16,12 +16,13 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
+            min-height: 100dvh;
+            /* Mobile viewport fix */
             width: 100%;
             margin: 0;
             padding: 1rem;
             background: #020617;
             overflow-x: hidden;
-            /* Ensure X overflow is hidden */
             position: relative;
         }
 
@@ -75,7 +76,8 @@
             width: 100%;
             max-width: 420px;
             padding: 3rem 2rem;
-            margin: 0 auto;
+            margin: auto;
+            /* Ensure centering */
             border-radius: 24px;
             background: rgba(30, 41, 59, 0.4);
             backdrop-filter: blur(20px);
@@ -89,8 +91,10 @@
         @media (max-width: 576px) {
             .login-card {
                 padding: 2rem 1.5rem;
+                width: 95%;
+                /* Better than max-width: 100% for edges */
                 max-width: 100%;
-                margin: 0;
+                margin: auto;
             }
 
             .logo-area {
