@@ -136,42 +136,40 @@ body {
     box-shadow: var(--shadow-lg), var(--shadow-glow);
 }
 
-/* Navbar Grid Layout */
-/* Navbar Layout: User (Left) | Brand (Center) | Links (Distributed) */
+/* Navbar Layout: Brand (Right) | Links (Center) | User (Left) */
 .navbar-layout {
     display: grid;
     grid-template-columns: auto 1fr auto;
-    /* User | Flexible Space | Links */
-    grid-template-areas: "user brand links";
+    /* RTL: Col 1 is Right, Col 3 is Left */
+    grid-template-areas: "brand links user";
     align-items: center;
-    gap: 1rem;
-    padding: 1rem 1.5rem;
+    gap: 1.5rem;
+    padding: 0.8rem 1.5rem;
     width: 100%;
-}
-
-.navbar-user-section {
-    grid-area: user;
-    justify-self: start;
-    /* اليسار */
 }
 
 .navbar-brand-section {
     grid-area: brand;
-    justify-self: center;
-    /* المنتصف */
+    justify-self: start;
+    /* أقصى اليمين */
     display: flex;
     align-items: center;
 }
 
 .navbar-links-section {
     grid-area: links;
-    justify-self: end;
+    justify-self: center;
+    /* في المنتصف تماماً */
     display: flex;
-    gap: 0.4rem;
-    /* مسافة أصغر لتقليل العرض */
+    gap: 0.5rem;
     flex-wrap: nowrap;
-    /* منع التفاف */
     align-items: center;
+}
+
+.navbar-user-section {
+    grid-area: user;
+    justify-self: end;
+    /* أقصى اليسار */
 }
 
 /* Reduce link button size to fit without scroll */
