@@ -692,15 +692,41 @@ input[type="date"].custom-input {
     }
 
     .custom-table td {
-        display: block !important;
+        display: flex !important;
+        /* Restore flex for Label + Value */
+        justify-content: space-between !important;
+        align-items: center !important;
         border: none !important;
-        padding: 0 !important;
-        width: auto !important;
+        padding: 0.5rem 0 !important;
+        width: 100% !important;
         background: transparent !important;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.05) !important;
     }
 
+    .custom-table td:last-child {
+        border-bottom: none !important;
+    }
+
+    /* Restore Labels for Generic Tables */
     .custom-table td::before {
-        display: none;
+        content: attr(data-label);
+        display: block;
+        font-weight: 700;
+        color: var(--text-secondary);
+        font-size: 0.8rem;
+        margin-left: 1rem;
+    }
+
+    /* --- ATM Specific Cells --- */
+    /* Override generic flex/labels for ATM Grid Layout */
+    .atm-table td {
+        display: block !important;
+        padding: 0 !important;
+        border-bottom: none !important;
+    }
+
+    .atm-table td::before {
+        display: none !important;
     }
 
     /* --- ATM Specific Cells --- */
