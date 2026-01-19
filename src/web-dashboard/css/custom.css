@@ -1418,20 +1418,25 @@ input[type="date"].custom-input {
    RADICAL TABLE FIXES - ATM REPORTS
    ========================================================================== */
 .atm-table th,
-.atm-table td {
+.atm-table td,
+.atm-table th:first-child,
+.atm-table td:first-child,
+.atm-table th:last-child,
+.atm-table td:last-child {
     text-align: center !important;
     vertical-align: middle !important;
+    padding-right: 1rem !important;
+    /* Reset padding override */
+    padding-left: 1rem !important;
 }
 
-/* Optional: If you want the Amount to be strictly LTR but centered in cell */
+/* Maintain LTR for numbers but keep them centered */
 .atm-table td.text-ltr {
     direction: ltr !important;
-    display: table-cell !important;
-    /* Ensure it stays a cell */
     unicode-bidi: embed;
 }
 
-/* Ensure badges inside table are centered */
+/* Ensure badges are centered */
 .atm-table .badge {
     display: inline-block !important;
     vertical-align: middle !important;
