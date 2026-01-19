@@ -17,6 +17,39 @@
 
     <!-- Custom CSS -->
     <link rel="stylesheet" href="css/custom.css?v=2">
+    <style>
+        /* NUCLEAR ALIGNMENT FIX - Same as ATM Reports */
+        .custom-table th,
+        .custom-table td,
+        .customer-table th,
+        .customer-table td,
+        .ledger-details-table th,
+        .ledger-details-table td {
+            text-align: center !important;
+            vertical-align: middle !important;
+        }
+
+        /* Mobile Optimization for Ledger Details */
+        @media (max-width: 768px) {
+
+            /* Hide non-essential columns in Details Table */
+            .ledger-details-table th:nth-child(1),
+            /* # */
+            .ledger-details-table td:nth-child(1),
+            .ledger-details-table th:nth-child(3),
+            /* Type (redundant if Debit/Credit exists) */
+            .ledger-details-table td:nth-child(3) {
+                display: none !important;
+            }
+
+            /* Compact padding for mobile */
+            .custom-table th,
+            .custom-table td {
+                padding: 0.5rem 0.2rem !important;
+                font-size: 0.85rem !important;
+            }
+        }
+    </style>
 </head>
 
 <body>
