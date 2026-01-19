@@ -237,14 +237,28 @@
                 const res = await fetch(`${API_URL}/users`);
                 const result = await res.json();
 
+                console.log('👥 [USERS] API Response:', result); // Debugging
+
                 if (result.success) {
-                    USERS_CACHE = result.data;
+                    if (Array.isArray(result.data)) {
+                        USERS_CACHE = result.data;
+                    } else {
+                        console.error('❌ [USERS] Invalid data format (not array):', result.data);
+                        USERS_CACHE = [];
+                    }
                     renderUsers(sortUsers(applyFilter()));
                 } else {
-                    console.error(result.error);
+                    console.error('❌ [USERS] Server Error:', result.error);
+                    // Show error in table
+                    document.getElementById('usersTableBody').innerHTML = `
+                        <tr><td colspan="5" class="text-center text-danger py-4">خطأ في تحميل البيانات: ${result.error}</td></tr>
+                    `;
                 }
             } catch (error) {
-                console.error(error);
+                console.error('❌ [USERS] Network Error:', error);
+                document.getElementById('usersTableBody').innerHTML = `
+                        <tr><td colspan="5" class="text-center text-danger py-4">خطأ في الاتصال: ${error.message}</td></tr>
+                    `;
             }
         }
 
@@ -258,6 +272,10 @@
         }
 
         function sortUsers(arr) {
+            if (!Array.isArray(arr)) {
+                console.warn('⚠️ sortUsers received non-array:', arr);
+                return [];
+            }
             return [...arr].sort((a, b) => {
                 const an = (a.name || '').toString();
                 const bn = (b.name || '').toString();
