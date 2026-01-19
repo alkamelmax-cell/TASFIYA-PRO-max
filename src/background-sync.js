@@ -42,6 +42,8 @@ class BackgroundSync {
             const accountants = db.prepare('SELECT * FROM accountants').all();
             const atms = db.prepare('SELECT * FROM atms').all();
 
+            console.log(`🔍 [SYNC] Local counts: admins=${admins.length}, branches=${branches.length}, cashiers=${cashiers.length}, accountants=${accountants.length}, atms=${atms.length}`);
+
             await this.sendPayload({ admins, branches, cashiers, accountants, atms });
 
             // 2. Fetch & Send Reconciliations (Chunked) - ALL History
@@ -91,7 +93,16 @@ class BackgroundSync {
                 hasData = true;
             }
         }
-        if (!hasData) return;
+
+        // Enhanced logging
+        if (Object.keys(dataToSend).length > 0) {
+            console.log(`📤 [SYNC] Sending: ${Object.keys(dataToSend).map(k => `${k}(${dataToSend[k].length})`).join(', ')}`);
+        }
+
+        if (!hasData) {
+            console.log('⚠️ [SYNC] sendPayload called but all arrays empty');
+            return;
+        }
 
         try {
             const res = await fetch(REMOTE_URL, {
@@ -100,7 +111,7 @@ class BackgroundSync {
                 body: JSON.stringify(dataToSend)
             });
             if (!res.ok) throw new Error(`HTTP Error: ${res.status} ${res.statusText}`);
-            // console.log(`📤 [SYNC] Sent ${Object.keys(dataToSend).join(', ')}`);
+            console.log(`✅ [SYNC] Server accepted: ${Object.keys(dataToSend).join(', ')}`);
         } catch (e) {
             console.error(`❌ [SYNC] Error sending ${Object.keys(dataToSend).join(', ')}:`, e.message);
             throw e;
