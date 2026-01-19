@@ -176,10 +176,7 @@ class BackgroundSync {
                             details = r.details_json;
                         }
 
-                        // Debug log for first item
-                        if (requests.indexOf(r) === 0) {
-                            console.log(`🔍 [SYNC] Processing request ${r.id}, details valid? ${details.length > 5}`);
-                        }
+
 
                         if (existingIds.includes(r.id)) {
                             updateStmt.run(r.status, r.notes, details, r.id);
