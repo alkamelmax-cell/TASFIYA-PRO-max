@@ -378,7 +378,6 @@ class DatabaseManager {
 
     // Reconciliation Requests (Synced from Web)
     this.db.exec(`
-    this.db.exec(`
       CREATE TABLE IF NOT EXISTS reconciliation_requests(
       id INTEGER PRIMARY KEY,
       cashier_id INTEGER,
@@ -522,7 +521,7 @@ class DatabaseManager {
           nextNumber++;
         }
 
-        console.log(`✅[DB] تم إصلاح ${ completedReconciliations.length } تصفية مكتملة`);
+        console.log(`✅[DB] تم إصلاح ${completedReconciliations.length} تصفية مكتملة`);
       } else {
         console.log('✅ [DB] جميع التصفيات المكتملة لديها أرقام');
       }
@@ -789,7 +788,7 @@ class DatabaseManager {
 
       if (isNaN(numericId) || numericId <= 0) {
         console.error('❌ [DB] معرف التصفية غير صحيح:', reconciliationId, 'تم تحويله إلى:', numericId);
-        throw new Error(`معرف التصفية غير صحيح: ${ reconciliationId }`);
+        throw new Error(`معرف التصفية غير صحيح: ${reconciliationId}`);
       }
 
       console.log('✅ [DB] معرف التصفية صحيح:', numericId);
@@ -815,7 +814,7 @@ class DatabaseManager {
       `, [numericId]);
       } catch (sqlError) {
         console.error('❌ [DB] خطأ في استعلام SQL:', sqlError);
-        throw new Error(`خطأ في قاعدة البيانات: ${ sqlError.message }`);
+        throw new Error(`خطأ في قاعدة البيانات: ${sqlError.message}`);
       }
 
       if (!reconciliation) {
@@ -824,9 +823,9 @@ class DatabaseManager {
         // Check if reconciliation exists at all
         const exists = this.get('SELECT COUNT(*) as count FROM reconciliations WHERE id = ?', [numericId]);
         if (exists && exists.count === 0) {
-          throw new Error(`التصفية رقم ${ numericId } غير موجودة في قاعدة البيانات`);
+          throw new Error(`التصفية رقم ${numericId} غير موجودة في قاعدة البيانات`);
         } else {
-          throw new Error(`خطأ في تحميل التصفية رقم ${ numericId }`);
+          throw new Error(`خطأ في تحميل التصفية رقم ${numericId}`);
         }
       }
 
@@ -867,7 +866,7 @@ class DatabaseManager {
           WHERE br.reconciliation_id = ?
       ORDER BY br.created_at
       `, [numericId]) || [];
-        console.log(`✅[DB] تم تحميل ${ bankReceipts.length } مقبوضة بنكية`);
+        console.log(`✅[DB] تم تحميل ${bankReceipts.length} مقبوضة بنكية`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل المقبوضات البنكية:', error.message);
         bankReceipts = [];
@@ -880,7 +879,7 @@ class DatabaseManager {
           WHERE reconciliation_id = ?
       ORDER BY denomination DESC
       `, [numericId]) || [];
-        console.log(`✅[DB] تم تحميل ${ cashReceipts.length } مقبوضة نقدية`);
+        console.log(`✅[DB] تم تحميل ${cashReceipts.length} مقبوضة نقدية`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل المقبوضات النقدية:', error.message);
         cashReceipts = [];
@@ -893,7 +892,7 @@ class DatabaseManager {
           WHERE reconciliation_id = ?
       ORDER BY created_at
       `, [numericId]) || [];
-        console.log(`✅[DB] تم تحميل ${ postpaidSales.length } مبيعة آجلة`);
+        console.log(`✅[DB] تم تحميل ${postpaidSales.length} مبيعة آجلة`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل المبيعات الآجلة:', error.message);
         postpaidSales = [];
@@ -906,7 +905,7 @@ class DatabaseManager {
           WHERE reconciliation_id = ?
       ORDER BY created_at
       `, [numericId]) || [];
-        console.log(`✅[DB] تم تحميل ${ customerReceipts.length } مقبوضة عميل`);
+        console.log(`✅[DB] تم تحميل ${customerReceipts.length} مقبوضة عميل`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل مقبوضات العملاء:', error.message);
         customerReceipts = [];
@@ -919,7 +918,7 @@ class DatabaseManager {
           WHERE reconciliation_id = ?
       ORDER BY created_at
       `, [numericId]) || [];
-        console.log(`✅[DB] تم تحميل ${ returnInvoices.length } فاتورة مرتجع`);
+        console.log(`✅[DB] تم تحميل ${returnInvoices.length} فاتورة مرتجع`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل فواتير المرتجع:', error.message);
         returnInvoices = [];
@@ -932,7 +931,7 @@ class DatabaseManager {
           WHERE reconciliation_id = ?
       ORDER BY created_at
       `, [numericId]) || [];
-        console.log(`✅[DB] تم تحميل ${ suppliers.length } مورد`);
+        console.log(`✅[DB] تم تحميل ${suppliers.length} مورد`);
       } catch (error) {
         console.warn('⚠️ [DB] خطأ في تحميل الموردين:', error.message);
         suppliers = [];
@@ -983,13 +982,13 @@ class DatabaseManager {
 
       // Enhanced error handling
       if (error.code === 'SQLITE_ERROR') {
-        throw new Error(`خطأ في قاعدة البيانات: ${ error.message }`);
+        throw new Error(`خطأ في قاعدة البيانات: ${error.message}`);
       } else if (error.message && error.message.includes('no such table')) {
         throw new Error('جدول قاعدة البيانات غير موجود');
       } else if (error.message && error.message.includes('no such column')) {
         throw new Error('عمود قاعدة البيانات غير موجود');
       } else {
-        throw new Error(`خطأ في تحميل بيانات التصفية: ${ error.message }`);
+        throw new Error(`خطأ في تحميل بيانات التصفية: ${error.message}`);
       }
     }
   }
