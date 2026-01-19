@@ -138,11 +138,17 @@ class BackgroundSync {
             // BASE URL is https://tasfiya-pro-max.onrender.com/api/sync/users
             // We need https://tasfiya-pro-max.onrender.com/api/reconciliation-requests
             const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests');
+            console.log(`📥 [SYNC] Pulling requests from: ${reqUrl}`);
 
             const res = await fetch(reqUrl);
-            if (!res.ok) return;
+            if (!res.ok) {
+                console.error(`❌ [SYNC] Pull failed: ${res.status} ${res.statusText}`);
+                return;
+            }
 
             const json = await res.json();
+            console.log(`📥 [SYNC] Pull Response: ${json.data ? json.data.length : 0} items found`);
+
             if (json.success && json.data && Array.isArray(json.data)) {
                 const requests = json.data;
                 const insertStmt = db.prepare(`
@@ -158,18 +164,19 @@ class BackgroundSync {
                 `);
 
                 let newCount = 0;
+                let updateCount = 0;
                 const existingIds = db.prepare('SELECT id FROM reconciliation_requests').all().map(r => r.id);
 
                 db.transaction(() => {
                     requests.forEach(r => {
                         const details = typeof r.details === 'object' ? JSON.stringify(r.details) : r.details_json;
-                        // Use ID from server to ensure sync consistency? 
-                        // Actually, desktop usually creates its own IDs. 
-                        // If Web creates IDs, we should respect them OR map them.
-                        // Assuming these act as "External Requests", we can use their ID if available
+
+                        // IMPORTANT: For pull sync, we trust the Web ID.
+                        // Ensure local DB has this table with compatible schema.
 
                         if (existingIds.includes(r.id)) {
                             updateStmt.run(r.status, r.notes, details, r.id);
+                            updateCount++;
                         } else {
                             insertStmt.run(r.id, r.cashier_id, r.status, r.notes, details, r.created_at);
                             newCount++;
@@ -177,7 +184,10 @@ class BackgroundSync {
                     });
                 })();
 
-                if (newCount > 0) console.log(`📥 [SYNC] Downloaded ${newCount} new reconciliation requests.`);
+                if (newCount > 0 || updateCount > 0) {
+                    console.log(`✅ [SYNC] Pulled requests: ${newCount} new, ${updateCount} updated.`);
+                }
+
             }
         } catch (e) {
             console.error('⚠️ [SYNC] Failed to fetch requests:', e.message);
