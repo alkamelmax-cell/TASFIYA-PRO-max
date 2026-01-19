@@ -727,6 +727,30 @@ input[type="date"].custom-input {
     .custom-table tbody td:nth-child(8) {
         display: none !important;
     }
+
+    /* Modal Summary Grid - Stack Vertically on Mobile */
+    .summary-grid {
+        grid-template-columns: 1fr !important;
+        /* Single column */
+        gap: 0.75rem !important;
+        padding: 1rem !important;
+    }
+
+    .summary-item {
+        padding: 0.75rem;
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .summary-item label {
+        font-size: 0.75rem !important;
+        margin-bottom: 0.4rem !important;
+    }
+
+    .summary-item .value {
+        font-size: 1.1rem !important;
+    }
 }
 
 .custom-table td {
