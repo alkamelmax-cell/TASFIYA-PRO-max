@@ -16,14 +16,20 @@
             align-items: center;
             justify-content: center;
             min-height: 100vh;
-            min-height: 100dvh;
-            /* Mobile viewport fix */
+            height: 100dvh;
+            /* Enforce exact viewport height */
             width: 100%;
             margin: 0;
             padding: 1rem;
             background: #020617;
-            overflow-x: hidden;
+            overflow: hidden;
+            /* CRITICAL: Prevent Scrolling */
             position: relative;
+        }
+
+        /* Hide Scrollbar explicitly */
+        ::-webkit-scrollbar {
+            display: none;
         }
 
         /* Abstract Background blobs */
@@ -33,6 +39,8 @@
             filter: blur(80px);
             z-index: 0;
             animation: float 20s infinite alternate;
+            opacity: 0.6;
+            /* Reduce visibility to prevent layout issues */
         }
 
         .blob-1 {
@@ -90,32 +98,59 @@
 
         @media (max-width: 576px) {
             .login-card {
-                padding: 2rem 1.5rem;
+                padding: 1.5rem 1rem;
+                /* Compact padding */
                 width: 95%;
                 /* Better than max-width: 100% for edges */
                 max-width: 100%;
                 margin: auto;
+                max-height: 90dvh;
+                /* Ensure it fits */
+
+                /* Adaptive scaling for very small screens */
+                display: flex;
+                flex-direction: column;
+                justify-content: center;
             }
 
             .logo-area {
-                width: 60px;
-                height: 60px;
-                font-size: 1.5rem;
-                margin-bottom: 1rem;
+                width: 50px;
+                /* Smaller Logo */
+                height: 50px;
+                font-size: 1.2rem;
+                margin-bottom: 0.8rem;
             }
 
             h3 {
-                font-size: 1.5rem;
+                font-size: 1.3rem;
+                /* Smaller Title */
+                margin-bottom: 0.5rem !important;
+                /* reduce spacing */
+            }
+
+            .nav-pills {
+                margin-bottom: 0.9rem !important;
             }
 
             .nav-pills .nav-link {
-                padding: 0.5rem;
-                font-size: 0.9rem;
+                padding: 0.4rem;
+                font-size: 0.85rem;
             }
 
             .btn-login {
-                height: 48px;
-                font-size: 1rem;
+                height: 44px;
+                /* Compact Button */
+                font-size: 0.95rem;
+                margin-top: 0.5rem !important;
+            }
+
+            .form-floating>.form-control {
+                height: calc(3rem + 2px);
+                line-height: normal;
+            }
+
+            .form-floating>label {
+                padding: 0.8rem 0.75rem;
             }
         }
 
