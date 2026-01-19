@@ -16,7 +16,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="css/custom.css?v=12">
+    <link rel="stylesheet" href="css/custom.css?v=13">
     <style>
         /* Better Table Padding - Fix for cells touching borders */
         .table-container table th,
@@ -421,19 +421,19 @@
                 const accountNumber = row.location || 'غير محدد';
 
                 tr.innerHTML = `
-                    <td class="text-white d-none d-md-table-cell">${index + 1}</td>
-                    <td>${new Date(row.reconciliation_date).toLocaleDateString('en-GB')}</td>
-                    <td class="text-center">${opBadge}</td>
-                    <td class="text-center" style="min-width: 140px; vertical-align: middle;">
+                    <td class="text-white d-none d-md-table-cell" data-label="#">${index + 1}</td>
+                    <td data-label="التاريخ">${new Date(row.reconciliation_date).toLocaleDateString('en-GB')}</td>
+                    <td class="text-center" data-label="نوع العملية">${opBadge}</td>
+                    <td class="text-center" style="min-width: 140px; vertical-align: middle;" data-label="الجهاز">
                         <b style="color: #60a5fa !important; font-size: 0.9rem; display: inline-block;">${row.atm_name || 'غير معروف'}</b>
                         <br>
                         <span class="badge bg-dark border border-secondary text-light mt-1" style="font-size: 0.75rem; letter-spacing: 0.5px;">${accountNumber}</span>
                     </td>
                     <!-- <td class="text-white d-none d-md-table-cell font-monospace">${row.account_number || '-'}</td> -->
-                    <td class="text-white d-none d-md-table-cell">${row.bank_name || '-'}</td>
-                    <td class="font-monospace text-success fw-bold text-ltr">${formatCurrency(row.amount)}</td>
-                    <td class="text-white d-none d-md-table-cell">${row.cashier_name || '-'}</td>
-                    <td class="text-center d-none d-md-table-cell"><span class="badge bg-secondary">#${row.reconciliation_number || row.reconciliation_id}</span></td>
+                    <td class="text-white d-none d-md-table-cell" data-label="البنك">${row.bank_name || '-'}</td>
+                    <td class="font-monospace text-success fw-bold text-ltr" data-label="المبلغ">${formatCurrency(row.amount)}</td>
+                    <td class="text-white d-none d-md-table-cell" data-label="الكاشير">${row.cashier_name || '-'}</td>
+                    <td class="text-center d-none d-md-table-cell" data-label="رقم التصفية"><span class="badge bg-secondary">#${row.reconciliation_number || row.reconciliation_id}</span></td>
                 `;
                 tbody.appendChild(tr);
             });
