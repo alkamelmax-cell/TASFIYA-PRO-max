@@ -665,8 +665,8 @@ input[type="date"].custom-input {
     }
 
     .custom-table {
-        min-width: 800px;
-        /* Force minimum width to trigger scroll */
+        min-width: 650px;
+        /* Adjusted for 5 columns in mobile */
     }
 
     .custom-table thead {
