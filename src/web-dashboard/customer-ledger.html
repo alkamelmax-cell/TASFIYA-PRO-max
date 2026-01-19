@@ -30,26 +30,76 @@
         }
 
         /* Mobile Optimization for Ledger Details */
-        /* Mobile Optimization for Ledger Details */
         @media (max-width: 768px) {
+            /* 1. CUSTOMER LIST TABLE RULES */
 
-            /* 1. CUSTOMER LIST TABLE: Force hide secondary columns */
-            /* Column 2: Branch */
+            /* FORCE SHOW key columns if they were hidden */
+            .customer-table th:nth-child(1),
+            #customersSummaryTableBody td:nth-child(1),
+            /* Name */
+            .customer-table th:nth-child(5),
+            #customersSummaryTableBody td:nth-child(5),
+            /* Balance */
+            .customer-table th:last-child,
+            #customersSummaryTableBody td:last-child
+
+            /* Actions */
+                {
+                display: table-cell !important;
+            }
+
+            /* FORCE HIDE other columns */
             .customer-table th:nth-child(2),
             #customersSummaryTableBody td:nth-child(2),
-            /* Column 3: Debit */
+            /* Branch */
             .customer-table th:nth-child(3),
             #customersSummaryTableBody td:nth-child(3),
-            /* Column 4: Credit */
+            /* Debit */
             .customer-table th:nth-child(4),
             #customersSummaryTableBody td:nth-child(4),
-            /* Column 6: Last Trans */
+            /* Credit */
             .customer-table th:nth-child(6),
             #customersSummaryTableBody td:nth-child(6),
-            /* Column 7: Count */
+            /* Last Trans */
             .customer-table th:nth-child(7),
-            #customersSummaryTableBody td:nth-child(7) {
+            #customersSummaryTableBody td:nth-child(7)
+
+            /* Count */
+                {
                 display: none !important;
+            }
+
+            /* COLUMN WIDTHS CONTROLS */
+            /* Name: 45% */
+            .customer-table th:nth-child(1),
+            #customersSummaryTableBody td:nth-child(1) {
+                width: 45% !important;
+                max-width: 45% !important;
+                white-space: normal !important;
+                /* Allow wrapping for long names */
+                font-size: 0.8rem !important;
+                padding: 0.5rem 0.2rem !important;
+            }
+
+            /* Balance: 35% */
+            .customer-table th:nth-child(5),
+            #customersSummaryTableBody td:nth-child(5) {
+                width: 35% !important;
+                white-space: nowrap !important;
+                font-size: 0.8rem !important;
+                padding: 0.5rem 0 !important;
+            }
+
+            /* Action: 20% */
+            .customer-table th:last-child,
+            #customersSummaryTableBody td:last-child {
+                width: 20% !important;
+                padding: 0.2rem !important;
+            }
+
+            .btn-action-mobile {
+                padding: 0.25rem 0.5rem !important;
+                font-size: 0.7rem !important;
             }
 
             /* 2. LEDGER DETAILS TABLE */
@@ -67,8 +117,6 @@
             .custom-table th,
             .custom-table td {
                 padding: 0.5rem 0.2rem !important;
-                font-size: 0.8rem !important;
-                /* Smaller font */
             }
         }
     </style>
