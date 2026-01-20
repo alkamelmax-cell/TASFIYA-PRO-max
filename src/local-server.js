@@ -702,21 +702,33 @@ class LocalWebServer {
     async handleGetUsers(res) {
         try {
             console.log('👥 [API] Fetching users list...');
+            console.log('👥 [API] Database type:', this.dbManager.constructor.name);
+
             let users = await this.dbManager.db.prepare("SELECT id, name, username, role, permissions, active, created_at FROM admins ORDER BY id DESC").all();
 
-            console.log(`👥 [API] Found ${users ? users.length : 0} users`);
+            console.log(`👥 [API] Raw query result:`, users);
+            console.log(`👥 [API] Result type:`, typeof users, 'isArray:', Array.isArray(users));
+            console.log(`👥 [API] Result length:`, users ? users.length : 'null/undefined');
 
             // Safety Check
-            if (!users || !Array.isArray(users)) users = [];
+            if (!users || !Array.isArray(users)) {
+                console.warn('⚠️ [API] Query returned non-array, converting to empty array');
+                users = [];
+            }
+
+            console.log(`👥 [API] Final users count: ${users.length}`);
 
             users.forEach(u => {
                 if (u.permissions && typeof u.permissions === 'string') {
                     try { u.permissions = JSON.parse(u.permissions); } catch (e) { u.permissions = []; }
                 }
             });
+
+            console.log('👥 [API] About to send response with data:', JSON.stringify({ success: true, data: users }));
             this.sendJson(res, { success: true, data: users });
         } catch (error) {
             console.error('❌ [API] Error fetching users:', error);
+            console.error('❌ [API] Error stack:', error.stack);
             this.sendJson(res, { success: false, error: error.message });
         }
     }
