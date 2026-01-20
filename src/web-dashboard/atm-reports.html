@@ -425,16 +425,28 @@
 
                 tr.innerHTML = `
                     <td class="text-white d-none d-md-table-cell text-center" style="text-align: center !important;" data-label="#">${index + 1}</td>
-                    <td class="text-center" style="text-align: center !important;" data-label="التاريخ">${new Date(row.reconciliation_date).toLocaleDateString('en-GB')}</td>
-                    <td class="text-center" style="text-align: center !important;" data-label="نوع العملية">${opBadge}</td>
-                    <td class="text-center" style="min-width: 140px; vertical-align: middle; text-align: center !important;" data-label="الجهاز">
-                        <b style="color: #60a5fa !important; font-size: 0.9rem; display: inline-block;">${row.atm_name || 'غير معروف'}</b>
-                        <br>
-                        <span class="badge bg-dark border border-secondary text-light mt-1" style="font-size: 0.75rem; letter-spacing: 0.5px;">${accountNumber}</span>
+                    <td class="text-center" style="text-align: center !important;" data-label="التاريخ">
+                        <div class="fw-bold">${new Date(row.reconciliation_date).toLocaleDateString('en-GB')}</div>
+                    </td>
+                    <td class="text-center" style="text-align: center !important;" data-label="العملية">
+                        ${opBadge}
+                        <div class="d-md-none mt-2 d-flex align-items-center justify-content-center gap-1" style="font-size: 0.75rem;">
+                            <i class="fas fa-user text-secondary" style="font-size: 0.7rem;"></i>
+                            <span class="text-white opacity-75">${row.cashier_name || 'غير محدد'}</span>
+                        </div>
+                    </td>
+                    <td class="text-center" style="min-width: 100px; vertical-align: middle; text-align: center !important;" data-label="الجهاز">
+                        <span class="text-info fw-bold" style="font-size: 0.85rem;">${row.atm_name || '-'}</span>
+                        <div class="d-md-none mt-1">
+                             <span class="badge bg-dark border border-secondary text-secondary" style="font-size: 0.6rem; letter-spacing: 0px; padding: 2px 6px;">${accountNumber}</span>
+                        </div>
                     </td>
                     <!-- <td class="text-white d-none d-md-table-cell font-monospace text-center">${row.account_number || '-'}</td> -->
                     <td class="text-white d-none d-md-table-cell text-center" style="text-align: center !important;" data-label="البنك">${row.bank_name || '-'}</td>
-                    <td class="font-monospace text-success fw-bold text-ltr text-center" style="text-align: center !important;" data-label="المبلغ">${formatCurrency(row.amount)}</td>
+                    <td class="font-monospace text-success fw-bold text-ltr text-center" style="text-align: center !important; font-size: 0.9rem; vertical-align: middle;" data-label="المبلغ">
+                        <div>${formatCurrency(row.amount)}</div>
+                        <div class="d-md-none text-muted" style="font-size: 0.6rem; margin-top: -2px;">ر.س</div>
+                    </td>
                     <td class="text-white d-none d-md-table-cell text-center" style="text-align: center !important;" data-label="الكاشير">${row.cashier_name || '-'}</td>
                     <td class="text-center d-none d-md-table-cell" style="text-align: center !important;" data-label="رقم التصفية"><span class="badge bg-secondary">#${row.reconciliation_number || row.reconciliation_id}</span></td>
                 `;
