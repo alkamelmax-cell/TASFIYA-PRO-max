@@ -1227,19 +1227,6 @@ class LocalWebServer {
         });
     }
 
-    async handleGetUsers(res) {
-        try {
-            const users = this.dbManager.db.prepare(`
-                SELECT id, name, username, role, active, permissions, created_at 
-                FROM admins 
-                ORDER BY id DESC
-            `).all();
-
-            this.sendJson(res, { success: true, users });
-        } catch (error) {
-            this.sendJson(res, { success: false, error: error.message });
-        }
-    }
 
     async handleSaveUser(req, res) {
         let body = '';
