@@ -748,32 +748,32 @@ input[type="date"].custom-input {
     /* HIDE unwanted columns in mobile (columns 4,5,6,8) - EXCLUDING ATM Table */
     /* Column 4: المحاسب */
     /* Column 4: المحاسب */
-    .custom-table:not(.atm-table):not(.customer-table) thead th:nth-child(4),
-    .custom-table:not(.atm-table):not(.customer-table) tbody td:nth-child(4) {
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management) thead th:nth-child(4),
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management) tbody td:nth-child(4) {
         display: none !important;
     }
 
     /* Column 5: مبيعات النظام */
     /* Column 5: مبيعات النظام */
     /* Column 5: مبيعات النظام */
-    .custom-table:not(.atm-table):not(.customer-table) thead th:nth-child(5),
-    .custom-table:not(.atm-table):not(.customer-table) tbody td:nth-child(5) {
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management) thead th:nth-child(5),
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management) tbody td:nth-child(5) {
         display: none !important;
     }
 
     /* Column 6: المقبوض الفعلي */
     /* Column 6: المقبوض الفعلي */
     /* Column 6: المقبوض الفعلي */
-    .custom-table:not(.atm-table):not(.customer-table) thead th:nth-child(6),
-    .custom-table:not(.atm-table):not(.customer-table) tbody td:nth-child(6) {
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management) thead th:nth-child(6),
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management) tbody td:nth-child(6) {
         display: none !important;
     }
 
     /* Column 8: الحالة */
     /* Column 8: الحالة */
     /* Column 8: الحالة */
-    .custom-table:not(.atm-table):not(.customer-table) thead th:nth-child(8),
-    .custom-table:not(.atm-table):not(.customer-table) tbody td:nth-child(8) {
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management) thead th:nth-child(8),
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management) tbody td:nth-child(8) {
         display: none !important;
     }
 
