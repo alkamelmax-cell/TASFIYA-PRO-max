@@ -681,46 +681,13 @@ class LocalWebServer {
         }
     }
 
-    async handleGetLookups(res) {
-        try {
-            // FIX: Get full cashier details including branch name and pin status
-            const cashiers = await this.dbManager.db.prepare(`
-                SELECT 
-                    c.id, 
-                    c.name, 
-                    c.cashier_number, 
-                    c.pin_code,
-                    c.active,
-                    b.branch_name 
-                FROM cashiers c
-                LEFT JOIN branches b ON c.branch_id = b.id
-                WHERE c.active = 1
-            `).all();
-
-            const branches = await this.dbManager.db.prepare('SELECT id, branch_name as name FROM branches WHERE is_active = 1').all();
-            const accountants = await this.dbManager.db.prepare('SELECT id, name FROM accountants WHERE active = 1').all();
-
-            // Get unique locations from ATMs as "accounts"
-            const accounts = await this.dbManager.db.prepare("SELECT DISTINCT location as name FROM atms WHERE location IS NOT NULL AND location != '' ORDER BY location").all();
-
-            // Get unique customers
-            const customers = await this.dbManager.db.prepare(`
-                SELECT DISTINCT customer_name as name FROM manual_postpaid_sales
-            UNION
-                SELECT DISTINCT customer_name as name FROM manual_customer_receipts
-                ORDER BY name
-                `).all();
-
-            this.sendJson(res, { success: true, cashiers, branches, accountants, accounts, customers });
-        } catch (error) {
-            console.error('[Lookups] Error:', error);
-            this.sendJson(res, { success: false, error: error.message });
-        }
-    }
 
     async handleGetUsers(res) {
         try {
+            console.log('👥 [API] Fetching users list...');
             let users = await this.dbManager.db.prepare("SELECT id, name, username, role, permissions, active, created_at FROM admins ORDER BY id DESC").all();
+
+            console.log(`👥 [API] Found ${users ? users.length : 0} users`);
 
             // Safety Check
             if (!users || !Array.isArray(users)) users = [];
@@ -732,6 +699,7 @@ class LocalWebServer {
             });
             this.sendJson(res, { success: true, data: users });
         } catch (error) {
+            console.error('❌ [API] Error fetching users:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
     }
