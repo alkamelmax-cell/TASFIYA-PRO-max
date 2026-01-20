@@ -1218,6 +1218,16 @@ class LocalWebServer {
                     ]);
                 }
 
+                // Sync reconciliation requests (especially status updates)
+                if (data.reconciliation_requests) {
+                    await syncTable('reconciliation_requests', data.reconciliation_requests, [
+                        { name: 'id' }, { name: 'cashier_id' }, { name: 'system_sales' },
+                        { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json' },
+                        { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
+                        { name: 'created_at' }, { name: 'updated_at' }
+                    ]);
+                }
+
                 console.log('✅ [SYNC] Full sync completed successfully');
                 this.sendJson(res, { success: true, message: 'Full sync completed' });
             } catch (error) {
