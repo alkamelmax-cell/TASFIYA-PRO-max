@@ -107,7 +107,12 @@
                         return `
                             <tr>
                                 <td class="font-monospace fw-bold text-white">#${req.id}</td>
-                                <td class="font-monospace text-white small" dir="ltr">${formattedDateTime}</td>
+                                <td class="text-white">
+                                    <div class="d-flex flex-column align-items-start">
+                                        <span class="font-monospace fw-bold">${formattedDate}</span>
+                                        <span class="font-monospace text-info small">${formattedTime}</span>
+                                    </div>
+                                </td>
                                 <td class="fw-bold text-white">${req.cashier_name || 'غير معروف'}</td>
                                 <td class="text-center font-monospace text-success fw-bold dir-ltr">${cashTotal.toFixed(2)}</td>
                                 <td class="text-center">
