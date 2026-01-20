@@ -237,11 +237,17 @@
                 const res = await fetch(`${API_URL}/users`);
                 const result = await res.json();
 
-                console.log('👥 [USERS] API Response:', result); // Debugging
+                console.log('👥 [USERS] Full API Response:', JSON.stringify(result, null, 2)); // Detailed debugging
+                console.log('👥 [USERS] result.success:', result.success);
+                console.log('👥 [USERS] result.data type:', typeof result.data, Array.isArray(result.data));
+                console.log('👥 [USERS] result.data content:', result.data);
 
                 if (result.success) {
                     // FIX: Server might return 'users' or 'data' key
                     const usersData = result.users || result.data;
+
+                    console.log('👥 [USERS] usersData type:', typeof usersData, 'isArray:', Array.isArray(usersData));
+                    console.log('👥 [USERS] usersData:', usersData);
 
                     if (Array.isArray(usersData)) {
                         USERS_CACHE = usersData;
