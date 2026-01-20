@@ -102,9 +102,9 @@ function renderCustomersTable(data) {
         tr.innerHTML = `
             <td class="fw-bold text-white text-center" style="text-align: center !important;">${row.customer_name}</td>
             <td class="small text-secondary d-none d-md-table-cell text-center" style="text-align: center !important;">${branchName}</td>
-            <td class="text-danger fw-bold text-ltr d-none d-md-table-cell text-center" style="text-align: center !important;">${formatCurrency(row.total_debit)}</td>
-            <td class="text-success fw-bold text-ltr d-none d-md-table-cell text-center" style="text-align: center !important;">${formatCurrency(row.total_credit)}</td>
-            <td class="text-center" style="text-align: center !important;">${formatCurrency(row.balance)}</td>
+            <td class="text-danger fw-bold d-none d-md-table-cell text-center" style="text-align: center !important;"><span dir="ltr">${formatCurrency(row.total_debit)}</span></td>
+            <td class="text-success fw-bold d-none d-md-table-cell text-center" style="text-align: center !important;"><span dir="ltr">${formatCurrency(row.total_credit)}</span></td>
+            <td class="text-center" style="text-align: center !important;"><span dir="ltr">${formatCurrency(row.balance)}</span></td>
             <td class="d-none d-md-table-cell text-center" style="text-align: center !important;">${row.last_transaction ? new Date(row.last_transaction).toLocaleDateString('en-GB') : '-'}</td>
             <td class="d-none d-md-table-cell text-center" style="text-align: center !important;">${row.transaction_count}</td>
             <td class="text-center" style="text-align: center !important;">
@@ -213,9 +213,9 @@ function renderLedgerTable(data) {
                 <div class="small text-secondary mt-1 text-nowrap" style="font-size: 0.65rem; opacity: 0.8;">${cashierDisplay}</div>
             </td>
             <td class="d-none">${row.description || '-'}</td>
-            <td class="text-danger font-monospace text-ltr text-center" style="text-align: center !important;">${debit > 0 ? formatCurrency(debit) : '-'}</td>
-            <td class="text-success font-monospace text-ltr text-center" style="text-align: center !important;">${credit > 0 ? formatCurrency(credit) : '-'}</td>
-            <td class="text-info font-monospace text-ltr fw-bold text-center" style="text-align: center !important;">${formatCurrency(row.currentBalance)}</td>
+            <td class="text-danger font-monospace text-center" style="text-align: center !important;"><span dir="ltr">${debit > 0 ? formatCurrency(debit) : '-'}</span></td>
+            <td class="text-success font-monospace text-center" style="text-align: center !important;"><span dir="ltr">${credit > 0 ? formatCurrency(credit) : '-'}</span></td>
+            <td class="text-info font-monospace fw-bold text-center" style="text-align: center !important;"><span dir="ltr">${formatCurrency(row.currentBalance)}</span></td>
         `;
         tbody.appendChild(tr);
     });
