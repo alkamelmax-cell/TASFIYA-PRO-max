@@ -87,64 +87,81 @@ class LocalWebServer {
                 // API endpoints
                 if (pathname === '/api/reconciliations') {
                     await this.handleGetReconciliations(res, parsedUrl.query);
+                    return;
                 }
                 else if (pathname === '/api/atm-report') {
                     await this.handleGetAtmReport(res, parsedUrl.query);
+                    return;
                 }
                 else if (pathname.match(/^\/api\/reconciliation\/\d+$/)) {
                     const id = pathname.split('/').pop();
                     await this.handleGetReconciliationDetails(res, id);
+                    return;
                 }
                 else if (pathname === '/api/lookups') {
                     await this.handleGetLookups(res);
+                    return;
                 }
                 else if (pathname === '/api/customer-ledger') {
                     await this.handleGetCustomerLedger(res, parsedUrl.query);
+                    return;
                 }
                 else if (pathname === '/api/customers-summary') {
                     await this.handleGetCustomersSummary(res);
+                    return;
                 }
                 // User Management
                 else if (pathname === '/users-management.html') {
                     this.serveFile(res, path.join(__dirname, 'web-dashboard', 'users-management.html'), 'text/html');
+                    return;
                 }
                 else if (pathname === '/api/users') {
                     if (req.method === 'GET') await this.handleGetUsers(res);
                     else if (req.method === 'POST') await this.handleSaveUser(req, res);
+                    return;
                 }
                 else if (pathname.match(/^\/api\/users\/\d+$/) && req.method === 'DELETE') {
                     const id = pathname.split('/').pop();
                     await this.handleDeleteUser(res, id);
+                    return;
                 }
 
                 // --- Reconciliation Requests Feature ---
                 else if (pathname === '/request-reconciliation.html') {
                     this.serveFile(res, path.join(__dirname, 'web-dashboard', 'request-reconciliation.html'), 'text/html');
+                    return;
                 }
                 else if (pathname === '/reconciliation-requests.html') {
                     this.serveFile(res, path.join(__dirname, 'web-dashboard', 'reconciliation-requests.html'), 'text/html');
+                    return;
                 }
                 else if (pathname === '/api/reconciliation-requests') {
                     if (req.method === 'GET') await this.handleGetReconciliationRequests(res);
                     else if (req.method === 'POST') await this.handleCreateReconciliationRequest(req, res);
+                    return;
                 }
                 else if (pathname.match(/^\/api\/reconciliation-requests\/\d+\/approve$/) && req.method === 'POST') {
                     const id = pathname.split('/')[3]; // /api/reconciliation-requests/ID/approve
                     await this.handleApproveReconciliationRequest(res, id, req);
+                    return;
                 }
                 else if (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && req.method === 'DELETE') {
                     const id = pathname.split('/').pop();
                     await this.handleDeleteReconciliationRequest(res, id);
+                    return;
                 }
                 else if (pathname === '/api/customers') {
                     console.log('🔥 [ROUTER] /api/customers route HIT!');
                     await this.handleGetCustomerList(res, parsedUrl.query);
+                    return;
                 }
                 else if (pathname === '/api/atms') {
                     await this.handleGetAtms(res);
+                    return;
                 }
                 else if (pathname === '/api/sync/users' && req.method === 'POST') {
                     await this.handleSyncUsers(req, res);
+                    return;
                 }
                 else {
                     res.writeHead(404, { 'Content-Type': 'text/plain' });
