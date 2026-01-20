@@ -86,12 +86,12 @@
                         return `
                             <tr>
                                 <td class="font-monospace fw-bold">#${req.id}</td>
-                                <td class="font-monospace text-muted">${new Date(req.created_at).toLocaleString('en-GB')}</td>
+                                <td class="font-monospace text-white-50 small">${new Date(req.created_at).toLocaleString('ar-SA', { dateStyle: 'short', timeStyle: 'short' })}</td>
                                 <td class="fw-bold text-white">${req.cashier_name || 'غير معروف'}</td>
                                 <td class="text-center font-monospace text-success dir-ltr">${cashTotal.toFixed(2)}</td>
                                 <td class="text-center">
                                     <div class="btn-group">
-                                        <button class="btn btn-sm btn-action-delete" onclick="deleteRequest(${req.id})">
+                                        <button class="btn btn-sm btn-danger" onclick="deleteRequest(${req.id})">
                                             <i class="fas fa-trash-alt"></i> حذف
                                         </button>
                                     </div>
