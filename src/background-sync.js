@@ -70,6 +70,13 @@ class BackgroundSync {
             const bank_receipts = db.prepare('SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000').all();
             await this.sendInBatches('bank_receipts', bank_receipts, 500);
 
+            // 5. Push Reconciliation Requests Status Updates
+            const reconciliation_requests = db.prepare('SELECT * FROM reconciliation_requests').all();
+            if (reconciliation_requests && reconciliation_requests.length > 0) {
+                console.log(`📤 [SYNC] Pushing ${reconciliation_requests.length} reconciliation requests...`);
+                await this.sendPayload({ reconciliation_requests });
+            }
+
             console.log('✅ [SYNC] Push completed successfully');
 
             // --- PULL: Fetch Remote Requests (Reconciliation Requests) ---
