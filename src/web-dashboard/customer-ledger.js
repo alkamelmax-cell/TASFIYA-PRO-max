@@ -218,7 +218,7 @@ function renderLedgerTable(data) {
                 <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}">${row.type}</span>
                 <div class="small text-secondary mt-1 text-nowrap" style="font-size: 0.65rem; opacity: 0.8;">${cashierDisplay}</div>
             </td>
-            <td class="d-none">${row.description || '-'}</td>
+            <td>${row.description || '-'}</td>
             <td class="text-danger font-monospace text-center" style="text-align: center !important;">
                 <div class="d-flex justify-content-center align-items-center"><span dir="ltr">${debit > 0 ? formatCurrency(debit) : '-'}</span></div>
             </td>
