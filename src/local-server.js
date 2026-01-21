@@ -385,6 +385,7 @@ class LocalWebServer {
                     atm.name as atm_name,
                     atm.bank_name,
                     atm.location,
+                    atm.account_number,
                     c.name as cashier_name
                 FROM bank_receipts br
                 LEFT JOIN reconciliations r ON br.reconciliation_id = r.id

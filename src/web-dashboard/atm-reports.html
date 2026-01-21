@@ -27,10 +27,45 @@
 
 
 
-        /* Ensure numbers don't touch borders */
-        .table-container table td.text-ltr {
-            padding-right: 1.2rem !important;
-            padding-left: 1.2rem !important;
+
+        /* Mobile Card Float & Glow Effect */
+        @media (max-width: 768px) {
+
+            /* Remove parent container frame on mobile */
+            .pro-card {
+                background: transparent !important;
+                border: none !important;
+                box-shadow: none !important;
+                backdrop-filter: none !important;
+                -webkit-backdrop-filter: none !important;
+            }
+
+            .pro-card .border-bottom {
+                border-bottom: none !important;
+                padding: 0 0.5rem 1rem 0.5rem !important;
+            }
+
+            /* Card base styling */
+            .glass-card {
+                margin-bottom: 1.2rem;
+                transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1),
+                    box-shadow 0.3s ease;
+                will-change: transform, box-shadow;
+            }
+
+            /* HOVER STATE - Float + Colored Glow */
+            .glass-card:hover,
+            .glass-card:active {
+                /* Float up */
+                transform: translateY(-10px) scale(1.02) !important;
+
+                /* Strong colored shadow using the --card-glow variable */
+                box-shadow:
+                    0 20px 35px -5px var(--card-glow, rgba(99, 102, 241, 0.5)),
+                    0 10px 20px -10px rgba(0, 0, 0, 0.3) !important;
+
+                z-index: 999 !important;
+            }
         }
     </style>
 </head>
@@ -200,19 +235,19 @@
                 <small class="text-secondary" id="recordCount">0 عملية</small>
             </div>
 
-            <div class="table-container border-0">
+            <div class="table-container border-0 d-none d-md-block">
                 <table class="custom-table atm-table">
                     <thead>
                         <tr>
-                            <th class="d-none d-md-table-cell" style="text-align: center !important;">#</th>
+                            <th class="text-center" style="text-align: center !important;">#</th>
                             <th style="text-align: center !important;">التاريخ</th>
                             <th class="text-center" style="text-align: center !important;">نوع العملية</th>
                             <th class="text-center" style="text-align: center !important;">الجهاز</th>
                             <!-- <th class="d-none d-md-table-cell">رقم الحساب</th> -->
-                            <th class="d-none d-md-table-cell" style="text-align: center !important;">البنك</th>
+                            <th class="text-center" style="text-align: center !important;">البنك</th>
                             <th class="text-ltr text-center" style="text-align: center !important;">المبلغ</th>
-                            <th class="d-none d-md-table-cell" style="text-align: center !important;">الكاشير</th>
-                            <th class="d-none d-md-table-cell text-center" style="text-align: center !important;">رقم
+                            <th class="text-center" style="text-align: center !important;">الكاشير</th>
+                            <th class="text-center" style="text-align: center !important;">رقم
                                 التصفية</th>
                         </tr>
                     </thead>
@@ -220,6 +255,11 @@
                         <!-- Rows -->
                     </tbody>
                 </table>
+            </div>
+
+            <!-- Mobile Cards Container -->
+            <div class="d-md-none px-2 pb-3" id="mobileCardsContainer">
+                <!-- Cards will be injected here -->
             </div>
         </div>
     </div>
@@ -397,15 +437,22 @@
 
         function renderAtmTable(data) {
             const tbody = document.getElementById('atmTableBody');
+            const cardsContainer = document.getElementById('mobileCardsContainer');
+
             tbody.innerHTML = '';
+            if (cardsContainer) cardsContainer.innerHTML = '';
+
             document.getElementById('recordCount').textContent = `${data.length} عملية`;
 
             if (data.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="8" class="text-center py-5"><div class="text-muted opacity-50"><i class="fas fa-inbox fa-3x mb-3"></i><br>لا توجد بيانات للعرض</div></td></tr>`;
+                const emptyHtml = `<tr><td colspan="8" class="text-center py-5"><div class="text-muted opacity-50"><i class="fas fa-inbox fa-3x mb-3"></i><br>لا توجد بيانات للعرض</div></td></tr>`;
+                tbody.innerHTML = emptyHtml;
+                if (cardsContainer) cardsContainer.innerHTML = `<div class="text-center py-5 text-white-50"><i class="fas fa-inbox fa-3x mb-3 opacity-50"></i><br>لا توجد بيانات للعرض</div>`;
                 return;
             }
 
-            data.forEach((row, index) => {
+            // 1. Render Desktop Table
+            tbody.innerHTML = data.map((row, index) => {
                 // Operation type badge
                 let opBadge = '';
                 const opType = (row.operation_type || '').toLowerCase();
@@ -419,39 +466,107 @@
                     opBadge = `<span class="badge bg-secondary">${row.operation_type || '-'}</span>`;
                 }
 
-                const tr = document.createElement('tr');
-                // Format Account Number (Location field)
-                const accountNumber = row.location || 'غير محدد';
+                // Date Formatting
+                const date = new Date(row.reconciliation_date);
+                const formattedDate = date.toLocaleDateString('en-GB');
 
-                tr.innerHTML = `
-                    <td class="text-white d-none d-md-table-cell text-center" style="text-align: center !important;" data-label="#">${index + 1}</td>
-                    <td class="text-center" style="text-align: center !important;" data-label="التاريخ">
-                        <div class="fw-bold">${new Date(row.reconciliation_date).toLocaleDateString('en-GB')}</div>
-                    </td>
-                    <td class="text-center" style="text-align: center !important;" data-label="العملية">
-                        ${opBadge}
-                        <div class="d-md-none mt-2 d-flex align-items-center justify-content-center gap-1" style="font-size: 0.75rem;">
-                            <i class="fas fa-user text-secondary" style="font-size: 0.7rem;"></i>
-                            <span class="text-white opacity-75">${row.cashier_name || 'غير محدد'}</span>
-                        </div>
-                    </td>
-                    <td class="text-center" style="min-width: 100px; vertical-align: middle; text-align: center !important;" data-label="الجهاز">
-                        <span class="text-info fw-bold" style="font-size: 0.85rem;">${row.atm_name || '-'}</span>
-                        <div class="d-md-none mt-1">
-                             <span class="badge bg-dark border border-secondary text-secondary" style="font-size: 0.6rem; letter-spacing: 0px; padding: 2px 6px;">${accountNumber}</span>
-                        </div>
-                    </td>
-                    <!-- <td class="text-white d-none d-md-table-cell font-monospace text-center">${row.account_number || '-'}</td> -->
-                    <td class="text-white d-none d-md-table-cell text-center" style="text-align: center !important;" data-label="البنك">${row.bank_name || '-'}</td>
-                    <td class="font-monospace text-success fw-bold text-ltr text-center" style="text-align: center !important; font-size: 0.9rem; vertical-align: middle;" data-label="المبلغ">
-                        <div>${formatCurrency(row.amount)}</div>
-                        <div class="d-md-none text-muted" style="font-size: 0.6rem; margin-top: -2px;">ر.س</div>
-                    </td>
-                    <td class="text-white d-none d-md-table-cell text-center" style="text-align: center !important;" data-label="الكاشير">${row.cashier_name || '-'}</td>
-                    <td class="text-center d-none d-md-table-cell" style="text-align: center !important;" data-label="رقم التصفية"><span class="badge bg-secondary">#${row.reconciliation_number || row.reconciliation_id}</span></td>
+                return `
+                    <tr>
+                        <td class="text-white text-center">${index + 1}</td>
+                        <td class="text-center fw-bold">${formattedDate}</td>
+                        <td class="text-center">${opBadge}</td>
+                        <td class="text-center text-info fw-bold">
+                            <div>${row.atm_name || '-'}</div>
+                            ${row.location ? `<div class="text-secondary small fw-normal">${row.location}</div>` : ''}
+                        </td>
+                        <td class="text-center text-white">${row.bank_name || '-'}</td>
+                        <td class="font-monospace text-success fw-bold text-ltr text-center fs-6">
+                            ${formatCurrency(row.amount)} <small class="text-muted">SAR</small>
+                        </td>
+                        <td class="text-center text-white">${row.cashier_name || '-'}</td>
+                        <td class="text-center font-monospace">
+                            <span class="badge bg-secondary">#${row.reconciliation_number || row.reconciliation_id}</span>
+                        </td>
+                    </tr>
                 `;
-                tbody.appendChild(tr);
-            });
+            }).join('');
+
+            // 2. Render Mobile Cards
+            if (cardsContainer) {
+                cardsContainer.innerHTML = data.map(row => {
+                    // Determine Icon and Color based on Operation type
+                    let iconClass = 'fas fa-credit-card';
+                    let colorClass = 'text-secondary';
+                    let borderClass = 'border-secondary';
+                    let glowColor = 'rgba(255,255,255,0.1)'; // Default glow
+
+
+
+                    const opType = (row.operation_type || '').toLowerCase();
+                    if (opType.includes('مدى') || opType.includes('mada')) {
+                        colorClass = 'text-info';
+                        borderClass = 'border-info';
+                        glowColor = '#0dcaf0'; // Cyan
+                    } else if (opType.includes('فيزا') || opType.includes('visa')) {
+                        iconClass = 'fab fa-cc-visa';
+                        colorClass = 'text-primary';
+                        borderClass = 'border-primary';
+                        glowColor = '#6366f1'; // Indigo
+                    } else if (opType.includes('ماستر') || opType.includes('master')) {
+                        iconClass = 'fab fa-cc-mastercard';
+                        colorClass = 'text-warning';
+                        borderClass = 'border-warning';
+                        glowColor = '#f59e0b'; // Amber
+                    }
+
+                    const date = new Date(row.reconciliation_date);
+                    const formattedDate = date.toLocaleDateString('en-GB');
+
+                    return `
+                    <div class="card glass-card mb-3 border border-secondary border-opacity-25 shadow-lg overflow-hidden position-relative" 
+                         style="--card-glow: ${glowColor};">
+                        <!-- Decoration Line -->
+                        <div class="position-absolute top-0 end-0 bottom-0 ${borderClass.replace('border-', 'bg-')}" style="width: 4px;"></div>
+                        
+                        <div class="card-body p-3">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <div>
+                                    <h5 class="fw-bold text-white mb-1">
+                                        <i class="${iconClass} ${colorClass} me-2"></i> ${row.atm_name || 'جهاز صراف'}
+                                    </h5>
+                                    <div class="text-white-50 small font-monospace mb-1">
+                                        <i class="far fa-calendar-alt me-1"></i> ${formattedDate}
+                                    </div>
+                                    ${row.location ? `
+                                    <div class="text-secondary small">
+                                        ${row.location}
+                                    </div>
+                                    ` : ''}
+                                </div>
+                                <span class="badge bg-dark border ${borderClass} text-light font-monospace">#${row.reconciliation_number || row.reconciliation_id}</span>
+                            </div>
+                            
+                            <div class="d-flex justify-content-between align-items-center bg-dark bg-opacity-25 rounded-3 p-2 mb-2">
+                                <div class="d-flex align-items-center">
+                                    <i class="fas fa-user-circle text-secondary me-2"></i>
+                                    <span class="text-white small">${row.cashier_name || 'غير معروف'}</span>
+                                </div>
+                                <span class="badge ${borderClass.replace('border-', 'bg-')} text-dark fw-bold">${row.operation_type}</span>
+                            </div>
+
+                            <hr class="border-secondary opacity-25 my-2">
+                            
+                            <div class="d-flex justify-content-between align-items-center mt-2">
+                                <span class="text-secondary small">قيمة العملية</span>
+                                <span class="fs-3 fw-bold text-success font-monospace dir-ltr">
+                                    ${formatCurrency(row.amount)} <small class="fs-6 text-white-50">SAR</small>
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                    `;
+                }).join('');
+            }
         }
 
         function calculateAtmStats(data) {
