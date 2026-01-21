@@ -513,7 +513,16 @@
         let atmsData = [];
         async function loadAtms() {
             try {
-                const res = await fetch('/api/atms');
+                const cashierId = user && user.id ? user.id : null;
+                // Only filter if not admin, OR if required by logic. 
+                // Does admin need to see ALL ATMs in this view? 
+                // Usually admins doing reconciliation might want to select ANY ATM. 
+                // But if the user is a cashier, they MUST be restricted.
+                // Let's pass cashierId primarily if role is cashier, or just pass user.id generally 
+                // and let server filter if that user is a cashier with a branch.
+
+                const url = cashierId ? `/api/atms?cashierId=${cashierId}` : '/api/atms';
+                const res = await fetch(url);
                 const data = await res.json();
                 if (data.success && data.atms) {
                     atmsData = data.atms;

@@ -156,7 +156,7 @@ class LocalWebServer {
                     return;
                 }
                 else if (pathname === '/api/atms') {
-                    await this.handleGetAtms(res);
+                    await this.handleGetAtms(res, parsedUrl.query);
                     return;
                 }
                 else if (pathname === '/api/sync/users' && req.method === 'POST') {
@@ -981,9 +981,28 @@ class LocalWebServer {
         }
     }
 
-    async handleGetAtms(res) {
+    async handleGetAtms(res, query) {
         try {
-            const atms = await this.dbManager.db.prepare("SELECT * FROM atms ORDER BY name").all();
+            let atms;
+
+            // If cashierId is provided, filter by their branch
+            if (query && query.cashierId) {
+                // 1. Get Cashier Branch
+                const cashier = await this.dbManager.db.prepare("SELECT branch_id FROM cashiers WHERE id = ?").get(query.cashierId);
+
+                if (cashier && cashier.branch_id) {
+                    // 2. Get ATMs for this branch
+                    atms = await this.dbManager.db.prepare("SELECT * FROM atms WHERE branch_id = ? ORDER BY name").all(cashier.branch_id);
+                } else {
+                    // Cashier has no branch? Fallback to all or empty? Let's fallback to all for safety, or empty. 
+                    // Better to fallback to all if branch logic isn't strictly enforced everywhere yet.
+                    atms = await this.dbManager.db.prepare("SELECT * FROM atms ORDER BY name").all();
+                }
+            } else {
+                // Admin or no cashier specified -> Get All
+                atms = await this.dbManager.db.prepare("SELECT * FROM atms ORDER BY name").all();
+            }
+
             this.sendJson(res, { success: true, atms });
         } catch (error) {
             console.error('Error fetching ATMs:', error);
