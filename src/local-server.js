@@ -1273,12 +1273,41 @@ class LocalWebServer {
 
                 // Sync reconciliation requests (especially status updates)
                 if (data.reconciliation_requests) {
+                    // Check for new pending requests BEFORE syncing (or just assume if data contains pending requests)
+                    // We'll filter for requests that are 'pending' and notify about them
+                    const pendingRequests = data.reconciliation_requests.filter(r => r.status === 'pending');
+
                     await syncTable('reconciliation_requests', data.reconciliation_requests, [
                         { name: 'id' }, { name: 'cashier_id' }, { name: 'system_sales' },
                         { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json' },
                         { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
                         { name: 'created_at' }, { name: 'updated_at' }
                     ]);
+
+                    // Send notification if there are pending requests in this sync batch
+                    // To prevent spam, we check if we "recently" notified or just send a summary notification
+                    if (pendingRequests.length > 0) {
+                        const requestCount = pendingRequests.length;
+                        console.log(`🔔 [SYNC] Found ${requestCount} pending requests. Sending notification...`);
+
+                        // Get cashier name for the first request (as example)
+                        const firstReq = pendingRequests[0];
+                        let cashierName = 'كاشير';
+                        if (data.cashiers) {
+                            const c = data.cashiers.find(c => c.id === firstReq.cashier_id);
+                            if (c) cashierName = c.name;
+                        }
+
+                        const title = requestCount === 1 ? '📋 طلب تصفية جديد (مزامنة)' : `📋 وصل ${requestCount} طلبات تصفية (مزامنة)`;
+                        const msg = requestCount === 1
+                            ? `تم مزامنة طلب تصفية جديد من ${cashierName}`
+                            : `تم مزامنة ${requestCount} طلبات تصفية جديدة من سطح المكتب`;
+
+                        await this.sendOneSignalNotification(title, msg, {
+                            type: 'synced_requests',
+                            count: requestCount
+                        });
+                    }
                 }
 
                 console.log('✅ [SYNC] Full sync completed successfully');
