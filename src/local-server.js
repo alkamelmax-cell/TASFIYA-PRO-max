@@ -1222,45 +1222,68 @@ class LocalWebServer {
                 }
 
                 if (data.reconciliations) {
+                    // 1. Identify IDs of incoming items
+                    const incomingIds = data.reconciliations.map(r => r.id).filter(id => id);
+                    let newReconciliationsCount = 0;
+                    let firstNewRec = null;
+
+                    // 2. Check which IDs already exist in DB to find truly NEW ones
+                    if (incomingIds.length > 0) {
+                        try {
+                            const pool = this.dbManager.pool || this.dbManager.db.pool;
+                            // Create placeholders like $1, $2, $3...
+                            // IMPORTANT: PostgreSQL uses $1, $2... syntax
+                            const placeholders = incomingIds.map((_, i) => `$${i + 1}`).join(',');
+
+                            // Query existing IDs
+                            const existingResult = await pool.query(
+                                `SELECT id FROM reconciliations WHERE id IN (${placeholders})`,
+                                incomingIds
+                            );
+
+                            const existingIdsSet = new Set(existingResult.rows.map(row => row.id));
+
+                            // Filter incoming items that are NOT in the existing set -> THESE ARE NEW
+                            const newItems = data.reconciliations.filter(r => !existingIdsSet.has(r.id));
+
+                            newReconciliationsCount = newItems.length;
+                            if (newReconciliationsCount > 0) {
+                                firstNewRec = newItems[0];
+                                console.log(`🔔 [SYNC] Detected ${newReconciliationsCount} truly NEW reconciliations (not in DB). Notifying...`);
+                            }
+
+                        } catch (checkErr) {
+                            console.error('⚠️ [SYNC] Failed to check existing records:', checkErr.message);
+                        }
+                    }
+
+                    // 3. Perform the Sync (Save Data)
                     await syncTable('reconciliations', data.reconciliations, [
                         { name: 'id' }, { name: 'reconciliation_number' }, { name: 'cashier_id' },
                         { name: 'accountant_id' }, { name: 'reconciliation_date' }, { name: 'system_sales' },
                         { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' }
                     ]);
 
-                    // NOTIFICATION LOGIC: Only for new completed reconciliations added to Main List
-                    // We filter for reconciliations that correspond to "today" or are generally new to avoid alerting on full history sync
-                    const today = new Date().toISOString().split('T')[0];
-                    const newReconciliations = data.reconciliations.filter(rec => rec.reconciliation_date === today);
-
-                    if (newReconciliations.length > 0) {
-                        const count = newReconciliations.length;
-                        console.log(`🔔 [SYNC] Found ${count} new completed reconciliations (Today). Sending notification...`);
-
-                        // Get details for the first one
-                        const firstRec = newReconciliations[0];
-
-                        // Resolve cashier name (from DB or current sync batch)
+                    // 4. Send Notification ONLY if we found NEW items
+                    if (newReconciliationsCount > 0 && firstNewRec) {
+                        // Resolve cashier name
                         let cashierName = 'كاشير';
-                        try {
-                            // Try to find in current batch first
-                            if (data.cashiers) {
-                                const c = data.cashiers.find(c => c.id === firstRec.cashier_id);
-                                if (c) cashierName = c.name;
-                            }
-                            // If not found, fallback to generic or we could query DB, but let's keep it fast
-                        } catch (e) { /* ignore */ }
+                        if (data.cashiers) {
+                            const c = data.cashiers.find(c => c.id === firstNewRec.cashier_id);
+                            if (c) cashierName = c.name;
+                        }
 
-                        const title = count === 1 ? '💰 تصفية جديدة مكتملة' : `💰 وصل ${count} تصفيات جديدة`;
-                        const msg = count === 1
-                            ? `تم حفظ تصفية رقم ${firstRec.reconciliation_number} للكاشير ${cashierName}`
-                            : `تمت إضافة ${count} تصفيات جديدة للسجل الرئيسي`;
+                        const title = newReconciliationsCount === 1 ? '💰 تصفية جديدة مكتملة' : `💰 وصل ${newReconciliationsCount} تصفيات جديدة`;
+                        const msg = newReconciliationsCount === 1
+                            ? `تم حفظ تصفية رقم ${firstNewRec.reconciliation_number}`
+                            : `تمت إضافة ${newReconciliationsCount} تصفيات جديدة للسجل الرئيسي`;
 
-                        await this.sendOneSignalNotification(title, msg, {
+                        // Send async notification
+                        this.sendOneSignalNotification(title, msg, {
                             type: 'new_reconciliation',
-                            count: count,
-                            rec_number: firstRec.reconciliation_number
-                        });
+                            count: newReconciliationsCount,
+                            rec_number: firstNewRec.reconciliation_number
+                        }).catch(e => console.error('Notification send failed:', e));
                     }
                 }
 
