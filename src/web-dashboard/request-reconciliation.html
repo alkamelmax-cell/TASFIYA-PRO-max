@@ -560,10 +560,21 @@
                 backBtn.href = '#';
                 backBtn.onclick = function (e) {
                     e.preventDefault();
-                    if (confirm('هل أنت متأكد من تسجيل الخروج؟')) {
-                        localStorage.removeItem('user');
-                        window.location.href = '/login.html';
-                    }
+                    Swal.fire({
+                        title: 'تسجيل الخروج',
+                        text: 'هل أنت متأكد من تسجيل الخروج؟',
+                        icon: 'warning',
+                        showCancelButton: true,
+                        confirmButtonColor: '#d33',
+                        cancelButtonColor: '#3085d6',
+                        confirmButtonText: 'نعم، خروج',
+                        cancelButtonText: 'إلغاء'
+                    }).then((result) => {
+                        if (result.isConfirmed) {
+                            localStorage.removeItem('user');
+                            window.location.href = '/login.html';
+                        }
+                    });
                 };
             }
         }
@@ -628,6 +639,25 @@
 
         document.getElementById('systemSales').addEventListener('input', updateUI);
 
+        // --- Toast Notification Helper ---
+        const Toast = Swal.mixin({
+            toast: true,
+            position: 'top-end',
+            showConfirmButton: false,
+            timer: 3000,
+            timerProgressBar: true,
+            background: '#1e293b',
+            color: '#fff',
+            didOpen: (toast) => {
+                toast.addEventListener('mouseenter', Swal.stopTimer)
+                toast.addEventListener('mouseleave', Swal.resumeTimer)
+            }
+        });
+
+        const showToast = (icon, title) => {
+            Toast.fire({ icon, title });
+        };
+
         // --- Helper: Add Row ---
         function addRow(tbodyId, data, index, fields) {
             const tbody = document.getElementById(tbodyId);
@@ -638,7 +668,6 @@
         }
 
         // --- Add Handlers ---
-        // --- Add Handlers ---
         function addCashItem() {
             const denomSelect = document.getElementById('cashDenomSelect');
             const countInput = document.getElementById('cashCountInput');
@@ -647,20 +676,20 @@
             const qty = parseFloat(countInput.value);
 
             if (!val || !qty || qty <= 0) {
-                alert('الرجاء اختيار الفئة وإدخال العدد');
+                showToast('warning', 'الرجاء اختيار الفئة وإدخال العدد بشكل صحيح');
                 return;
             }
 
             const sub = val * qty;
             cashItems.push({ val, qty, sub });
-            // Sort (optional)
             cashItems.sort((a, b) => b.val - a.val);
 
             renderTable('cashTableBody', cashItems, ['val', 'qty', 'sub']);
 
             countInput.value = '';
-            document.getElementById('cashDenomSelect').focus(); // Auto focus back
+            document.getElementById('cashDenomSelect').focus();
             updateUI();
+            showToast('success', 'تمت إضافة النقدية');
         }
 
         function addBankItem() {
@@ -669,58 +698,86 @@
             const opText = opEl.options[opEl.selectedIndex].text;
 
             const atm = document.getElementById('bankAtmName').value;
-
-            // RADICAL FIX: Read from the NEW UNIQUE ID
             const bankVal = document.getElementById('input_bank_name_v2').value;
             const amt = parseFloat(document.getElementById('input_bank_amount_v2').value);
 
-            if (!amt) return;
+            if (!amt || amt <= 0) {
+                showToast('warning', 'الرجاء إدخال المبلغ بشكل صحيح');
+                return;
+            }
 
             bankItems.push({ op: opType, opText: opText, atm: atm || '-', entry_bank_name: bankVal || '-', amount: amt });
             renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
 
-            // Clear NEW inputs
             document.getElementById('input_bank_amount_v2').value = '';
             document.getElementById('bankOpType').focus();
             updateUI();
+            showToast('success', 'تمت إضافة عملية البنك');
         }
 
         function addPostpaidItem() {
             const customer_name = document.getElementById('postpaidName').value;
             const amt = parseFloat(document.getElementById('postpaidAmount').value);
-            if (!customer_name || !amt) return;
+
+            if (!customer_name) {
+                showToast('warning', 'الرجاء إدخال اسم العميل');
+                return;
+            }
+            if (!amt || amt <= 0) {
+                showToast('warning', 'الرجاء إدخال المبلغ');
+                return;
+            }
 
             postpaidItems.push({ customer_name, amount: amt });
             renderTable('postpaidTableBody', postpaidItems, ['customer_name', 'amount']);
             document.getElementById('postpaidName').value = ''; document.getElementById('postpaidAmount').value = '';
-            document.getElementById('postpaidName').focus(); // Auto focus back
+            document.getElementById('postpaidName').focus();
             updateUI();
+            showToast('success', 'تمت إضافة المبيعات الآجلة');
         }
 
         function addCustomerReceiptItem() {
             const customer_name = document.getElementById('custReceiptName').value;
             const type = document.getElementById('custReceiptType').value;
             const amt = parseFloat(document.getElementById('custReceiptAmount').value);
-            if (!customer_name || !amt) return;
+
+            if (!customer_name) {
+                showToast('warning', 'الرجاء إدخال اسم العميل');
+                return;
+            }
+            if (!amt || amt <= 0) {
+                showToast('warning', 'الرجاء إدخال المبلغ');
+                return;
+            }
 
             custReceiptItems.push({ customer_name, type, amount: amt });
             renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
             document.getElementById('custReceiptName').value = ''; document.getElementById('custReceiptAmount').value = '';
-            document.getElementById('custReceiptName').focus(); // Auto focus back
+            document.getElementById('custReceiptName').focus();
             updateUI();
+            showToast('success', 'تمت إضافة المقبوضات');
         }
 
         function addReturnItem() {
             const num = document.getElementById('returnInv').value;
             const amt = parseFloat(document.getElementById('returnAmount').value);
             const note = document.getElementById('returnNote').value;
-            if (!num || !amt) return;
+
+            if (!num) {
+                showToast('warning', 'الرجاء إدخال رقم الفاتورة');
+                return;
+            }
+            if (!amt || amt <= 0) {
+                showToast('warning', 'الرجاء إدخال المبلغ');
+                return;
+            }
 
             returnItems.push({ num, amount: amt, note });
             renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
             document.getElementById('returnInv').value = ''; document.getElementById('returnAmount').value = ''; document.getElementById('returnNote').value = '';
-            document.getElementById('returnInv').focus(); // Auto focus back
+            document.getElementById('returnInv').focus();
             updateUI();
+            showToast('success', 'تم إضافة المرتجع');
         }
 
         function addSupplierItem() {
@@ -728,20 +785,29 @@
             const invoice_number = document.getElementById('supplierInv').value;
             const amt = parseFloat(document.getElementById('supplierAmount').value);
 
-            if (!supplier_name || !amt) return;
+            if (!supplier_name) {
+                showToast('warning', 'الرجاء إدخال اسم المورد');
+                return;
+            }
+            if (!amt || amt <= 0) {
+                showToast('warning', 'الرجاء إدخال المبلغ');
+                return;
+            }
 
             supplierItems.push({ supplier_name, invoice_number, amount: amt });
             renderTable('supplierTableBody', supplierItems, ['supplier_name', 'invoice_number', 'amount']);
             document.getElementById('supplierName').value = ''; document.getElementById('supplierAmount').value = '';
-            document.getElementById('supplierInv').value = ''; // Also clear invoice
-            document.getElementById('supplierName').focus(); // Auto focus back
+            document.getElementById('supplierInv').value = '';
+            document.getElementById('supplierName').focus();
             updateUI();
+            showToast('success', 'تمت إضافة المصروفات');
         }
 
         function removeSupplierItem(idx) {
             supplierItems.splice(idx, 1);
             renderTable('supplierTableBody', supplierItems, ['supplier_name', 'invoice_number', 'amount']);
             updateUI();
+            showToast('info', 'تم الحذف');
         }
 
         // --- NEW REMOVE FUNCTIONS ---
@@ -749,24 +815,28 @@
             bankItems.splice(idx, 1);
             renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
             updateUI();
+            showToast('info', 'تم الحذف');
         }
 
         function removePostpaidItem(idx) {
             postpaidItems.splice(idx, 1);
             renderTable('postpaidTableBody', postpaidItems, ['customer_name', 'amount']);
             updateUI();
+            showToast('info', 'تم الحذف');
         }
 
         function removeCustReceiptItem(idx) {
             custReceiptItems.splice(idx, 1);
             renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
             updateUI();
+            showToast('info', 'تم الحذف');
         }
 
         function removeReturnItem(idx) {
             returnItems.splice(idx, 1);
             renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
             updateUI();
+            showToast('info', 'تم الحذف');
         }
 
         // --- Generic Render & Remove ---
@@ -816,6 +886,7 @@
             // if (tableId === 'supplierTableBody') renderTable(tableId, supplierItems, ['supplier_name', 'invoice_number', 'amount']);
 
             updateUI();
+            showToast('info', 'تم الحذف');
         };
 
         // --- Submit ---
