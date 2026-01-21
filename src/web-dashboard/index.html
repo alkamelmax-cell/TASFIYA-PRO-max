@@ -15,8 +15,13 @@
     <!-- Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
+
     <!-- Custom CSS -->
     <link rel="stylesheet" href="css/custom.css?v=17">
+
+    <!-- OneSignal SDK -->
+    <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+
 </head>
 
 <body>
@@ -229,10 +234,29 @@
         const user = JSON.parse(userStr || '{}');
         document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
 
+
         // Redirect Cashier Immediately
         if (user.role === 'cashier') {
             window.location.href = 'request-reconciliation.html';
         }
+
+        // Initialize OneSignal for Admin users only
+        if (user.role === 'admin' || !user.role) {
+            window.OneSignalDeferred = window.OneSignalDeferred || [];
+            OneSignalDeferred.push(async function (OneSignal) {
+                await OneSignal.init({
+                    appId: "os_v2_app_dn3xr5ipevg7riubmenwqkuwjtawhyjjuy3ul2urlqseuwxemciq5aknyw7rq5qfb7kctrraudf4pevr375o3twsn4odam5zy47tjva",
+                    allowLocalhostAsSecureOrigin: true,
+                });
+
+                // Tag user as admin for targeted notifications
+                await OneSignal.User.addTag("role", "admin");
+                await OneSignal.User.addTag("userId", user.id || "unknown");
+
+                console.log("✅ OneSignal initialized for admin:", user.name);
+            });
+        }
+
 
         // Check Permissions
         const protectedPages = [

@@ -830,7 +830,24 @@ class LocalWebServer {
                     data.notes || ''
                 );
 
+
+                // Get cashier name for notification
+                const cashier = await this.dbManager.db.prepare("SELECT name FROM cashiers WHERE id = ?").get(data.cashier_id);
+                const cashierName = cashier ? cashier.name : 'كاشير';
+
+                // Send OneSignal notification to admins
+                await this.sendOneSignalNotification(
+                    '📋 طلب تصفية جديد',
+                    `تم استلام طلب تصفية جديد من ${cashierName}`,
+                    {
+                        type: 'new_reconciliation_request',
+                        cashier_id: data.cashier_id,
+                        cashier_name: cashierName
+                    }
+                );
+
                 this.sendJson(res, { success: true });
+
             } catch (error) {
                 console.error('Create Request Error:', error);
                 this.sendJson(res, { success: false, error: error.message });
@@ -962,6 +979,21 @@ class LocalWebServer {
                     // Archive Request
                     await tx.prepare("UPDATE reconciliation_requests SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
                 });
+
+                // Get cashier name for notification
+                const cashierInfo = await this.dbManager.db.prepare("SELECT name FROM cashiers WHERE id = ?").get(cashierId);
+                const cashierName = cashierInfo ? cashierInfo.name : 'كاشير';
+
+                // Send notification about new completed reconciliation
+                await this.sendOneSignalNotification(
+                    '✅  تصفية جديدة مكتملة',
+                    `تم اعتماد تصفية رقم ${newRecNum} للكاشير ${cashierName}`,
+                    {
+                        type: 'reconciliation_approved',
+                        reconciliation_number: newRecNum,
+                        cashier_name: cashierName
+                    }
+                );
 
                 this.sendJson(res, { success: true });
 
@@ -1296,6 +1328,46 @@ class LocalWebServer {
             this.sendJson(res, { success: true });
         } catch (error) {
             this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    async sendOneSignalNotification(title, message, data = {}) {
+        try {
+            const appId = "os_v2_app_dn3xr5ipevg7riubmenwqkuwjtawhyjjuy3ul2urlqseuwxemciq5aknyw7rq5qfb7kctrraudf4pevr375o3twsn4odam5zy47tjva";
+            const restApiKey = "1b7778f5-0f25-4df8-a281-611b682a964c";
+
+            const notificationPayload = {
+                app_id: appId,
+                headings: { en: title, ar: title },
+                contents: { en: message, ar: message },
+                data: data,
+                // Target only users tagged as admin
+                filters: [
+                    { field: "tag", key: "role", relation: "=", value: "admin" }
+                ]
+            };
+
+            const response = await fetch('https://onesignal.com/api/v1/notifications', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                    'Authorization': `Basic ${restApiKey}`
+                },
+                body: JSON.stringify(notificationPayload)
+            });
+
+            const result = await response.json();
+
+            if (response.ok) {
+                console.log('🔔 OneSignal notification sent:', result);
+                return { success: true, result };
+            } else {
+                console.error('❌ OneSignal error:', result);
+                return { success: false, error: result };
+            }
+        } catch (error) {
+            console.error('❌ OneSignal request failed:', error);
+            return { success: false, error: error.message };
         }
     }
 
