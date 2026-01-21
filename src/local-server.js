@@ -1391,23 +1391,19 @@ class LocalWebServer {
                 body: JSON.stringify(notificationPayload)
             });
 
-            // Log raw response status
-            console.log(`🔔 OneSignal API Status: ${response.status}`);
 
             const result = await response.json();
 
             if (response.ok) {
-                console.log('✅ OneSignal Notification SUCCESS:', result);
+                // Log only ID to keep console clean
+                // console.log('✅ Notification Sent:', result.id);
                 return { success: true, result };
             } else {
-                console.error('❌ OneSignal Notification FAILED:', result);
-                if (result.errors) {
-                    console.error('   Details:', JSON.stringify(result.errors));
-                }
+                console.error('❌ Notification Failed:', result);
                 return { success: false, error: result };
             }
         } catch (error) {
-            console.error('❌ OneSignal Network/Code Error:', error);
+            console.error('❌ Notification Error:', error.message);
             return { success: false, error: error.message };
         }
     }
