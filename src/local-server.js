@@ -1334,8 +1334,7 @@ class LocalWebServer {
     async sendOneSignalNotification(title, message, data = {}) {
         try {
             const appId = "1b7778f5-0f25-4df8-a281-611b682a964c";
-            // TODO: Replace with correct REST API Key from user
-            const restApiKey = "1b7778f5-0f25-4df8-a281-611b682a964c";
+            const restApiKey = "os_v2_app_dn3xr5ipevg7riubmenwqkuwjrah3jplvivu7l463ws63qwhb7vhsl2wzq7rfg5u37cocmuzwwjhesyoz2xgtnxxhzk7gbbq3kbahii";
 
             const notificationPayload = {
                 app_id: appId,
