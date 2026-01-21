@@ -255,19 +255,12 @@
                     const userId = user.id ? String(user.id) : "unknown";
                     await OneSignal.User.addTag("userId", userId);
 
-                    console.log("✅ OneSignal initialized for admin:", user.name);
-
                     // Request notification permission
-                    const permission = await OneSignal.Notifications.permissionNative;
-                    console.log("📱 Current permission:", permission);
-
-                    if (permission === "default") {
-                        // Show native prompt
-                        const result = await OneSignal.Notifications.requestPermission();
-                        console.log("📱 Permission result:", result);
+                    if (OneSignal.Notifications.permission === "default") {
+                        await OneSignal.Notifications.requestPermission();
                     }
                 } catch (error) {
-                    console.error("❌ OneSignal initialization error:", error);
+                    console.error("OneSignal Error:", error);
                 }
             });
         }
