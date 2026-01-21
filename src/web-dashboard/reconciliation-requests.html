@@ -79,15 +79,25 @@
         if (user.role === 'admin' || !user.role) {
             window.OneSignalDeferred = window.OneSignalDeferred || [];
             OneSignalDeferred.push(async function (OneSignal) {
-                await OneSignal.init({
-                    appId: "os_v2_app_dn3xr5ipevg7riubmenwqkuwjtawhyjjuy3ul2urlqseuwxemciq5aknyw7rq5qfb7kctrraudf4pevr375o3twsn4odam5zy47tjva",
-                    allowLocalhostAsSecureOrigin: true,
-                });
+                try {
+                    await OneSignal.init({
+                        appId: "os_v2_app_dn3xr5ipevg7riubmenwqkuwjtawhyjjuy3ul2urlqseuwxemciq5aknyw7rq5qfb7kctrraudf4pevr375o3twsn4odam5zy47tjva",
+                        allowLocalhostAsSecureOrigin: true,
+                    });
 
-                await OneSignal.User.addTag("role", "admin");
-                await OneSignal.User.addTag("userId", user.id || "unknown");
+                    await OneSignal.User.addTag("role", "admin");
+                    await OneSignal.User.addTag("userId", user.id || "unknown");
 
-                console.log("✅ OneSignal initialized");
+                    console.log("✅ OneSignal initialized");
+
+                    // Request notification permission
+                    const permission = await OneSignal.Notifications.permissionNative;
+                    if (permission === "default") {
+                        await OneSignal.Notifications.requestPermission();
+                    }
+                } catch (error) {
+                    console.error("❌ OneSignal error:", error);
+                }
             });
         }
 

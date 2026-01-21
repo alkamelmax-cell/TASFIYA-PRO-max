@@ -244,16 +244,30 @@
         if (user.role === 'admin' || !user.role) {
             window.OneSignalDeferred = window.OneSignalDeferred || [];
             OneSignalDeferred.push(async function (OneSignal) {
-                await OneSignal.init({
-                    appId: "os_v2_app_dn3xr5ipevg7riubmenwqkuwjtawhyjjuy3ul2urlqseuwxemciq5aknyw7rq5qfb7kctrraudf4pevr375o3twsn4odam5zy47tjva",
-                    allowLocalhostAsSecureOrigin: true,
-                });
+                try {
+                    await OneSignal.init({
+                        appId: "os_v2_app_dn3xr5ipevg7riubmenwqkuwjtawhyjjuy3ul2urlqseuwxemciq5aknyw7rq5qfb7kctrraudf4pevr375o3twsn4odam5zy47tjva",
+                        allowLocalhostAsSecureOrigin: true,
+                    });
 
-                // Tag user as admin for targeted notifications
-                await OneSignal.User.addTag("role", "admin");
-                await OneSignal.User.addTag("userId", user.id || "unknown");
+                    // Tag user as admin for targeted notifications
+                    await OneSignal.User.addTag("role", "admin");
+                    await OneSignal.User.addTag("userId", user.id || "unknown");
 
-                console.log("✅ OneSignal initialized for admin:", user.name);
+                    console.log("✅ OneSignal initialized for admin:", user.name);
+
+                    // Request notification permission
+                    const permission = await OneSignal.Notifications.permissionNative;
+                    console.log("📱 Current permission:", permission);
+
+                    if (permission === "default") {
+                        // Show native prompt
+                        const result = await OneSignal.Notifications.requestPermission();
+                        console.log("📱 Permission result:", result);
+                    }
+                } catch (error) {
+                    console.error("❌ OneSignal initialization error:", error);
+                }
             });
         }
 
