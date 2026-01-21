@@ -139,12 +139,12 @@
                     <label class="custom-label">إلى تاريخ</label>
                     <input type="date" class="custom-input w-100" id="filterDateTo">
                 </div>
-                <!-- <div class="col-6 col-md-2">
+                <div class="col-6 col-md-2">
                     <label class="custom-label">الفرع</label>
                     <select class="custom-input form-select w-100" id="filterBranch">
-                        <option value="all">الكل</option>
+                        <option value="all">جميع الفروع</option>
                     </select>
-                </div> -->
+                </div>
                 <div class="col-6 col-md-2">
                     <label class="custom-label">الكاشير</label>
                     <select class="custom-input form-select w-100" id="filterCashier">
@@ -286,6 +286,17 @@
                 const res = await fetch(`${API_URL}/lookups`);
                 const data = await res.json();
                 if (data.success) {
+                    const branchSelect = document.getElementById('filterBranch');
+                    // Check if branches exist in response
+                    if (data.branches) {
+                        data.branches.forEach(b => {
+                            const opt = document.createElement('option');
+                            opt.value = b.id;
+                            opt.textContent = b.name;
+                            branchSelect.appendChild(opt);
+                        });
+                    }
+
                     const cashierSelect = document.getElementById('filterCashier');
                     data.cashiers.forEach(c => {
                         const opt = document.createElement('option');
@@ -300,14 +311,16 @@
         async function loadReconciliations() {
             const dateFrom = document.getElementById('filterDateFrom').value;
             const dateTo = document.getElementById('filterDateTo').value;
+            const branchId = document.getElementById('filterBranch').value;
             const cashierId = document.getElementById('filterCashier').value;
             const status = document.getElementById('filterStatus').value;
 
             const params = new URLSearchParams();
             if (dateFrom) params.append('dateFrom', dateFrom);
             if (dateTo) params.append('dateTo', dateTo);
-            if (cashierId) params.append('cashierId', cashierId);
-            if (status) params.append('status', status);
+            if (branchId && branchId !== 'all') params.append('branchId', branchId);
+            if (cashierId && cashierId !== 'all') params.append('cashierId', cashierId);
+            if (status && status !== 'all') params.append('status', status);
 
             showLoading(true);
             try {
