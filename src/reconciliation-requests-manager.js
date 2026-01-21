@@ -324,6 +324,7 @@
             details: details,
             notes: `📥 طلب من Web: ${request.cashier_name} (${new Date(request.created_at).toLocaleString('en-GB')})\n${request.notes || ''}`,
             cashierName: request.cashier_name,
+            cashierId: request.cashier_id, // Ensure ID is passed
             branchName: request.branch_name
         };
 
@@ -339,21 +340,7 @@
             const notesInput = document.getElementById('filterNotes');
             if (notesInput) notesInput.value = window.pendingReconciliationData.notes;
 
-            // 3. Set Cashier (Search by name in dropdown)
-            const cashierSelect = document.getElementById('cashierSelect');
-            if (cashierSelect && window.pendingReconciliationData.cashierName) {
-                const nameToFind = window.pendingReconciliationData.cashierName;
-                for (let i = 0; i < cashierSelect.options.length; i++) {
-                    const option = cashierSelect.options[i];
-                    if (option.text.includes(nameToFind)) {
-                        cashierSelect.value = option.value;
-                        cashierSelect.dispatchEvent(new Event('change'));
-                        break;
-                    }
-                }
-            }
-
-            // 4. Set Branch (Search by name in dropdown)
+            // 3. Set Branch FIRST (To filter cashiers properly)
             const branchSelect = document.getElementById('branchSelect');
             if (branchSelect && window.pendingReconciliationData.branchName) {
                 const branchToFind = window.pendingReconciliationData.branchName;
@@ -361,16 +348,54 @@
 
                 for (let i = 0; i < branchSelect.options.length; i++) {
                     const option = branchSelect.options[i];
-                    // Match if option text contains the branch name
                     if (option.text.includes(branchToFind) || branchToFind.includes(option.text)) {
                         branchSelect.value = option.value;
                         console.log('✅ [REVIEW] Branch selected:', option.text);
-                        // Trigger change to update related fields (if any)
                         branchSelect.dispatchEvent(new Event('change'));
                         break;
                     }
                 }
             }
+
+            // 4. Set Cashier (Wait for branch change to propagate)
+            setTimeout(() => {
+                const cashierSelect = document.getElementById('cashierSelect');
+                if (cashierSelect) {
+                    let found = false;
+
+                    // Try finding by ID first (Most accurate)
+                    if (window.pendingReconciliationData.cashierId) {
+                        const option = Array.from(cashierSelect.options).find(o => o.value == window.pendingReconciliationData.cashierId);
+                        if (option) {
+                            cashierSelect.value = window.pendingReconciliationData.cashierId;
+                            found = true;
+                            console.log('✅ [REVIEW] Cashier matched by ID:', window.pendingReconciliationData.cashierId);
+                        }
+                    }
+
+                    // Fallback to Name
+                    if (!found && window.pendingReconciliationData.cashierName) {
+                        const nameToFind = window.pendingReconciliationData.cashierName;
+                        console.log('⚠️ [REVIEW] Cashier ID match failed, verifying by name:', nameToFind);
+
+                        for (let i = 0; i < cashierSelect.options.length; i++) {
+                            const option = cashierSelect.options[i];
+                            if (option.text.includes(nameToFind)) {
+                                cashierSelect.value = option.value;
+                                found = true;
+                                console.log('✅ [REVIEW] Cashier matched by Name:', option.text);
+                                break;
+                            }
+                        }
+                    }
+
+                    if (found) {
+                        cashierSelect.dispatchEvent(new Event('change'));
+                    } else {
+                        console.warn('❌ [REVIEW] Cashier could not be auto-selected');
+                    }
+                }
+            }, 300); // Small delay to allow branch change to update cashier list
 
             // Scroll to top
             window.scrollTo({ top: 0, behavior: 'smooth' });
