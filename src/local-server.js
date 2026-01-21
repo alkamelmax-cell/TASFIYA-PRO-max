@@ -840,9 +840,10 @@ class LocalWebServer {
     async handleGetReconciliationRequests(res) {
         try {
             const sql = `
-                SELECT r.*, c.name as cashier_name 
+                SELECT r.*, c.name as cashier_name, b.branch_name 
                 FROM reconciliation_requests r
                 LEFT JOIN cashiers c ON r.cashier_id = c.id
+                LEFT JOIN branches b ON c.branch_id = b.id
                 WHERE r.status = 'pending'
                 ORDER BY r.created_at DESC
                 `;
