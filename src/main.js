@@ -21,30 +21,30 @@ const { startBackgroundSync } = require('./background-sync');
  * Safe console logging that won't crash on EPIPE errors
  */
 function safeLog(message) {
-  try {
-    console.log(message);
-  } catch (error) {
-    // Ignore EPIPE and other console errors
-    if (error.code !== 'EPIPE' && error.syscall !== 'write') {
-      // Only log if it's not a known console error
+    try {
+        console.log(message);
+    } catch (error) {
+        // Ignore EPIPE and other console errors
+        if (error.code !== 'EPIPE' && error.syscall !== 'write') {
+            // Only log if it's not a known console error
+        }
     }
-  }
 }
 
 function safeWarn(message) {
-  try {
-    console.warn(message);
-  } catch (error) {
-    // Ignore EPIPE and other console errors
-  }
+    try {
+        console.warn(message);
+    } catch (error) {
+        // Ignore EPIPE and other console errors
+    }
 }
 
 function safeError(message) {
-  try {
-    console.error(message);
-  } catch (error) {
-    // Ignore EPIPE and other console errors
-  }
+    try {
+        console.error(message);
+    } catch (error) {
+        // Ignore EPIPE and other console errors
+    }
 }
 
 /**
@@ -52,69 +52,69 @@ function safeError(message) {
  * الحصول على الطابعات من نظام Windows باستخدام WMIC أو PowerShell
  */
 function getSystemPrinters() {
-  try {
-    let printers = [];
-
-    // Try Method 1: WMIC (Windows Management Instrumentation Command-line)
     try {
-      const wmicCommand = `wmic printerjob list brief`;
-      const output = execSync(wmicCommand, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 5000 });
+        let printers = [];
 
-      if (output && output.includes('Name')) {
-        // WMIC returned something, parse it
-        const lines = output.split('\n').slice(1); // Skip header
-        printers = lines
-          .map(line => line.trim())
-          .filter(line => line.length > 0)
-          .map(name => ({
-            name: name,
-            displayName: name,
-            description: 'طابعة النظام',
-            status: 'ready',
-            isDefault: false
-          }));
+        // Try Method 1: WMIC (Windows Management Instrumentation Command-line)
+        try {
+            const wmicCommand = `wmic printerjob list brief`;
+            const output = execSync(wmicCommand, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 5000 });
 
-        if (printers.length > 0) {
-          safeLog(`✅ [PRINTERS] تم الحصول على ${printers.length} طابعة من WMIC`);
-          return printers;
+            if (output && output.includes('Name')) {
+                // WMIC returned something, parse it
+                const lines = output.split('\n').slice(1); // Skip header
+                printers = lines
+                    .map(line => line.trim())
+                    .filter(line => line.length > 0)
+                    .map(name => ({
+                        name: name,
+                        displayName: name,
+                        description: 'طابعة النظام',
+                        status: 'ready',
+                        isDefault: false
+                    }));
+
+                if (printers.length > 0) {
+                    safeLog(`✅ [PRINTERS] تم الحصول على ${printers.length} طابعة من WMIC`);
+                    return printers;
+                }
+            }
+        } catch (wmicError) {
+            // WMIC failed, try PowerShell
         }
-      }
-    } catch (wmicError) {
-      // WMIC failed, try PowerShell
-    }
 
-    // Try Method 2: PowerShell - Get-Printer
-    try {
-      const psCommand = `powershell -NoProfile -Command "Get-Printer -ErrorAction SilentlyContinue | Select-Object Name | ForEach-Object { if ($_.Name) { $_.Name } }"`;
-      const output = execSync(psCommand, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 5000 });
+        // Try Method 2: PowerShell - Get-Printer
+        try {
+            const psCommand = `powershell -NoProfile -Command "Get-Printer -ErrorAction SilentlyContinue | Select-Object Name | ForEach-Object { if ($_.Name) { $_.Name } }"`;
+            const output = execSync(psCommand, { encoding: 'utf-8', stdio: ['pipe', 'pipe', 'ignore'], timeout: 5000 });
 
-      if (output) {
-        printers = output.split('\n')
-          .map(line => line.trim())
-          .filter(line => line.length > 0 && line !== '' && line !== 'Name' && !line.includes('-'))
-          .map(name => ({
-            name: name,
-            displayName: name,
-            description: 'طابعة النظام',
-            status: 'ready',
-            isDefault: false
-          }));
+            if (output) {
+                printers = output.split('\n')
+                    .map(line => line.trim())
+                    .filter(line => line.length > 0 && line !== '' && line !== 'Name' && !line.includes('-'))
+                    .map(name => ({
+                        name: name,
+                        displayName: name,
+                        description: 'طابعة النظام',
+                        status: 'ready',
+                        isDefault: false
+                    }));
 
-        if (printers.length > 0) {
-          safeLog(`✅ [PRINTERS] تم الحصول على ${printers.length} طابعة من PowerShell`);
-          return printers;
+                if (printers.length > 0) {
+                    safeLog(`✅ [PRINTERS] تم الحصول على ${printers.length} طابعة من PowerShell`);
+                    return printers;
+                }
+            }
+        } catch (psError) {
+            // PowerShell failed
         }
-      }
-    } catch (psError) {
-      // PowerShell failed
-    }
 
-    safeWarn('⚠️ [PRINTERS] لم يتم العثور على طابعات من النظام');
-    return [];
-  } catch (error) {
-    safeWarn('⚠️ [PRINTERS] فشل الحصول على الطابعات: ' + error.message);
-    return [];
-  }
+        safeWarn('⚠️ [PRINTERS] لم يتم العثور على طابعات من النظام');
+        return [];
+    } catch (error) {
+        safeWarn('⚠️ [PRINTERS] فشل الحصول على الطابعات: ' + error.message);
+        return [];
+    }
 }
 
 /**
@@ -129,131 +129,131 @@ function getSystemPrinters() {
  * Format date using Gregorian calendar only (DD/MM/YYYY format)
  */
 function formatDate(dateString) {
-  if (!dateString) return 'غير محدد';
+    if (!dateString) return 'غير محدد';
 
-  try {
-    const date = new Date(dateString);
-    if (isNaN(date.getTime())) return 'غير محدد';
+    try {
+        const date = new Date(dateString);
+        if (isNaN(date.getTime())) return 'غير محدد';
 
-    // Format as DD/MM/YYYY using English numbers
-    const day = String(date.getDate()).padStart(2, '0');
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const year = date.getFullYear();
+        // Format as DD/MM/YYYY using English numbers
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
 
-    return `${day}/${month}/${year}`;
-  } catch (error) {
-    console.error('Error formatting date:', error);
-    return 'غير محدد';
-  }
+        return `${day}/${month}/${year}`;
+    } catch (error) {
+        console.error('Error formatting date:', error);
+        return 'غير محدد';
+    }
 }
 
 /**
  * Format date and time using Gregorian calendar only
  */
 function formatDateTime(dateTimeString) {
-  if (!dateTimeString) return 'غير محدد';
+    if (!dateTimeString) return 'غير محدد';
 
-  try {
-    const date = new Date(dateTimeString);
-    if (isNaN(date.getTime())) return 'غير محدد';
+    try {
+        const date = new Date(dateTimeString);
+        if (isNaN(date.getTime())) return 'غير محدد';
 
-    // Format as DD/MM/YYYY HH:MM using English numbers
-    const day = String(date.getDate()).padStart(2, '0');
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const year = date.getFullYear();
-    const hours = String(date.getHours()).padStart(2, '0');
-    const minutes = String(date.getMinutes()).padStart(2, '0');
+        // Format as DD/MM/YYYY HH:MM using English numbers
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        const hours = String(date.getHours()).padStart(2, '0');
+        const minutes = String(date.getMinutes()).padStart(2, '0');
 
-    return `${day}/${month}/${year} ${hours}:${minutes}`;
-  } catch (error) {
-    console.error('Error formatting datetime:', error);
-    return 'غير محدد';
-  }
+        return `${day}/${month}/${year} ${hours}:${minutes}`;
+    } catch (error) {
+        console.error('Error formatting datetime:', error);
+        return 'غير محدد';
+    }
 }
 
 /**
  * Format numbers using English numerals
  */
 function formatNumber(number) {
-  if (number === null || number === undefined) return '0';
+    if (number === null || number === undefined) return '0';
 
-  try {
-    // Use English locale for number formatting
-    return new Intl.NumberFormat('en-US').format(number);
-  } catch (error) {
-    console.error('Error formatting number:', error);
-    return String(number);
-  }
+    try {
+        // Use English locale for number formatting
+        return new Intl.NumberFormat('en-US').format(number);
+    } catch (error) {
+        console.error('Error formatting number:', error);
+        return String(number);
+    }
 }
 
 /**
  * Get current date in DD/MM/YYYY format using Gregorian calendar
  */
 function getCurrentDate() {
-  return formatDate(new Date());
+    return formatDate(new Date());
 }
 
 /**
  * Get current date and time in DD/MM/YYYY HH:MM format using Gregorian calendar
  */
 function getCurrentDateTime() {
-  return formatDateTime(new Date());
+    return formatDateTime(new Date());
 }
 
 /**
  * Format currency amounts using English numerals
  */
 function formatCurrency(amount) {
-  if (amount === null || amount === undefined) return '0.00';
+    if (amount === null || amount === undefined) return '0.00';
 
-  try {
-    const numericAmount = parseFloat(amount);
-    if (isNaN(numericAmount)) return '0.00';
+    try {
+        const numericAmount = parseFloat(amount);
+        if (isNaN(numericAmount)) return '0.00';
 
-    // Format with 2 decimal places using English numbers
-    return numericAmount.toFixed(2);
-  } catch (error) {
-    console.error('Error formatting currency:', error);
-    return '0.00';
-  }
+        // Format with 2 decimal places using English numbers
+        return numericAmount.toFixed(2);
+    } catch (error) {
+        console.error('Error formatting currency:', error);
+        return '0.00';
+    }
 }
 
 /**
  * Format decimal numbers (percentages, averages, etc.) using English numerals
  */
 function formatDecimal(value, decimalPlaces = 2) {
-  if (value === null || value === undefined) return '0.00';
+    if (value === null || value === undefined) return '0.00';
 
-  try {
-    const numericValue = parseFloat(value);
-    if (isNaN(numericValue)) return '0.00';
+    try {
+        const numericValue = parseFloat(value);
+        if (isNaN(numericValue)) return '0.00';
 
-    // Format with specified decimal places using English numbers
-    return numericValue.toFixed(decimalPlaces);
-  } catch (error) {
-    console.error('Error formatting decimal:', error);
-    return '0.00';
-  }
+        // Format with specified decimal places using English numbers
+        return numericValue.toFixed(decimalPlaces);
+    } catch (error) {
+        console.error('Error formatting decimal:', error);
+        return '0.00';
+    }
 }
 
 // Set environment variables for proper development/production detection
 if (!process.env.NODE_ENV) {
-  // Check if running in development mode
-  const isDev = process.argv.includes('--dev');
-  process.env.NODE_ENV = isDev ? 'development' : 'production';
+    // Check if running in development mode
+    const isDev = process.argv.includes('--dev');
+    process.env.NODE_ENV = isDev ? 'development' : 'production';
 }
 
 // Handle EPIPE errors globally to prevent crashes
 process.stdout.on('error', (err) => {
-  if (err.code !== 'EPIPE') {
-    throw err;
-  }
+    if (err.code !== 'EPIPE') {
+        throw err;
+    }
 });
 
 process.stderr.on('error', (err) => {
-  if (err.code !== 'EPIPE') {
-    throw err;
-  }
+    if (err.code !== 'EPIPE') {
+        throw err;
+    }
 });
 
 console.log(`🚀 Application starting in ${process.env.NODE_ENV} mode`);
@@ -261,7 +261,7 @@ console.log(`🔧 Command line args: ${process.argv.join(' ')}`);
 
 // Ensure test scripts are not loaded in production
 if (process.env.NODE_ENV === 'production') {
-  console.log('🔒 Production mode: Test scripts will be disabled for optimal performance');
+    console.log('🔒 Production mode: Test scripts will be disabled for optimal performance');
 }
 
 // Keep a global reference of the window object
@@ -274,125 +274,125 @@ let thermalPrinter;
 let webServer;
 
 function createWindow() {
-  // Create the browser window with Arabic RTL support
-  mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 1200,
-    minHeight: 800,
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      enableRemoteModule: true
-    },
-    icon: path.join(__dirname, '../assets/icon.ico'),
-    title: 'تصفية برو - Tasfiya Pro',
-    show: true
-  });
+    // Create the browser window with Arabic RTL support
+    mainWindow = new BrowserWindow({
+        width: 1400,
+        height: 900,
+        minWidth: 1200,
+        minHeight: 800,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false,
+            enableRemoteModule: true
+        },
+        icon: path.join(__dirname, '../assets/icon.ico'),
+        title: 'تصفية برو - Tasfiya Pro',
+        show: true
+    });
 
-  // Load the index.html of the app
-  mainWindow.loadFile(path.join(__dirname, 'index.html'));
+    // Load the index.html of the app
+    mainWindow.loadFile(path.join(__dirname, 'index.html'));
 
-  // Show window when ready to prevent visual flash
-  mainWindow.once('ready-to-show', () => {
-    mainWindow.show();
-  });
+    // Show window when ready to prevent visual flash
+    mainWindow.once('ready-to-show', () => {
+        mainWindow.show();
+    });
 
-  // Open DevTools in development
-  if (process.argv.includes('--dev')) {
-    mainWindow.webContents.openDevTools();
-  }
+    // Open DevTools in development
+    if (process.argv.includes('--dev')) {
+        mainWindow.webContents.openDevTools();
+    }
 
-  // Emitted when the window is closed
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+    // Emitted when the window is closed
+    mainWindow.on('closed', () => {
+        mainWindow = null;
+    });
 }
 
 // Create print preview window
 function createPrintPreviewWindow(printData) {
-  console.log('🖨️ [PRINT] إنشاء نافذة معاينة الطباعة...');
+    console.log('🖨️ [PRINT] إنشاء نافذة معاينة الطباعة...');
 
-  // Close existing print preview window if open
-  if (printPreviewWindow && !printPreviewWindow.isDestroyed()) {
-    console.log('🖨️ [PRINT] إغلاق نافذة المعاينة السابقة...');
-    printPreviewWindow.close();
-    printPreviewWindow = null;
-  }
+    // Close existing print preview window if open
+    if (printPreviewWindow && !printPreviewWindow.isDestroyed()) {
+        console.log('🖨️ [PRINT] إغلاق نافذة المعاينة السابقة...');
+        printPreviewWindow.close();
+        printPreviewWindow = null;
+    }
 
-  // Create new print preview window
-  printPreviewWindow = new BrowserWindow({
-    width: 900,
-    height: 1200,
-    minWidth: 800,
-    minHeight: 1000,
-    webPreferences: {
-      nodeIntegration: true,
-      contextIsolation: false,
-      enableRemoteModule: true
-    },
-    title: 'معاينة الطباعة - Print Preview',
-    icon: path.join(__dirname, '../assets/icon.png'),
-    parent: mainWindow,
-    modal: false,
-    show: false,
-    autoHideMenuBar: true,
-    webSecurity: false
-  });
+    // Create new print preview window
+    printPreviewWindow = new BrowserWindow({
+        width: 900,
+        height: 1200,
+        minWidth: 800,
+        minHeight: 1000,
+        webPreferences: {
+            nodeIntegration: true,
+            contextIsolation: false,
+            enableRemoteModule: true
+        },
+        title: 'معاينة الطباعة - Print Preview',
+        icon: path.join(__dirname, '../assets/icon.png'),
+        parent: mainWindow,
+        modal: false,
+        show: false,
+        autoHideMenuBar: true,
+        webSecurity: false
+    });
 
-  // Get current print settings and merge with print data options
-  const printSettings = printManager ? printManager.getPrintSettings() : {};
-  const mergedOptions = { ...printSettings, ...(printData.options || {}) };
-  const printDataWithSettings = { ...printData, options: mergedOptions };
+    // Get current print settings and merge with print data options
+    const printSettings = printManager ? printManager.getPrintSettings() : {};
+    const mergedOptions = { ...printSettings, ...(printData.options || {}) };
+    const printDataWithSettings = { ...printData, options: mergedOptions };
 
-  // Generate print HTML content
-  const printHtml = generatePrintHtml(printDataWithSettings);
+    // Generate print HTML content
+    const printHtml = generatePrintHtml(printDataWithSettings);
 
-  // Load the print content
-  printPreviewWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(printHtml)}`);
+    // Load the print content
+    printPreviewWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(printHtml)}`);
 
-  // Show window when ready
-  printPreviewWindow.once('ready-to-show', () => {
-    console.log('✅ [PRINT] نافذة معاينة الطباعة جاهزة');
-    printPreviewWindow.show();
-    printPreviewWindow.focus();
-  });
+    // Show window when ready
+    printPreviewWindow.once('ready-to-show', () => {
+        console.log('✅ [PRINT] نافذة معاينة الطباعة جاهزة');
+        printPreviewWindow.show();
+        printPreviewWindow.focus();
+    });
 
-  // Handle window closed
-  printPreviewWindow.on('closed', () => {
-    console.log('🖨️ [PRINT] تم إغلاق نافذة معاينة الطباعة');
-    printPreviewWindow = null;
-  });
+    // Handle window closed
+    printPreviewWindow.on('closed', () => {
+        console.log('🖨️ [PRINT] تم إغلاق نافذة معاينة الطباعة');
+        printPreviewWindow = null;
+    });
 
-  // Handle any errors
-  printPreviewWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
-    console.error('❌ [PRINT] خطأ في تحميل نافذة المعاينة:', errorCode, errorDescription);
-  });
+    // Handle any errors
+    printPreviewWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription) => {
+        console.error('❌ [PRINT] خطأ في تحميل نافذة المعاينة:', errorCode, errorDescription);
+    });
 
-  return printPreviewWindow;
+    return printPreviewWindow;
 }
 
 // Handle adding new transaction to customer statement
 ipcMain.handle('add-statement-transaction', async (event, data) => {
-  try {
-    const { customerName, type, amount, reason } = data;
+    try {
+        const { customerName, type, amount, reason } = data;
 
-    if (!customerName || !type || amount <= 0) {
-      return { success: false, error: 'بيانات غير كاملة' };
-    }
+        if (!customerName || !type || amount <= 0) {
+            return { success: false, error: 'بيانات غير كاملة' };
+        }
 
-    // Get current date
-    const currentDate = new Date().toISOString().split('T')[0];
-    const currentDateTime = new Date().toISOString();
+        // Get current date
+        const currentDate = new Date().toISOString().split('T')[0];
+        const currentDateTime = new Date().toISOString();
 
-    // Get the last reconciliation number
-    const lastRecQuery = 'SELECT MAX(reconciliation_number) as max_num FROM reconciliations WHERE status = \'completed\'';
-    const lastRecResult = await dbManager.query(lastRecQuery);
-    const lastRecNum = lastRecResult[0]?.max_num || 0;
-    const newRecNum = parseInt(lastRecNum) + 1;
+        // Get the last reconciliation number
+        const lastRecQuery = 'SELECT MAX(reconciliation_number) as max_num FROM reconciliations WHERE status = \'completed\'';
+        const lastRecResult = await dbManager.query(lastRecQuery);
+        const lastRecNum = lastRecResult[0]?.max_num || 0;
+        const newRecNum = parseInt(lastRecNum) + 1;
 
-    // Create a new reconciliation record
-    const recInsertQuery = `
+        // Create a new reconciliation record
+        const recInsertQuery = `
       INSERT INTO reconciliations (
         reconciliation_number, 
         cashier_id, 
@@ -406,24 +406,24 @@ ipcMain.handle('add-statement-transaction', async (event, data) => {
       ) VALUES (?, 1, 1, ?, 0, 0, 0, 'completed', ?)
     `;
 
-    const recParams = [newRecNum, currentDate, currentDateTime];
+        const recParams = [newRecNum, currentDate, currentDateTime];
 
-    // Start a transaction to ensure both inserts succeed or fail together
-    await dbManager.run("BEGIN TRANSACTION");
+        // Start a transaction to ensure both inserts succeed or fail together
+        await dbManager.run("BEGIN TRANSACTION");
 
-    try {
-      const recResult = await dbManager.run(recInsertQuery, recParams);
+        try {
+            const recResult = await dbManager.run(recInsertQuery, recParams);
 
-      // Get the last inserted ID
-      const recId = recResult.lastInsertRowid;
-      if (!recId) {
-        throw new Error('فشل في إنشاء تصفية جديدة');
-      }
+            // Get the last inserted ID
+            const recId = recResult.lastInsertRowid;
+            if (!recId) {
+                throw new Error('فشل في إنشاء تصفية جديدة');
+            }
 
-      // Add the transaction based on type
-      if (type === 'receipt') {
-        // Customer receipt
-        const receiptInsertQuery = `
+            // Add the transaction based on type
+            if (type === 'receipt') {
+                // Customer receipt
+                const receiptInsertQuery = `
           INSERT INTO customer_receipts (
             reconciliation_id, 
             customer_name, 
@@ -434,16 +434,16 @@ ipcMain.handle('add-statement-transaction', async (event, data) => {
           ) VALUES (?, ?, ?, 'manual', ?, ?)
         `;
 
-        await dbManager.run(receiptInsertQuery, [
-          recId,
-          customerName,
-          amount,
-          reason || '',
-          currentDateTime
-        ]);
-      } else if (type === 'postpaid') {
-        // Postpaid sale
-        const postInsertQuery = `
+                await dbManager.run(receiptInsertQuery, [
+                    recId,
+                    customerName,
+                    amount,
+                    reason || '',
+                    currentDateTime
+                ]);
+            } else if (type === 'postpaid') {
+                // Postpaid sale
+                const postInsertQuery = `
           INSERT INTO postpaid_sales (
             reconciliation_id, 
             customer_name, 
@@ -453,125 +453,152 @@ ipcMain.handle('add-statement-transaction', async (event, data) => {
           ) VALUES (?, ?, ?, ?, ?)
         `;
 
-        await dbManager.run(postInsertQuery, [
-          recId,
-          customerName,
-          amount,
-          reason || '',
-          currentDateTime
-        ]);
-      }
+                await dbManager.run(postInsertQuery, [
+                    recId,
+                    customerName,
+                    amount,
+                    reason || '',
+                    currentDateTime
+                ]);
+            }
 
-      // Commit the transaction if all inserts succeeded
-      await dbManager.run("COMMIT");
-      return { success: true, id: recId };
+            // Commit the transaction if all inserts succeeded
+            await dbManager.run("COMMIT");
+            return { success: true, id: recId };
+        } catch (error) {
+            // Rollback the transaction if any insert failed
+            await dbManager.run("ROLLBACK");
+            console.error('Error adding statement transaction:', error);
+            return { success: false, error: `فشل في إضافة الحركة: ${error.message}` };
+        }
     } catch (error) {
-      // Rollback the transaction if any insert failed
-      await dbManager.run("ROLLBACK");
-      console.error('Error adding statement transaction:', error);
-      return { success: false, error: `فشل في إضافة الحركة: ${error.message}` };
+        console.error('Error in add-statement-transaction:', error);
+        return { success: false, error: error.message };
     }
-  } catch (error) {
-    console.error('Error in add-statement-transaction:', error);
-    return { success: false, error: error.message };
-  }
 });
 
 // Add print manager to window for renderer access
 app.whenReady().then(() => {
-  // Create print manager instance
-  printManager = new PrintManager();
-  printManager.initialize();
-
-  // Initialize thermal printer for 80mm receipts
-  thermalPrinter = new ThermalPrinter80mm();
-
-  // Load saved thermal printer settings from database after a short delay
-  setTimeout(() => {
-    if (dbManager) {
-      try {
-        const query = `SELECT setting_key, setting_value FROM system_settings WHERE category = 'thermal_printer'`;
-        const results = dbManager.db.prepare(query).all();
-
-        if (results && results.length > 0) {
-          const settings = {};
-          for (const row of results) {
-            const key = row.setting_key;
-            const value = row.setting_value;
-
-            // Convert string values back to proper types
-            if (value === 'true') {
-              settings[key] = true;
-            } else if (value === 'false') {
-              settings[key] = false;
-            } else if (!isNaN(value) && value !== '') {
-              settings[key] = parseInt(value);
-            } else {
-              settings[key] = value;
-            }
-          }
-
-          if (Object.keys(settings).length > 0) {
-            thermalPrinter.updateSettings(settings);
-            safeLog('✅ [THERMAL-PRINTER] تم تحميل الإعدادات المحفوظة من قاعدة البيانات');
-          }
+    // --- SYNC INITIALIZATION ---
+    // Ensure dbManager is initialized if it hasn't been already
+    if (!dbManager) {
+        try {
+            console.log('🔄 [APP] Initializing DatabaseManager for Background Sync...');
+            const DatabaseManager = require('./database');
+            dbManager = new DatabaseManager();
+            dbManager.initialize();
+        } catch (dbError) {
+            console.error('❌ [APP] Failed to initialize DatabaseManager:', dbError);
         }
-      } catch (loadError) {
-        safeWarn('⚠️ [THERMAL-PRINTER] فشل تحميل الإعدادات المحفوظة: ' + loadError.message);
-      }
     }
-  }, 500);
 
-  // Make print manager available to renderer process
-  ipcMain.handle('get-print-manager', () => printManager);
+    // Start background synchronization
+    try {
+        const { startBackgroundSync } = require('./background-sync');
+        if (dbManager) {
+            startBackgroundSync(dbManager);
+            console.log('✅ [APP] Background Sync Service Started');
+        } else {
+            console.error('❌ [APP] Cannot start sync: dbManager is null');
+        }
+    } catch (syncError) {
+        console.error('❌ [APP] Failed to start Background Sync Service:', syncError);
+    }
+    // ---------------------------
+
+    // Create print manager instance
+    printManager = new PrintManager();
+    printManager.initialize();
+
+    // Initialize thermal printer for 80mm receipts
+    thermalPrinter = new ThermalPrinter80mm();
+
+    // Load saved thermal printer settings from database after a short delay
+    setTimeout(() => {
+        if (dbManager) {
+            try {
+                const query = `SELECT setting_key, setting_value FROM system_settings WHERE category = 'thermal_printer'`;
+                const results = dbManager.db.prepare(query).all();
+
+                if (results && results.length > 0) {
+                    const settings = {};
+                    for (const row of results) {
+                        const key = row.setting_key;
+                        const value = row.setting_value;
+
+                        // Convert string values back to proper types
+                        if (value === 'true') {
+                            settings[key] = true;
+                        } else if (value === 'false') {
+                            settings[key] = false;
+                        } else if (!isNaN(value) && value !== '') {
+                            settings[key] = parseInt(value);
+                        } else {
+                            settings[key] = value;
+                        }
+                    }
+
+                    if (Object.keys(settings).length > 0) {
+                        thermalPrinter.updateSettings(settings);
+                        safeLog('✅ [THERMAL-PRINTER] تم تحميل الإعدادات المحفوظة من قاعدة البيانات');
+                    }
+                }
+            } catch (loadError) {
+                safeWarn('⚠️ [THERMAL-PRINTER] فشل تحميل الإعدادات المحفوظة: ' + loadError.message);
+            }
+        }
+    }, 500);
+
+    // Make print manager available to renderer process
+    ipcMain.handle('get-print-manager', () => printManager);
 });
 
 // Helper function to get font size for print
 function getFontSizeForPrint(fontSize) {
-  const fontSizes = {
-    'small': '12px',
-    'normal': '14px',
-    'large': '16px',
-    'extra-large': '18px'
-  };
-  return fontSizes[fontSize] || fontSizes['normal'];
+    const fontSizes = {
+        'small': '12px',
+        'normal': '14px',
+        'large': '16px',
+        'extra-large': '18px'
+    };
+    return fontSizes[fontSize] || fontSizes['normal'];
 }
 
 // Helper function to get optimized font size for A4 single page print
 function getEnhancedFontSizeForPrint(fontSize) {
-  const optimizedFontSizes = {
-    'small': '12px',    /* صغير - محسن للقراءة الواضحة */
-    'normal': '14px',   /* عادي - محسن للقراءة الواضحة */
-    'large': '16px',    /* كبير - محسن للقراءة الواضحة */
-    'extra-large': '18px' /* كبير جداً - محسن للقراءة الواضحة */
-  };
-  return optimizedFontSizes[fontSize] || optimizedFontSizes['normal'];
+    const optimizedFontSizes = {
+        'small': '12px',    /* صغير - محسن للقراءة الواضحة */
+        'normal': '14px',   /* عادي - محسن للقراءة الواضحة */
+        'large': '16px',    /* كبير - محسن للقراءة الواضحة */
+        'extra-large': '18px' /* كبير جداً - محسن للقراءة الواضحة */
+    };
+    return optimizedFontSizes[fontSize] || optimizedFontSizes['normal'];
 }
 
 // Generate print HTML with Arabic RTL support and A4 formatting
 function generatePrintHtml(printData) {
-  console.log('📄 [PRINT] إنشاء محتوى HTML للطباعة...');
+    console.log('📄 [PRINT] إنشاء محتوى HTML للطباعة...');
 
-  const { reconciliation, sections, options } = printData;
+    const { reconciliation, sections, options } = printData;
 
-  // Print HTML generation with filter enhancement fields support
+    // Print HTML generation with filter enhancement fields support
 
-  // Validate required data
-  if (!reconciliation) {
-    throw new Error('بيانات التصفية مطلوبة للطباعة');
-  }
+    // Validate required data
+    if (!reconciliation) {
+        throw new Error('بيانات التصفية مطلوبة للطباعة');
+    }
 
-  const currentDate = getCurrentDate();
-  const currentTime = getCurrentDateTime();
+    const currentDate = getCurrentDate();
+    const currentTime = getCurrentDateTime();
 
-  // Get print settings to determine if colored printing is enabled
-  const isColorPrint = options && options.color !== undefined ? options.color : false;
-  const fontSize = options && options.fontSize ? options.fontSize : 'normal';
-  console.log('🎨 [PRINT] إعداد الطباعة الملونة:', isColorPrint);
-  console.log('📝 [PRINT] حجم الخط المختار:', fontSize);
-  console.log('📏 [PRINT] حجم الخط المحسوب:', getEnhancedFontSizeForPrint(fontSize));
+    // Get print settings to determine if colored printing is enabled
+    const isColorPrint = options && options.color !== undefined ? options.color : false;
+    const fontSize = options && options.fontSize ? options.fontSize : 'normal';
+    console.log('🎨 [PRINT] إعداد الطباعة الملونة:', isColorPrint);
+    console.log('📝 [PRINT] حجم الخط المختار:', fontSize);
+    console.log('📏 [PRINT] حجم الخط المحسوب:', getEnhancedFontSizeForPrint(fontSize));
 
-  return `
+    return `
 <!DOCTYPE html>
 <html dir="rtl" lang="ar">
 <head>
@@ -1054,10 +1081,10 @@ function generatePrintHtml(printData) {
                 <span class="info-label">النطاق الزمني:</span>
                 <span class="info-value">
                     ${reconciliation.time_range_start && reconciliation.time_range_end ?
-        `من ${reconciliation.time_range_start} إلى ${reconciliation.time_range_end}` :
-        reconciliation.time_range_start ? `من ${reconciliation.time_range_start}` :
-          `إلى ${reconciliation.time_range_end}`
-      }
+                `من ${reconciliation.time_range_start} إلى ${reconciliation.time_range_end}` :
+                reconciliation.time_range_start ? `من ${reconciliation.time_range_start}` :
+                    `إلى ${reconciliation.time_range_end}`
+            }
                 </span>
             </div>
             ` : ''}
@@ -1124,11 +1151,11 @@ function generatePrintHtml(printData) {
  * @returns {string} CSS styles for non-colored printing
  */
 function generateNonColoredPrintStyles(isColorPrint) {
-  if (isColorPrint) {
-    return ''; // Return empty string if colored printing is enabled
-  }
+    if (isColorPrint) {
+        return ''; // Return empty string if colored printing is enabled
+    }
 
-  return `
+    return `
         <style id="non-colored-print-styles">
             /* Non-colored print styles - Apply black color to all elements */
             @media print {
@@ -1298,15 +1325,15 @@ function generateNonColoredPrintStyles(isColorPrint) {
 
 // Generate sections HTML based on selected sections
 function generateSectionsHtml(sections) {
-  let html = '';
+    let html = '';
 
-  if (!sections || typeof sections !== 'object') {
-    return html;
-  }
+    if (!sections || typeof sections !== 'object') {
+        return html;
+    }
 
-  // Bank Receipts Section
-  if (sections.bankReceipts && sections.bankReceipts.length > 0) {
-    html += `
+    // Bank Receipts Section
+    if (sections.bankReceipts && sections.bankReceipts.length > 0) {
+        html += `
     <div class="section">
         <div class="section-title">💳 المقبوضات البنكية</div>
         <table class="table">
@@ -1321,8 +1348,8 @@ function generateSectionsHtml(sections) {
             </thead>
             <tbody>`;
 
-    sections.bankReceipts.forEach((receipt, index) => {
-      html += `
+        sections.bankReceipts.forEach((receipt, index) => {
+            html += `
                 <tr>
                     <td>${index + 1}</td>
                     <td>${receipt.atm_name || 'غير محدد'}</td>
@@ -1330,10 +1357,10 @@ function generateSectionsHtml(sections) {
                     <td>${receipt.operation_type || 'غير محدد'}</td>
                     <td class="currency">${formatCurrency(receipt.amount)} ريال</td>
                 </tr>`;
-    });
+        });
 
-    const totalBankReceipts = sections.bankReceipts.reduce((sum, receipt) => sum + (receipt.amount || 0), 0);
-    html += `
+        const totalBankReceipts = sections.bankReceipts.reduce((sum, receipt) => sum + (receipt.amount || 0), 0);
+        html += `
                 <tr class="total-row">
                     <td colspan="4">الإجمالي</td>
                     <td class="currency">${formatCurrency(totalBankReceipts)} ريال</td>
@@ -1341,11 +1368,11 @@ function generateSectionsHtml(sections) {
             </tbody>
         </table>
     </div>`;
-  }
+    }
 
-  // Cash Receipts Section - Fixed to show all denominations properly
-  if (sections.cashReceipts && sections.cashReceipts.length > 0) {
-    html += `
+    // Cash Receipts Section - Fixed to show all denominations properly
+    if (sections.cashReceipts && sections.cashReceipts.length > 0) {
+        html += `
     <div class="section">
         <div class="section-title">💰 المقبوضات النقدية</div>
         <table class="table">
@@ -1359,27 +1386,27 @@ function generateSectionsHtml(sections) {
             </thead>
             <tbody>`;
 
-    // Sort by denomination descending for better readability
-    const sortedCashReceipts = [...sections.cashReceipts].sort((a, b) => (b.denomination || 0) - (a.denomination || 0));
+        // Sort by denomination descending for better readability
+        const sortedCashReceipts = [...sections.cashReceipts].sort((a, b) => (b.denomination || 0) - (a.denomination || 0));
 
-    sortedCashReceipts.forEach((receipt, index) => {
-      const denomination = formatNumber(receipt.denomination || 0);
-      const quantity = formatNumber(receipt.quantity || 0);
-      const totalAmount = formatNumber(formatCurrency(receipt.total_amount));
+        sortedCashReceipts.forEach((receipt, index) => {
+            const denomination = formatNumber(receipt.denomination || 0);
+            const quantity = formatNumber(receipt.quantity || 0);
+            const totalAmount = formatNumber(formatCurrency(receipt.total_amount));
 
-      html += `
+            html += `
                 <tr>
                     <td>${index + 1}</td>
                     <td>${denomination} ريال</td>
                     <td>${quantity}</td>
                     <td class="currency">${totalAmount} ريال</td>
                 </tr>`;
-    });
+        });
 
-    const totalCashReceipts = sections.cashReceipts.reduce((sum, receipt) => sum + (receipt.total_amount || 0), 0);
-    const totalQuantity = sections.cashReceipts.reduce((sum, receipt) => sum + (receipt.quantity || 0), 0);
+        const totalCashReceipts = sections.cashReceipts.reduce((sum, receipt) => sum + (receipt.total_amount || 0), 0);
+        const totalQuantity = sections.cashReceipts.reduce((sum, receipt) => sum + (receipt.quantity || 0), 0);
 
-    html += `
+        html += `
                 <tr class="total-row">
                     <td>-</td>
                     <td>الإجمالي</td>
@@ -1389,11 +1416,11 @@ function generateSectionsHtml(sections) {
             </tbody>
         </table>
     </div>`;
-  }
+    }
 
-  // Postpaid Sales Section
-  if (sections.postpaidSales && sections.postpaidSales.length > 0) {
-    html += `
+    // Postpaid Sales Section
+    if (sections.postpaidSales && sections.postpaidSales.length > 0) {
+        html += `
     <div class="section">
         <div class="section-title">📱 المبيعات الآجلة</div>
         <table class="table">
@@ -1406,8 +1433,8 @@ function generateSectionsHtml(sections) {
             </thead>
             <tbody>`;
 
-    sections.postpaidSales.forEach((sale, index) => {
-      html += `
+        sections.postpaidSales.forEach((sale, index) => {
+            html += `
                 <tr>
                     <td>${index + 1}</td>
                     <td>
@@ -1418,10 +1445,10 @@ function generateSectionsHtml(sections) {
                     </td>
                     <td class="currency">${formatCurrency(sale.amount)} ريال</td>
                 </tr>`;
-    });
+        });
 
-    const totalPostpaidSales = sections.postpaidSales.reduce((sum, sale) => sum + (sale.amount || 0), 0);
-    html += `
+        const totalPostpaidSales = sections.postpaidSales.reduce((sum, sale) => sum + (sale.amount || 0), 0);
+        html += `
                 <tr class="total-row">
                     <td colspan="2">الإجمالي</td>
                     <td class="currency">${formatCurrency(totalPostpaidSales)} ريال</td>
@@ -1429,11 +1456,11 @@ function generateSectionsHtml(sections) {
             </tbody>
         </table>
     </div>`;
-  }
+    }
 
-  // Customer Receipts Section
-  if (sections.customerReceipts && sections.customerReceipts.length > 0) {
-    html += `
+    // Customer Receipts Section
+    if (sections.customerReceipts && sections.customerReceipts.length > 0) {
+        html += `
     <div class="section">
         <div class="section-title">👥 مقبوضات العملاء</div>
         <table class="table">
@@ -1447,8 +1474,8 @@ function generateSectionsHtml(sections) {
             </thead>
             <tbody>`;
 
-    sections.customerReceipts.forEach((receipt, index) => {
-      html += `
+        sections.customerReceipts.forEach((receipt, index) => {
+            html += `
                 <tr>
                     <td>${index + 1}</td>
                     <td>
@@ -1460,10 +1487,10 @@ function generateSectionsHtml(sections) {
                     <td>${receipt.payment_type || 'نقدي'}</td>
                     <td class="currency">${formatCurrency(receipt.amount)} ريال</td>
                 </tr>`;
-    });
+        });
 
-    const totalCustomerReceipts = sections.customerReceipts.reduce((sum, receipt) => sum + (receipt.amount || 0), 0);
-    html += `
+        const totalCustomerReceipts = sections.customerReceipts.reduce((sum, receipt) => sum + (receipt.amount || 0), 0);
+        html += `
                 <tr class="total-row">
                     <td colspan="3">الإجمالي</td>
                     <td class="currency">${formatCurrency(totalCustomerReceipts)} ريال</td>
@@ -1471,11 +1498,11 @@ function generateSectionsHtml(sections) {
             </tbody>
         </table>
     </div>`;
-  }
+    }
 
-  // Return Invoices Section
-  if (sections.returnInvoices && sections.returnInvoices.length > 0) {
-    html += `
+    // Return Invoices Section
+    if (sections.returnInvoices && sections.returnInvoices.length > 0) {
+        html += `
     <div class="section">
         <div class="section-title">↩️ فواتير المرتجع</div>
         <table class="table">
@@ -1488,17 +1515,17 @@ function generateSectionsHtml(sections) {
             </thead>
             <tbody>`;
 
-    sections.returnInvoices.forEach((invoice, index) => {
-      html += `
+        sections.returnInvoices.forEach((invoice, index) => {
+            html += `
                 <tr>
                     <td>${index + 1}</td>
                     <td>${invoice.invoice_number || 'غير محدد'}</td>
                     <td class="currency">${formatCurrency(invoice.amount)} ريال</td>
                 </tr>`;
-    });
+        });
 
-    const totalReturnInvoices = sections.returnInvoices.reduce((sum, invoice) => sum + (invoice.amount || 0), 0);
-    html += `
+        const totalReturnInvoices = sections.returnInvoices.reduce((sum, invoice) => sum + (invoice.amount || 0), 0);
+        html += `
                 <tr class="total-row">
                     <td colspan="2">الإجمالي</td>
                     <td class="currency">${formatCurrency(totalReturnInvoices)} ريال</td>
@@ -1506,11 +1533,11 @@ function generateSectionsHtml(sections) {
             </tbody>
         </table>
     </div>`;
-  }
+    }
 
-  // Suppliers Section
-  if (sections.suppliers && sections.suppliers.length > 0) {
-    html += `
+    // Suppliers Section
+    if (sections.suppliers && sections.suppliers.length > 0) {
+        html += `
     <div class="section">
         <div class="section-title">🏪 الموردين</div>
         <table class="table">
@@ -1523,17 +1550,17 @@ function generateSectionsHtml(sections) {
             </thead>
             <tbody>`;
 
-    sections.suppliers.forEach((supplier, index) => {
-      html += `
+        sections.suppliers.forEach((supplier, index) => {
+            html += `
                 <tr>
                     <td>${index + 1}</td>
                     <td>${supplier.supplier_name || 'غير محدد'}</td>
                     <td class="currency">${formatCurrency(supplier.amount)} ريال</td>
                 </tr>`;
-    });
+        });
 
-    const totalSuppliers = sections.suppliers.reduce((sum, supplier) => sum + (supplier.amount || 0), 0);
-    html += `
+        const totalSuppliers = sections.suppliers.reduce((sum, supplier) => sum + (supplier.amount || 0), 0);
+        html += `
                 <tr class="total-row">
                     <td colspan="2">الإجمالي</td>
                     <td class="currency">${formatCurrency(totalSuppliers)} ريال</td>
@@ -1541,14 +1568,14 @@ function generateSectionsHtml(sections) {
             </tbody>
         </table>
     </div>`;
-  }
+    }
 
-  return html;
+    return html;
 }
 
 // Generate signatures section
 function generateSignaturesSection() {
-  return `
+    return `
     <div class="signatures-section">
         <div class="signatures-title">التوقيعات</div>
         <div class="signature-row">
@@ -1571,14 +1598,14 @@ function generateSignaturesSection() {
 
 // Generate summary HTML
 function generateSummaryHtml(reconciliation) {
-  const systemSales = reconciliation.system_sales || 0;
-  const totalReceipts = reconciliation.total_receipts || 0;
-  const surplusDeficit = reconciliation.surplus_deficit || 0;
+    const systemSales = reconciliation.system_sales || 0;
+    const totalReceipts = reconciliation.total_receipts || 0;
+    const surplusDeficit = reconciliation.surplus_deficit || 0;
 
-  const surplusDeficitClass = surplusDeficit > 0 ? 'color: #27ae60' : surplusDeficit < 0 ? 'color: #e74c3c' : 'color: #7f8c8d';
-  const surplusDeficitText = surplusDeficit > 0 ? 'فائض' : surplusDeficit < 0 ? 'عجز' : 'متوازن';
+    const surplusDeficitClass = surplusDeficit > 0 ? 'color: #27ae60' : surplusDeficit < 0 ? 'color: #e74c3c' : 'color: #7f8c8d';
+    const surplusDeficitText = surplusDeficit > 0 ? 'فائض' : surplusDeficit < 0 ? 'عجز' : 'متوازن';
 
-  return `
+    return `
     <div class="summary">
         <h3>ملخص التصفية النهائية</h3>
         <div class="summary-grid">
@@ -1599,926 +1626,926 @@ function generateSummaryHtml(reconciliation) {
 }
 
 function initializeDatabase() {
-  try {
-    console.log('🔄 [INIT] تهيئة قاعدة البيانات...');
-    dbManager = new DatabaseManager();
-    const success = dbManager.initialize();
-
-    if (!success) {
-      console.error('❌ [INIT] فشل في تهيئة قاعدة البيانات');
-      return false;
-    }
-
-    console.log('✅ [INIT] تم تهيئة قاعدة البيانات بنجاح');
-
-    // Fix reconciliation numbering
     try {
-      console.log('🔄 [INIT] بدء إصلاح ترقيم التصفيات...');
-      dbManager.fixAllReconciliationNumbers();
-      console.log('✅ [INIT] تم إصلاح ترقيم التصفيات بنجاح');
-    } catch (fixError) {
-      console.error('⚠️ [INIT] حدث خطأ أثناء إصلاح ترقيم التصفيات:', fixError);
-      // Don't fail initialization, but log the error
+        console.log('🔄 [INIT] تهيئة قاعدة البيانات...');
+        dbManager = new DatabaseManager();
+        const success = dbManager.initialize();
+
+        if (!success) {
+            console.error('❌ [INIT] فشل في تهيئة قاعدة البيانات');
+            return false;
+        }
+
+        console.log('✅ [INIT] تم تهيئة قاعدة البيانات بنجاح');
+
+        // Fix reconciliation numbering
+        try {
+            console.log('🔄 [INIT] بدء إصلاح ترقيم التصفيات...');
+            dbManager.fixAllReconciliationNumbers();
+            console.log('✅ [INIT] تم إصلاح ترقيم التصفيات بنجاح');
+        } catch (fixError) {
+            console.error('⚠️ [INIT] حدث خطأ أثناء إصلاح ترقيم التصفيات:', fixError);
+            // Don't fail initialization, but log the error
+        }
+
+        return true;
+
+    } catch (error) {
+        console.error('❌ [INIT] خطأ في تهيئة قاعدة البيانات:', error);
+        return false;
     }
-
-    return true;
-
-  } catch (error) {
-    console.error('❌ [INIT] خطأ في تهيئة قاعدة البيانات:', error);
-    return false;
-  }
 }
 
 
 
 // App event handlers
 app.whenReady().then(() => {
-  const dbInitialized = initializeDatabase();
-  if (dbInitialized) {
-    // Initialize PDF generator
-    pdfGenerator = new PDFGenerator(dbManager);
+    const dbInitialized = initializeDatabase();
+    if (dbInitialized) {
+        // Initialize PDF generator
+        pdfGenerator = new PDFGenerator(dbManager);
 
-    // Initialize Print manager
-    printManager = new PrintManager();
-    printManager.initialize();
+        // Initialize Print manager
+        printManager = new PrintManager();
+        printManager.initialize();
 
-    createWindow();
+        createWindow();
 
-    // Initialize automatic backup
-    initializeAutoBackup();
+        // Initialize automatic backup
+        initializeAutoBackup();
 
-    // Start Background Sync to Cloud
-    startBackgroundSync(dbManager);
+        // Start Background Sync to Cloud
+        startBackgroundSync(dbManager);
 
-    // Start Local Web Server
-    try {
-      console.log('🌐 Starting Local Web Server...');
-      webServer = new LocalWebServer(dbManager);
-      webServer.start();
-    } catch (error) {
-      console.error('❌ Failed to start Web Server:', error);
-    }
-  } else {
-    console.error('Failed to initialize database, exiting...');
-    app.quit();
-  }
-
-  /**
-   * Initialize automatic backup system
-   */
-  function initializeAutoBackup() {
-    console.log('🔄 [AUTO-BACKUP] تهيئة نظام النسخ الاحتياطي التلقائي...');
-
-    // Check backup settings every hour
-    setInterval(async () => {
-      try {
-        // Get auto backup settings
-        const settings = await dbManager.db.prepare(
-          `SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?`
-        ).get('backup', 'auto_backup_frequency');
-
-        if (!settings || settings.setting_value === 'disabled') {
-          console.log('⏸️ [AUTO-BACKUP] النسخ الاحتياطي التلقائي معطل');
-          return;
-        }
-
-        // Get backup location
-        const backupLocation = await dbManager.db.prepare(
-          `SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?`
-        ).get('backup', 'default_backup_path');
-
-        if (!backupLocation) {
-          console.warn('⚠️ [AUTO-BACKUP] لم يتم تعيين مجلد النسخ الاحتياطي');
-          return;
-        }
-
-        // Check if backup should be performed based on frequency
-        const now = new Date();
-        const lastBackup = await dbManager.db.prepare(
-          `SELECT MAX(updated_at) as last_backup FROM system_settings WHERE category = ? AND setting_key LIKE ?`
-        ).get('backup', 'backup_%');
-
-        let shouldBackup = false;
-
-        if (!lastBackup || !lastBackup.last_backup) {
-          shouldBackup = true;
-        } else {
-          const lastBackupDate = new Date(lastBackup.last_backup);
-          const hoursSinceLastBackup = (now - lastBackupDate) / (1000 * 60 * 60);
-
-          switch (settings.setting_value) {
-            case 'daily':
-              shouldBackup = hoursSinceLastBackup >= 24;
-              break;
-            case 'weekly':
-              shouldBackup = hoursSinceLastBackup >= (24 * 7);
-              break;
-            case 'monthly':
-              shouldBackup = hoursSinceLastBackup >= (24 * 30);
-              break;
-          }
-        }
-
-        if (shouldBackup) {
-          console.log(`🔄 [AUTO-BACKUP] تنفيذ نسخة احتياطية ${settings.setting_value}...`);
-
-          // Generate backup file name
-          const timestamp = now.toISOString().split('T')[0];
-          const backupFileName = `casher_auto_backup_${settings.setting_value}_${timestamp}.json`;
-          const backupFilePath = path.join(backupLocation.setting_value, backupFileName);
-
-          // Collect all data from database
-          const backupData = await collectDatabaseData();
-
-          // Save backup file
-          const result = await saveBackupFile(backupFilePath, backupData);
-
-          if (result.success) {
-            console.log(`✅ [AUTO-BACKUP] تم إنشاء النسخة الاحتياطية بنجاح: ${backupFileName}`);
-
-            // Record backup in settings
-            await dbManager.db.prepare(
-              `INSERT INTO system_settings (category, setting_key, setting_value, updated_at) 
-             VALUES (?, ?, ?, CURRENT_TIMESTAMP)`
-            ).run('backup', `backup_${settings.setting_value}`, 'success');
-          } else {
-            console.error(`❌ [AUTO-BACKUP] فشل في إنشاء النسخة الاحتياطية: ${result.error}`);
-
-            // Record backup failure
-            await dbManager.db.prepare(
-              `INSERT INTO system_settings (category, setting_key, setting_value, updated_at) 
-             VALUES (?, ?, ?, CURRENT_TIMESTAMP)`
-            ).run('backup', `backup_${settings.setting_value}`, 'failed');
-          }
-        } else {
-          console.log(`⏭️ [AUTO-BACKUP] لا حاجة لنسخ احتياطي ${settings.setting_value}`);
-        }
-      } catch (error) {
-        console.error('❌ [AUTO-BACKUP] خطأ في النسخ الاحتياطي التلقائي:', error);
-      }
-    }, 60 * 60 * 1000); // Check every hour
-  }
-
-  /**
-   * Save backup file to disk
-   * @param {string} filePath - Path to save the backup file
-   * @param {object} data - Backup data to save
-   * @returns {Promise<{success: boolean, error?: string}>} - Result of the operation
-   */
-  async function saveBackupFile(filePath, data) {
-    try {
-      // Ensure directory exists
-      const dir = path.dirname(filePath);
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir, { recursive: true });
-      }
-
-      // Write backup file
-      await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2));
-
-      return { success: true };
-    } catch (error) {
-      console.error('❌ [AUTO-BACKUP] خطأ في حفظ الملف:', error);
-      return { success: false, error: error.message };
-    }
-  }
-
-  /**
-   * Verify backup directory exists and is writable
-   * @param {string} backupPath - Path to backup directory
-   * @returns {Promise<boolean>} - Whether directory is ready
-   */
-  async function verifyBackupDirectory(backupPath) {
-    try {
-      if (!fs.existsSync(backupPath)) {
-        fs.mkdirSync(backupPath, { recursive: true });
-        console.log(`📁 [AUTO-BACKUP] تم إنشاء مجلد النسخ الاحتياطي: ${backupPath}`);
-      }
-
-      // Test if directory is writable
-      const testFile = path.join(backupPath, 'test_write.tmp');
-      fs.writeFileSync(testFile, 'test');
-      fs.unlinkSync(testFile);
-      console.log(`✅ [AUTO-BACKUP] مجلد النسخ الاحتياطي جاهز للكتابة: ${backupPath}`);
-      return true;
-    } catch (error) {
-      console.error(`❌ [AUTO-BACKUP] مجلد النسخ الاحتياطي غير قابل للكتابة: ${error.message}`);
-      return false;
-    }
-  }
-
-  /**
-   * Collect all data from database for backup
-   * @returns {Promise<object>} - Backup data
-   */
-  async function collectDatabaseData() {
-    console.log('📊 [BACKUP] جمع البيانات من قاعدة البيانات...');
-
-    const backupData = {
-      metadata: {
-        version: '1.0',
-        created_at: new Date().toISOString(),
-        app_name: 'نظام تصفية الكاشير',
-        description: 'نسخة احتياطية كاملة من قاعدة البيانات'
-      },
-      data: {}
-    };
-
-    try {
-      // Get all table data
-      const tables = [
-        'admins',
-        'branches',
-        'cashiers',
-        'accountants',
-        'atms',
-        'reconciliations',
-        'bank_receipts',
-        'cash_receipts',
-        'postpaid_sales',
-        'customer_receipts',
-        'return_invoices',
-        'suppliers',
-        'system_settings'
-      ];
-
-      // Get data for each table
-      for (const table of tables) {
+        // Start Local Web Server
         try {
-          const stmt = dbManager.db.prepare(`SELECT * FROM ${table}`);
-          const data = stmt.all();
-          backupData.data[table] = data;
-          console.log(`✅ [BACKUP] تم جلب ${data.length} سجل من جدول ${table}`);
+            console.log('🌐 Starting Local Web Server...');
+            webServer = new LocalWebServer(dbManager);
+            webServer.start();
         } catch (error) {
-          console.error(`❌ [BACKUP] خطأ في جلب بيانات جدول ${table}:`, error);
-          backupData.data[table] = [];
+            console.error('❌ Failed to start Web Server:', error);
         }
-      }
-
-      return backupData;
-    } catch (error) {
-      console.error('❌ [BACKUP] خطأ في جمع البيانات:', error);
-      throw error;
+    } else {
+        console.error('Failed to initialize database, exiting...');
+        app.quit();
     }
-  }
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
-      createWindow();
+    /**
+     * Initialize automatic backup system
+     */
+    function initializeAutoBackup() {
+        console.log('🔄 [AUTO-BACKUP] تهيئة نظام النسخ الاحتياطي التلقائي...');
+
+        // Check backup settings every hour
+        setInterval(async () => {
+            try {
+                // Get auto backup settings
+                const settings = await dbManager.db.prepare(
+                    `SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?`
+                ).get('backup', 'auto_backup_frequency');
+
+                if (!settings || settings.setting_value === 'disabled') {
+                    console.log('⏸️ [AUTO-BACKUP] النسخ الاحتياطي التلقائي معطل');
+                    return;
+                }
+
+                // Get backup location
+                const backupLocation = await dbManager.db.prepare(
+                    `SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?`
+                ).get('backup', 'default_backup_path');
+
+                if (!backupLocation) {
+                    console.warn('⚠️ [AUTO-BACKUP] لم يتم تعيين مجلد النسخ الاحتياطي');
+                    return;
+                }
+
+                // Check if backup should be performed based on frequency
+                const now = new Date();
+                const lastBackup = await dbManager.db.prepare(
+                    `SELECT MAX(updated_at) as last_backup FROM system_settings WHERE category = ? AND setting_key LIKE ?`
+                ).get('backup', 'backup_%');
+
+                let shouldBackup = false;
+
+                if (!lastBackup || !lastBackup.last_backup) {
+                    shouldBackup = true;
+                } else {
+                    const lastBackupDate = new Date(lastBackup.last_backup);
+                    const hoursSinceLastBackup = (now - lastBackupDate) / (1000 * 60 * 60);
+
+                    switch (settings.setting_value) {
+                        case 'daily':
+                            shouldBackup = hoursSinceLastBackup >= 24;
+                            break;
+                        case 'weekly':
+                            shouldBackup = hoursSinceLastBackup >= (24 * 7);
+                            break;
+                        case 'monthly':
+                            shouldBackup = hoursSinceLastBackup >= (24 * 30);
+                            break;
+                    }
+                }
+
+                if (shouldBackup) {
+                    console.log(`🔄 [AUTO-BACKUP] تنفيذ نسخة احتياطية ${settings.setting_value}...`);
+
+                    // Generate backup file name
+                    const timestamp = now.toISOString().split('T')[0];
+                    const backupFileName = `casher_auto_backup_${settings.setting_value}_${timestamp}.json`;
+                    const backupFilePath = path.join(backupLocation.setting_value, backupFileName);
+
+                    // Collect all data from database
+                    const backupData = await collectDatabaseData();
+
+                    // Save backup file
+                    const result = await saveBackupFile(backupFilePath, backupData);
+
+                    if (result.success) {
+                        console.log(`✅ [AUTO-BACKUP] تم إنشاء النسخة الاحتياطية بنجاح: ${backupFileName}`);
+
+                        // Record backup in settings
+                        await dbManager.db.prepare(
+                            `INSERT INTO system_settings (category, setting_key, setting_value, updated_at) 
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP)`
+                        ).run('backup', `backup_${settings.setting_value}`, 'success');
+                    } else {
+                        console.error(`❌ [AUTO-BACKUP] فشل في إنشاء النسخة الاحتياطية: ${result.error}`);
+
+                        // Record backup failure
+                        await dbManager.db.prepare(
+                            `INSERT INTO system_settings (category, setting_key, setting_value, updated_at) 
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP)`
+                        ).run('backup', `backup_${settings.setting_value}`, 'failed');
+                    }
+                } else {
+                    console.log(`⏭️ [AUTO-BACKUP] لا حاجة لنسخ احتياطي ${settings.setting_value}`);
+                }
+            } catch (error) {
+                console.error('❌ [AUTO-BACKUP] خطأ في النسخ الاحتياطي التلقائي:', error);
+            }
+        }, 60 * 60 * 1000); // Check every hour
     }
-  });
+
+    /**
+     * Save backup file to disk
+     * @param {string} filePath - Path to save the backup file
+     * @param {object} data - Backup data to save
+     * @returns {Promise<{success: boolean, error?: string}>} - Result of the operation
+     */
+    async function saveBackupFile(filePath, data) {
+        try {
+            // Ensure directory exists
+            const dir = path.dirname(filePath);
+            if (!fs.existsSync(dir)) {
+                fs.mkdirSync(dir, { recursive: true });
+            }
+
+            // Write backup file
+            await fs.promises.writeFile(filePath, JSON.stringify(data, null, 2));
+
+            return { success: true };
+        } catch (error) {
+            console.error('❌ [AUTO-BACKUP] خطأ في حفظ الملف:', error);
+            return { success: false, error: error.message };
+        }
+    }
+
+    /**
+     * Verify backup directory exists and is writable
+     * @param {string} backupPath - Path to backup directory
+     * @returns {Promise<boolean>} - Whether directory is ready
+     */
+    async function verifyBackupDirectory(backupPath) {
+        try {
+            if (!fs.existsSync(backupPath)) {
+                fs.mkdirSync(backupPath, { recursive: true });
+                console.log(`📁 [AUTO-BACKUP] تم إنشاء مجلد النسخ الاحتياطي: ${backupPath}`);
+            }
+
+            // Test if directory is writable
+            const testFile = path.join(backupPath, 'test_write.tmp');
+            fs.writeFileSync(testFile, 'test');
+            fs.unlinkSync(testFile);
+            console.log(`✅ [AUTO-BACKUP] مجلد النسخ الاحتياطي جاهز للكتابة: ${backupPath}`);
+            return true;
+        } catch (error) {
+            console.error(`❌ [AUTO-BACKUP] مجلد النسخ الاحتياطي غير قابل للكتابة: ${error.message}`);
+            return false;
+        }
+    }
+
+    /**
+     * Collect all data from database for backup
+     * @returns {Promise<object>} - Backup data
+     */
+    async function collectDatabaseData() {
+        console.log('📊 [BACKUP] جمع البيانات من قاعدة البيانات...');
+
+        const backupData = {
+            metadata: {
+                version: '1.0',
+                created_at: new Date().toISOString(),
+                app_name: 'نظام تصفية الكاشير',
+                description: 'نسخة احتياطية كاملة من قاعدة البيانات'
+            },
+            data: {}
+        };
+
+        try {
+            // Get all table data
+            const tables = [
+                'admins',
+                'branches',
+                'cashiers',
+                'accountants',
+                'atms',
+                'reconciliations',
+                'bank_receipts',
+                'cash_receipts',
+                'postpaid_sales',
+                'customer_receipts',
+                'return_invoices',
+                'suppliers',
+                'system_settings'
+            ];
+
+            // Get data for each table
+            for (const table of tables) {
+                try {
+                    const stmt = dbManager.db.prepare(`SELECT * FROM ${table}`);
+                    const data = stmt.all();
+                    backupData.data[table] = data;
+                    console.log(`✅ [BACKUP] تم جلب ${data.length} سجل من جدول ${table}`);
+                } catch (error) {
+                    console.error(`❌ [BACKUP] خطأ في جلب بيانات جدول ${table}:`, error);
+                    backupData.data[table] = [];
+                }
+            }
+
+            return backupData;
+        } catch (error) {
+            console.error('❌ [BACKUP] خطأ في جمع البيانات:', error);
+            throw error;
+        }
+    }
+
+    app.on('activate', () => {
+        if (BrowserWindow.getAllWindows().length === 0) {
+            createWindow();
+        }
+    });
 });
 
 app.on('window-all-closed', () => {
-  if (process.platform !== 'darwin') {
-    // Clean up resources properly
-    try {
-      if (dbManager) {
-        console.log('🔄 Closing database connection...');
-        dbManager.close();
-        dbManager = null;
-      }
-      if (pdfGenerator) {
-        console.log('🔄 Closing PDF generator...');
-        pdfGenerator.close();
-        pdfGenerator = null;
-      }
-      if (printManager) {
-        console.log('🔄 Cleaning up print manager...');
-        printManager = null;
-      }
-      if (printPreviewWindow && !printPreviewWindow.isDestroyed()) {
-        printPreviewWindow.close();
-        printPreviewWindow = null;
-      }
-      console.log('✅ All resources cleaned up successfully');
-    } catch (error) {
-      console.error('❌ Error during cleanup:', error);
+    if (process.platform !== 'darwin') {
+        // Clean up resources properly
+        try {
+            if (dbManager) {
+                console.log('🔄 Closing database connection...');
+                dbManager.close();
+                dbManager = null;
+            }
+            if (pdfGenerator) {
+                console.log('🔄 Closing PDF generator...');
+                pdfGenerator.close();
+                pdfGenerator = null;
+            }
+            if (printManager) {
+                console.log('🔄 Cleaning up print manager...');
+                printManager = null;
+            }
+            if (printPreviewWindow && !printPreviewWindow.isDestroyed()) {
+                printPreviewWindow.close();
+                printPreviewWindow = null;
+            }
+            console.log('✅ All resources cleaned up successfully');
+        } catch (error) {
+            console.error('❌ Error during cleanup:', error);
+        }
+        app.quit();
     }
-    app.quit();
-  }
 });
 
 // Manual transaction handlers
 ipcMain.handle('add-manual-transaction', async (event, data) => {
-  const { customerName, type, amount, reason, date } = data;
+    const { customerName, type, amount, reason, date } = data;
 
-  try {
-    if (type === 'receipt') {
-      await dbManager.run(
-        'INSERT INTO manual_customer_receipts (customer_name, amount, reason, created_at) VALUES (?, ?, ?, ?)',
-        [customerName, amount, reason, date]
-      );
-    } else if (type === 'postpaid') {
-      await dbManager.run(
-        'INSERT INTO manual_postpaid_sales (customer_name, amount, reason, created_at) VALUES (?, ?, ?, ?)',
-        [customerName, amount, reason, date]
-      );
+    try {
+        if (type === 'receipt') {
+            await dbManager.run(
+                'INSERT INTO manual_customer_receipts (customer_name, amount, reason, created_at) VALUES (?, ?, ?, ?)',
+                [customerName, amount, reason, date]
+            );
+        } else if (type === 'postpaid') {
+            await dbManager.run(
+                'INSERT INTO manual_postpaid_sales (customer_name, amount, reason, created_at) VALUES (?, ?, ?, ?)',
+                [customerName, amount, reason, date]
+            );
+        }
+
+        return { success: true };
+    } catch (error) {
+        console.error('Error adding manual transaction:', error);
+        return { success: false, error: error.message };
     }
-
-    return { success: true };
-  } catch (error) {
-    console.error('Error adding manual transaction:', error);
-    return { success: false, error: error.message };
-  }
 });
 
 // IPC handlers for database operations
 ipcMain.handle('db-query', async (event, sql, params = []) => {
-  try {
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.query(sql, params);
+    } catch (error) {
+        console.error('Database query error:', error);
+        throw error;
     }
-    return dbManager.query(sql, params);
-  } catch (error) {
-    console.error('Database query error:', error);
-    throw error;
-  }
 });
 
 ipcMain.handle('db-run', async (event, sql, params = []) => {
-  try {
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.run(sql, params);
+    } catch (error) {
+        console.error('Database run error:', error);
+        throw error;
     }
-    return dbManager.run(sql, params);
-  } catch (error) {
-    console.error('Database run error:', error);
-    throw error;
-  }
 });
 
 ipcMain.handle('db-get', async (event, sql, params = []) => {
-  try {
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.get(sql, params);
+    } catch (error) {
+        console.error('Database get error:', error);
+        throw error;
     }
-    return dbManager.get(sql, params);
-  } catch (error) {
-    console.error('Database get error:', error);
-    throw error;
-  }
 });
 
 ipcMain.handle('db-all', async (event, sql, params = []) => {
-  try {
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.query(sql, params);
+    } catch (error) {
+        console.error('Database all error:', error);
+        throw error;
     }
-    return dbManager.query(sql, params);
-  } catch (error) {
-    console.error('Database all error:', error);
-    throw error;
-  }
 });
 
 // Autocomplete IPC handlers
 ipcMain.handle('autocomplete-postpaid-customers', async (event, query, limit = 10) => {
-  try {
-    console.log(`🔍 [IPC] طلب اقتراحات عملاء المبيعات الآجلة: "${query}"`);
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        console.log(`🔍 [IPC] طلب اقتراحات عملاء المبيعات الآجلة: "${query}"`);
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.getPostpaidCustomerSuggestions(query, limit);
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في جلب اقتراحات عملاء المبيعات الآجلة:', error);
+        return [];
     }
-    return dbManager.getPostpaidCustomerSuggestions(query, limit);
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في جلب اقتراحات عملاء المبيعات الآجلة:', error);
-    return [];
-  }
 });
 
 ipcMain.handle('autocomplete-customer-receipts', async (event, query, limit = 10) => {
-  try {
-    console.log(`🔍 [IPC] طلب اقتراحات عملاء المقبوضات: "${query}"`);
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        console.log(`🔍 [IPC] طلب اقتراحات عملاء المقبوضات: "${query}"`);
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.getCustomerReceiptSuggestions(query, limit);
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في جلب اقتراحات عملاء المقبوضات:', error);
+        return [];
     }
-    return dbManager.getCustomerReceiptSuggestions(query, limit);
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في جلب اقتراحات عملاء المقبوضات:', error);
-    return [];
-  }
 });
 
 ipcMain.handle('autocomplete-all-customers', async (event, query, limit = 10) => {
-  try {
-    console.log(`🔍 [IPC] طلب اقتراحات جميع العملاء: "${query}"`);
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        console.log(`🔍 [IPC] طلب اقتراحات جميع العملاء: "${query}"`);
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.getAllCustomerSuggestions(query, limit);
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في جلب اقتراحات جميع العملاء:', error);
+        return [];
     }
-    return dbManager.getAllCustomerSuggestions(query, limit);
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في جلب اقتراحات جميع العملاء:', error);
-    return [];
-  }
 });
 
 ipcMain.handle('autocomplete-customer-stats', async (event, customerName) => {
-  try {
-    console.log(`📊 [IPC] طلب إحصائيات العميل: "${customerName}"`);
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        console.log(`📊 [IPC] طلب إحصائيات العميل: "${customerName}"`);
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.getCustomerUsageStats(customerName);
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في جلب إحصائيات العميل:', error);
+        return null;
     }
-    return dbManager.getCustomerUsageStats(customerName);
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في جلب إحصائيات العميل:', error);
-    return null;
-  }
 });
 
 // Get reconciliation for editing
 ipcMain.handle('get-reconciliation-for-edit', async (event, reconciliationId) => {
-  console.log('🔍 [IPC] طلب تحميل التصفية للتعديل - معرف:', reconciliationId, 'نوع:', typeof reconciliationId);
+    console.log('🔍 [IPC] طلب تحميل التصفية للتعديل - معرف:', reconciliationId, 'نوع:', typeof reconciliationId);
 
-  try {
-    // Validate input
-    if (reconciliationId === null || reconciliationId === undefined) {
-      console.error('❌ [IPC] معرف التصفية مفقود');
-      throw new Error('معرف التصفية مطلوب');
+    try {
+        // Validate input
+        if (reconciliationId === null || reconciliationId === undefined) {
+            console.error('❌ [IPC] معرف التصفية مفقود');
+            throw new Error('معرف التصفية مطلوب');
+        }
+
+        // Check database manager
+        if (!dbManager) {
+            console.error('❌ [IPC] مدير قاعدة البيانات غير مهيأ');
+            throw new Error('مدير قاعدة البيانات غير مهيأ');
+        }
+
+        if (!dbManager.db) {
+            console.error('❌ [IPC] قاعدة البيانات غير متصلة');
+            throw new Error('قاعدة البيانات غير متصلة');
+        }
+
+        console.log('✅ [IPC] قاعدة البيانات متاحة، بدء التحميل...');
+
+        const startTime = Date.now();
+        const result = dbManager.getReconciliationForEdit(reconciliationId);
+        const loadTime = Date.now() - startTime;
+
+        console.log(`⏱️ [IPC] وقت تحميل البيانات: ${loadTime}ms`);
+
+        if (!result) {
+            console.error('❌ [IPC] لم يتم إرجاع بيانات من قاعدة البيانات');
+            throw new Error(`لم يتم العثور على التصفية رقم ${reconciliationId}`);
+        }
+
+        console.log('✅ [IPC] تم تحميل البيانات بنجاح');
+        return result;
+
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في تحميل التصفية للتعديل:', {
+            reconciliationId: reconciliationId,
+            error: error.message,
+            stack: error.stack
+        });
+
+        // Re-throw with more context
+        const enhancedError = new Error(`فشل في تحميل التصفية: ${error.message}`);
+        enhancedError.originalError = error;
+        enhancedError.reconciliationId = reconciliationId;
+        throw enhancedError;
     }
-
-    // Check database manager
-    if (!dbManager) {
-      console.error('❌ [IPC] مدير قاعدة البيانات غير مهيأ');
-      throw new Error('مدير قاعدة البيانات غير مهيأ');
-    }
-
-    if (!dbManager.db) {
-      console.error('❌ [IPC] قاعدة البيانات غير متصلة');
-      throw new Error('قاعدة البيانات غير متصلة');
-    }
-
-    console.log('✅ [IPC] قاعدة البيانات متاحة، بدء التحميل...');
-
-    const startTime = Date.now();
-    const result = dbManager.getReconciliationForEdit(reconciliationId);
-    const loadTime = Date.now() - startTime;
-
-    console.log(`⏱️ [IPC] وقت تحميل البيانات: ${loadTime}ms`);
-
-    if (!result) {
-      console.error('❌ [IPC] لم يتم إرجاع بيانات من قاعدة البيانات');
-      throw new Error(`لم يتم العثور على التصفية رقم ${reconciliationId}`);
-    }
-
-    console.log('✅ [IPC] تم تحميل البيانات بنجاح');
-    return result;
-
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في تحميل التصفية للتعديل:', {
-      reconciliationId: reconciliationId,
-      error: error.message,
-      stack: error.stack
-    });
-
-    // Re-throw with more context
-    const enhancedError = new Error(`فشل في تحميل التصفية: ${error.message}`);
-    enhancedError.originalError = error;
-    enhancedError.reconciliationId = reconciliationId;
-    throw enhancedError;
-  }
 });
 
 // Update reconciliation with modification date
 ipcMain.handle('update-reconciliation-modified', async (event, reconciliationId, systemSales, totalReceipts, surplusDeficit, status) => {
-  try {
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.updateReconciliationModified(reconciliationId, systemSales, totalReceipts, surplusDeficit, status);
+    } catch (error) {
+        console.error('Error updating reconciliation:', error);
+        throw error;
     }
-    return dbManager.updateReconciliationModified(reconciliationId, systemSales, totalReceipts, surplusDeficit, status);
-  } catch (error) {
-    console.error('Error updating reconciliation:', error);
-    throw error;
-  }
 });
 
 // Get next reconciliation number
 ipcMain.handle('get-next-reconciliation-number', async (event) => {
-  try {
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.getNextReconciliationNumber();
+    } catch (error) {
+        console.error('Error getting next reconciliation number:', error);
+        throw error;
     }
-    return dbManager.getNextReconciliationNumber();
-  } catch (error) {
-    console.error('Error getting next reconciliation number:', error);
-    throw error;
-  }
 });
 
 // Complete reconciliation with reconciliation number
 ipcMain.handle('complete-reconciliation', async (event, reconciliationId, systemSales, totalReceipts, surplusDeficit, reconciliationNumber) => {
-  try {
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.completeReconciliation(reconciliationId, systemSales, totalReceipts, surplusDeficit, reconciliationNumber);
+    } catch (error) {
+        console.error('Error completing reconciliation:', error);
+        throw error;
     }
-    return dbManager.completeReconciliation(reconciliationId, systemSales, totalReceipts, surplusDeficit, reconciliationNumber);
-  } catch (error) {
-    console.error('Error completing reconciliation:', error);
-    throw error;
-  }
 });
 
 // Fix existing completed reconciliations numbering
 ipcMain.handle('fix-existing-reconciliations', async (event) => {
-  try {
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
+    try {
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.fixExistingCompletedReconciliations();
+    } catch (error) {
+        console.error('Error fixing existing reconciliations:', error);
+        throw error;
     }
-    return dbManager.fixExistingCompletedReconciliations();
-  } catch (error) {
-    console.error('Error fixing existing reconciliations:', error);
-    throw error;
-  }
 });
 
 // PDF generation handler
 ipcMain.handle('generate-pdf', async (event, reconciliationData) => {
-  try {
-    if (!pdfGenerator) {
-      throw new Error('PDF generator not initialized');
-    }
-
-    const pdfBuffer = await pdfGenerator.generateReconciliationReport(reconciliationData);
-
-    // Get default save path from settings
-    let defaultPath = `تقرير_تصفية_${reconciliationData.cashierName}_${reconciliationData.reconciliationDate}.pdf`;
     try {
-      const savedPath = await dbManager.get(
-        'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?',
-        ['reports', 'default_save_path']
-      );
-      if (savedPath && savedPath.setting_value) {
-        const path = require('path');
-        defaultPath = path.join(savedPath.setting_value, defaultPath);
-      }
+        if (!pdfGenerator) {
+            throw new Error('PDF generator not initialized');
+        }
+
+        const pdfBuffer = await pdfGenerator.generateReconciliationReport(reconciliationData);
+
+        // Get default save path from settings
+        let defaultPath = `تقرير_تصفية_${reconciliationData.cashierName}_${reconciliationData.reconciliationDate}.pdf`;
+        try {
+            const savedPath = await dbManager.get(
+                'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?',
+                ['reports', 'default_save_path']
+            );
+            if (savedPath && savedPath.setting_value) {
+                const path = require('path');
+                defaultPath = path.join(savedPath.setting_value, defaultPath);
+            }
+        } catch (error) {
+            console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ');
+        }
+
+        // Show save dialog
+        const result = await dialog.showSaveDialog(mainWindow, {
+            title: 'حفظ تقرير التصفية',
+            defaultPath: defaultPath,
+            filters: [
+                { name: 'PDF Files', extensions: ['pdf'] }
+            ]
+        });
+
+        if (!result.canceled && result.filePath) {
+            fs.writeFileSync(result.filePath, pdfBuffer);
+            return { success: true, filePath: result.filePath };
+        } else {
+            return { success: false, message: 'تم إلغاء العملية' };
+        }
+
     } catch (error) {
-      console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ');
+        console.error('PDF generation error:', error);
+        return { success: false, message: error.message };
     }
-
-    // Show save dialog
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'حفظ تقرير التصفية',
-      defaultPath: defaultPath,
-      filters: [
-        { name: 'PDF Files', extensions: ['pdf'] }
-      ]
-    });
-
-    if (!result.canceled && result.filePath) {
-      fs.writeFileSync(result.filePath, pdfBuffer);
-      return { success: true, filePath: result.filePath };
-    } else {
-      return { success: false, message: 'تم إلغاء العملية' };
-    }
-
-  } catch (error) {
-    console.error('PDF generation error:', error);
-    return { success: false, message: error.message };
-  }
 });
 
 // Advanced printing handlers
 ipcMain.handle('get-printers', async () => {
-  try {
-    if (!printManager) {
-      throw new Error('Print manager not initialized');
-    }
+    try {
+        if (!printManager) {
+            throw new Error('Print manager not initialized');
+        }
 
-    // Use main window to get printers
-    if (mainWindow && mainWindow.webContents) {
-      try {
-        const printers = await mainWindow.webContents.getPrinters();
-        return printers.map(printer => ({
-          name: printer.name,
-          displayName: printer.displayName || printer.name,
-          description: printer.description || '',
-          status: printer.status || 'unknown',
-          isDefault: printer.isDefault || false
-        }));
-      } catch (printerError) {
-        console.warn('Could not get system printers, using fallback');
+        // Use main window to get printers
+        if (mainWindow && mainWindow.webContents) {
+            try {
+                const printers = await mainWindow.webContents.getPrinters();
+                return printers.map(printer => ({
+                    name: printer.name,
+                    displayName: printer.displayName || printer.name,
+                    description: printer.description || '',
+                    status: printer.status || 'unknown',
+                    isDefault: printer.isDefault || false
+                }));
+            } catch (printerError) {
+                console.warn('Could not get system printers, using fallback');
+                return [{
+                    name: 'default',
+                    displayName: 'الطابعة الافتراضية',
+                    description: 'طابعة النظام الافتراضية',
+                    status: 'available',
+                    isDefault: true
+                }];
+            }
+        } else {
+            return [{
+                name: 'default',
+                displayName: 'الطابعة الافتراضية',
+                description: 'طابعة النظام الافتراضية',
+                status: 'available',
+                isDefault: true
+            }];
+        }
+    } catch (error) {
+        console.error('Error getting printers:', error);
         return [{
-          name: 'default',
-          displayName: 'الطابعة الافتراضية',
-          description: 'طابعة النظام الافتراضية',
-          status: 'available',
-          isDefault: true
+            name: 'default',
+            displayName: 'الطابعة الافتراضية',
+            description: 'طابعة النظام الافتراضية',
+            status: 'available',
+            isDefault: true
         }];
-      }
-    } else {
-      return [{
-        name: 'default',
-        displayName: 'الطابعة الافتراضية',
-        description: 'طابعة النظام الافتراضية',
-        status: 'available',
-        isDefault: true
-      }];
     }
-  } catch (error) {
-    console.error('Error getting printers:', error);
-    return [{
-      name: 'default',
-      displayName: 'الطابعة الافتراضية',
-      description: 'طابعة النظام الافتراضية',
-      status: 'available',
-      isDefault: true
-    }];
-  }
 });
 
 ipcMain.handle('get-print-settings', async () => {
-  try {
-    if (!printManager) {
-      throw new Error('Print manager not initialized');
+    try {
+        if (!printManager) {
+            throw new Error('Print manager not initialized');
+        }
+        return printManager.getPrintSettings();
+    } catch (error) {
+        console.error('Error getting print settings:', error);
+        throw error;
     }
-    return printManager.getPrintSettings();
-  } catch (error) {
-    console.error('Error getting print settings:', error);
-    throw error;
-  }
 });
 
 ipcMain.handle('update-print-settings', async (event, settings) => {
-  try {
-    if (!printManager) {
-      throw new Error('Print manager not initialized');
+    try {
+        if (!printManager) {
+            throw new Error('Print manager not initialized');
+        }
+        // Ensure color setting is properly parsed
+        if (typeof settings.color === 'string') {
+            settings.color = settings.color === 'true';
+        }
+        printManager.updatePrintSettings(settings);
+
+        // Save settings to database instead of using saveSettings
+        const db = dbManager.db;
+        const settingsArray = Object.entries(settings).map(([key, value]) => ({
+            setting_key: key,
+            setting_value: value.toString(),
+            category: 'print'
+        }));
+
+        // Delete existing print settings
+        await dbManager.run('DELETE FROM system_settings WHERE category = ?', ['print']);
+
+        // Insert new settings
+        for (const setting of settingsArray) {
+            await dbManager.run(
+                'INSERT INTO system_settings (category, setting_key, setting_value) VALUES (?, ?, ?)',
+                ['print', setting.setting_key, setting.setting_value]
+            );
+        }
+
+        return { success: true };
+    } catch (error) {
+        console.error('Error updating print settings:', error);
+        throw error;
     }
-    // Ensure color setting is properly parsed
-    if (typeof settings.color === 'string') {
-      settings.color = settings.color === 'true';
-    }
-    printManager.updatePrintSettings(settings);
-
-    // Save settings to database instead of using saveSettings
-    const db = dbManager.db;
-    const settingsArray = Object.entries(settings).map(([key, value]) => ({
-      setting_key: key,
-      setting_value: value.toString(),
-      category: 'print'
-    }));
-
-    // Delete existing print settings
-    await dbManager.run('DELETE FROM system_settings WHERE category = ?', ['print']);
-
-    // Insert new settings
-    for (const setting of settingsArray) {
-      await dbManager.run(
-        'INSERT INTO system_settings (category, setting_key, setting_value) VALUES (?, ?, ?)',
-        ['print', setting.setting_key, setting.setting_value]
-      );
-    }
-
-    return { success: true };
-  } catch (error) {
-    console.error('Error updating print settings:', error);
-    throw error;
-  }
 });
 
 ipcMain.handle('print-direct', async (event, reconciliationData, printOptions = {}) => {
-  try {
-    if (!printManager) {
-      throw new Error('Print manager not initialized');
-    }
+    try {
+        if (!printManager) {
+            throw new Error('Print manager not initialized');
+        }
 
-    const htmlContent = printManager.generateReconciliationPrintHTML(reconciliationData, printOptions);
-    return await printManager.printHTML(htmlContent, printOptions);
-  } catch (error) {
-    console.error('Direct print error:', error);
-    return { success: false, error: error.message };
-  }
+        const htmlContent = printManager.generateReconciliationPrintHTML(reconciliationData, printOptions);
+        return await printManager.printHTML(htmlContent, printOptions);
+    } catch (error) {
+        console.error('Direct print error:', error);
+        return { success: false, error: error.message };
+    }
 });
 
 ipcMain.handle('print-preview', async (event, reconciliationData, printOptions = {}) => {
-  try {
-    if (!printManager) {
-      throw new Error('Print manager not initialized');
-    }
+    try {
+        if (!printManager) {
+            throw new Error('Print manager not initialized');
+        }
 
-    const htmlContent = printManager.generateReconciliationPrintHTML(reconciliationData, printOptions);
-    return await printManager.printWithPreview(htmlContent, printOptions);
-  } catch (error) {
-    console.error('Print preview error:', error);
-    return { success: false, error: error.message };
-  }
+        const htmlContent = printManager.generateReconciliationPrintHTML(reconciliationData, printOptions);
+        return await printManager.printWithPreview(htmlContent, printOptions);
+    } catch (error) {
+        console.error('Print preview error:', error);
+        return { success: false, error: error.message };
+    }
 });
 
 // Export PDF handler for reports
 ipcMain.handle('export-pdf', async (event, exportData) => {
-  console.log('📄 [IPC] طلب تصدير PDF...');
+    console.log('📄 [IPC] طلب تصدير PDF...');
 
-  try {
-    if (!exportData) {
-      throw new Error('بيانات التصدير مطلوبة');
-    }
-
-    if (!exportData.html) {
-      throw new Error('محتوى HTML مطلوب للتصدير');
-    }
-
-    if (!pdfGenerator) {
-      throw new Error('PDF generator not initialized');
-    }
-
-    // Generate PDF from HTML
-    const pdfBuffer = await pdfGenerator.generateFromHTML(exportData.html);
-
-    // Get default save path from settings
-    let defaultPath = exportData.filename || `report-${new Date().toISOString().split('T')[0]}.pdf`;
     try {
-      const savedPath = await dbManager.get(
-        'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?',
-        ['reports', 'default_save_path']
-      );
-      if (savedPath && savedPath.setting_value) {
-        const path = require('path');
-        defaultPath = path.join(savedPath.setting_value, defaultPath);
-      }
+        if (!exportData) {
+            throw new Error('بيانات التصدير مطلوبة');
+        }
+
+        if (!exportData.html) {
+            throw new Error('محتوى HTML مطلوب للتصدير');
+        }
+
+        if (!pdfGenerator) {
+            throw new Error('PDF generator not initialized');
+        }
+
+        // Generate PDF from HTML
+        const pdfBuffer = await pdfGenerator.generateFromHTML(exportData.html);
+
+        // Get default save path from settings
+        let defaultPath = exportData.filename || `report-${new Date().toISOString().split('T')[0]}.pdf`;
+        try {
+            const savedPath = await dbManager.get(
+                'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?',
+                ['reports', 'default_save_path']
+            );
+            if (savedPath && savedPath.setting_value) {
+                const path = require('path');
+                defaultPath = path.join(savedPath.setting_value, defaultPath);
+            }
+        } catch (error) {
+            console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ');
+        }
+
+        // Show save dialog
+        const result = await dialog.showSaveDialog(mainWindow, {
+            title: 'حفظ تقرير PDF',
+            defaultPath: defaultPath,
+            filters: [
+                { name: 'PDF Files', extensions: ['pdf'] }
+            ]
+        });
+
+        if (!result.canceled && result.filePath) {
+            fs.writeFileSync(result.filePath, pdfBuffer);
+            console.log('✅ [IPC] تم تصدير PDF بنجاح:', result.filePath);
+            return { success: true, filePath: result.filePath };
+        } else {
+            return { success: false, error: 'تم إلغاء العملية' };
+        }
+
     } catch (error) {
-      console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ');
+        console.error('❌ [IPC] خطأ في تصدير PDF:', error);
+        return { success: false, error: error.message };
     }
-
-    // Show save dialog
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'حفظ تقرير PDF',
-      defaultPath: defaultPath,
-      filters: [
-        { name: 'PDF Files', extensions: ['pdf'] }
-      ]
-    });
-
-    if (!result.canceled && result.filePath) {
-      fs.writeFileSync(result.filePath, pdfBuffer);
-      console.log('✅ [IPC] تم تصدير PDF بنجاح:', result.filePath);
-      return { success: true, filePath: result.filePath };
-    } else {
-      return { success: false, error: 'تم إلغاء العملية' };
-    }
-
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في تصدير PDF:', error);
-    return { success: false, error: error.message };
-  }
 });
 
 // Export Excel handler for reports
 ipcMain.handle('export-excel', async (event, exportData) => {
-  console.log('📊 [IPC] طلب تصدير Excel...');
+    console.log('📊 [IPC] طلب تصدير Excel...');
 
-  try {
-    if (!exportData) {
-      throw new Error('بيانات التصدير مطلوبة');
-    }
-
-    if (!exportData.data) {
-      throw new Error('بيانات Excel مطلوبة للتصدير');
-    }
-
-    // Create Excel workbook
-    const ExcelJS = require('exceljs');
-    const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('تقرير التصفيات');
-
-    // Add headers
-    if (exportData.data.headers) {
-      worksheet.addRow(exportData.data.headers);
-
-      // Style headers
-      const headerRow = worksheet.getRow(1);
-      headerRow.font = { bold: true };
-      headerRow.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FFE0E0E0' }
-      };
-    }
-
-    // Add data rows
-    if (exportData.data.rows) {
-      exportData.data.rows.forEach(row => {
-        worksheet.addRow(row);
-      });
-    }
-
-    // Auto-fit columns
-    worksheet.columns.forEach(column => {
-      column.width = 15;
-    });
-
-    // Get default save path from settings
-    let defaultPath = exportData.filename || `report-${new Date().toISOString().split('T')[0]}.xlsx`;
     try {
-      const savedPath = await dbManager.get(
-        'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?',
-        ['reports', 'default_save_path']
-      );
-      if (savedPath && savedPath.setting_value) {
-        const path = require('path');
-        defaultPath = path.join(savedPath.setting_value, defaultPath);
-      }
+        if (!exportData) {
+            throw new Error('بيانات التصدير مطلوبة');
+        }
+
+        if (!exportData.data) {
+            throw new Error('بيانات Excel مطلوبة للتصدير');
+        }
+
+        // Create Excel workbook
+        const ExcelJS = require('exceljs');
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('تقرير التصفيات');
+
+        // Add headers
+        if (exportData.data.headers) {
+            worksheet.addRow(exportData.data.headers);
+
+            // Style headers
+            const headerRow = worksheet.getRow(1);
+            headerRow.font = { bold: true };
+            headerRow.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: 'FFE0E0E0' }
+            };
+        }
+
+        // Add data rows
+        if (exportData.data.rows) {
+            exportData.data.rows.forEach(row => {
+                worksheet.addRow(row);
+            });
+        }
+
+        // Auto-fit columns
+        worksheet.columns.forEach(column => {
+            column.width = 15;
+        });
+
+        // Get default save path from settings
+        let defaultPath = exportData.filename || `report-${new Date().toISOString().split('T')[0]}.xlsx`;
+        try {
+            const savedPath = await dbManager.get(
+                'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?',
+                ['reports', 'default_save_path']
+            );
+            if (savedPath && savedPath.setting_value) {
+                const path = require('path');
+                defaultPath = path.join(savedPath.setting_value, defaultPath);
+            }
+        } catch (error) {
+            console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ');
+        }
+
+        // Show save dialog
+        const result = await dialog.showSaveDialog(mainWindow, {
+            title: 'حفظ تقرير Excel',
+            defaultPath: defaultPath,
+            filters: [
+                { name: 'Excel Files', extensions: ['xlsx'] }
+            ]
+        });
+
+        if (!result.canceled && result.filePath) {
+            await workbook.xlsx.writeFile(result.filePath);
+            console.log('✅ [IPC] تم تصدير Excel بنجاح:', result.filePath);
+            return { success: true, filePath: result.filePath };
+        } else {
+            return { success: false, error: 'تم إلغاء العملية' };
+        }
+
     } catch (error) {
-      console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ');
+        console.error('❌ [IPC] خطأ في تصدير Excel:', error);
+        return { success: false, error: error.message };
     }
-
-    // Show save dialog
-    const result = await dialog.showSaveDialog(mainWindow, {
-      title: 'حفظ تقرير Excel',
-      defaultPath: defaultPath,
-      filters: [
-        { name: 'Excel Files', extensions: ['xlsx'] }
-      ]
-    });
-
-    if (!result.canceled && result.filePath) {
-      await workbook.xlsx.writeFile(result.filePath);
-      console.log('✅ [IPC] تم تصدير Excel بنجاح:', result.filePath);
-      return { success: true, filePath: result.filePath };
-    } else {
-      return { success: false, error: 'تم إلغاء العملية' };
-    }
-
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في تصدير Excel:', error);
-    return { success: false, error: error.message };
-  }
 });
 
 // Create print preview window with Arabic support
 ipcMain.handle('create-print-preview', async (event, printData) => {
-  console.log('🖨️ [IPC] طلب إنشاء نافذة معاينة الطباعة...');
+    console.log('🖨️ [IPC] طلب إنشاء نافذة معاينة الطباعة...');
 
-  try {
-    // Validate print data
-    if (!printData) {
-      throw new Error('بيانات الطباعة مطلوبة');
+    try {
+        // Validate print data
+        if (!printData) {
+            throw new Error('بيانات الطباعة مطلوبة');
+        }
+
+        // Handle different data formats
+        if (printData.html && printData.title) {
+            // Report HTML format
+            console.log('📄 [IPC] معاينة طباعة تقرير HTML');
+            const previewWindow = createReportPrintPreviewWindow(printData);
+
+            if (previewWindow) {
+                console.log('✅ [IPC] تم إنشاء نافذة معاينة طباعة التقرير بنجاح');
+                return { success: true, windowId: previewWindow.id };
+            } else {
+                throw new Error('فشل في إنشاء نافذة معاينة طباعة التقرير');
+            }
+        } else if (printData.reconciliation) {
+            // Reconciliation format
+            console.log('📊 [IPC] معاينة طباعة التصفية');
+            console.log('📊 [IPC] بيانات الطباعة:', {
+                reconciliationId: printData.reconciliation.id,
+                sectionsCount: Object.keys(printData.sections || {}).length,
+                hasOptions: !!printData.options
+            });
+
+            // Create print preview window
+            const previewWindow = createPrintPreviewWindow(printData);
+
+            if (previewWindow) {
+                console.log('✅ [IPC] تم إنشاء نافذة معاينة الطباعة بنجاح');
+                return { success: true, windowId: previewWindow.id };
+            } else {
+                throw new Error('فشل في إنشاء نافذة معاينة الطباعة');
+            }
+        } else {
+            throw new Error('تنسيق بيانات الطباعة غير مدعوم');
+        }
+
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في إنشاء نافذة معاينة الطباعة:', error);
+        return { success: false, error: error.message };
     }
-
-    // Handle different data formats
-    if (printData.html && printData.title) {
-      // Report HTML format
-      console.log('📄 [IPC] معاينة طباعة تقرير HTML');
-      const previewWindow = createReportPrintPreviewWindow(printData);
-
-      if (previewWindow) {
-        console.log('✅ [IPC] تم إنشاء نافذة معاينة طباعة التقرير بنجاح');
-        return { success: true, windowId: previewWindow.id };
-      } else {
-        throw new Error('فشل في إنشاء نافذة معاينة طباعة التقرير');
-      }
-    } else if (printData.reconciliation) {
-      // Reconciliation format
-      console.log('📊 [IPC] معاينة طباعة التصفية');
-      console.log('📊 [IPC] بيانات الطباعة:', {
-        reconciliationId: printData.reconciliation.id,
-        sectionsCount: Object.keys(printData.sections || {}).length,
-        hasOptions: !!printData.options
-      });
-
-      // Create print preview window
-      const previewWindow = createPrintPreviewWindow(printData);
-
-      if (previewWindow) {
-        console.log('✅ [IPC] تم إنشاء نافذة معاينة الطباعة بنجاح');
-        return { success: true, windowId: previewWindow.id };
-      } else {
-        throw new Error('فشل في إنشاء نافذة معاينة الطباعة');
-      }
-    } else {
-      throw new Error('تنسيق بيانات الطباعة غير مدعوم');
-    }
-
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في إنشاء نافذة معاينة الطباعة:', error);
-    return { success: false, error: error.message };
-  }
 });
 
 // Helper function to create report print preview window
 function createReportPrintPreviewWindow(printData) {
-  try {
-    console.log('🖨️ [HELPER] إنشاء نافذة معاينة طباعة التقرير...');
+    try {
+        console.log('🖨️ [HELPER] إنشاء نافذة معاينة طباعة التقرير...');
 
-    // Create print preview window
-    printPreviewWindow = new BrowserWindow({
-      width: 900,
-      height: 1200,
-      minWidth: 800,
-      minHeight: 1000,
-      webPreferences: {
-        nodeIntegration: true,
-        contextIsolation: false,
-        enableRemoteModule: true
-      },
-      title: printData.title || 'معاينة الطباعة',
-      icon: path.join(__dirname, '../assets/icon.png'),
-      parent: mainWindow,
-      modal: false,
-      show: false,
-      autoHideMenuBar: true,
-      webSecurity: false
-    });
+        // Create print preview window
+        printPreviewWindow = new BrowserWindow({
+            width: 900,
+            height: 1200,
+            minWidth: 800,
+            minHeight: 1000,
+            webPreferences: {
+                nodeIntegration: true,
+                contextIsolation: false,
+                enableRemoteModule: true
+            },
+            title: printData.title || 'معاينة الطباعة',
+            icon: path.join(__dirname, '../assets/icon.png'),
+            parent: mainWindow,
+            modal: false,
+            show: false,
+            autoHideMenuBar: true,
+            webSecurity: false
+        });
 
-    // Create HTML content with print styles
-    const htmlContent = `
+        // Create HTML content with print styles
+        const htmlContent = `
       <!DOCTYPE html>
       <html dir="rtl" lang="ar">
       <head>
@@ -2595,137 +2622,137 @@ function createReportPrintPreviewWindow(printData) {
       </html>
     `;
 
-    // Load HTML content
-    printPreviewWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
+        // Load HTML content
+        printPreviewWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
 
-    // Show window when ready
-    printPreviewWindow.once('ready-to-show', () => {
-      printPreviewWindow.show();
-      console.log('✅ [HELPER] تم عرض نافذة معاينة طباعة التقرير');
-    });
+        // Show window when ready
+        printPreviewWindow.once('ready-to-show', () => {
+            printPreviewWindow.show();
+            console.log('✅ [HELPER] تم عرض نافذة معاينة طباعة التقرير');
+        });
 
-    // Handle window closed
-    printPreviewWindow.on('closed', () => {
-      printPreviewWindow = null;
-      console.log('🖨️ [HELPER] تم إغلاق نافذة معاينة طباعة التقرير');
-    });
+        // Handle window closed
+        printPreviewWindow.on('closed', () => {
+            printPreviewWindow = null;
+            console.log('🖨️ [HELPER] تم إغلاق نافذة معاينة طباعة التقرير');
+        });
 
-    return printPreviewWindow;
+        return printPreviewWindow;
 
-  } catch (error) {
-    console.error('❌ [HELPER] خطأ في إنشاء نافذة معاينة طباعة التقرير:', error);
-    return null;
-  }
+    } catch (error) {
+        console.error('❌ [HELPER] خطأ في إنشاء نافذة معاينة طباعة التقرير:', error);
+        return null;
+    }
 }
 
 // Close print preview window
 ipcMain.handle('close-print-preview', async (event) => {
-  console.log('🖨️ [IPC] طلب إغلاق نافذة معاينة الطباعة...');
+    console.log('🖨️ [IPC] طلب إغلاق نافذة معاينة الطباعة...');
 
-  try {
-    if (printPreviewWindow && !printPreviewWindow.isDestroyed()) {
-      printPreviewWindow.close();
-      printPreviewWindow = null;
-      console.log('✅ [IPC] تم إغلاق نافذة معاينة الطباعة');
-      return { success: true };
-    } else {
-      console.log('⚠️ [IPC] نافذة معاينة الطباعة غير موجودة');
-      return { success: true, message: 'نافذة معاينة الطباعة غير موجودة' };
+    try {
+        if (printPreviewWindow && !printPreviewWindow.isDestroyed()) {
+            printPreviewWindow.close();
+            printPreviewWindow = null;
+            console.log('✅ [IPC] تم إغلاق نافذة معاينة الطباعة');
+            return { success: true };
+        } else {
+            console.log('⚠️ [IPC] نافذة معاينة الطباعة غير موجودة');
+            return { success: true, message: 'نافذة معاينة الطباعة غير موجودة' };
+        }
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في إغلاق نافذة معاينة الطباعة:', error);
+        return { success: false, error: error.message };
     }
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في إغلاق نافذة معاينة الطباعة:', error);
-    return { success: false, error: error.message };
-  }
 });
 
 // Get system information
 ipcMain.handle('get-system-info', async (event) => {
-  try {
-    const os = require('os');
-    const process = require('process');
+    try {
+        const os = require('os');
+        const process = require('process');
 
-    const systemInfo = {
-      nodeVersion: process.version,
-      electronVersion: process.versions.electron,
-      osInfo: `${os.type()} ${os.release()} ${os.arch()}`,
-      memoryUsage: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)} MB`,
-      uptime: formatUptime(process.uptime())
-    };
+        const systemInfo = {
+            nodeVersion: process.version,
+            electronVersion: process.versions.electron,
+            osInfo: `${os.type()} ${os.release()} ${os.arch()}`,
+            memoryUsage: `${Math.round(process.memoryUsage().heapUsed / 1024 / 1024)} MB`,
+            uptime: formatUptime(process.uptime())
+        };
 
-    return systemInfo;
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في الحصول على معلومات النظام:', error);
-    return null;
-  }
+        return systemInfo;
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في الحصول على معلومات النظام:', error);
+        return null;
+    }
 });
 
 // Get database statistics
 ipcMain.handle('get-database-stats', async (event) => {
-  try {
-    if (!dbManager || !dbManager.db) {
-      throw new Error('Database not initialized');
-    }
-
-    // Get database file size
-    const fs = require('fs');
-    const path = require('path');
-    const dbPath = path.join(app.getPath('userData'), 'casher.db');
-
-    let size = 'غير متاح';
-    let recordCount = 0;
-
     try {
-      const stats = fs.statSync(dbPath);
-      size = `${formatCurrency(stats.size / 1024 / 1024)} MB`;
-    } catch (error) {
-      console.error('خطأ في قراءة حجم قاعدة البيانات:', error);
-    }
-
-    // Get total record count
-    try {
-      const tables = ['reconciliations', 'bank_receipts', 'cash_receipts', 'customer_receipts', 'postpaid_sales', 'return_invoices', 'suppliers'];
-      for (const table of tables) {
-        try {
-          // Check if table exists before querying
-          const tableExists = dbManager.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(table);
-          if (tableExists) {
-            const result = dbManager.db.prepare(`SELECT COUNT(*) as count FROM ${table}`).get();
-            recordCount += result.count;
-          } else {
-            console.warn(`⚠️ [DB-STATS] الجدول ${table} غير موجود، تم تخطيه`);
-          }
-        } catch (tableError) {
-          console.error(`❌ [DB-STATS] خطأ في فحص الجدول ${table}:`, tableError.message);
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
         }
-      }
+
+        // Get database file size
+        const fs = require('fs');
+        const path = require('path');
+        const dbPath = path.join(app.getPath('userData'), 'casher.db');
+
+        let size = 'غير متاح';
+        let recordCount = 0;
+
+        try {
+            const stats = fs.statSync(dbPath);
+            size = `${formatCurrency(stats.size / 1024 / 1024)} MB`;
+        } catch (error) {
+            console.error('خطأ في قراءة حجم قاعدة البيانات:', error);
+        }
+
+        // Get total record count
+        try {
+            const tables = ['reconciliations', 'bank_receipts', 'cash_receipts', 'customer_receipts', 'postpaid_sales', 'return_invoices', 'suppliers'];
+            for (const table of tables) {
+                try {
+                    // Check if table exists before querying
+                    const tableExists = dbManager.db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name=?`).get(table);
+                    if (tableExists) {
+                        const result = dbManager.db.prepare(`SELECT COUNT(*) as count FROM ${table}`).get();
+                        recordCount += result.count;
+                    } else {
+                        console.warn(`⚠️ [DB-STATS] الجدول ${table} غير موجود، تم تخطيه`);
+                    }
+                } catch (tableError) {
+                    console.error(`❌ [DB-STATS] خطأ في فحص الجدول ${table}:`, tableError.message);
+                }
+            }
+        } catch (error) {
+            console.error('خطأ في حساب عدد السجلات:', error);
+        }
+
+        return {
+            size: size,
+            recordCount: formatNumber(recordCount)
+        };
+
     } catch (error) {
-      console.error('خطأ في حساب عدد السجلات:', error);
+        console.error('❌ [IPC] خطأ في الحصول على إحصائيات قاعدة البيانات:', error);
+        return null;
     }
-
-    return {
-      size: size,
-      recordCount: formatNumber(recordCount)
-    };
-
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في الحصول على إحصائيات قاعدة البيانات:', error);
-    return null;
-  }
 });
 
 // Helper function to format uptime
 function formatUptime(seconds) {
-  const hours = Math.floor(seconds / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = Math.floor(seconds % 60);
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    const secs = Math.floor(seconds % 60);
 
-  if (hours > 0) {
-    return `${hours} ساعة ${minutes} دقيقة`;
-  } else if (minutes > 0) {
-    return `${minutes} دقيقة ${secs} ثانية`;
-  } else {
-    return `${secs} ثانية`;
-  }
+    if (hours > 0) {
+        return `${hours} ساعة ${minutes} دقيقة`;
+    } else if (minutes > 0) {
+        return `${minutes} دقيقة ${secs} ثانية`;
+    } else {
+        return `${secs} ثانية`;
+    }
 }
 
 // ========================================
@@ -2734,153 +2761,153 @@ function formatUptime(seconds) {
 
 // Show save dialog for backup
 ipcMain.handle('show-save-dialog', async (event, options) => {
-  try {
-    const result = await dialog.showSaveDialog(mainWindow, options);
-    return result.canceled ? null : result.filePath;
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في عرض حوار الحفظ:', error);
-    throw error;
-  }
+    try {
+        const result = await dialog.showSaveDialog(mainWindow, options);
+        return result.canceled ? null : result.filePath;
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في عرض حوار الحفظ:', error);
+        throw error;
+    }
 });
 
 // Show open dialog for restore
 ipcMain.handle('show-open-dialog', async (event, options) => {
-  try {
-    const result = await dialog.showOpenDialog(mainWindow, options);
-    return result.canceled ? [] : result.filePaths;
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في عرض حوار الفتح:', error);
-    throw error;
-  }
+    try {
+        const result = await dialog.showOpenDialog(mainWindow, options);
+        return result.canceled ? [] : result.filePaths;
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في عرض حوار الفتح:', error);
+        throw error;
+    }
 });
 
 // Save backup file
 ipcMain.handle('save-backup-file', async (event, { filePath, data }) => {
-  try {
-    console.log('💾 [IPC] حفظ ملف النسخة الاحتياطية:', filePath);
+    try {
+        console.log('💾 [IPC] حفظ ملف النسخة الاحتياطية:', filePath);
 
-    const jsonData = JSON.stringify(data, null, 2);
-    fs.writeFileSync(filePath, jsonData, 'utf8');
+        const jsonData = JSON.stringify(data, null, 2);
+        fs.writeFileSync(filePath, jsonData, 'utf8');
 
-    const stats = fs.statSync(filePath);
-    const fileSize = `${formatCurrency(stats.size / 1024 / 1024)} MB`;
-    const recordCount = data.metadata.total_records || 0;
+        const stats = fs.statSync(filePath);
+        const fileSize = `${formatCurrency(stats.size / 1024 / 1024)} MB`;
+        const recordCount = data.metadata.total_records || 0;
 
-    console.log('✅ [IPC] تم حفظ النسخة الاحتياطية بنجاح');
-    return {
-      success: true,
-      fileSize: fileSize,
-      recordCount: recordCount
-    };
+        console.log('✅ [IPC] تم حفظ النسخة الاحتياطية بنجاح');
+        return {
+            success: true,
+            fileSize: fileSize,
+            recordCount: recordCount
+        };
 
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في حفظ النسخة الاحتياطية:', error);
-    return { success: false, error: error.message };
-  }
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في حفظ النسخة الاحتياطية:', error);
+        return { success: false, error: error.message };
+    }
 });
 
 // Select directory dialog
 ipcMain.handle('select-directory', async (event, options = {}) => {
-  try {
-    console.log('📁 [IPC] فتح حوار اختيار المجلد...');
+    try {
+        console.log('📁 [IPC] فتح حوار اختيار المجلد...');
 
-    const result = await dialog.showOpenDialog(mainWindow, {
-      title: options.title || 'اختر مجلد',
-      defaultPath: options.defaultPath || '',
-      properties: ['openDirectory', 'createDirectory']
-    });
+        const result = await dialog.showOpenDialog(mainWindow, {
+            title: options.title || 'اختر مجلد',
+            defaultPath: options.defaultPath || '',
+            properties: ['openDirectory', 'createDirectory']
+        });
 
-    if (!result.canceled && result.filePaths && result.filePaths.length > 0) {
-      console.log('✅ [IPC] تم اختيار المجلد:', result.filePaths[0]);
-      return { success: true, filePath: result.filePaths[0] };
-    } else {
-      return { success: false, message: 'تم إلغاء العملية' };
+        if (!result.canceled && result.filePaths && result.filePaths.length > 0) {
+            console.log('✅ [IPC] تم اختيار المجلد:', result.filePaths[0]);
+            return { success: true, filePath: result.filePaths[0] };
+        } else {
+            return { success: false, message: 'تم إلغاء العملية' };
+        }
+
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في اختيار المجلد:', error);
+        return { success: false, error: error.message };
     }
-
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في اختيار المجلد:', error);
-    return { success: false, error: error.message };
-  }
 });
 
 // Load backup file
 ipcMain.handle('load-backup-file', async (event, filePath) => {
-  try {
-    console.log('📥 [IPC] تحميل ملف النسخة الاحتياطية:', filePath);
+    try {
+        console.log('📥 [IPC] تحميل ملف النسخة الاحتياطية:', filePath);
 
-    if (!fs.existsSync(filePath)) {
-      throw new Error('ملف النسخة الاحتياطية غير موجود');
+        if (!fs.existsSync(filePath)) {
+            throw new Error('ملف النسخة الاحتياطية غير موجود');
+        }
+
+        const jsonData = fs.readFileSync(filePath, 'utf8');
+        const backupData = JSON.parse(jsonData);
+
+        console.log('✅ [IPC] تم تحميل النسخة الاحتياطية بنجاح');
+        return { success: true, data: backupData };
+
+    } catch (error) {
+        console.error('❌ [IPC] خطأ في تحميل النسخة الاحتياطية:', error);
+        return { success: false, error: error.message };
     }
-
-    const jsonData = fs.readFileSync(filePath, 'utf8');
-    const backupData = JSON.parse(jsonData);
-
-    console.log('✅ [IPC] تم تحميل النسخة الاحتياطية بنجاح');
-    return { success: true, data: backupData };
-
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في تحميل النسخة الاحتياطية:', error);
-    return { success: false, error: error.message };
-  }
 });
 
 // Helper function to format numbers using English digits
 function formatNumber(number) {
-  if (number === null || number === undefined) return '0';
+    if (number === null || number === undefined) return '0';
 
-  try {
-    return new Intl.NumberFormat('en-US').format(number);
-  } catch (error) {
-    console.error('Error formatting number:', error);
-    return String(number);
-  }
+    try {
+        return new Intl.NumberFormat('en-US').format(number);
+    } catch (error) {
+        console.error('Error formatting number:', error);
+        return String(number);
+    }
 }
 
 // تحديث بيانات العميل
 ipcMain.handle('update-customer-data', async (event, data) => {
-  try {
-    console.log('🔄 [IPC] طلب تحديث بيانات العميل:', data);
+    try {
+        console.log('🔄 [IPC] طلب تحديث بيانات العميل:', data);
 
-    if (!dbManager || !dbManager.db) {
-      throw new Error('قاعدة البيانات غير متاحة');
-    }
+        if (!dbManager || !dbManager.db) {
+            throw new Error('قاعدة البيانات غير متاحة');
+        }
 
-    const { oldCustomerName, newName } = data;
+        const { oldCustomerName, newName } = data;
 
-    if (oldCustomerName !== newName) {
-      // تحديث اسم العميل في جميع الجداول
-      await dbManager.run('BEGIN TRANSACTION');
+        if (oldCustomerName !== newName) {
+            // تحديث اسم العميل في جميع الجداول
+            await dbManager.run('BEGIN TRANSACTION');
 
-      try {
-        await dbManager.run(
-          `UPDATE customer_receipts 
+            try {
+                await dbManager.run(
+                    `UPDATE customer_receipts 
            SET customer_name = ?
            WHERE customer_name = ?`,
-          [newName, oldCustomerName]
-        );
+                    [newName, oldCustomerName]
+                );
 
-        await dbManager.run(
-          `UPDATE postpaid_sales 
+                await dbManager.run(
+                    `UPDATE postpaid_sales 
            SET customer_name = ?
            WHERE customer_name = ?`,
-          [newName, oldCustomerName]
-        );
+                    [newName, oldCustomerName]
+                );
 
-        await dbManager.run('COMMIT');
-        console.log('✅ [IPC] تم تحديث بيانات العميل بنجاح');
-        return { success: true };
-      } catch (error) {
-        await dbManager.run('ROLLBACK');
+                await dbManager.run('COMMIT');
+                console.log('✅ [IPC] تم تحديث بيانات العميل بنجاح');
+                return { success: true };
+            } catch (error) {
+                await dbManager.run('ROLLBACK');
+                console.error('❌ [IPC] خطأ في تحديث بيانات العميل:', error);
+                return { success: false, error: error.message };
+            }
+        } else {
+            return { success: true };
+        }
+    } catch (error) {
         console.error('❌ [IPC] خطأ في تحديث بيانات العميل:', error);
         return { success: false, error: error.message };
-      }
-    } else {
-      return { success: true };
     }
-  } catch (error) {
-    console.error('❌ [IPC] خطأ في تحديث بيانات العميل:', error);
-    return { success: false, error: error.message };
-  }
 });
 
 // =====================================================================
@@ -2892,67 +2919,67 @@ ipcMain.handle('update-customer-data', async (event, data) => {
  * معاينة إيصال الطابعة الحرارية
  */
 ipcMain.handle('thermal-printer-preview', async (event, reconciliationData) => {
-  try {
-    console.log('🖨️ [THERMAL-PRINTER] طلب معاينة إيصال الطابعة الحرارية...');
-
-    if (!thermalPrinter) {
-      throw new Error('طابعة حرارية غير معاهة للتهيئة');
-    }
-
-    if (!reconciliationData || !reconciliationData.reconciliation) {
-      throw new Error('بيانات التصفية مطلوبة');
-    }
-
-    // Get company settings from database
     try {
-      const companySettings = {};
-      const companyName = await dbManager.db.prepare(
-        'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?'
-      ).get('general', 'company_name');
+        console.log('🖨️ [THERMAL-PRINTER] طلب معاينة إيصال الطابعة الحرارية...');
 
-      const companyLogo = await dbManager.db.prepare(
-        'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?'
-      ).get('general', 'company_logo');
+        if (!thermalPrinter) {
+            throw new Error('طابعة حرارية غير معاهة للتهيئة');
+        }
 
-      if (companyName) {
-        companySettings.company_name = companyName.setting_value;
-      }
-      if (companyLogo) {
-        companySettings.company_logo = companyLogo.setting_value;
-      }
+        if (!reconciliationData || !reconciliationData.reconciliation) {
+            throw new Error('بيانات التصفية مطلوبة');
+        }
 
-      if (Object.keys(companySettings).length > 0) {
-        reconciliationData.companySettings = companySettings;
-      }
-    } catch (settingsError) {
-      console.warn('⚠️ [THERMAL-PRINTER] تعذر تحميل إعدادات الشركة:', settingsError);
+        // Get company settings from database
+        try {
+            const companySettings = {};
+            const companyName = await dbManager.db.prepare(
+                'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?'
+            ).get('general', 'company_name');
+
+            const companyLogo = await dbManager.db.prepare(
+                'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?'
+            ).get('general', 'company_logo');
+
+            if (companyName) {
+                companySettings.company_name = companyName.setting_value;
+            }
+            if (companyLogo) {
+                companySettings.company_logo = companyLogo.setting_value;
+            }
+
+            if (Object.keys(companySettings).length > 0) {
+                reconciliationData.companySettings = companySettings;
+            }
+        } catch (settingsError) {
+            console.warn('⚠️ [THERMAL-PRINTER] تعذر تحميل إعدادات الشركة:', settingsError);
+        }
+
+        // Don't await - let preview open in background
+        thermalPrinter.previewReceipt(reconciliationData).then(result => {
+            if (result.success) {
+                console.log('✅ [THERMAL-PRINTER] تم فتح معاينة الإيصال بنجاح');
+            } else {
+                console.error('❌ [THERMAL-PRINTER] فشلت المعاينة:', result.error);
+            }
+        }).catch(error => {
+            console.error('❌ [THERMAL-PRINTER] خطأ غير متوقع في المعاينة:', error);
+        });
+
+        // Return immediately to close the loading dialog
+        return {
+            success: true,
+            message: 'تم فتح معاينة الإيصال'
+        };
+
+    } catch (error) {
+        console.error('❌ [THERMAL-PRINTER] خطأ في معاينة الإيصال:', error);
+        return {
+            success: false,
+            error: error.message,
+            message: 'فشل في فتح معاينة الإيصال'
+        };
     }
-
-    // Don't await - let preview open in background
-    thermalPrinter.previewReceipt(reconciliationData).then(result => {
-      if (result.success) {
-        console.log('✅ [THERMAL-PRINTER] تم فتح معاينة الإيصال بنجاح');
-      } else {
-        console.error('❌ [THERMAL-PRINTER] فشلت المعاينة:', result.error);
-      }
-    }).catch(error => {
-      console.error('❌ [THERMAL-PRINTER] خطأ غير متوقع في المعاينة:', error);
-    });
-
-    // Return immediately to close the loading dialog
-    return {
-      success: true,
-      message: 'تم فتح معاينة الإيصال'
-    };
-
-  } catch (error) {
-    console.error('❌ [THERMAL-PRINTER] خطأ في معاينة الإيصال:', error);
-    return {
-      success: false,
-      error: error.message,
-      message: 'فشل في فتح معاينة الإيصال'
-    };
-  }
 });
 
 /**
@@ -2960,75 +2987,75 @@ ipcMain.handle('thermal-printer-preview', async (event, reconciliationData) => {
  * طباعة مباشرة على طابعة حرارية
  */
 ipcMain.handle('thermal-printer-print', async (event, reconciliationData, options = {}) => {
-  try {
-    console.log('🖨️ [THERMAL-PRINTER] طلب طباعة مباشرة على الطابعة الحرارية...');
-
-    if (!thermalPrinter) {
-      throw new Error('طابعة حرارية غير معاهة للتهيئة');
-    }
-
-    if (!reconciliationData || !reconciliationData.reconciliation) {
-      throw new Error('بيانات التصفية مطلوبة');
-    }
-
-    // Get company settings from database
     try {
-      const companySettings = {};
-      const companyName = await dbManager.db.prepare(
-        'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?'
-      ).get('general', 'company_name');
+        console.log('🖨️ [THERMAL-PRINTER] طلب طباعة مباشرة على الطابعة الحرارية...');
 
-      const companyLogo = await dbManager.db.prepare(
-        'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?'
-      ).get('general', 'company_logo');
+        if (!thermalPrinter) {
+            throw new Error('طابعة حرارية غير معاهة للتهيئة');
+        }
 
-      if (companyName) {
-        companySettings.company_name = companyName.setting_value;
-      }
-      if (companyLogo) {
-        companySettings.company_logo = companyLogo.setting_value;
-      }
+        if (!reconciliationData || !reconciliationData.reconciliation) {
+            throw new Error('بيانات التصفية مطلوبة');
+        }
 
-      if (Object.keys(companySettings).length > 0) {
-        reconciliationData.companySettings = companySettings;
-      }
-    } catch (settingsError) {
-      console.warn('⚠️ [THERMAL-PRINTER] تعذر تحميل إعدادات الشركة:', settingsError);
+        // Get company settings from database
+        try {
+            const companySettings = {};
+            const companyName = await dbManager.db.prepare(
+                'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?'
+            ).get('general', 'company_name');
+
+            const companyLogo = await dbManager.db.prepare(
+                'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?'
+            ).get('general', 'company_logo');
+
+            if (companyName) {
+                companySettings.company_name = companyName.setting_value;
+            }
+            if (companyLogo) {
+                companySettings.company_logo = companyLogo.setting_value;
+            }
+
+            if (Object.keys(companySettings).length > 0) {
+                reconciliationData.companySettings = companySettings;
+            }
+        } catch (settingsError) {
+            console.warn('⚠️ [THERMAL-PRINTER] تعذر تحميل إعدادات الشركة:', settingsError);
+        }
+
+        // Update printer settings if provided
+        if (options && Object.keys(options).length > 0) {
+            thermalPrinter.updateSettings(options);
+        }
+
+        // Don't await the full process - return immediately and let printing happen in background
+        thermalPrinter.printReceipt(
+            reconciliationData,
+            options.printerName
+        ).then(result => {
+            if (result.success) {
+                console.log('✅ [THERMAL-PRINTER] اكتملت الطباعة بنجاح');
+            } else {
+                console.error('❌ [THERMAL-PRINTER] فشلت الطباعة:', result.error);
+            }
+        }).catch(error => {
+            console.error('❌ [THERMAL-PRINTER] خطأ غير متوقع في الطباعة:', error);
+        });
+
+        // Return immediately to close the loading dialog
+        return {
+            success: true,
+            message: 'تم إرسال الإيصال للطابعة'
+        };
+
+    } catch (error) {
+        console.error('❌ [THERMAL-PRINTER] خطأ في الطباعة الحرارية:', error);
+        return {
+            success: false,
+            error: error.message,
+            message: 'فشل في طباعة الإيصال'
+        };
     }
-
-    // Update printer settings if provided
-    if (options && Object.keys(options).length > 0) {
-      thermalPrinter.updateSettings(options);
-    }
-
-    // Don't await the full process - return immediately and let printing happen in background
-    thermalPrinter.printReceipt(
-      reconciliationData,
-      options.printerName
-    ).then(result => {
-      if (result.success) {
-        console.log('✅ [THERMAL-PRINTER] اكتملت الطباعة بنجاح');
-      } else {
-        console.error('❌ [THERMAL-PRINTER] فشلت الطباعة:', result.error);
-      }
-    }).catch(error => {
-      console.error('❌ [THERMAL-PRINTER] خطأ غير متوقع في الطباعة:', error);
-    });
-
-    // Return immediately to close the loading dialog
-    return {
-      success: true,
-      message: 'تم إرسال الإيصال للطابعة'
-    };
-
-  } catch (error) {
-    console.error('❌ [THERMAL-PRINTER] خطأ في الطباعة الحرارية:', error);
-    return {
-      success: false,
-      error: error.message,
-      message: 'فشل في طباعة الإيصال'
-    };
-  }
 });
 
 /**
@@ -3036,60 +3063,60 @@ ipcMain.handle('thermal-printer-print', async (event, reconciliationData, option
  * الحصول على إعدادات الطابعة الحرارية
  */
 ipcMain.handle('thermal-printer-settings-get', async (event) => {
-  try {
-    if (!thermalPrinter) {
-      throw new Error('طابعة حرارية غير معاهة للتهيئة');
-    }
-
-    // First try to get from database
-    if (dbManager) {
-      try {
-        const query = `SELECT setting_key, setting_value FROM system_settings WHERE category = 'thermal_printer'`;
-        const results = dbManager.db.prepare(query).all();
-
-        if (results && results.length > 0) {
-          const settings = {};
-          for (const row of results) {
-            const key = row.setting_key;
-            const value = row.setting_value;
-
-            // Convert string values back to proper types
-            if (value === 'true') {
-              settings[key] = true;
-            } else if (value === 'false') {
-              settings[key] = false;
-            } else if (!isNaN(value) && value !== '') {
-              settings[key] = parseInt(value);
-            } else {
-              settings[key] = value;
-            }
-          }
-
-          if (Object.keys(settings).length > 0) {
-            return {
-              success: true,
-              settings: settings
-            };
-          }
+    try {
+        if (!thermalPrinter) {
+            throw new Error('طابعة حرارية غير معاهة للتهيئة');
         }
-      } catch (dbError) {
-        safeWarn('⚠️ [THERMAL-PRINTER] خطأ في جلب الإعدادات من قاعدة البيانات: ' + dbError.message);
-      }
+
+        // First try to get from database
+        if (dbManager) {
+            try {
+                const query = `SELECT setting_key, setting_value FROM system_settings WHERE category = 'thermal_printer'`;
+                const results = dbManager.db.prepare(query).all();
+
+                if (results && results.length > 0) {
+                    const settings = {};
+                    for (const row of results) {
+                        const key = row.setting_key;
+                        const value = row.setting_value;
+
+                        // Convert string values back to proper types
+                        if (value === 'true') {
+                            settings[key] = true;
+                        } else if (value === 'false') {
+                            settings[key] = false;
+                        } else if (!isNaN(value) && value !== '') {
+                            settings[key] = parseInt(value);
+                        } else {
+                            settings[key] = value;
+                        }
+                    }
+
+                    if (Object.keys(settings).length > 0) {
+                        return {
+                            success: true,
+                            settings: settings
+                        };
+                    }
+                }
+            } catch (dbError) {
+                safeWarn('⚠️ [THERMAL-PRINTER] خطأ في جلب الإعدادات من قاعدة البيانات: ' + dbError.message);
+            }
+        }
+
+        // Fallback to in-memory settings
+        return {
+            success: true,
+            settings: thermalPrinter.getSettings()
+        };
+
+    } catch (error) {
+        safeError('❌ [THERMAL-PRINTER] خطأ في الحصول على الإعدادات: ' + error.message);
+        return {
+            success: false,
+            error: error.message
+        };
     }
-
-    // Fallback to in-memory settings
-    return {
-      success: true,
-      settings: thermalPrinter.getSettings()
-    };
-
-  } catch (error) {
-    safeError('❌ [THERMAL-PRINTER] خطأ في الحصول على الإعدادات: ' + error.message);
-    return {
-      success: false,
-      error: error.message
-    };
-  }
 });
 
 /**
@@ -3097,47 +3124,47 @@ ipcMain.handle('thermal-printer-settings-get', async (event) => {
  * تحديث إعدادات الطابعة الحرارية
  */
 ipcMain.handle('thermal-printer-settings-update', async (event, settings) => {
-  try {
-    if (!thermalPrinter) {
-      throw new Error('طابعة حرارية غير معاهة للتهيئة');
-    }
-
-    if (!settings || typeof settings !== 'object') {
-      throw new Error('إعدادات غير صحيحة');
-    }
-
-    thermalPrinter.updateSettings(settings);
-
-    // Save settings to database
-    if (dbManager) {
-      try {
-        await dbManager.run('DELETE FROM system_settings WHERE category = ?', ['thermal_printer']);
-
-        for (const [key, value] of Object.entries(settings)) {
-          await dbManager.run(
-            'INSERT INTO system_settings (category, setting_key, setting_value) VALUES (?, ?, ?)',
-            ['thermal_printer', key, String(value)]
-          );
+    try {
+        if (!thermalPrinter) {
+            throw new Error('طابعة حرارية غير معاهة للتهيئة');
         }
 
-        safeLog('✅ [THERMAL-PRINTER] تم حفظ الإعدادات بنجاح');
-      } catch (dbError) {
-        safeWarn('⚠️ [THERMAL-PRINTER] تحذير عند حفظ الإعدادات في قاعدة البيانات: ' + dbError.message);
-      }
+        if (!settings || typeof settings !== 'object') {
+            throw new Error('إعدادات غير صحيحة');
+        }
+
+        thermalPrinter.updateSettings(settings);
+
+        // Save settings to database
+        if (dbManager) {
+            try {
+                await dbManager.run('DELETE FROM system_settings WHERE category = ?', ['thermal_printer']);
+
+                for (const [key, value] of Object.entries(settings)) {
+                    await dbManager.run(
+                        'INSERT INTO system_settings (category, setting_key, setting_value) VALUES (?, ?, ?)',
+                        ['thermal_printer', key, String(value)]
+                    );
+                }
+
+                safeLog('✅ [THERMAL-PRINTER] تم حفظ الإعدادات بنجاح');
+            } catch (dbError) {
+                safeWarn('⚠️ [THERMAL-PRINTER] تحذير عند حفظ الإعدادات في قاعدة البيانات: ' + dbError.message);
+            }
+        }
+
+        return {
+            success: true,
+            message: 'تم تحديث إعدادات الطابعة الحرارية'
+        };
+
+    } catch (error) {
+        safeError('❌ [THERMAL-PRINTER] خطأ في تحديث الإعدادات: ' + error.message);
+        return {
+            success: false,
+            error: error.message
+        };
     }
-
-    return {
-      success: true,
-      message: 'تم تحديث إعدادات الطابعة الحرارية'
-    };
-
-  } catch (error) {
-    safeError('❌ [THERMAL-PRINTER] خطأ في تحديث الإعدادات: ' + error.message);
-    return {
-      success: false,
-      error: error.message
-    };
-  }
 });
 
 /**
@@ -3145,87 +3172,87 @@ ipcMain.handle('thermal-printer-settings-update', async (event, settings) => {
  * الحصول على قائمة الطابعات المتاحة
  */
 ipcMain.handle('thermal-printer-list', async (event) => {
-  try {
-    let printers = [];
-
-    // Method 1: Try getting system printers using PowerShell
     try {
-      printers = getSystemPrinters();
-      if (printers && printers.length > 0) {
-        safeLog(`✅ [THERMAL] تم الحصول على ${printers.length} طابعة من النظام`);
+        let printers = [];
+
+        // Method 1: Try getting system printers using PowerShell
+        try {
+            printers = getSystemPrinters();
+            if (printers && printers.length > 0) {
+                safeLog(`✅ [THERMAL] تم الحصول على ${printers.length} طابعة من النظام`);
+                return {
+                    success: true,
+                    printers: printers
+                };
+            }
+        } catch (sysError) {
+            safeWarn('⚠️ [THERMAL] فشل الحصول على الطابعات من النظام: ' + sysError.message);
+        }
+
+        // Method 2: Try using webContents.getPrinters()
+        if (mainWindow && mainWindow.webContents && typeof mainWindow.webContents.getPrinters === 'function') {
+            try {
+                printers = await mainWindow.webContents.getPrinters();
+                if (printers && printers.length > 0) {
+                    safeLog(`✅ [THERMAL] تم الحصول على ${printers.length} طابعة من webContents`);
+                    return {
+                        success: true,
+                        printers: printers.map(printer => ({
+                            name: printer.name || 'Unknown',
+                            displayName: printer.displayName || printer.name || 'Unknown',
+                            description: printer.description || '',
+                            status: printer.status || 'unknown',
+                            isDefault: printer.isDefault || false
+                        }))
+                    };
+                }
+            } catch (webError) {
+                safeWarn('⚠️ [THERMAL] فشل الحصول على الطابعات من webContents: ' + webError.message);
+            }
+        }
+
+        // Method 3: If no printers found, return fallback options
+        safeLog('⚠️ [THERMAL] لم يتم العثور على طابعات محددة، سيتم استخدام الخيارات الافتراضية');
+
+        printers = [
+            {
+                name: 'Default Printer',
+                displayName: 'الطابعة الافتراضية',
+                description: 'طابعة النظام الافتراضية',
+                status: 'unknown',
+                isDefault: true
+            },
+            {
+                name: 'Microsoft Print to PDF',
+                displayName: 'طباعة إلى PDF',
+                description: 'طباعة إلى ملف PDF',
+                status: 'unknown',
+                isDefault: false
+            }
+        ];
+
         return {
-          success: true,
-          printers: printers
-        };
-      }
-    } catch (sysError) {
-      safeWarn('⚠️ [THERMAL] فشل الحصول على الطابعات من النظام: ' + sysError.message);
-    }
-
-    // Method 2: Try using webContents.getPrinters()
-    if (mainWindow && mainWindow.webContents && typeof mainWindow.webContents.getPrinters === 'function') {
-      try {
-        printers = await mainWindow.webContents.getPrinters();
-        if (printers && printers.length > 0) {
-          safeLog(`✅ [THERMAL] تم الحصول على ${printers.length} طابعة من webContents`);
-          return {
             success: true,
-            printers: printers.map(printer => ({
-              name: printer.name || 'Unknown',
-              displayName: printer.displayName || printer.name || 'Unknown',
-              description: printer.description || '',
-              status: printer.status || 'unknown',
-              isDefault: printer.isDefault || false
-            }))
-          };
-        }
-      } catch (webError) {
-        safeWarn('⚠️ [THERMAL] فشل الحصول على الطابعات من webContents: ' + webError.message);
-      }
+            printers: printers
+        };
+
+    } catch (error) {
+        safeError('❌ [THERMAL-PRINTER] خطأ في الحصول على قائمة الطابعات: ' + error.message);
+
+        // Return fallback printers even on error
+        return {
+            success: true,
+            printers: [
+                {
+                    name: 'Default Printer',
+                    displayName: 'الطابعة الافتراضية',
+                    description: 'طابعة النظام الافتراضية',
+                    status: 'unknown',
+                    isDefault: true
+                }
+            ]
+        };
     }
-
-    // Method 3: If no printers found, return fallback options
-    safeLog('⚠️ [THERMAL] لم يتم العثور على طابعات محددة، سيتم استخدام الخيارات الافتراضية');
-
-    printers = [
-      {
-        name: 'Default Printer',
-        displayName: 'الطابعة الافتراضية',
-        description: 'طابعة النظام الافتراضية',
-        status: 'unknown',
-        isDefault: true
-      },
-      {
-        name: 'Microsoft Print to PDF',
-        displayName: 'طباعة إلى PDF',
-        description: 'طباعة إلى ملف PDF',
-        status: 'unknown',
-        isDefault: false
-      }
-    ];
-
-    return {
-      success: true,
-      printers: printers
-    };
-
-  } catch (error) {
-    safeError('❌ [THERMAL-PRINTER] خطأ في الحصول على قائمة الطابعات: ' + error.message);
-
-    // Return fallback printers even on error
-    return {
-      success: true,
-      printers: [
-        {
-          name: 'Default Printer',
-          displayName: 'الطابعة الافتراضية',
-          description: 'طابعة النظام الافتراضية',
-          status: 'unknown',
-          isDefault: true
-        }
-      ]
-    };
-  }
 });
 
 /**
@@ -3233,24 +3260,24 @@ ipcMain.handle('thermal-printer-list', async (event) => {
  * الحصول على أحجام الورق المدعومة
  */
 ipcMain.handle('thermal-printer-paper-sizes', async (event) => {
-  try {
-    if (!thermalPrinter) {
-      throw new Error('طابعة حرارية غير معاهة للتهيئة');
+    try {
+        if (!thermalPrinter) {
+            throw new Error('طابعة حرارية غير معاهة للتهيئة');
+        }
+
+        return {
+            success: true,
+            paperSizes: thermalPrinter.getSupportedPaperSizes()
+        };
+
+    } catch (error) {
+        console.error('❌ [THERMAL-PRINTER] خطأ في الحصول على أحجام الورق:', error);
+        return {
+            success: false,
+            error: error.message,
+            paperSizes: []
+        };
     }
-
-    return {
-      success: true,
-      paperSizes: thermalPrinter.getSupportedPaperSizes()
-    };
-
-  } catch (error) {
-    console.error('❌ [THERMAL-PRINTER] خطأ في الحصول على أحجام الورق:', error);
-    return {
-      success: false,
-      error: error.message,
-      paperSizes: []
-    };
-  }
 });
 
 /**
@@ -3258,69 +3285,69 @@ ipcMain.handle('thermal-printer-paper-sizes', async (event) => {
  * طباعة كشف حساب العميل على الطابعة الحرارية
  */
 ipcMain.handle('print-thermal-statement', async (event, statementData) => {
-  try {
-    console.log('🖨️ [THERMAL-PRINTER] طلب طباعة كشف حساب على الطابعة الحرارية...');
+    try {
+        console.log('🖨️ [THERMAL-PRINTER] طلب طباعة كشف حساب على الطابعة الحرارية...');
 
-    if (!thermalPrinter) {
-      throw new Error('طابعة حرارية غير معاهة للتهيئة');
+        if (!thermalPrinter) {
+            throw new Error('طابعة حرارية غير معاهة للتهيئة');
+        }
+
+        if (!statementData || !statementData.customerName) {
+            throw new Error('بيانات كشف الحساب غير كاملة');
+        }
+
+        // إنشاء بيانات متوافقة مع ThermalPrinter80mm
+        const reconciliationData = {
+            reconciliation: {
+                id: null,
+                cashier_id: null,
+                accountant_id: null,
+                reconciliation_number: null,
+                reconciliation_date: new Date().toISOString().split('T')[0],
+                status: 'completed'
+            },
+            cashier: {
+                cashier_name: 'كشف حساب عميل',
+                branch_id: null
+            },
+            branch: statementData.branch ? {
+                branch_name: statementData.branch.branch_name || 'فرع',
+                address: statementData.branch.branch_address || '',
+                phone: statementData.branch.branch_phone || ''
+            } : {
+                branch_name: 'فرع',
+                address: '',
+                phone: ''
+            },
+            // النص المخصص لكشف الحساب
+            customText: statementData.textReceipt,
+            isCustomerStatement: true,
+            customerName: statementData.customerName,
+            totalPostpaid: statementData.totalPost || 0,
+            totalReceipts: statementData.totalRec || 0,
+            balance: statementData.balance || 0
+        };
+
+        // طباعة الإيصال
+        const result = await thermalPrinter.printReceipt(reconciliationData);
+
+        if (result && result.success) {
+            console.log('✅ [THERMAL-PRINTER] تمت طباعة كشف الحساب بنجاح');
+            return {
+                success: true,
+                message: 'تمت طباعة كشف الحساب بنجاح'
+            };
+        } else {
+            throw new Error(result?.error || 'فشلت عملية الطباعة');
+        }
+
+    } catch (error) {
+        console.error('❌ [THERMAL-PRINTER] خطأ في طباعة كشف الحساب:', error);
+        return {
+            success: false,
+            error: error.message,
+            message: 'فشل في طباعة كشف الحساب'
+        };
     }
-
-    if (!statementData || !statementData.customerName) {
-      throw new Error('بيانات كشف الحساب غير كاملة');
-    }
-
-    // إنشاء بيانات متوافقة مع ThermalPrinter80mm
-    const reconciliationData = {
-      reconciliation: {
-        id: null,
-        cashier_id: null,
-        accountant_id: null,
-        reconciliation_number: null,
-        reconciliation_date: new Date().toISOString().split('T')[0],
-        status: 'completed'
-      },
-      cashier: {
-        cashier_name: 'كشف حساب عميل',
-        branch_id: null
-      },
-      branch: statementData.branch ? {
-        branch_name: statementData.branch.branch_name || 'فرع',
-        address: statementData.branch.branch_address || '',
-        phone: statementData.branch.branch_phone || ''
-      } : {
-        branch_name: 'فرع',
-        address: '',
-        phone: ''
-      },
-      // النص المخصص لكشف الحساب
-      customText: statementData.textReceipt,
-      isCustomerStatement: true,
-      customerName: statementData.customerName,
-      totalPostpaid: statementData.totalPost || 0,
-      totalReceipts: statementData.totalRec || 0,
-      balance: statementData.balance || 0
-    };
-
-    // طباعة الإيصال
-    const result = await thermalPrinter.printReceipt(reconciliationData);
-
-    if (result && result.success) {
-      console.log('✅ [THERMAL-PRINTER] تمت طباعة كشف الحساب بنجاح');
-      return {
-        success: true,
-        message: 'تمت طباعة كشف الحساب بنجاح'
-      };
-    } else {
-      throw new Error(result?.error || 'فشلت عملية الطباعة');
-    }
-
-  } catch (error) {
-    console.error('❌ [THERMAL-PRINTER] خطأ في طباعة كشف الحساب:', error);
-    return {
-      success: false,
-      error: error.message,
-      message: 'فشل في طباعة كشف الحساب'
-    };
-  }
 });
 
