@@ -11,6 +11,9 @@
     <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
 
+    <!-- OneSignal SDK -->
+    <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+
 </head>
 
 <body class="bg-dark text-light">
@@ -71,6 +74,22 @@
         const userStr = localStorage.getItem('user');
         if (!userStr) window.location.href = '/login.html';
         const user = JSON.parse(userStr);
+
+        // Initialize OneSignal for Admin users
+        if (user.role === 'admin' || !user.role) {
+            window.OneSignalDeferred = window.OneSignalDeferred || [];
+            OneSignalDeferred.push(async function (OneSignal) {
+                await OneSignal.init({
+                    appId: "os_v2_app_dn3xr5ipevg7riubmenwqkuwjtawhyjjuy3ul2urlqseuwxemciq5aknyw7rq5qfb7kctrraudf4pevr375o3twsn4odam5zy47tjva",
+                    allowLocalhostAsSecureOrigin: true,
+                });
+
+                await OneSignal.User.addTag("role", "admin");
+                await OneSignal.User.addTag("userId", user.id || "unknown");
+
+                console.log("✅ OneSignal initialized");
+            });
+        }
 
         async function loadRequests() {
             const tbody = document.getElementById('requestsTableBody');
