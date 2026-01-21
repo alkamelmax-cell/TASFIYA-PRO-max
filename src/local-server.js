@@ -1333,7 +1333,7 @@ class LocalWebServer {
 
     async sendOneSignalNotification(title, message, data = {}) {
         try {
-            const appId = "os_v2_app_dn3xr5ipevg7riubmenwqkuwjtawhyjjuy3ul2urlqseuwxemciq5aknyw7rq5qfb7kctrraudf4pevr375o3twsn4odam5zy47tjva";
+            const appId = "1b77f85d25-4df8-4291-611b682a964c";
             const restApiKey = "1b7778f5-0f25-4df8-a281-611b682a964c";
 
             const notificationPayload = {
