@@ -1285,16 +1285,23 @@ class LocalWebServer {
                             if (c) cashierName = c.name;
                         }
 
-                        const title = newReconciliationsCount === 1 ? '💰 تصفية جديدة مكتملة' : `💰 وصل ${newReconciliationsCount} تصفيات جديدة`;
-                        const msg = newReconciliationsCount === 1
-                            ? `تم حفظ تصفية رقم ${firstNewRec.reconciliation_number}`
-                            : `تمت إضافة ${newReconciliationsCount} تصفيات جديدة للسجل الرئيسي`;
+                        // Enhanced notification messages
+                        let title, msg;
+
+                        if (newReconciliationsCount === 1) {
+                            title = '✅ تصفية جديدة مكتملة';
+                            msg = `تم حفظ تصفية رقم ${firstNewRec.reconciliation_number} للكاشير: ${cashierName}`;
+                        } else {
+                            title = `🎯 ${newReconciliationsCount} تصفيات جديدة`;
+                            msg = `تمت إضافة ${newReconciliationsCount} تصفيات مكتملة إلى السجل - أول تصفية: ${firstNewRec.reconciliation_number}`;
+                        }
 
                         // Send async notification
                         this.sendOneSignalNotification(title, msg, {
                             type: 'new_reconciliation',
                             count: newReconciliationsCount,
-                            rec_number: firstNewRec.reconciliation_number
+                            rec_number: firstNewRec.reconciliation_number,
+                            cashier_name: cashierName
                         }).catch(e => console.error('Notification send failed:', e));
                     }
                 }
@@ -1405,10 +1412,6 @@ class LocalWebServer {
         try {
             const appId = "1b7778f5-0f25-4df8-a281-611b682a964c";
             const restApiKey = process.env.ONESIGNAL_REST_API_KEY || "YOUR_REST_API_KEY_HERE";
-
-            // Debug logging
-            console.log('🔑 OneSignal API Key loaded:', restApiKey ? 'YES ✅' : 'NO ❌');
-            console.log('🔑 Key starts with:', restApiKey.substring(0, 15) + '...');
 
             const notificationPayload = {
                 app_id: appId,
