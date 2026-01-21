@@ -163,6 +163,18 @@ class LocalWebServer {
                     await this.handleSyncUsers(req, res);
                     return;
                 }
+                // DEBUG ROUTE: Test Notification directly
+                else if (pathname === '/api/test-notification') {
+                    console.log('🔔 Manual test notification requested');
+                    const result = await this.sendOneSignalNotification(
+                        '🔔 اختبار الإشعارات',
+                        'إذا وصلت هذه الرسالة، فإن OneSignal يعمل بنجاح!',
+                        { type: 'test' }
+                    );
+                    res.writeHead(200, { 'Content-Type': 'application/json' });
+                    res.end(JSON.stringify(result));
+                    return;
+                }
                 else {
                     res.writeHead(404, { 'Content-Type': 'text/plain' });
                     res.end('Not Found');
