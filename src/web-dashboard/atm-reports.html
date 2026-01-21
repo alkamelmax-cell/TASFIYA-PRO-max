@@ -407,7 +407,7 @@
             const dateTo = document.getElementById('filterDateTo').value;
             const cashierId = document.getElementById('filterCashier').value;
             const branchId = document.getElementById('filterBranch').value;
-            const accountLocation = document.getElementById('filterAccount').value;
+            const accountNumber = document.getElementById('filterAccount').value;
             const specificAmount = document.getElementById('filterAmount').value;
 
             const params = new URLSearchParams();
@@ -415,7 +415,7 @@
             if (dateTo) params.append('dateTo', dateTo);
             if (cashierId && cashierId !== 'all') params.append('cashierId', cashierId);
             if (branchId && branchId !== 'all') params.append('branchId', branchId);
-            if (accountLocation && accountLocation !== 'all') params.append('accountLocation', accountLocation);
+            if (accountNumber && accountNumber !== 'all') params.append('accountNumber', accountNumber);
             if (specificAmount) params.append('specificAmount', specificAmount);
 
             showLoading(true);
@@ -477,7 +477,7 @@
                         <td class="text-center">${opBadge}</td>
                         <td class="text-center text-info fw-bold">
                             <div>${row.atm_name || '-'}</div>
-                            ${row.location ? `<div class="text-secondary small fw-normal">${row.location}</div>` : ''}
+                            ${row.account_number ? `<div class="text-secondary small fw-normal">${row.account_number}</div>` : ''}
                         </td>
                         <td class="text-center text-white">${row.bank_name || '-'}</td>
                         <td class="font-monospace text-success fw-bold text-ltr text-center fs-6">
@@ -537,9 +537,9 @@
                                     <div class="text-white-50 small font-monospace mb-1">
                                         <i class="far fa-calendar-alt me-1"></i> ${formattedDate}
                                     </div>
-                                    ${row.location ? `
+                                    ${row.account_number ? `
                                     <div class="text-secondary small">
-                                        ${row.location}
+                                        ${row.account_number}
                                     </div>
                                     ` : ''}
                                 </div>

@@ -384,8 +384,7 @@ class LocalWebServer {
                     atm.id as atm_id,
                     atm.name as atm_name,
                     atm.bank_name,
-                    atm.location,
-                    atm.account_number,
+                    atm.location as account_number,
                     c.name as cashier_name
                 FROM bank_receipts br
                 LEFT JOIN reconciliations r ON br.reconciliation_id = r.id
@@ -412,9 +411,10 @@ class LocalWebServer {
                 sql += ` AND atm.branch_id = ?`;
                 params.push(query.branchId);
             }
-            if (query.accountLocation && query.accountLocation !== 'all') {
+            // Changed from accountLocation to accountNumber
+            if (query.accountNumber && query.accountNumber !== 'all') {
                 sql += ` AND atm.location = ?`;
-                params.push(query.accountLocation);
+                params.push(query.accountNumber);
             }
             if (query.specificAmount) {
                 sql += ` AND br.amount = ?`;
