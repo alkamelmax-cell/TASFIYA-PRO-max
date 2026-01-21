@@ -1285,15 +1285,27 @@ class LocalWebServer {
                             if (c) cashierName = c.name;
                         }
 
+                        // Calculate surplus/deficit
+                        const surplusDeficit = parseFloat(firstNewRec.surplus_deficit || 0);
+                        let differenceText = '';
+
+                        if (surplusDeficit > 0) {
+                            differenceText = `الفارق: زيادة ${surplusDeficit.toFixed(2)} ريال`;
+                        } else if (surplusDeficit < 0) {
+                            differenceText = `الفارق: عجز ${Math.abs(surplusDeficit).toFixed(2)} ريال`;
+                        } else {
+                            differenceText = 'الفارق: متوازن ✅';
+                        }
+
                         // Enhanced notification messages
                         let title, msg;
 
                         if (newReconciliationsCount === 1) {
                             title = '✅ تصفية جديدة مكتملة';
-                            msg = `تم حفظ تصفية رقم ${firstNewRec.reconciliation_number} للكاشير: ${cashierName}`;
+                            msg = `تصفية جديدة رقم ${firstNewRec.reconciliation_number} من ${cashierName} - ${differenceText}`;
                         } else {
                             title = `🎯 ${newReconciliationsCount} تصفيات جديدة`;
-                            msg = `تمت إضافة ${newReconciliationsCount} تصفيات مكتملة إلى السجل - أول تصفية: ${firstNewRec.reconciliation_number}`;
+                            msg = `تمت إضافة ${newReconciliationsCount} تصفيات مكتملة - أول تصفية: رقم ${firstNewRec.reconciliation_number} من ${cashierName}`;
                         }
 
                         // Send async notification
@@ -1301,7 +1313,8 @@ class LocalWebServer {
                             type: 'new_reconciliation',
                             count: newReconciliationsCount,
                             rec_number: firstNewRec.reconciliation_number,
-                            cashier_name: cashierName
+                            cashier_name: cashierName,
+                            surplus_deficit: surplusDeficit
                         }).catch(e => console.error('Notification send failed:', e));
                     }
                 }
