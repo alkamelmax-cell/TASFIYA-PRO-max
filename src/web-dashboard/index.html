@@ -252,7 +252,8 @@
 
                     // Tag user as admin for targeted notifications
                     await OneSignal.User.addTag("role", "admin");
-                    await OneSignal.User.addTag("userId", user.id || "unknown");
+                    const userId = user.id ? String(user.id) : "unknown";
+                    await OneSignal.User.addTag("userId", userId);
 
                     console.log("✅ OneSignal initialized for admin:", user.name);
 
