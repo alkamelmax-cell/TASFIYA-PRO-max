@@ -777,10 +777,51 @@ input[type="date"].custom-input {
         display: none !important;
     }
 
-    /* FORCE SHOW Amount Column for Reconciliation Requests */
-    .reconciliation-table thead th:nth-child(4),
-    .reconciliation-table tbody td:nth-child(4) {
-        display: table-cell !important;
+    /* Mobile Optimization for Reconciliation Request Table (4 Columns) */
+    @media (max-width: 768px) {
+        .reconciliation-table {
+            font-size: 0.75rem !important;
+        }
+
+        .reconciliation-table th,
+        .reconciliation-table td {
+            padding: 6px 2px !important;
+            white-space: normal !important;
+        }
+
+        /* Force display all 4 columns */
+        .reconciliation-table thead th,
+        .reconciliation-table tbody td {
+            display: table-cell !important;
+        }
+
+        /* Adjust width ratios for mobile */
+        .reconciliation-table th:nth-child(1),
+        .reconciliation-table td:nth-child(1) {
+            width: 30% !important;
+        }
+
+        /* Cashier/ID */
+        .reconciliation-table th:nth-child(2),
+        .reconciliation-table td:nth-child(2) {
+            width: 25% !important;
+        }
+
+        /* Date */
+        .reconciliation-table th:nth-child(3),
+        .reconciliation-table td:nth-child(3) {
+            width: 25% !important;
+            background: rgba(25, 135, 84, 0.05) !important;
+        }
+
+        /* Amount */
+        .reconciliation-table th:nth-child(4),
+        .reconciliation-table td:nth-child(4) {
+            width: 20% !important;
+            text-align: center !important;
+        }
+
+        /* Actions */
     }
 
     /* Modal Summary Grid - Stack Vertically on Mobile */

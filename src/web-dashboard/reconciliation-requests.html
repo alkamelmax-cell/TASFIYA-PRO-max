@@ -41,11 +41,10 @@
                     <table class="table table-dark table-hover mb-0 align-middle custom-table reconciliation-table">
                         <thead>
                             <tr>
-                                <th class="text-secondary">#</th>
-                                <th class="text-secondary">التاريخ</th>
-                                <th class="text-secondary">الكاشير</th>
-                                <th class="text-secondary text-center">إجمالي النقد</th>
-                                <th class="text-secondary text-center">الإجراءات</th>
+                                <th class="text-secondary" style="width: 25%">الكاشير</th>
+                                <th class="text-secondary" style="width: 30%">التاريخ</th>
+                                <th class="text-secondary text-center" style="width: 25%">المبلغ</th>
+                                <th class="text-secondary text-center" style="width: 20%">الإجراءات</th>
                             </tr>
                         </thead>
                         <tbody id="requestsTableBody">
@@ -106,21 +105,25 @@
 
                         return `
                             <tr>
-                                <td class="font-monospace fw-bold text-white">#${req.id}</td>
                                 <td class="text-white">
-                                    <div class="d-flex flex-column align-items-start">
-                                        <span class="font-monospace fw-bold">${formattedDate}</span>
-                                        <span class="font-monospace text-info small">${formattedTime}</span>
+                                    <div class="d-flex flex-column">
+                                        <span class="fw-bold text-white small">${req.cashier_name || 'غير معروف'}</span>
+                                        <span class="font-monospace text-muted small" style="font-size: 0.75rem">#${req.id}</span>
                                     </div>
                                 </td>
-                                <td class="fw-bold text-white">${req.cashier_name || 'غير معروف'}</td>
-                                <td class="text-center font-monospace text-success fw-bold dir-ltr">${cashTotal.toFixed(2)}</td>
-                                <td class="text-center">
-                                    <div class="btn-group">
-                                        <button class="btn btn-sm btn-danger" onclick="deleteRequest(${req.id})">
-                                            <i class="fas fa-trash-alt"></i> حذف
-                                        </button>
+                                <td class="text-white">
+                                    <div class="d-flex flex-column align-items-start">
+                                        <span class="font-monospace fw-bold small">${formattedDate}</span>
+                                        <span class="font-monospace text-info small" style="font-size: 0.75rem">${formattedTime}</span>
                                     </div>
+                                </td>
+                                <td class="text-center align-middle">
+                                    <span class="font-monospace text-success fw-bold dir-ltr" style="font-size: 1rem">${cashTotal.toFixed(2)}</span>
+                                </td>
+                                <td class="text-center align-middle">
+                                    <button class="btn btn-sm btn-danger px-2 py-1" onclick="deleteRequest(${req.id})">
+                                        <i class="fas fa-trash-alt"></i>
+                                    </button>
                                 </td>
                             </tr>
                         `;
