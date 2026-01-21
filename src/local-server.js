@@ -1406,6 +1406,10 @@ class LocalWebServer {
             const appId = "1b7778f5-0f25-4df8-a281-611b682a964c";
             const restApiKey = process.env.ONESIGNAL_REST_API_KEY || "YOUR_REST_API_KEY_HERE";
 
+            // Debug logging
+            console.log('🔑 OneSignal API Key loaded:', restApiKey ? 'YES ✅' : 'NO ❌');
+            console.log('🔑 Key starts with:', restApiKey.substring(0, 15) + '...');
+
             const notificationPayload = {
                 app_id: appId,
                 headings: { en: title, ar: title },
