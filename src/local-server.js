@@ -1227,6 +1227,41 @@ class LocalWebServer {
                         { name: 'accountant_id' }, { name: 'reconciliation_date' }, { name: 'system_sales' },
                         { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' }
                     ]);
+
+                    // NOTIFICATION LOGIC: Only for new completed reconciliations added to Main List
+                    // We filter for reconciliations that correspond to "today" or are generally new to avoid alerting on full history sync
+                    const today = new Date().toISOString().split('T')[0];
+                    const newReconciliations = data.reconciliations.filter(rec => rec.reconciliation_date === today);
+
+                    if (newReconciliations.length > 0) {
+                        const count = newReconciliations.length;
+                        console.log(`🔔 [SYNC] Found ${count} new completed reconciliations (Today). Sending notification...`);
+
+                        // Get details for the first one
+                        const firstRec = newReconciliations[0];
+
+                        // Resolve cashier name (from DB or current sync batch)
+                        let cashierName = 'كاشير';
+                        try {
+                            // Try to find in current batch first
+                            if (data.cashiers) {
+                                const c = data.cashiers.find(c => c.id === firstRec.cashier_id);
+                                if (c) cashierName = c.name;
+                            }
+                            // If not found, fallback to generic or we could query DB, but let's keep it fast
+                        } catch (e) { /* ignore */ }
+
+                        const title = count === 1 ? '💰 تصفية جديدة مكتملة' : `💰 وصل ${count} تصفيات جديدة`;
+                        const msg = count === 1
+                            ? `تم حفظ تصفية رقم ${firstRec.reconciliation_number} للكاشير ${cashierName}`
+                            : `تمت إضافة ${count} تصفيات جديدة للسجل الرئيسي`;
+
+                        await this.sendOneSignalNotification(title, msg, {
+                            type: 'new_reconciliation',
+                            count: count,
+                            rec_number: firstRec.reconciliation_number
+                        });
+                    }
                 }
 
                 if (data.cash_receipts) {
@@ -1273,41 +1308,12 @@ class LocalWebServer {
 
                 // Sync reconciliation requests (especially status updates)
                 if (data.reconciliation_requests) {
-                    // Check for new pending requests BEFORE syncing (or just assume if data contains pending requests)
-                    // We'll filter for requests that are 'pending' and notify about them
-                    const pendingRequests = data.reconciliation_requests.filter(r => r.status === 'pending');
-
                     await syncTable('reconciliation_requests', data.reconciliation_requests, [
                         { name: 'id' }, { name: 'cashier_id' }, { name: 'system_sales' },
                         { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json' },
                         { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
                         { name: 'created_at' }, { name: 'updated_at' }
                     ]);
-
-                    // Send notification if there are pending requests in this sync batch
-                    // To prevent spam, we check if we "recently" notified or just send a summary notification
-                    if (pendingRequests.length > 0) {
-                        const requestCount = pendingRequests.length;
-                        console.log(`🔔 [SYNC] Found ${requestCount} pending requests. Sending notification...`);
-
-                        // Get cashier name for the first request (as example)
-                        const firstReq = pendingRequests[0];
-                        let cashierName = 'كاشير';
-                        if (data.cashiers) {
-                            const c = data.cashiers.find(c => c.id === firstReq.cashier_id);
-                            if (c) cashierName = c.name;
-                        }
-
-                        const title = requestCount === 1 ? '📋 طلب تصفية جديد (مزامنة)' : `📋 وصل ${requestCount} طلبات تصفية (مزامنة)`;
-                        const msg = requestCount === 1
-                            ? `تم مزامنة طلب تصفية جديد من ${cashierName}`
-                            : `تم مزامنة ${requestCount} طلبات تصفية جديدة من سطح المكتب`;
-
-                        await this.sendOneSignalNotification(title, msg, {
-                            type: 'synced_requests',
-                            count: requestCount
-                        });
-                    }
                 }
 
                 console.log('✅ [SYNC] Full sync completed successfully');
