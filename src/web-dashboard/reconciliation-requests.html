@@ -7,9 +7,10 @@
     <title>طلبات التصفية المعلقة</title>
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
-    <link href="css/custom.css?v=8" rel="stylesheet">
+    <link href="css/custom.css?v=9" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+
 </head>
 
 <body class="bg-dark text-light">
@@ -37,14 +38,16 @@
                 </button>
             </div>
             <div class="card-body p-0">
-                <div class="table-responsive">
+                <!-- Desktop Table View -->
+                <div class="table-responsive d-none d-md-block">
                     <table class="table table-dark table-hover mb-0 align-middle custom-table reconciliation-table">
                         <thead>
                             <tr>
-                                <th class="text-secondary" style="width: 25%">الكاشير</th>
-                                <th class="text-secondary" style="width: 30%">التاريخ</th>
-                                <th class="text-secondary text-center" style="width: 25%">المبلغ</th>
-                                <th class="text-secondary text-center" style="width: 20%">الإجراءات</th>
+                                <th class="text-secondary">#</th>
+                                <th class="text-secondary">التاريخ</th>
+                                <th class="text-secondary">الكاشير</th>
+                                <th class="text-secondary text-center">إجمالي النقد</th>
+                                <th class="text-secondary text-center">الإجراءات</th>
                             </tr>
                         </thead>
                         <tbody id="requestsTableBody">
@@ -53,6 +56,11 @@
                             </tr>
                         </tbody>
                     </table>
+                </div>
+
+                <!-- Mobile Cards View -->
+                <div id="mobileCardsContainer" class="d-md-none p-3">
+                    <div class="text-center py-4 text-muted">جاري التحميل...</div>
                 </div>
             </div>
         </div>
@@ -66,7 +74,11 @@
 
         async function loadRequests() {
             const tbody = document.getElementById('requestsTableBody');
-            tbody.innerHTML = '<tr><td colspan="5" class="text-center py-4 text-muted">جاري التحميل...</td></tr>';
+            const cardsContainer = document.getElementById('mobileCardsContainer');
+
+            const loadingHtml = '<tr><td colspan="5" class="text-center py-4 text-muted">جاري التحميل...</td></tr>';
+            tbody.innerHTML = loadingHtml;
+            cardsContainer.innerHTML = '<div class="text-center py-4 text-muted"><i class="fas fa-spinner fa-spin me-2"></i>جاري التحميل...</div>';
 
             try {
                 const res = await fetch('/api/reconciliation-requests');
@@ -74,73 +86,113 @@
 
                 if (data.success) {
                     if (data.data.length === 0) {
-                        tbody.innerHTML = '<tr><td colspan="5" class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</td></tr>';
+                        const emptyHtml = '<tr><td colspan="5" class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</td></tr>';
+                        tbody.innerHTML = emptyHtml;
+                        cardsContainer.innerHTML = '<div class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</div>';
                         return;
                     }
 
+                    // Render Desktop Table
                     tbody.innerHTML = data.data.map(req => {
                         const details = req.details || {};
-                        const cashTotal = (details.cashItems || []).reduce((sum, item) => sum + (Number(item.sub) || 0), 0);
-
-                        // Fix Date Issue: Append 'Z' to treat as UTC, then let browser convert to local
-                        let dateStr = req.created_at;
-                        // Assuming the DB returns "YYYY-MM-DD HH:MM:SS" without Z
-                        if (dateStr && !dateStr.endsWith('Z')) {
-                            dateStr = dateStr.replace(' ', 'T') + 'Z';
+                        let cashTotal = Number(req.total_cash);
+                        if (isNaN(cashTotal) || cashTotal === 0) {
+                            cashTotal = (details.cashItems || []).reduce((sum, item) => sum + (Number(item.sub) || 0), 0);
                         }
+
+                        // Date Formatting
+                        let dateStr = req.created_at;
+                        if (dateStr && !dateStr.endsWith('Z')) dateStr = dateStr.replace(' ', 'T') + 'Z';
                         const date = new Date(dateStr);
-
-                        const formattedDate = date.toLocaleDateString('en-GB', {
-                            day: '2-digit',
-                            month: '2-digit',
-                            year: 'numeric'
-                        });
-                        const formattedTime = date.toLocaleTimeString('en-GB', {
-                            hour: '2-digit',
-                            minute: '2-digit',
-                            hour12: false
-                        });
-
-                        const formattedDateTime = `${formattedDate} ${formattedTime}`;
+                        const formattedDate = date.toLocaleDateString('en-GB');
+                        const formattedTime = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
 
                         return `
                             <tr>
-                                <td class="text-white">
-                                    <div class="d-flex flex-column">
-                                        <span class="fw-bold text-white small">${req.cashier_name || 'غير معروف'}</span>
-                                        <span class="font-monospace text-muted small" style="font-size: 0.75rem">#${req.id}</span>
-                                    </div>
-                                </td>
+                                <td class="font-monospace fw-bold text-white">#${req.id}</td>
                                 <td class="text-white">
                                     <div class="d-flex flex-column align-items-start">
-                                        <span class="font-monospace fw-bold small">${formattedDate}</span>
-                                        <span class="font-monospace text-info small" style="font-size: 0.75rem">${formattedTime}</span>
+                                        <span class="font-monospace fw-bold">${formattedDate}</span>
+                                        <span class="font-monospace text-info small">${formattedTime}</span>
                                     </div>
                                 </td>
-                                <td class="text-center align-middle">
-                                    <span class="font-monospace text-success fw-bold dir-ltr" style="font-size: 1rem">${cashTotal.toFixed(2)}</span>
-                                </td>
-                                <td class="text-center align-middle">
-                                    <button class="btn btn-sm btn-danger px-2 py-1" onclick="deleteRequest(${req.id})">
-                                        <i class="fas fa-trash-alt"></i>
+                                <td class="fw-bold text-white">${req.cashier_name || 'غير معروف'}</td>
+                                <td class="text-center font-monospace text-success fw-bold dir-ltr fs-5">${cashTotal.toFixed(2)}</td>
+                                <td class="text-center">
+                                    <button class="btn btn-sm btn-danger px-3 rounded-pill" onclick="deleteRequest(${req.id})">
+                                        <i class="fas fa-trash-alt me-1"></i> حذف
                                     </button>
                                 </td>
                             </tr>
                         `;
                     }).join('');
+
+                    // Render Mobile Cards
+                    cardsContainer.innerHTML = data.data.map(req => {
+                        const details = req.details || {};
+                        let cashTotal = Number(req.total_cash);
+                        if (isNaN(cashTotal) || cashTotal === 0) {
+                            cashTotal = (details.cashItems || []).reduce((sum, item) => sum + (Number(item.sub) || 0), 0);
+                        }
+
+                        let dateStr = req.created_at;
+                        if (dateStr && !dateStr.endsWith('Z')) dateStr = dateStr.replace(' ', 'T') + 'Z';
+                        const date = new Date(dateStr);
+                        const formattedDate = date.toLocaleDateString('en-GB');
+                        const formattedTime = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true }); // AM/PM mostly preferred on mobile
+
+                        return `
+                        <div class="card glass-card mb-3 border border-secondary border-opacity-25 shadow-lg overflow-hidden position-relative">
+                            <!-- Card Decoration Line -->
+                            <div class="position-absolute top-0 end-0 bottom-0 bg-success" style="width: 4px;"></div>
+                            
+                            <div class="card-body p-3">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <div>
+                                        <h5 class="fw-bold text-white mb-1">
+                                            <i class="fas fa-user-circle text-secondary me-1"></i> ${req.cashier_name || 'غير معروف'}
+                                        </h5>
+                                        <div class="text-white-50 small font-monospace">
+                                            <i class="far fa-clock me-1"></i> ${formattedDate} | ${formattedTime}
+                                        </div>
+                                    </div>
+                                    <span class="badge bg-dark border border-secondary text-light font-monospace">#${req.id}</span>
+                                </div>
+                                
+                                <hr class="border-secondary opacity-25 my-2">
+                                
+                                <div class="d-flex justify-content-between align-items-center mt-2">
+                                    <div class="d-flex flex-column">
+                                        <span class="text-secondary small mb-1">إجمالي النقد</span>
+                                        <span class="fs-3 fw-bold text-success font-monospace dir-ltr">${cashTotal.toFixed(2)} <small class="fs-6 text-white-50">SAR</small></span>
+                                    </div>
+                                    
+                                    <button class="btn btn-outline-danger btn-sm rounded-3 px-3 py-2" onclick="deleteRequest(${req.id})">
+                                        <i class="fas fa-trash-alt"></i> حذف
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        `;
+                    }).join('');
+
                 } else {
-                    tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">خطأ: ${data.error}</td></tr>`;
+                    const errorHtml = `<tr><td colspan="5" class="text-center text-danger">خطأ: ${data.error}</td></tr>`;
+                    tbody.innerHTML = errorHtml;
+                    cardsContainer.innerHTML = `<div class="alert alert-danger">خطأ: ${data.error}</div>`;
                 }
             } catch (error) {
                 console.error(error);
-                tbody.innerHTML = `<tr><td colspan="5" class="text-center text-danger">فشل الاتصال بالخادم</td></tr>`;
+                const failHtml = `<tr><td colspan="5" class="text-center text-danger">فشل الاتصال بالخادم</td></tr>`;
+                tbody.innerHTML = failHtml;
+                cardsContainer.innerHTML = `<div class="alert alert-danger">فشل الاتصال بالخادم</div>`;
             }
         }
 
         async function deleteRequest(id) {
             const result = await Swal.fire({
                 title: 'هل أنت متأكد؟',
-                text: "سيتم حذف هذا الطلب نهائياً ولا يمكن التراجع عنه!",
+                text: "سيتم حذف هذا الطلب نهائياً!",
                 icon: 'warning',
                 showCancelButton: true,
                 confirmButtonColor: '#d33',
