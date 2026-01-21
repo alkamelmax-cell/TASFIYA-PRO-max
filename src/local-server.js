@@ -1333,7 +1333,8 @@ class LocalWebServer {
 
     async sendOneSignalNotification(title, message, data = {}) {
         try {
-            const appId = "1b77f85d25-4df8-4291-611b682a964c";
+            const appId = "1b7778f5-0f25-4df8-a281-611b682a964c";
+            // TODO: Replace with correct REST API Key from user
             const restApiKey = "1b7778f5-0f25-4df8-a281-611b682a964c";
 
             const notificationPayload = {
