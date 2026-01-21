@@ -777,6 +777,12 @@ input[type="date"].custom-input {
         display: none !important;
     }
 
+    /* FORCE SHOW Amount Column for Reconciliation Requests */
+    .reconciliation-table thead th:nth-child(4),
+    .reconciliation-table tbody td:nth-child(4) {
+        display: table-cell !important;
+    }
+
     /* Modal Summary Grid - Stack Vertically on Mobile */
     .summary-grid {
         grid-template-columns: 1fr !important;
