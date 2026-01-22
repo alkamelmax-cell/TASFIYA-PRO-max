@@ -260,6 +260,11 @@
 
         <h3 class="fw-bold mb-4 text-white">تصفية برو</h3>
 
+        <!-- Error Message Alert -->
+        <div id="errorMessage" class="alert alert-danger d-none animate__animated animate__shakeX" role="alert"
+            style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.3); color: #fca5a5; font-size: 0.9rem;">
+        </div>
+
         <ul class="nav nav-pills mb-4 justify-content-center bg-black bg-opacity-25 p-1 rounded-4" id="loginTypeTab"
             role="tablist">
             <li class="nav-item flex-grow-1" role="presentation">
@@ -323,6 +328,9 @@
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <!-- Add Animate.css for shake effect -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" />
+
     <script>
         // Admin Login
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
@@ -341,10 +349,30 @@
             await performLogin('/api/cashier-login', { cashierId, pin }, document.querySelector('#cashier-login .btn-login'), '/request-reconciliation.html');
         });
 
+        function showError(message) {
+            const errorDiv = document.getElementById('errorMessage');
+            errorDiv.innerHTML = `<i class="fas fa-exclamation-circle me-2"></i> ${message}`;
+            errorDiv.classList.remove('d-none');
+            // Re-trigger animation
+            errorDiv.classList.remove('animate__shakeX');
+            void errorDiv.offsetWidth; // trigger reflow
+            errorDiv.classList.add('animate__shakeX');
+        }
+
+        function hideError() {
+            document.getElementById('errorMessage').classList.add('d-none');
+        }
+
+        // Hide error on input change
+        document.querySelectorAll('input, select').forEach(el => {
+            el.addEventListener('input', hideError);
+        });
+
         async function performLogin(url, body, btn, redirectUrl) {
             const originalContent = btn.innerHTML;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> جاري التحقق...';
             btn.disabled = true;
+            hideError();
 
             try {
                 const response = await fetch(url, {
@@ -359,10 +387,10 @@
                     localStorage.setItem('user', JSON.stringify(data.user));
                     window.location.href = redirectUrl;
                 } else {
-                    alert('خطأ: ' + data.error);
+                    showError(data.error || 'بيانات الدخول غير صحيحة');
                 }
             } catch (error) {
-                alert('فشل الاتصال بالخادم');
+                showError('فشل الاتصال بالخادم، تأكد من تشغيل البرنامج');
                 console.error(error);
             } finally {
                 btn.innerHTML = originalContent;
