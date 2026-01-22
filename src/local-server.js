@@ -504,102 +504,142 @@ class LocalWebServer {
                 return this.sendJson(res, { success: false, error: 'اسم العميل مطلوب' });
             }
 
-            let dateFilterSales = '';
-            let dateFilterReceipts = '';
-            const paramsSales = [customerName];
-            const paramsReceipts = [customerName];
+            // Check if we are in Server Mode (Render/Postgres) or Local Mode (SQLite)
+            const pool = this.dbManager.pool;
 
-            // Validate dates - ensure they are not empty strings
-            if (dateFrom && dateFrom.trim() !== '') {
-                dateFilterSales += ' AND ps.created_at >= ?';
-                dateFilterReceipts += ' AND cr.created_at >= ?';
-                paramsSales.push(dateFrom);
-                paramsReceipts.push(dateFrom);
+            if (pool) {
+                // ============================================
+                // POSTGRESQL MODE (Server / Synced Data)
+                // ============================================
+                console.log('[Customer Ledger] Using PostgreSQL connection (Synced Data)');
+
+                let dateFilterSales = '';
+                let dateFilterReceipts = '';
+                const paramsSales = [customerName];
+                const paramsReceipts = [customerName];
+                let pNextSales = 2;
+                let pNextReceipts = 2;
+
+                if (dateFrom && dateFrom.trim() !== '') {
+                    dateFilterSales += ` AND ps.created_at >= $${pNextSales++}`;
+                    dateFilterReceipts += ` AND cr.created_at >= $${pNextReceipts++}`;
+                    paramsSales.push(dateFrom);
+                    paramsReceipts.push(dateFrom);
+                }
+                if (dateTo && dateTo.trim() !== '') {
+                    dateFilterSales += ` AND ps.created_at <= $${pNextSales++}`;
+                    dateFilterReceipts += ` AND cr.created_at <= $${pNextReceipts++}`;
+                    const dateToEnd = dateTo.includes(' ') ? dateTo : dateTo + ' 23:59:59';
+                    paramsSales.push(dateToEnd);
+                    paramsReceipts.push(dateToEnd);
+                }
+
+                // Get Debits
+                const salesResult = await pool.query(`
+                    SELECT ps.id, ps.amount, ps.created_at, 'مبيعات آجلة' as type, 'فاتورة مبيعات' as description, c.name as cashier_name, r.reconciliation_number
+                    FROM postpaid_sales ps 
+                    LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    WHERE ps.customer_name = $1 ${dateFilterSales}
+                `, paramsSales);
+
+                const filterSalesManual = dateFilterSales.replace(/ps\./g, '');
+                const manualSalesResult = await pool.query(`
+                    SELECT id, amount, created_at, 'مبيعات يدوية' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
+                    FROM manual_postpaid_sales 
+                    WHERE customer_name = $1 ${filterSalesManual}
+                `, paramsSales);
+
+                // Get Credits
+                const receiptsResult = await pool.query(`
+                    SELECT cr.id, cr.amount, cr.payment_type, cr.created_at, 'سند قبض' as type, 'سداد - ' || cr.payment_type as description, c.name as cashier_name, r.reconciliation_number
+                    FROM customer_receipts cr 
+                    LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    WHERE cr.customer_name = $1 ${dateFilterReceipts}
+                `, paramsReceipts);
+
+                const filterReceiptsManual = dateFilterReceipts.replace(/cr\./g, '');
+                const manualReceiptsResult = await pool.query(`
+                    SELECT id, amount, 'نقدي' as payment_type, created_at, 'سند قبض يدوي' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
+                    FROM manual_customer_receipts 
+                    WHERE customer_name = $1 ${filterReceiptsManual}
+                `, paramsReceipts);
+
+                const ledger = [
+                    ...salesResult.rows.map(s => ({ ...s, debit: s.amount, credit: 0 })),
+                    ...manualSalesResult.rows.map(s => ({ ...s, debit: s.amount, credit: 0 })),
+                    ...receiptsResult.rows.map(r => ({ ...r, debit: 0, credit: r.amount })),
+                    ...manualReceiptsResult.rows.map(r => ({ ...r, debit: 0, credit: r.amount }))
+                ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+                this.sendJson(res, { success: true, data: ledger });
+
+            } else {
+                // ============================================
+                // SQLITE MODE (Local / Offline)
+                // ============================================
+                console.log('[Customer Ledger] Using SQLite connection (Local Data)');
+
+                let dateFilterSales = '';
+                let dateFilterReceipts = '';
+                const paramsSales = [customerName];
+                const paramsReceipts = [customerName];
+
+                if (dateFrom && dateFrom.trim() !== '') {
+                    dateFilterSales += ' AND ps.created_at >= ?';
+                    dateFilterReceipts += ' AND cr.created_at >= ?';
+                    paramsSales.push(dateFrom);
+                    paramsReceipts.push(dateFrom);
+                }
+                if (dateTo && dateTo.trim() !== '') {
+                    dateFilterSales += ' AND ps.created_at <= ?';
+                    dateFilterReceipts += ' AND cr.created_at <= ?';
+                    const dateToEnd = dateTo.includes(' ') ? dateTo : dateTo + ' 23:59:59';
+                    paramsSales.push(dateToEnd);
+                    paramsReceipts.push(dateToEnd);
+                }
+
+                const sales = await this.dbManager.db.prepare(`
+                    SELECT ps.id, ps.amount, ps.created_at, 'مبيعات آجلة' as type, 'فاتورة مبيعات' as description, c.name as cashier_name, r.reconciliation_number
+                    FROM postpaid_sales ps 
+                    LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    WHERE ps.customer_name = ? ${dateFilterSales}
+                `).all(paramsSales);
+
+                const filterSalesManual = dateFilterSales.replace(/ps\./g, '');
+                const manualSales = await this.dbManager.db.prepare(`
+                    SELECT id, amount, created_at, 'مبيعات يدوية' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
+                    FROM manual_postpaid_sales 
+                    WHERE customer_name = ? ${filterSalesManual}
+                `).all(paramsSales);
+
+                const receipts = await this.dbManager.db.prepare(`
+                    SELECT cr.id, cr.amount, cr.payment_type, cr.created_at, 'سند قبض' as type, 'سداد - ' || cr.payment_type as description, c.name as cashier_name, r.reconciliation_number
+                    FROM customer_receipts cr 
+                    LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    WHERE cr.customer_name = ? ${dateFilterReceipts}
+                `).all(paramsReceipts);
+
+                const filterReceiptsManual = dateFilterReceipts.replace(/cr\./g, '');
+                const manualReceipts = await this.dbManager.db.prepare(`
+                    SELECT id, amount, 'نقدي' as payment_type, created_at, 'سند قبض يدوي' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
+                    FROM manual_customer_receipts 
+                    WHERE customer_name = ? ${filterReceiptsManual}
+                `).all(paramsReceipts);
+
+                const ledger = [
+                    ...sales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
+                    ...manualSales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
+                    ...receipts.map(r => ({ ...r, debit: 0, credit: r.amount })),
+                    ...manualReceipts.map(r => ({ ...r, debit: 0, credit: r.amount }))
+                ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+
+                this.sendJson(res, { success: true, data: ledger });
             }
-            if (dateTo && dateTo.trim() !== '') {
-                dateFilterSales += ' AND ps.created_at <= ?';
-                dateFilterReceipts += ' AND cr.created_at <= ?';
-                // Add time to end of day
-                const dateToEnd = dateTo.includes(' ') ? dateTo : dateTo + ' 23:59:59';
-                paramsSales.push(dateToEnd);
-                paramsReceipts.push(dateToEnd);
-            }
 
-            // Get Debits (Sales) - From Reconciliations
-            const sales = await this.dbManager.db.prepare(`
-            SELECT 
-                ps.id, 
-                ps.amount, 
-                ps.created_at, 
-                'مبيعات آجلة' as type, 
-                'فاتورة مبيعات' as description,
-                c.name as cashier_name,
-                r.reconciliation_number
-            FROM postpaid_sales ps 
-            LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
-            LEFT JOIN cashiers c ON r.cashier_id = c.id
-            WHERE ps.customer_name = ? ${dateFilterSales}
-        `).all(paramsSales);
-
-            // Get Manual Debits (Sales) - Fix field references for manual table
-            // manual table doesn't have ps alias, so remove it from filter
-            const filterSalesManual = dateFilterSales.replace(/ps\./g, '');
-            const manualSales = await this.dbManager.db.prepare(`
-            SELECT 
-                id, 
-                amount, 
-                created_at, 
-                'مبيعات يدوية' as type, 
-                reason as description,
-                'مسؤول النظام' as cashier_name,
-                NULL as reconciliation_number
-            FROM manual_postpaid_sales 
-            WHERE customer_name = ? ${filterSalesManual}
-        `).all(paramsSales);
-
-
-            // Get Credits (Receipts) - From Reconciliations
-            const receipts = await this.dbManager.db.prepare(`
-            SELECT 
-                cr.id, 
-                cr.amount, 
-                cr.payment_type, 
-                cr.created_at, 
-                'سند قبض' as type, 
-                'سداد - ' || cr.payment_type as description,
-                c.name as cashier_name,
-                r.reconciliation_number
-            FROM customer_receipts cr 
-            LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
-            LEFT JOIN cashiers c ON r.cashier_id = c.id
-            WHERE cr.customer_name = ? ${dateFilterReceipts}
-        `).all(paramsReceipts);
-
-            // Get Manual Credits (Receipts) - Fix field references
-            const filterReceiptsManual = dateFilterReceipts.replace(/cr\./g, '');
-            const manualReceipts = await this.dbManager.db.prepare(`
-            SELECT 
-                id, 
-                amount, 
-                'نقدي' as payment_type, 
-                created_at, 
-                'سند قبض يدوي' as type, 
-                reason as description,
-                'مسؤول النظام' as cashier_name,
-                NULL as reconciliation_number
-            FROM manual_customer_receipts 
-            WHERE customer_name = ? ${filterReceiptsManual}
-        `).all(paramsReceipts);
-
-            // Combine and sort
-            const ledger = [
-                ...sales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
-                ...manualSales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
-                ...receipts.map(r => ({ ...r, debit: 0, credit: r.amount })),
-                ...manualReceipts.map(r => ({ ...r, debit: 0, credit: r.amount }))
-            ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-            this.sendJson(res, { success: true, data: ledger });
         } catch (error) {
             console.error('[Customer Ledger] Error:', error);
             this.sendJson(res, { success: false, error: error.message });
