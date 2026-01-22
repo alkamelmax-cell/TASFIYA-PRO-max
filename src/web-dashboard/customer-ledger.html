@@ -105,7 +105,7 @@
 
 
             /* 2. LEDGER DETAILS TABLE - MOBILE VIEW */
-            /* Explicitly HIDE columns: #, البيان, دائن */
+            /* Explicitly HIDE columns: #, البيان, دائن, الرصيد */
             .ledger-details-table th:nth-child(1),
             .ledger-details-table td:nth-child(1),
             /* # */
@@ -113,14 +113,17 @@
             .ledger-details-table td:nth-child(4),
             /* البيان */
             .ledger-details-table th:nth-child(6),
-            .ledger-details-table td:nth-child(6)
-
+            .ledger-details-table td:nth-child(6),
             /* دائن */
+            .ledger-details-table th:nth-child(7),
+            .ledger-details-table td:nth-child(7)
+
+            /* الرصيد */
                 {
                 display: none !important;
             }
 
-            /* Explicitly SHOW columns: التاريخ, نوع الحركة, مدين, الرصيد */
+            /* Explicitly SHOW columns: التاريخ, نوع الحركة, مدين */
             .ledger-details-table th:nth-child(2),
             .ledger-details-table td:nth-child(2),
             /* التاريخ */
@@ -128,12 +131,9 @@
             .ledger-details-table td:nth-child(3),
             /* نوع الحركة */
             .ledger-details-table th:nth-child(5),
-            .ledger-details-table td:nth-child(5),
-            /* مدين */
-            .ledger-details-table th:nth-child(7),
-            .ledger-details-table td:nth-child(7)
+            .ledger-details-table td:nth-child(5)
 
-            /* الرصيد */
+            /* مدين */
                 {
                 display: table-cell !important;
             }
@@ -338,13 +338,13 @@
                     <table class="custom-table ledger-details-table">
                         <thead>
                             <tr>
-                                <th width="50">#</th>
+                                <th width="50" class="d-none d-md-table-cell">#</th>
                                 <th>التاريخ</th>
                                 <th>نوع الحركة</th>
-                                <th>البيان</th>
-                                <th class="text-danger text-ltr text-center">مدين</th>
-                                <th class="text-success text-ltr text-center">دائن</th>
-                                <th class="text-info text-ltr text-center">الرصيد</th>
+                                <th class="d-none d-md-table-cell">البيان</th>
+                                <th class="text-danger text-center" style="display: table-cell !important;">مدين</th>
+                                <th class="text-success text-ltr text-center d-none d-md-table-cell">دائن</th>
+                                <th class="text-info text-ltr text-center d-none d-md-table-cell">الرصيد</th>
                             </tr>
                         </thead>
                         <tbody id="ledgerTableBody">

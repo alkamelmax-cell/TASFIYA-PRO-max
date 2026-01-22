@@ -212,20 +212,26 @@ function renderLedgerTable(data) {
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td class="text-white text-center" style="text-align: center !important;">${data.length - index}</td>
-            <td class="text-center" style="text-align: center !important;">${new Date(row.created_at).toLocaleDateString('en-GB')}</td>
+            <td class="text-white text-center d-none d-md-table-cell" style="text-align: center !important;">${data.length - index}</td>
+            <td class="text-center" style="text-align: center !important; font-size: 0.75rem;">${new Date(row.created_at).toLocaleDateString('en-GB')}</td>
             <td class="text-center" style="text-align: center !important;">
-                <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}">${row.type}</span>
-                <div class="small text-secondary mt-1 text-nowrap" style="font-size: 0.65rem; opacity: 0.8;">${cashierDisplay}</div>
+                <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}" style="font-size: 0.65rem;">${row.type}</span>
+                <div class="small text-secondary mt-1 text-nowrap d-block d-md-none" style="font-size: 0.6rem; opacity: 0.8;">${cashierDisplay}</div>
             </td>
-            <td>${row.description || '-'}</td>
-            <td class="text-danger font-monospace text-center" style="text-align: center !important;">
+            <td class="d-none d-md-table-cell">${row.description || '-'}</td>
+            
+            <!-- DEBIT COLUMN: Force Show on Mobile -->
+            <td class="text-danger font-monospace text-center" style="text-align: center !important; display: table-cell !important;">
                 <div class="d-flex justify-content-center align-items-center"><span dir="ltr">${debit > 0 ? formatCurrency(debit) : '-'}</span></div>
             </td>
-            <td class="text-success font-monospace text-center" style="text-align: center !important;">
+
+            <!-- CREDIT COLUMN: Hide on Mobile -->
+            <td class="text-success font-monospace text-center d-none d-md-table-cell" style="text-align: center !important;">
                 <div class="d-flex justify-content-center align-items-center"><span dir="ltr">${credit > 0 ? formatCurrency(credit) : '-'}</span></div>
             </td>
-            <td class="text-info font-monospace fw-bold text-center" style="text-align: center !important;">
+
+            <!-- BALANCE COLUMN: Hide on Mobile -->
+            <td class="text-info font-monospace fw-bold text-center d-none d-md-table-cell" style="text-align: center !important;">
                 <div class="d-flex justify-content-center align-items-center"><span dir="ltr">${formatCurrency(row.currentBalance)}</span></div>
             </td>
         `;
