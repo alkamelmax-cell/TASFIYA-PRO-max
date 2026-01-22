@@ -15,6 +15,7 @@
     <!-- Font Awesome -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
+
     <!-- Custom CSS -->
     <link rel="stylesheet" href="css/custom.css?v=20">
     <style>
@@ -102,18 +103,46 @@
                 font-size: 0.7rem !important;
             }
 
-            /* 2. LEDGER DETAILS TABLE */
-            /* Hide non-essential columns in Details Table */
+
+            /* 2. LEDGER DETAILS TABLE - MOBILE VIEW */
+            /* Explicitly HIDE columns: #, البيان, دائن */
             .ledger-details-table th:nth-child(1),
+            .ledger-details-table td:nth-child(1),
             /* # */
-            .ledger-details-table td:nth-child(1) {
+            .ledger-details-table th:nth-child(4),
+            .ledger-details-table td:nth-child(4),
+            /* البيان */
+            .ledger-details-table th:nth-child(6),
+            .ledger-details-table td:nth-child(6)
+
+            /* دائن */
+                {
                 display: none !important;
+            }
+
+            /* Explicitly SHOW columns: التاريخ, نوع الحركة, مدين, الرصيد */
+            .ledger-details-table th:nth-child(2),
+            .ledger-details-table td:nth-child(2),
+            /* التاريخ */
+            .ledger-details-table th:nth-child(3),
+            .ledger-details-table td:nth-child(3),
+            /* نوع الحركة */
+            .ledger-details-table th:nth-child(5),
+            .ledger-details-table td:nth-child(5),
+            /* مدين */
+            .ledger-details-table th:nth-child(7),
+            .ledger-details-table td:nth-child(7)
+
+            /* الرصيد */
+                {
+                display: table-cell !important;
             }
 
             /* Compact padding for mobile */
             .custom-table th,
             .custom-table td {
                 padding: 0.5rem 0.2rem !important;
+                font-size: 0.75rem !important;
             }
         }
     </style>
