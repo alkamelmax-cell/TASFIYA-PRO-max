@@ -1286,12 +1286,9 @@ class LocalWebServer {
                             const c = data.cashiers.find(c => c.id === firstNewRec.cashier_id);
                             if (c && c.name) {
                                 cashierName = c.name;
-                                console.log('✅ [NOTIFICATION] Found cashier in sync data:', cashierName);
-                            } else {
-                                console.log('⚠️ [NOTIFICATION] Cashier not found in sync data. cashier_id:', firstNewRec.cashier_id);
                             }
                         } else {
-                            console.log('⚠️ [NOTIFICATION] No cashiers data in sync');
+                            // No cashiers data in sync, proceed to DB fallback
                         }
 
                         // Fallback: Try to get from database
@@ -1304,7 +1301,6 @@ class LocalWebServer {
                                 );
                                 if (result.rows && result.rows.length > 0 && result.rows[0].name) {
                                     cashierName = result.rows[0].name;
-                                    console.log('✅ [NOTIFICATION] Found cashier in database:', cashierName);
                                 }
                             } catch (dbErr) {
                                 console.error('⚠️ [NOTIFICATION] Failed to fetch cashier from DB:', dbErr.message);
