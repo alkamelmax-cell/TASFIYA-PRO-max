@@ -1302,10 +1302,10 @@ class LocalWebServer {
 
                         if (newReconciliationsCount === 1) {
                             title = '✅ تصفية جديدة مكتملة';
-                            msg = `تصفية جديدة رقم ${firstNewRec.reconciliation_number} من ${cashierName} - ${differenceText}`;
+                            msg = `تصفية جديدة رقم ${firstNewRec.reconciliation_number} (${cashierName}) - ${differenceText}`;
                         } else {
                             title = `🎯 ${newReconciliationsCount} تصفيات جديدة`;
-                            msg = `تمت إضافة ${newReconciliationsCount} تصفيات مكتملة - أول تصفية: رقم ${firstNewRec.reconciliation_number} من ${cashierName}`;
+                            msg = `تمت إضافة ${newReconciliationsCount} تصفيات مكتملة - أول تصفية: رقم ${firstNewRec.reconciliation_number} (${cashierName})`;
                         }
 
                         // Send async notification
