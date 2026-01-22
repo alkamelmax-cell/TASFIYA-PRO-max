@@ -1278,11 +1278,37 @@ class LocalWebServer {
 
                     // 4. Send Notification ONLY if we found NEW items
                     if (newReconciliationsCount > 0 && firstNewRec) {
-                        // Resolve cashier name
+                        // Resolve cashier name with database fallback
                         let cashierName = 'كاشير';
+
+                        // Try to find in synced data first
                         if (data.cashiers) {
                             const c = data.cashiers.find(c => c.id === firstNewRec.cashier_id);
-                            if (c) cashierName = c.name;
+                            if (c && c.name) {
+                                cashierName = c.name;
+                                console.log('✅ [NOTIFICATION] Found cashier in sync data:', cashierName);
+                            } else {
+                                console.log('⚠️ [NOTIFICATION] Cashier not found in sync data. cashier_id:', firstNewRec.cashier_id);
+                            }
+                        } else {
+                            console.log('⚠️ [NOTIFICATION] No cashiers data in sync');
+                        }
+
+                        // Fallback: Try to get from database
+                        if (cashierName === 'كاشير' && firstNewRec.cashier_id) {
+                            try {
+                                const pool = this.dbManager.pool || this.dbManager.db.pool;
+                                const result = await pool.query(
+                                    'SELECT name FROM cashiers WHERE id = $1',
+                                    [firstNewRec.cashier_id]
+                                );
+                                if (result.rows && result.rows.length > 0 && result.rows[0].name) {
+                                    cashierName = result.rows[0].name;
+                                    console.log('✅ [NOTIFICATION] Found cashier in database:', cashierName);
+                                }
+                            } catch (dbErr) {
+                                console.error('⚠️ [NOTIFICATION] Failed to fetch cashier from DB:', dbErr.message);
+                            }
                         }
 
                         // Calculate surplus/deficit
