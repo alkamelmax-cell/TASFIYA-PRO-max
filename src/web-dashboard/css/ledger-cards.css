@@ -1,0 +1,83 @@
+/* Ledger Cards Styles for Mobile - Compact Version */
+.ledger-cards-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.ledger-card {
+    background: rgba(33, 46, 64, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 0.65rem;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.ledger-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    padding-bottom: 0.4rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.ledger-card-date {
+    color: #94a3b8;
+    font-size: 0.75rem;
+}
+
+.ledger-card-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+}
+
+.ledger-card-amount {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.5rem 0.65rem;
+    border-radius: 6px;
+    background: rgba(255, 255, 255, 0.02);
+}
+
+.ledger-card-amount.debit {
+    border-right: 3px solid #f43f5e;
+}
+
+.ledger-card-amount.credit {
+    border-right: 3px solid #22c55e;
+}
+
+.amount-label {
+    font-size: 0.7rem;
+    color: #94a3b8;
+    text-transform: uppercase;
+}
+
+.amount-value {
+    font-size: 1.1rem;
+    font-weight: 700;
+    font-family: 'Courier New', monospace;
+}
+
+.ledger-card-amount.debit .amount-value {
+    color: #f43f5e;
+}
+
+.ledger-card-amount.credit .amount-value {
+    color: #22c55e;
+}
+
+.ledger-card-cashier {
+    font-size: 0.7rem;
+    color: #94a3b8;
+    padding: 0.15rem 0;
+}
+
+.ledger-card-desc {
+    font-size: 0.75rem;
+    color: #64748b;
+    font-style: italic;
+}

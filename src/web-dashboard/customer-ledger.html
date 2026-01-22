@@ -18,6 +18,7 @@
 
     <!-- Custom CSS -->
     <link rel="stylesheet" href="css/custom.css?v=20">
+    <link rel="stylesheet" href="css/ledger-cards.css?v=1">
     <style>
         /* NUCLEAR ALIGNMENT FIX - Same as ATM Reports */
         .custom-table th,
@@ -334,7 +335,8 @@
                     <small class="text-secondary" id="recordCount">0 حركة</small>
                 </div>
 
-                <div class="table-container border-0">
+                <!-- Desktop Table View -->
+                <div class="table-container border-0 d-none d-md-block">
                     <table class="custom-table ledger-details-table">
                         <thead>
                             <tr>
@@ -342,15 +344,26 @@
                                 <th>التاريخ</th>
                                 <th>نوع الحركة</th>
                                 <th class="d-none d-md-table-cell">البيان</th>
-                                <th class="text-danger text-center" style="display: table-cell !important;">مدين</th>
-                                <th class="text-success text-ltr text-center d-none d-md-table-cell">دائن</th>
-                                <th class="text-info text-ltr text-center d-none d-md-table-cell">الرصيد</th>
+
+                                <!-- Mobile Combined Header -->
+                                <th class="d-md-none text-center table-cell-force">المبلغ</th>
+
+                                <!-- Desktop Split Headers -->
+                                <th class="text-danger text-center d-none d-md-table-cell">مدين</th>
+                                <th class="text-success text-center d-none d-md-table-cell">دائن</th>
+
+                                <th class="text-info text-center d-none d-md-table-cell">الرصيد</th>
                             </tr>
                         </thead>
                         <tbody id="ledgerTableBody">
                             <!-- Rows -->
                         </tbody>
                     </table>
+                </div>
+
+                <!-- Mobile Cards View -->
+                <div class="ledger-cards-container d-md-none p-3" id="ledgerCardsContainer">
+                    <!-- Cards rendered by JS -->
                 </div>
             </div>
         </div>
