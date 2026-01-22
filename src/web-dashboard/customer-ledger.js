@@ -182,15 +182,22 @@ async function loadCustomerLedger(customerName) {
 
 function renderLedgerTable(data) {
     const tbody = document.getElementById('ledgerTableBody');
+    const cardsContainer = document.getElementById('ledgerCardsContainer');
+
     tbody.innerHTML = '';
+    if (cardsContainer) cardsContainer.innerHTML = '';
+
     document.getElementById('recordCount').textContent = `${data.length} حركة`;
 
     if (data.length === 0) {
         tbody.innerHTML = `<tr><td colspan="7" class="text-center py-5"><div class="text-muted opacity-50"><i class="fas fa-inbox fa-3x mb-3"></i><br>لا توجد حركات للعرض</div></td></tr>`;
+        if (cardsContainer) {
+            cardsContainer.innerHTML = `<div class="text-center py-5 text-muted opacity-50"><i class="fas fa-inbox fa-3x mb-3"></i><br>لا توجد حركات للعرض</div>`;
+        }
         return;
     }
 
-    // 1. Calculate running balance first (on chronological order)
+    // 1. Calculate running balance
     let runningBalance = 0;
     data.forEach(row => {
         const debit = Number(row.debit || 0);
@@ -199,44 +206,65 @@ function renderLedgerTable(data) {
         row.currentBalance = runningBalance;
     });
 
-    // 2. Reverse data to show newest first
+    // 2. Reverse to show newest first
     const reversedData = [...data].reverse();
 
+    // 3. Render DESKTOP Table
     reversedData.forEach((row, index) => {
         const debit = Number(row.debit || 0);
         const credit = Number(row.credit || 0);
-
-        const cashierDisplay = row.cashier_name
-            ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}`
-            : '-';
+        const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '-';
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
-            <td class="text-white text-center d-none d-md-table-cell" style="text-align: center !important;">${data.length - index}</td>
-            <td class="text-center" style="text-align: center !important; font-size: 0.75rem;">${new Date(row.created_at).toLocaleDateString('en-GB')}</td>
-            <td class="text-center" style="text-align: center !important;">
+            <td class="text-white text-center d-none d-md-table-cell">${data.length - index}</td>
+            <td class="text-center">${new Date(row.created_at).toLocaleDateString('en-GB')}</td>
+            <td class="text-center">
                 <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}" style="font-size: 0.65rem;">${row.type}</span>
                 <div class="small text-secondary mt-1 text-nowrap d-block d-md-none" style="font-size: 0.6rem; opacity: 0.8;">${cashierDisplay}</div>
             </td>
             <td class="d-none d-md-table-cell">${row.description || '-'}</td>
-            
-            <!-- DEBIT COLUMN: Force Show on Mobile -->
-            <td class="text-danger font-monospace text-center" style="text-align: center !important; display: table-cell !important;">
+            <td class="text-danger font-monospace text-center d-none d-md-table-cell">
                 <div class="d-flex justify-content-center align-items-center"><span dir="ltr">${debit > 0 ? formatCurrency(debit) : '-'}</span></div>
             </td>
-
-            <!-- CREDIT COLUMN: Hide on Mobile -->
-            <td class="text-success font-monospace text-center d-none d-md-table-cell" style="text-align: center !important;">
+            <td class="text-success font-monospace text-center d-none d-md-table-cell">
                 <div class="d-flex justify-content-center align-items-center"><span dir="ltr">${credit > 0 ? formatCurrency(credit) : '-'}</span></div>
             </td>
-
-            <!-- BALANCE COLUMN: Hide on Mobile -->
-            <td class="text-info font-monospace fw-bold text-center d-none d-md-table-cell" style="text-align: center !important;">
+            <td class="text-info font-monospace fw-bold text-center d-none d-md-table-cell">
                 <div class="d-flex justify-content-center align-items-center"><span dir="ltr">${formatCurrency(row.currentBalance)}</span></div>
             </td>
         `;
         tbody.appendChild(tr);
     });
+
+    // 4. Render MOBILE Cards
+    if (cardsContainer) {
+        reversedData.forEach((row, index) => {
+            const debit = Number(row.debit || 0);
+            const credit = Number(row.credit || 0);
+            const amount = debit > 0 ? debit : credit;
+            const amountType = debit > 0 ? 'debit' : 'credit';
+            const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '';
+
+            const card = document.createElement('div');
+            card.className = 'ledger-card';
+            card.innerHTML = `
+                <div class="ledger-card-header">
+                    <span class="ledger-card-date"><i class="fas fa-calendar-alt me-1"></i>${new Date(row.created_at).toLocaleDateString('en-GB')}</span>
+                    <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}">${row.type}</span>
+                </div>
+                <div class="ledger-card-body">
+                    <div class="ledger-card-amount ${amountType}">
+                        <div class="amount-label">${debit > 0 ? 'مدين' : 'دائن'}</div>
+                        <div class="amount-value" dir="ltr">${formatCurrency(amount)}</div>
+                    </div>
+                    ${cashierDisplay ? `<div class="ledger-card-cashier"><i class="fas fa-user me-1"></i>${cashierDisplay}</div>` : ''}
+                    ${row.description ? `<div class="ledger-card-desc">${row.description}</div>` : ''}
+                </div>
+            `;
+            cardsContainer.appendChild(card);
+        });
+    }
 }
 
 function calculateStats(data) {
