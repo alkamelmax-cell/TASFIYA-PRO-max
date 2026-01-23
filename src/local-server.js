@@ -1613,21 +1613,27 @@ class LocalWebServer {
                             // IMPORTANT: PostgreSQL uses $1, $2... syntax
                             const placeholders = incomingIds.map((_, i) => `$${i + 1}`).join(',');
 
-                            // Query existing IDs
+                            // Query existing IDs and their statuses
                             const existingResult = await pool.query(
-                                `SELECT id FROM reconciliations WHERE id IN (${placeholders})`,
+                                `SELECT id, status FROM reconciliations WHERE id IN (${placeholders})`,
                                 incomingIds
                             );
 
-                            const existingIdsSet = new Set(existingResult.rows.map(row => row.id));
+                            const existingMap = new Map();
+                            existingResult.rows.forEach(row => existingMap.set(row.id, row.status));
 
-                            // Filter incoming items that are NOT in the existing set -> THESE ARE NEW
-                            const newItems = validReconciliations.filter(r => !existingIdsSet.has(r.id));
+                            // Filter items that need notification:
+                            // 1. It is 'completed'
+                            // 2. AND (It's NEW OR It was NOT completed before)
+                            const notifyItems = validReconciliations.filter(r =>
+                                (r.status === 'completed' || r.status === 'مكتملة') &&
+                                (!existingMap.has(r.id) || existingMap.get(r.id) !== r.status)
+                            );
 
-                            newReconciliationsCount = newItems.length;
+                            newReconciliationsCount = notifyItems.length;
                             if (newReconciliationsCount > 0) {
-                                firstNewRec = newItems[0];
-                                console.log(`🔔 [SYNC] Detected ${newReconciliationsCount} truly NEW reconciliations (not in DB). Notifying...`);
+                                firstNewRec = notifyItems[0];
+                                console.log(`🔔 [SYNC] Detected ${newReconciliationsCount} completed reconciliations (New or Updated). Notifying...`);
                             }
 
                         } catch (checkErr) {
