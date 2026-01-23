@@ -115,6 +115,14 @@ class LocalWebServer {
                     await this.handleGetCustomerLedger(res, parsedUrl.query);
                     return;
                 }
+                else if (pathname === '/api/update-manual-transaction' && req.method === 'POST') {
+                    await this.handleUpdateManualTransaction(req, res);
+                    return;
+                }
+                else if (pathname === '/api/delete-manual-transaction' && req.method === 'POST') {
+                    await this.handleDeleteManualTransaction(req, res);
+                    return;
+                }
                 else if (pathname === '/api/customers-summary') {
                     await this.handleGetCustomersSummary(res);
                     return;
@@ -1841,6 +1849,61 @@ class LocalWebServer {
         } catch (error) {
             this.sendJson(res, { success: false, error: error.message });
         }
+    }
+
+    async handleUpdateManualTransaction(req, res) {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const { id, mode, date, amount, description } = JSON.parse(body);
+                // mode: 'debit' (manual_postpaid_sales) or 'credit' (manual_customer_receipts)
+
+                const table = (mode === 'debit') ? 'manual_postpaid_sales' : 'manual_customer_receipts';
+
+                // Check Server Mode
+                const pool = this.dbManager.pool;
+                if (pool) {
+                    await pool.query(
+                        `UPDATE ${table} SET amount = $1, created_at = $2, reason = $3 WHERE id = $4`,
+                        [amount, date, description, id]
+                    );
+                } else {
+                    this.dbManager.db.prepare(
+                        `UPDATE ${table} SET amount = ?, created_at = ?, reason = ? WHERE id = ?`
+                    ).run(amount, date, description, id);
+                }
+
+                this.sendJson(res, { success: true });
+            } catch (e) {
+                console.error('Update Transaction Error:', e);
+                this.sendJson(res, { success: false, error: e.message });
+            }
+        });
+    }
+
+    async handleDeleteManualTransaction(req, res) {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const { id, mode } = JSON.parse(body);
+                const table = (mode === 'debit') ? 'manual_postpaid_sales' : 'manual_customer_receipts';
+
+                // Check Server Mode
+                const pool = this.dbManager.pool;
+                if (pool) {
+                    await pool.query(`DELETE FROM ${table} WHERE id = $1`, [id]);
+                } else {
+                    this.dbManager.db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(id);
+                }
+
+                this.sendJson(res, { success: true });
+            } catch (e) {
+                console.error('Delete Transaction Error:', e);
+                this.sendJson(res, { success: false, error: e.message });
+            }
+        });
     }
 
     async sendOneSignalNotification(title, message, data = {}) {

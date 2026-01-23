@@ -167,6 +167,7 @@ async function loadCustomerLedger(customerName) {
         const result = await res.json();
 
         if (result.success) {
+            currentLedgerData = result.data; // Store globally
             renderLedgerTable(result.data);
             calculateStats(result.data);
         } else {
@@ -179,6 +180,8 @@ async function loadCustomerLedger(customerName) {
         showLoading(false);
     }
 }
+
+let currentLedgerData = [];
 
 function renderLedgerTable(data) {
     const tbody = document.getElementById('ledgerTableBody');
@@ -215,6 +218,13 @@ function renderLedgerTable(data) {
         const credit = Number(row.credit || 0);
         const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '-';
 
+        const isManual = row.type === 'مبيعات يدوية' || row.type === 'سند قبض يدوي';
+        // Safe way to pass data: identify by unique properties or index in currentLedgerData if synced
+        // But here we are iterating reversedData. Let's pass the ID and Type directly.
+        const editBtn = isManual ?
+            `<button class="btn btn-sm btn-link text-warning p-0 ms-2" onclick="openEditModal(${row.id}, '${row.type}', '${row.created_at}', ${debit > 0 ? debit : credit}, '${(row.description || '').replace(/'/g, "\\'")}')" title="تعديل"><i class="fas fa-edit"></i></button>`
+            : '';
+
         const tr = document.createElement('tr');
         tr.innerHTML = `
             <td class="text-white text-center d-none d-md-table-cell">${data.length - index}</td>
@@ -223,7 +233,10 @@ function renderLedgerTable(data) {
                 <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}" style="font-size: 0.65rem;">${row.type}</span>
                 <div class="small text-secondary mt-1 text-nowrap d-block d-md-none" style="font-size: 0.6rem; opacity: 0.8;">${cashierDisplay}</div>
             </td>
-            <td class="d-none d-md-table-cell">${row.description || '-'}</td>
+            <td class="d-none d-md-table-cell">
+                <span class="text-break">${row.description || '-'}</span>
+                ${editBtn}
+            </td>
             <td class="text-danger font-monospace text-center d-none d-md-table-cell">
                 <div class="d-flex justify-content-center align-items-center"><span dir="ltr">${debit > 0 ? formatCurrency(debit) : '-'}</span></div>
             </td>
@@ -246,12 +259,20 @@ function renderLedgerTable(data) {
             const amountType = debit > 0 ? 'debit' : 'credit';
             const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '';
 
+            const isManual = row.type === 'مبيعات يدوية' || row.type === 'سند قبض يدوي';
+            const editBtnMobile = isManual ?
+                `<button class="btn btn-sm btn-ghost text-warning ms-1 p-0" style="width:24px;height:24px;" onclick="openEditModal(${row.id}, '${row.type}', '${row.created_at}', ${amount}, '${(row.description || '').replace(/'/g, "\\'")}')"><i class="fas fa-edit fa-xs"></i></button>`
+                : '';
+
             const card = document.createElement('div');
             card.className = 'ledger-card';
             card.innerHTML = `
                 <div class="ledger-card-header">
                     <span class="ledger-card-date"><i class="fas fa-calendar-alt me-1"></i>${new Date(row.created_at).toLocaleDateString('en-GB')}</span>
-                    <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}">${row.type}</span>
+                    <div>
+                        ${editBtnMobile}
+                        <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}">${row.type}</span>
+                    </div>
                 </div>
                 <div class="ledger-card-body">
                     <div class="ledger-card-amount ${amountType}">
@@ -286,6 +307,124 @@ function calculateStats(data) {
 // Helpers
 function formatCurrency(val) {
     return Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+
+// ================== EDIT FUNCTIONS ==================
+
+let editModalInstance = null;
+
+function openEditModal(id, type, dateStr, amount, desc) {
+    document.getElementById('editTransId').value = id;
+    document.getElementById('editTransType').value = type;
+
+    // Format date for input[type="date"] (YYYY-MM-DD)
+    const d = new Date(dateStr);
+    const yyyy = d.getFullYear();
+    const mm = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    // document.getElementById('editTransDate').value = `${yyyy}-${mm}-${dd}`;
+    // Using simple split if string is already suitable, but Date object is safer.
+    document.getElementById('editTransDate').value = d.toISOString().split('T')[0];
+
+    document.getElementById('editTransAmount').value = amount;
+    document.getElementById('editTransDesc').value = desc;
+
+    if (!editModalInstance) {
+        editModalInstance = new bootstrap.Modal(document.getElementById('editTransactionModal'));
+    }
+    editModalInstance.show();
+}
+
+async function saveTransactionUpdate() {
+    const id = document.getElementById('editTransId').value;
+    const type = document.getElementById('editTransType').value;
+    const date = document.getElementById('editTransDate').value; // YYYY-MM-DD
+    const amount = document.getElementById('editTransAmount').value;
+    const desc = document.getElementById('editTransDesc').value;
+
+    if (!date || !amount) {
+        Swal.fire('تنبيه', 'يرجى ملء التاريخ والمبلغ', 'warning');
+        return;
+    }
+
+    // Determine backend action type
+    // type is 'مبيعات يدوية' (debit) or 'سند قبض يدوي' (credit)
+    const mode = (type === 'مبيعات يدوية') ? 'debit' : 'credit';
+
+    try {
+        const res = await fetch(`${API_URL}/update-manual-transaction`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                id: id,
+                mode: mode, // 'debit' or 'credit'
+                date: date,
+                amount: amount,
+                description: desc
+            })
+        });
+
+        const result = await res.json();
+        if (result.success) {
+            editModalInstance.hide();
+            Swal.fire({
+                icon: 'success',
+                title: 'تم الحفظ',
+                text: 'تم تحديث الحركة بنجاح',
+                timer: 1500,
+                showConfirmButton: false
+            });
+            refreshLedger(); // Reload table
+        } else {
+            Swal.fire('خطأ', result.error, 'error');
+        }
+    } catch (e) {
+        console.error(e);
+        Swal.fire('خطأ', 'فشل الاتصال بالخادم', 'error');
+    }
+}
+
+async function deleteTransaction() {
+    const id = document.getElementById('editTransId').value;
+    const type = document.getElementById('editTransType').value;
+    const mode = (type === 'مبيعات يدوية') ? 'debit' : 'credit';
+
+    const confirm = await Swal.fire({
+        title: 'هل أنت متأكد؟',
+        text: "لا يمكن التراجع عن حذف هذه الحركة",
+        icon: 'warning',
+        showCancelButton: true,
+        confirmButtonColor: '#d33',
+        cancelButtonColor: '#3085d6',
+        confirmButtonText: 'نعم، احذفها',
+        cancelButtonText: 'إلغاء'
+    });
+
+    if (confirm.isConfirmed) {
+        try {
+            const res = await fetch(`${API_URL}/delete-manual-transaction`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ id, mode })
+            });
+            const result = await res.json();
+
+            if (result.success) {
+                editModalInstance.hide();
+                Swal.fire({
+                    icon: 'success',
+                    title: 'تم الحذف',
+                    timer: 1500,
+                    showConfirmButton: false
+                });
+                refreshLedger();
+            } else {
+                Swal.fire('خطأ', result.error, 'error');
+            }
+        } catch (e) {
+            Swal.fire('خطأ', 'فشل الحذف', 'error');
+        }
+    }
 }
 
 function showLoading(show) {
