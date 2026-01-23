@@ -431,7 +431,7 @@ class LocalWebServer {
             `;
 
             console.log('📊 [STATS] Calculating via JS Loop...');
-            const mainRows = this.dbManager.db.prepare(sqlMain).all(params);
+            const mainRows = await this.dbManager.db.prepare(sqlMain).all(params);
 
             let count = 0;
             let totalReceipts = 0;
@@ -465,7 +465,7 @@ class LocalWebServer {
                 ${whereClause}
             `;
 
-            const cashRows = this.dbManager.db.prepare(sqlCash).all(params);
+            const cashRows = await this.dbManager.db.prepare(sqlCash).all(params);
 
             let totalCash = 0;
             cashRows.forEach(row => {
