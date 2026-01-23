@@ -1534,6 +1534,60 @@ class LocalWebServer {
                     ]);
                 }
 
+
+
+                // --- MIRROR SYNC: Delete Removed Reconciliations ---
+                if (data.active_reconciliation_ids && Array.isArray(data.active_reconciliation_ids)) {
+                    const activeIds = data.active_reconciliation_ids;
+                    if (activeIds.length > 0) {
+                        try {
+                            console.log(`🗑️ [SYNC] Checking for deletions against ${activeIds.length} active IDs...`);
+                            const pool = this.dbManager.pool || this.dbManager.db.pool;
+
+                            // PostgreSQL requires array parameter for ANY operator
+                            // Fetch IDs that ARE IN the DB but NOT IN the activeIds list
+                            // We do this by selecting all IDs and filtering in JS to act safely, 
+                            // or better: use query parameters. But 1200+ params in NOT IN might be heavy.
+                            // Better Strategy: Select all local IDs, find diff in JS, then delete.
+
+                            const localResult = await pool.query('SELECT id FROM reconciliations');
+                            const localIds = localResult.rows.map(r => r.id);
+
+                            const activeIdSet = new Set(activeIds);
+                            const idsToDelete = localIds.filter(id => !activeIdSet.has(id));
+
+                            if (idsToDelete.length > 0) {
+                                console.log(`🗑️ [SYNC] Found ${idsToDelete.length} obsolete reconciliations. Deleting...`);
+
+                                // Delete in batches of 50
+                                const DELETE_BATCH = 50;
+                                for (let i = 0; i < idsToDelete.length; i += DELETE_BATCH) {
+                                    const batch = idsToDelete.slice(i, i + DELETE_BATCH);
+                                    const placeholders = batch.map((_, idx) => `$${idx + 1}`).join(',');
+
+                                    // 1. Delete Child Records First
+                                    await pool.query(`DELETE FROM cash_receipts WHERE reconciliation_id IN (${placeholders})`, batch);
+                                    await pool.query(`DELETE FROM bank_receipts WHERE reconciliation_id IN (${placeholders})`, batch);
+                                    await pool.query(`DELETE FROM postpaid_sales WHERE reconciliation_id IN (${placeholders})`, batch);
+                                    await pool.query(`DELETE FROM customer_receipts WHERE reconciliation_id IN (${placeholders})`, batch);
+
+                                    // 2. Delete Details
+                                    await pool.query(`DELETE FROM return_invoices WHERE reconciliation_id IN (${placeholders})`, batch);
+                                    await pool.query(`DELETE FROM suppliers WHERE reconciliation_id IN (${placeholders})`, batch);
+
+                                    // 3. Delete Parent
+                                    await pool.query(`DELETE FROM reconciliations WHERE id IN (${placeholders})`, batch);
+                                }
+                                console.log(`✅ [SYNC] Successfully deleted ${idsToDelete.length} obsolete records.`);
+                            } else {
+                                console.log('✅ [SYNC] No deletions needed. Local DB matches Active IDs.');
+                            }
+                        } catch (delErr) {
+                            console.error('❌ [SYNC] Deletion Error:', delErr.message);
+                        }
+                    }
+                }
+
                 if (data.reconciliations) {
                     // **FIX**: Filter out reconciliations without a valid ID to prevent duplicates
                     const validReconciliations = data.reconciliations.filter(r => r.id && r.id > 0);
