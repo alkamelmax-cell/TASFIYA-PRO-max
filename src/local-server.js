@@ -421,12 +421,14 @@ class LocalWebServer {
             // Strategy: Fetch RAW data and sum in JS to handle any data type weirdness (String vs Number)
 
             // 1. Get Main Totals (Fetch raw columns only)
+            // IMPORTANT: Use same JOINs as handleGetReconciliations for identical counts
             const sqlMain = `
                 SELECT 
                     r.total_receipts,
                     r.system_sales
                 FROM reconciliations r
                 LEFT JOIN cashiers c ON r.cashier_id = c.id
+                LEFT JOIN accountants a ON r.accountant_id = a.id
                 ${whereClause}
             `;
 
@@ -462,6 +464,7 @@ class LocalWebServer {
                 FROM cash_receipts cr
                 JOIN reconciliations r ON cr.reconciliation_id = r.id
                 LEFT JOIN cashiers c ON r.cashier_id = c.id
+                LEFT JOIN accountants a ON r.accountant_id = a.id
                 ${whereClause}
             `;
 
