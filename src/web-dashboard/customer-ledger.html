@@ -369,8 +369,54 @@
         </div>
     </div>
 
+    <!-- Edit Transaction Modal -->
+    <div class="modal fade" id="editTransactionModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content"
+                style="background: var(--bg-card); border: 1px solid var(--glass-border); backdrop-filter: blur(20px);">
+                <div class="modal-header border-bottom-0">
+                    <h5 class="modal-title font-bold text-white">تعديل حركة يدوية</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
+                        aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <form id="editTransactionForm">
+                        <input type="hidden" id="editTransId">
+                        <input type="hidden" id="editTransType">
+
+                        <div class="mb-3">
+                            <label class="form-label text-secondary small">التاريخ</label>
+                            <input type="date" class="form-control custom-input text-start" id="editTransDate" required>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label text-secondary small">المبلغ</label>
+                            <input type="number" step="0.01" class="form-control custom-input" id="editTransAmount"
+                                required>
+                        </div>
+
+                        <div class="mb-3">
+                            <label class="form-label text-secondary small">الوصف / ملاحظات</label>
+                            <textarea class="form-control custom-input" id="editTransDesc" rows="3"></textarea>
+                        </div>
+                    </form>
+                </div>
+                <div class="modal-footer border-top-0">
+                    <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">إلغاء</button>
+                    <button type="button" class="btn btn-primary btn-sm" onclick="saveTransactionUpdate()">
+                        <i class="fas fa-save me-1"></i> حفظ التعديلات
+                    </button>
+                    <button type="button" class="btn btn-outline-danger btn-sm me-auto" onclick="deleteTransaction()">
+                        <i class="fas fa-trash me-1"></i> حذف
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <script src="customer-ledger.js?v=21"></script>
 </body>
 

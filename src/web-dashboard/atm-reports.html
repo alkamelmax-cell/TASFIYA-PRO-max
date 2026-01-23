@@ -305,10 +305,17 @@
         const API_URL = '/api';
         let allAtmRecords = [];
 
+
+
+        let isServerFiltered = false;
+
         function filterAndRender() {
             const opType = document.getElementById('filterOperationType').value;
             const devFilter = document.getElementById('filterDevice').value;
             let filtered = allAtmRecords;
+
+            // 1. Apply Client-Side Filters
+            let isClientFiltered = false;
 
             if (opType !== 'all') {
                 filtered = filtered.filter(row => {
@@ -318,14 +325,22 @@
                     if (opType === 'mastercard') return rType.includes('ماستر') || rType.includes('master');
                     return false;
                 });
+                isClientFiltered = true;
             }
 
             if (devFilter !== 'all') {
                 filtered = filtered.filter(row => row.atm_name === devFilter);
+                isClientFiltered = true;
             }
 
-            renderAtmTable(filtered);
+            // 2. Calculate Stats on FULL matching dataset
             calculateAtmStats(filtered);
+
+            // 3. Render Table
+            // Logic: If any filter is active (Server or Client), show ALL.
+            // Else (Default View), show limited 50.
+            const shouldShowAll = isServerFiltered || isClientFiltered;
+            renderAtmTable(shouldShowAll ? filtered : filtered.slice(0, 50));
         }
 
         function populateDeviceFilter(data) {
@@ -409,6 +424,9 @@
             const branchId = document.getElementById('filterBranch').value;
             const accountLocation = document.getElementById('filterAccount').value;
             const specificAmount = document.getElementById('filterAmount').value;
+
+            // Update global flag
+            isServerFiltered = (dateFrom || dateTo || (cashierId && cashierId !== 'all') || (branchId && branchId !== 'all') || (accountLocation && accountLocation !== 'all') || specificAmount);
 
             const params = new URLSearchParams();
             if (dateFrom) params.append('dateFrom', dateFrom);
