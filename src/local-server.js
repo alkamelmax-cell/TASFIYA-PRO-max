@@ -1847,6 +1847,10 @@ class LocalWebServer {
                 headings: { en: title, ar: title },
                 contents: { en: message, ar: message },
                 data: data,
+                priority: 10,
+                android_visibility: 1,
+                lockscreen_visibility: 1,
+                ttl: 0,
                 // Target only users tagged as admin
                 filters: [
                     { field: "tag", key: "role", relation: "=", value: "admin" }
