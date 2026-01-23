@@ -422,20 +422,22 @@ class LocalWebServer {
             const sqlMain = `
                 SELECT 
                     COUNT(*) as count,
-                    COALESCE(SUM(CAST(r.total_receipts AS DECIMAL)), 0) as totalReceipts,
-                    COALESCE(SUM(CAST(r.system_sales AS DECIMAL)), 0) as totalSales
+                    COALESCE(SUM(CAST(r.total_receipts AS NUMERIC)), 0) as totalReceipts,
+                    COALESCE(SUM(CAST(r.system_sales AS NUMERIC)), 0) as totalSales
                 FROM reconciliations r
                 LEFT JOIN cashiers c ON r.cashier_id = c.id
                 ${whereClause}
             `;
 
+            console.log('📊 [STATS] Params:', params);
             const mainStats = this.dbManager.db.prepare(sqlMain).get(params);
+            console.log('📊 [STATS] Main:', mainStats);
 
             // 2. Stats from Cash Receipts (Total Cash)
             // We join reconciliations to filter by same criteria
             const sqlCash = `
                 SELECT 
-                    COALESCE(SUM(CAST(cr.total_amount AS DECIMAL)), 0) as totalCash
+                    COALESCE(SUM(CAST(cr.total_amount AS NUMERIC)), 0) as totalCash
                 FROM cash_receipts cr
                 JOIN reconciliations r ON cr.reconciliation_id = r.id
                 LEFT JOIN cashiers c ON r.cashier_id = c.id
@@ -443,6 +445,7 @@ class LocalWebServer {
             `;
 
             const cashStats = this.dbManager.db.prepare(sqlCash).get(params);
+            console.log('📊 [STATS] Cash:', cashStats);
 
             const result = {
                 count: mainStats.count,
