@@ -46,7 +46,15 @@ class BackgroundSync {
 
             await this.sendPayload({ admins, branches, cashiers, accountants, atms });
 
-            // 2. Fetch & Send Reconciliations (Chunked) - ALL History
+            // 2. NEW: Send ALL active Reconciliation IDs for Mirror Sync (Deletion Handling)
+            // This allows the server to identify and delete local records that are no longer present on desktop
+            const allReconciliationIds = db.prepare("SELECT id FROM reconciliations WHERE status = 'completed'").all().map(r => r.id);
+            if (allReconciliationIds.length > 0) {
+                // Send IDs as a separate payload to avoid batch size limits
+                await this.sendPayload({ active_reconciliation_ids: allReconciliationIds });
+            }
+
+            // 3. Fetch & Send Reconciliations (Chunked) - ALL History
             const reconciliations = db.prepare("SELECT * FROM reconciliations WHERE status = 'completed' ORDER BY id DESC").all();
             await this.sendInBatches('reconciliations', reconciliations, 200);
 
