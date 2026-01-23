@@ -42,7 +42,7 @@ function runCommand(cmd, description) {
 // ============================================================
 function checkRequiredFiles() {
   log('\n🔍 فحص الملفات المطلوبة...', 'blue');
-  
+
   const requiredFiles = [
     'src/main.js',
     'src/index.html',
@@ -51,15 +51,15 @@ function checkRequiredFiles() {
     'src/database.js',
     'package.json'
   ];
-  
+
   const missingFiles = requiredFiles.filter(file => !fs.existsSync(file));
-  
+
   if (missingFiles.length > 0) {
     log('❌ الملفات التالية مفقودة:', 'red');
     missingFiles.forEach(file => log(`   - ${file}`, 'red'));
     process.exit(1);
   }
-  
+
   log('✅ جميع الملفات المطلوبة موجودة', 'green');
 }
 
@@ -68,9 +68,9 @@ function checkRequiredFiles() {
 // ============================================================
 function cleanOldBuilds() {
   log('\n🗑️  تنظيف البنايات القديمة...', 'blue');
-  
+
   const dirsToClean = ['dist', 'dist-final-v4.0.0', 'dist-v4.0.0', 'out'];
-  
+
   dirsToClean.forEach(dir => {
     if (fs.existsSync(dir)) {
       try {
@@ -81,7 +81,7 @@ function cleanOldBuilds() {
       }
     }
   });
-  
+
   log('✅ تم تنظيف البنايات القديمة', 'green');
 }
 
@@ -107,16 +107,16 @@ function buildApplication() {
 // ============================================================
 function verifyBuild() {
   log('\n🔍 التحقق من نتائج البناء...', 'blue');
-  
+
   if (!fs.existsSync('dist')) {
     log('❌ فشل البناء: مجلد dist غير موجود', 'red');
     process.exit(1);
   }
-  
-  const distFiles = fs.readdirSync('dist').filter(f => 
+
+  const distFiles = fs.readdirSync('dist').filter(f =>
     f.endsWith('.exe') || f.endsWith('.nsis')
   );
-  
+
   if (distFiles.length === 0) {
     log('⚠️  تحذير: لم يتم العثور على ملفات .exe في المجلد dist', 'yellow');
   } else {
@@ -134,22 +134,22 @@ async function main() {
     log('║     تصفية برو - Tasfiya Pro - عملية البناء            ║', 'blue');
     log('║          Clean Build Script v4.0.0                     ║', 'blue');
     log('╚════════════════════════════════════════════════════════╝\n', 'blue');
-    
+
     // الخطوة 1: فحص الملفات
     checkRequiredFiles();
-    
+
     // الخطوة 2: تنظيف البنايات القديمة
     cleanOldBuilds();
-    
+
     // الخطوة 3: تثبيت المتطلبات
     installDependencies();
-    
+
     // الخطوة 4: بناء التطبيق
     buildApplication();
-    
+
     // الخطوة 5: التحقق من النتائج
     verifyBuild();
-    
+
     // النتيجة النهائية
     log('\n╔════════════════════════════════════════════════════════╗', 'green');
     log('║          🎉 تمت عملية البناء بنجاح! 🎉              ║', 'green');
@@ -157,7 +157,7 @@ async function main() {
     log('\n📁 ستجد ملفات البناء في: dist/', 'cyan');
     log('💻 التطبيق متوافق مع Windows 10/11', 'cyan');
     log('📦 التطبيق مستقل وجاهز للاستخدام\n', 'cyan');
-    
+
   } catch (error) {
     log('\n❌ فشلت عملية البناء', 'red');
     log(`   ${error.message}\n`, 'red');

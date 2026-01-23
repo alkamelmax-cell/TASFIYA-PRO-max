@@ -2556,12 +2556,38 @@ async function handleSaveReconciliation() {
         */
         if (currentReconciliation && currentReconciliation.originRequestId) {
             console.log('📡 [SAVE] Dispatching update event for Request ID:', currentReconciliation.originRequestId);
+
+            // 1. Dispatch event for local UI update
             window.dispatchEvent(new CustomEvent('reconciliation-saved', {
                 detail: {
                     originRequestId: currentReconciliation.originRequestId,
                     reconciliationNumber: reconciliationNumber
                 }
             }));
+
+            // 2. [DIRECT DB UPDATE] Update status locally using IPC (Guaranteed Offline Support)
+            try {
+                const reqId = currentReconciliation.originRequestId;
+                console.log(`💾 [SAVE] Updating request ${reqId} status directly via IPC...`);
+
+                // Execute UPDATE directly on SQLite
+                await ipcRenderer.invoke('db-run',
+                    "UPDATE reconciliation_requests SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    [reqId]
+                );
+
+                console.log(`✅ [SAVE] Request ${reqId} marked as completed in local DB.`);
+
+                // Optional: Fire-and-forget server notification for logging purposes
+                fetch('http://localhost:4000/api/sync/update-status', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ id: reqId, status: 'completed' })
+                }).catch(() => { }); // Ignore network errors
+
+            } catch (dbErr) {
+                console.error('❌ [SAVE] Failed to update request status in DB:', dbErr);
+            }
         }
 
         console.log('🧹 [SAVE] بدء تفريغ البيانات وإعادة التهيئة...');
@@ -2905,20 +2931,36 @@ function validateReconciliationBeforeSave() {
 }
 
 // دالة تحميل وعرض قائمة التصفيات في النافذة المنبثقة
-async function loadReconciliationsList() {
-    console.log('📋 [LIST] تحميل قائمة التصفيات...');
+// Pagination state for reconciliations list
+let recListCurrentPage = 1;
+const recListPageSize = 50;
+let recListTotalPages = 1;
+
+async function loadReconciliationsList(page = 1) {
+    console.log(`📋 [LIST] تحميل قائمة التصفيات - الصفحة ${page}...`);
     const searchInput = document.getElementById('reconciliationSearchInput');
     const table = document.getElementById('reconciliationsListTable');
     const tbody = table.querySelector('tbody');
 
     try {
+        // Get total count
+        const countResult = await ipcRenderer.invoke('db-query', `
+            SELECT COUNT(*) as total FROM reconciliations
+        `);
+        const totalRecords = countResult[0].total;
+        recListTotalPages = Math.ceil(totalRecords / recListPageSize);
+        recListCurrentPage = page;
+
+        // Get paginated data
+        const offset = (page - 1) * recListPageSize;
         const reconciliations = await ipcRenderer.invoke('db-query', `
             SELECT r.*, c.name as cashier_name, c.cashier_number, a.name as accountant_name
             FROM reconciliations r
             JOIN cashiers c ON r.cashier_id = c.id
             JOIN accountants a ON r.accountant_id = a.id
             ORDER BY r.reconciliation_date DESC, r.id DESC
-        `);
+            LIMIT ? OFFSET ?
+        `, [recListPageSize, offset]);
 
         tbody.innerHTML = '';
 
@@ -2943,12 +2985,63 @@ async function loadReconciliationsList() {
             tbody.appendChild(row);
         });
 
-        console.log(`✅ [LIST] تم تحميل ${reconciliations.length} تصفية`);
+        // Render pagination
+        renderRecListPagination(totalRecords);
+
+        console.log(`✅ [LIST] تم تحميل ${reconciliations.length} تصفية (${totalRecords} إجمالي)`);
 
     } catch (error) {
         console.error('❌ [LIST] خطأ في تحميل قائمة التصفيات:', error);
         DialogUtils.showError('حدث خطأ أثناء تحميل قائمة التصفيات', 'خطأ');
     }
+}
+
+function renderRecListPagination(totalRecords) {
+    let paginationContainer = document.getElementById('recListPaginationContainer');
+
+    // Create if doesn't exist
+    if (!paginationContainer) {
+        const modal = document.getElementById('reconciliationListModal');
+        const modalBody = modal.querySelector('.modal-body');
+        paginationContainer = document.createElement('div');
+        paginationContainer.id = 'recListPaginationContainer';
+        paginationContainer.className = 'mt-3 d-flex justify-content-between align-items-center';
+        paginationContainer.style.borderTop = '2px solid #e9ecef';
+        paginationContainer.style.paddingTop = '15px';
+        modalBody.appendChild(paginationContainer);
+    }
+
+    if (recListTotalPages <= 1) {
+        paginationContainer.innerHTML = `<small class="text-muted">المجموع: ${totalRecords} تصفية</small>`;
+        return;
+    }
+
+    const start = (recListCurrentPage - 1) * recListPageSize + 1;
+    const end = Math.min(recListCurrentPage * recListPageSize, totalRecords);
+
+    let html = `
+        <div><small class="text-muted">عرض ${start}-${end} من ${totalRecords}</small></div>
+        <div class="btn-group btn-group-sm">
+            <button class="btn btn-outline-secondary" onclick="loadReconciliationsList(1)" ${recListCurrentPage === 1 ? 'disabled' : ''}>«</button>
+            <button class="btn btn-outline-secondary" onclick="loadReconciliationsList(${recListCurrentPage - 1})" ${recListCurrentPage === 1 ? 'disabled' : ''}>‹</button>
+    `;
+
+    // Show page numbers
+    const maxVisible = 3;
+    let startPage = Math.max(1, recListCurrentPage - 1);
+    let endPage = Math.min(recListTotalPages, startPage + maxVisible - 1);
+
+    for (let i = startPage; i <= endPage; i++) {
+        html += `<button class="btn ${i === recListCurrentPage ? 'btn-primary' : 'btn-outline-secondary'}" onclick="loadReconciliationsList(${i})">${i}</button>`;
+    }
+
+    html += `
+            <button class="btn btn-outline-secondary" onclick="loadReconciliationsList(${recListCurrentPage + 1})" ${recListCurrentPage === recListTotalPages ? 'disabled' : ''}>›</button>
+            <button class="btn btn-outline-secondary" onclick="loadReconciliationsList(${recListTotalPages})" ${recListCurrentPage === recListTotalPages ? 'disabled' : ''}>»</button>
+        </div>
+    `;
+
+    paginationContainer.innerHTML = html;
 }
 
 // دالة البحث في قائمة التصفيات
@@ -3981,9 +4074,21 @@ async function toggleAtmStatus(id, currentStatus) {
 
 
 
-// Saved Reconciliations functions
-async function loadSavedReconciliations() {
+// Saved Reconciliations Pagination State
+let savedRecCurrentPage = 1;
+const savedRecPageSize = 50;
+let savedRecTotalPages = 1;
+
+async function loadSavedReconciliations(page = 1) {
     try {
+        // Get total count
+        const countResult = await ipcRenderer.invoke('db-query', `SELECT COUNT(*) as total FROM reconciliations`);
+        const totalRecords = countResult[0].total;
+        savedRecTotalPages = Math.ceil(totalRecords / savedRecPageSize);
+        savedRecCurrentPage = page;
+
+        // Get paginated data
+        const offset = (page - 1) * savedRecPageSize;
         const reconciliations = await ipcRenderer.invoke('db-query', `
             SELECT r.*, c.name as cashier_name, c.cashier_number, a.name as accountant_name, b.branch_name
             FROM reconciliations r
@@ -3991,13 +4096,143 @@ async function loadSavedReconciliations() {
             JOIN accountants a ON r.accountant_id = a.id
             LEFT JOIN branches b ON c.branch_id = b.id
             ORDER BY r.created_at DESC
-        `);
+            LIMIT ? OFFSET ?
+        `, [savedRecPageSize, offset]);
 
         displaySavedReconciliations(reconciliations);
+
+        // Render pagination
+        renderSavedRecPagination(totalRecords);
 
     } catch (error) {
         console.error('Error loading saved reconciliations:', error);
     }
+}
+
+function renderSavedRecPagination(totalRecords) {
+    let paginationContainer = document.getElementById('savedRecPaginationContainer');
+
+    // Add custom CSS for pagination buttons if not already added
+    if (!document.getElementById('saved-rec-pagination-styles')) {
+        const style = document.createElement('style');
+        style.id = 'saved-rec-pagination-styles';
+        style.textContent = `
+            .saved-rec-pagination-wrapper {
+                background: linear-gradient(135deg, #f5f7fa 0%, #c3cfe2 100%);
+                padding: 20px;
+                border-radius: 12px;
+                box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+                margin-top: 20px;
+            }
+            
+            .saved-rec-page-btn {
+                padding: 10px 18px;
+                margin: 0 4px;
+                border: none;
+                background: white;
+                color: #495057;
+                font-weight: 600;
+                font-size: 14px;
+                border-radius: 8px;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+                min-width: 45px;
+            }
+            
+            .saved-rec-page-btn:hover:not(:disabled) {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                transform: translateY(-3px);
+                box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+            }
+            
+            .saved-rec-page-btn.active {
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                box-shadow: 0 4px 15px rgba(102, 126, 234, 0.5);
+                transform: scale(1.05);
+            }
+            
+            .saved-rec-page-btn:disabled {
+                opacity: 0.4;
+                cursor: not-allowed;
+                background: #e9ecef;
+            }
+            
+            .saved-rec-page-info {
+                color: #495057;
+                font-weight: 600;
+                font-size: 15px;
+                background: white;
+                padding: 10px 20px;
+                border-radius: 8px;
+                box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+            }
+        `;
+        document.head.appendChild(style);
+    }
+
+    // Create if doesn't exist
+    if (!paginationContainer) {
+        const section = document.querySelector('#saved-reconciliations-section .card-body');
+        paginationContainer = document.createElement('div');
+        paginationContainer.id = 'savedRecPaginationContainer';
+        section.appendChild(paginationContainer);
+    }
+
+    if (savedRecTotalPages <= 1) {
+        paginationContainer.innerHTML = `<div class="saved-rec-pagination-wrapper d-flex justify-content-center"><div class="saved-rec-page-info">المجموع: ${totalRecords} تصفية</div></div>`;
+        return;
+    }
+
+    const start = (savedRecCurrentPage - 1) * savedRecPageSize + 1;
+    const end = Math.min(savedRecCurrentPage * savedRecPageSize, totalRecords);
+
+    let html = `<div class="saved-rec-pagination-wrapper d-flex justify-content-between align-items-center">
+        <div class="saved-rec-page-info">عرض ${start}-${end} من ${totalRecords} تصفية</div>
+        <div class="d-flex align-items-center gap-2">
+            <button class="saved-rec-page-btn" onclick="loadSavedReconciliations(1)" ${savedRecCurrentPage === 1 ? 'disabled' : ''} title="الصفحة الأولى">⏮</button>
+            <button class="saved-rec-page-btn" onclick="loadSavedReconciliations(${savedRecCurrentPage - 1})" ${savedRecCurrentPage === 1 ? 'disabled' : ''} title="السابق">❮</button>
+    `;
+
+    // Show page numbers with ellipsis
+    const maxVisible = 5;
+    let startPage = Math.max(1, savedRecCurrentPage - 2);
+    let endPage = Math.min(savedRecTotalPages, startPage + maxVisible - 1);
+
+    if (endPage - startPage < maxVisible - 1) {
+        startPage = Math.max(1, endPage - maxVisible + 1);
+    }
+
+    // First page + ellipsis
+    if (startPage > 1) {
+        html += `<button class="saved-rec-page-btn" onclick="loadSavedReconciliations(1)">1</button>`;
+        if (startPage > 2) {
+            html += `<span style="color: #6c757d; font-weight: bold; padding: 0 8px;">...</span>`;
+        }
+    }
+
+    // Page range
+    for (let i = startPage; i <= endPage; i++) {
+        html += `<button class="saved-rec-page-btn ${i === savedRecCurrentPage ? 'active' : ''}" onclick="loadSavedReconciliations(${i})">${i}</button>`;
+    }
+
+    // Last page + ellipsis
+    if (endPage < savedRecTotalPages) {
+        if (endPage < savedRecTotalPages - 1) {
+            html += `<span style="color: #6c757d; font-weight: bold; padding: 0 8px;">...</span>`;
+        }
+        html += `<button class="saved-rec-page-btn" onclick="loadSavedReconciliations(${savedRecTotalPages})">${savedRecTotalPages}</button>`;
+    }
+
+    html += `
+            <button class="saved-rec-page-btn" onclick="loadSavedReconciliations(${savedRecCurrentPage + 1})" ${savedRecCurrentPage === savedRecTotalPages ? 'disabled' : ''} title="التالي">❯</button>
+            <button class="saved-rec-page-btn" onclick="loadSavedReconciliations(${savedRecTotalPages})" ${savedRecCurrentPage === savedRecTotalPages ? 'disabled' : ''} title="الصفحة الأخيرة">⏭</button>
+        </div>
+    </div>`;
+
+    paginationContainer.innerHTML = html;
 }
 
 async function loadSearchFilters() {
@@ -16828,7 +17063,9 @@ async function collectDatabaseData() {
             'return_invoices',
             'suppliers',
             'system_settings',
-            'settings'
+            'settings',
+            'reconciliation_requests',
+            'manual_customer_receipts'
         ];
 
         for (const table of tables) {
@@ -17304,7 +17541,9 @@ async function restoreDatabaseData(backupData) {
             'return_invoices',  // References: reconciliations(id)
             'suppliers',        // References: reconciliations(id)
             'system_settings',  // No dependencies
-            'settings'          // No dependencies
+            'settings',          // No dependencies
+            'reconciliation_requests', // References: cashiers(id)
+            'manual_customer_receipts' // No major dependencies
         ];
 
         // Begin transaction

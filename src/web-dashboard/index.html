@@ -348,26 +348,79 @@
             const status = document.getElementById('filterStatus').value;
 
             const params = new URLSearchParams();
-            if (dateFrom) params.append('dateFrom', dateFrom);
-            if (dateTo) params.append('dateTo', dateTo);
-            if (branchId && branchId !== 'all') params.append('branchId', branchId);
-            if (cashierId && cashierId !== 'all') params.append('cashierId', cashierId);
-            if (status && status !== 'all') params.append('status', status);
+            let hasFilters = false;
+
+            if (dateFrom) {
+                params.append('dateFrom', dateFrom);
+                hasFilters = true;
+            }
+            if (dateTo) {
+                params.append('dateTo', dateTo);
+                hasFilters = true;
+            }
+            if (branchId && branchId !== 'all') {
+                params.append('branchId', branchId);
+                hasFilters = true;
+            }
+            if (cashierId && cashierId !== 'all') {
+                params.append('cashierId', cashierId);
+                hasFilters = true;
+            }
+            if (status && status !== 'all') {
+                params.append('status', status);
+                hasFilters = true;
+            }
+
+            // Create params for stats (exact copy of filters BUT WITHOUT limit)
+            const statsParams = new URLSearchParams(params);
+
+            // If no filters are active, limit main list to last 100 records
+            if (!hasFilters) {
+                params.append('limit', '100');
+            }
 
             showLoading(true);
             try {
-                const res = await fetch(`${API_URL}/reconciliations?${params.toString()}`);
-                const result = await res.json();
+                // Fetch Data and Stats in parallel
+                const [listRes, statsRes] = await Promise.all([
+                    fetch(`${API_URL}/reconciliations?${params.toString()}`),
+                    fetch(`${API_URL}/reconciliations/stats?${statsParams.toString()}`)
+                ]);
 
-                if (result.success) {
-                    renderTable(result.data);
-                    calculateStats(result.data);
+                const listResult = await listRes.json();
+                const statsResult = await statsRes.json();
+
+                if (listResult.success) {
+                    renderTable(listResult.data);
+
+                    // Show info message if showing limited results
+                    if (!hasFilters) {
+                        const countEl = document.getElementById('recordCount');
+                        countEl.innerHTML = `${listResult.data.length} سجل <small class="text-muted">(آخر 100 تصفية)</small>`;
+                    }
                 }
+
+                if (statsResult.success && statsResult.stats) {
+                    calculateStatsFromAPI(statsResult.stats);
+                } else if (listResult.success) {
+                    // Fallback to client-side calculation if stats API fails
+                    calculateStats(listResult.data);
+                }
+
             } catch (error) {
                 console.error(error);
             } finally {
                 showLoading(false);
             }
+        }
+
+        function calculateStatsFromAPI(stats) {
+            document.getElementById('statsTotalCount').textContent = formatNum(stats.count);
+            document.getElementById('statsTotalReceipts').textContent = formatNum(stats.totalReceipts);
+            document.getElementById('statsTotalSales').textContent = formatNum(stats.totalSales); // Note: Server returns totalSales
+            // Ensure ID matches HTML. Usually statsTotalCash or similar. Checking index.html... 
+            // In calculateStats: document.getElementById('statsTotalCash')
+            document.getElementById('statsTotalCash').textContent = formatNum(stats.totalCash);
         }
 
         function renderTable(data) {
@@ -389,7 +442,7 @@
 
                 const tr = document.createElement('tr');
                 tr.innerHTML = `
-                    <td data-label="#" class="text-white fw-bold font-monospace">${row.reconciliation_number || row.id}</td>
+                    <td data-label="#" class="text-white fw-bold font-monospace">${row.reconciliation_number || '<span class="badge bg-secondary opacity-50">مسودة</span>'}</td>
                     <td data-label="التاريخ" class="font-monospace">${new Date(row.reconciliation_date).toLocaleDateString('en-GB')}</td>
                     <td data-label="الكاشير" class="text-white">${row.cashier_name || '-'}</td>
                     <td data-label="المحاسب" class="text-white d-none d-md-table-cell">${row.accountant_name || '-'}</td>

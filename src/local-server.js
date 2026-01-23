@@ -85,7 +85,11 @@ class LocalWebServer {
                 }
 
                 // API endpoints
-                if (pathname === '/api/reconciliations') {
+                if (pathname === '/api/reconciliations/stats') {
+                    await this.handleGetReconciliationsStats(res, parsedUrl.query);
+                    return;
+                }
+                else if (pathname === '/api/reconciliations') {
                     await this.handleGetReconciliations(res, parsedUrl.query);
                     return;
                 }
@@ -136,8 +140,9 @@ class LocalWebServer {
                     return;
                 }
                 else if (pathname === '/api/reconciliation-requests') {
-                    if (req.method === 'GET') await this.handleGetReconciliationRequests(res);
+                    if (req.method === 'GET') await this.handleGetReconciliationRequests(res, parsedUrl.query);
                     else if (req.method === 'POST') await this.handleCreateReconciliationRequest(req, res);
+                    else if (req.method === 'DELETE') await this.handleDeleteAllReconciliationRequests(res);
                     return;
                 }
                 else if (pathname.match(/^\/api\/reconciliation-requests\/\d+\/approve$/) && req.method === 'POST') {
@@ -150,6 +155,14 @@ class LocalWebServer {
                     await this.handleDeleteReconciliationRequest(res, id);
                     return;
                 }
+
+                // Debug DB Route
+                else if (pathname === '/api/debug-db') {
+                    await this.handleDebugDB(res);
+                    return;
+                }
+
+                // --- End Reconciliation Requests Feature ---
                 else if (pathname === '/api/customers') {
                     console.log('🔥 [ROUTER] /api/customers route HIT!');
                     await this.handleGetCustomerList(res, parsedUrl.query);
@@ -371,11 +384,63 @@ class LocalWebServer {
             // Sort by ID DESC to ensure latest entries show first regardless of date typos
             sql += ` ORDER BY r.id DESC`;
 
+            // Add LIMIT if specified (for performance with large datasets)
+            if (query.limit) {
+                sql += ` LIMIT ?`;
+                params.push(parseInt(query.limit));
+            }
+
             const data = await this.dbManager.db.prepare(sql).all(params);
             this.sendJson(res, { success: true, data: data });
 
         } catch (error) {
             console.error('API Error:', error);
+            this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    async handleGetReconciliationsStats(res, query) {
+        try {
+            let sql = `
+                SELECT 
+                    COUNT(*) as count,
+                    COALESCE(SUM(r.total_receipts), 0) as totalReceipts,
+                    COALESCE(SUM(r.system_sales), 0) as totalSales,
+                    COALESCE(SUM((SELECT COALESCE(SUM(cr.total_amount), 0) FROM cash_receipts cr WHERE cr.reconciliation_id = r.id)), 0) as totalCash
+                FROM reconciliations r
+                LEFT JOIN cashiers c ON r.cashier_id = c.id
+                WHERE 1=1
+            `;
+
+            const params = [];
+
+            // Apply same filters as main query (but no LIMIT)
+            if (query.dateFrom) {
+                sql += ` AND r.reconciliation_date >= ?`;
+                params.push(query.dateFrom);
+            }
+            if (query.dateTo) {
+                sql += ` AND r.reconciliation_date <= ?`;
+                params.push(query.dateTo);
+            }
+            if (query.cashierId && query.cashierId !== 'all') {
+                sql += ` AND r.cashier_id = ?`;
+                params.push(query.cashierId);
+            }
+            if (query.branchId && query.branchId !== 'all') {
+                sql += ` AND c.branch_id = ?`;
+                params.push(query.branchId);
+            }
+            if (query.status && query.status !== 'all') {
+                sql += ` AND r.status = ?`;
+                params.push(query.status);
+            }
+
+            const result = await this.dbManager.db.prepare(sql).get(params);
+            this.sendJson(res, { success: true, stats: result });
+
+        } catch (error) {
+            console.error('Stats API Error:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
     }
@@ -907,25 +972,93 @@ class LocalWebServer {
         });
     }
 
-    async handleGetReconciliationRequests(res) {
+    async handleGetReconciliationRequests(res, query = {}) {
         try {
-            const sql = `
-                SELECT r.*, c.name as cashier_name, b.branch_name 
-                FROM reconciliation_requests r
-                LEFT JOIN cashiers c ON r.cashier_id = c.id
-                LEFT JOIN branches b ON c.branch_id = b.id
-                WHERE r.status = 'pending'
-                ORDER BY r.created_at DESC
+            const statusFilter = query.status || 'pending';
+            const page = parseInt(query.page) || 1;
+            const limit = parseInt(query.limit) || 20;
+            const offset = (page - 1) * limit;
+
+            const pool = this.dbManager.pool;
+
+            if (pool) {
+                // POSTGRESQL MODE
+                // Count total
+                const countSql = `SELECT COUNT(*) as total FROM reconciliation_requests WHERE status = $1`;
+                const countResult = await pool.query(countSql, [statusFilter]);
+                const total = parseInt(countResult.rows[0].total);
+
+                // Get paginated data
+                const sql = `
+                    SELECT r.*, c.name as cashier_name, b.branch_name 
+                    FROM reconciliation_requests r
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    LEFT JOIN branches b ON c.branch_id = b.id
+                    WHERE r.status = $1
+                    ORDER BY r.created_at DESC
+                    LIMIT $2 OFFSET $3
                 `;
-            const requests = await this.dbManager.db.prepare(sql).all();
+                const result = await pool.query(sql, [statusFilter, limit, offset]);
+                const requests = result.rows;
 
-            // Parse JSON details
-            requests.forEach(r => {
-                try { r.details = JSON.parse(r.details_json); } catch (e) { r.details = {}; }
-            });
+                requests.forEach(r => {
+                    try {
+                        if (typeof r.details_json === 'string') {
+                            r.details = JSON.parse(r.details_json);
+                        } else {
+                            r.details = r.details_json || {};
+                        }
+                    } catch (e) { r.details = {}; }
+                });
 
-            this.sendJson(res, { success: true, data: requests });
+                this.sendJson(res, {
+                    success: true,
+                    data: requests,
+                    pagination: {
+                        page,
+                        limit,
+                        total,
+                        totalPages: Math.ceil(total / limit)
+                    }
+                });
+
+            } else {
+                // SQLITE MODE
+                // Count total
+                const countSql = `SELECT COUNT(*) as total FROM reconciliation_requests WHERE status = ?`;
+                const countResult = this.dbManager.db.prepare(countSql).get(statusFilter);
+                const total = countResult.total;
+
+                // Get paginated data
+                const sql = `
+                    SELECT r.*, c.name as cashier_name, b.branch_name 
+                    FROM reconciliation_requests r
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    LEFT JOIN branches b ON c.branch_id = b.id
+                    WHERE r.status = ?
+                    ORDER BY r.created_at DESC
+                    LIMIT ? OFFSET ?
+                `;
+                const requests = await this.dbManager.db.prepare(sql).all(statusFilter, limit, offset);
+
+                requests.forEach(r => {
+                    try { r.details = JSON.parse(r.details_json); } catch (e) { r.details = {}; }
+                });
+
+                this.sendJson(res, {
+                    success: true,
+                    data: requests,
+                    pagination: {
+                        page,
+                        limit,
+                        total,
+                        totalPages: Math.ceil(total / limit)
+                    }
+                });
+            }
+
         } catch (error) {
+            console.error('[Get Requests] Error:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
     }
@@ -1058,9 +1191,47 @@ class LocalWebServer {
 
     async handleDeleteReconciliationRequest(res, id) {
         try {
-            await this.dbManager.db.prepare("DELETE FROM reconciliation_requests WHERE id = ?").run(id);
+            const pool = this.dbManager.pool;
+            if (pool) {
+                // Postgres Mode
+                await pool.query('DELETE FROM reconciliation_requests WHERE id = $1', [id]);
+            } else {
+                // SQLite Mode
+                await this.dbManager.db.prepare("DELETE FROM reconciliation_requests WHERE id = ?").run(id);
+            }
+
+            // CRITICAL: Also delete from remote server to prevent re-sync
+            try {
+                const remoteUrl = 'https://tasfiya-pro-max.onrender.com/api/reconciliation-requests/' + id;
+                const fetch = require('node-fetch');
+                await fetch(remoteUrl, { method: 'DELETE' });
+                console.log(`✅ [DELETE] Also deleted from cloud: ID ${id}`);
+            } catch (cloudErr) {
+                console.warn(`⚠️ [DELETE] Cloud deletion failed (ID ${id}):`, cloudErr.message);
+                // Don't fail the whole request if cloud is down, but log it
+            }
+
             this.sendJson(res, { success: true });
         } catch (error) {
+            console.error('Delete Error:', error);
+            this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    async handleDeleteAllReconciliationRequests(res) {
+        try {
+            console.log('🗑️ [DELETE ALL] Deleting ALL reconciliation requests...');
+            const pool = this.dbManager.pool;
+
+            if (pool) {
+                await pool.query('DELETE FROM reconciliation_requests');
+            } else {
+                this.dbManager.db.prepare('DELETE FROM reconciliation_requests').run();
+            }
+
+            this.sendJson(res, { success: true });
+        } catch (error) {
+            console.error('Delete All Error:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
     }
@@ -1423,6 +1594,10 @@ class LocalWebServer {
                     ]);
                 }
 
+                else if (pathname === '/api/sync/update-status' && req.method === 'POST') {
+                    await this.handleUpdateRequestStatus(req, res);
+                    return;
+                }
                 // Sync reconciliation requests (especially status updates)
                 if (data.reconciliation_requests) {
                     await syncTable('reconciliation_requests', data.reconciliation_requests, [
@@ -1437,6 +1612,35 @@ class LocalWebServer {
                 this.sendJson(res, { success: true, message: 'Full sync completed' });
             } catch (error) {
                 console.error('❌ [SYNC] Fatal error:', error);
+                this.sendJson(res, { success: false, error: error.message });
+            }
+        });
+    }
+
+    async handleUpdateRequestStatus(req, res) {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const { id, status } = JSON.parse(body);
+                console.log(`🔄 [Real-time Sync] Updating request ${id} to status: ${status}`);
+
+                const pool = this.dbManager.pool; // Check for Postgres (Render)
+
+                if (pool) {
+                    // Update Server DB (Postgres)
+                    const result = await pool.query("UPDATE reconciliation_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [status, id]);
+                    console.log(`✅ [Real-time Sync HOOK] Request ${id} updated to '${status}' on PostgreSQL (Server Mode). RowCount: ${result.rowCount}`);
+                } else {
+                    // Update Local DB (SQLite) - fallback
+                    const stmt = this.dbManager.db.prepare("UPDATE reconciliation_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+                    const info = stmt.run(status, id);
+                    console.log(`✅ [Real-time Sync HOOK] Request ${id} updated to '${status}' on SQLite (Local Mode). Changes: ${info.changes}`);
+                }
+
+                this.sendJson(res, { success: true });
+            } catch (error) {
+                console.error('❌ [Real-time Sync] Error:', error);
                 this.sendJson(res, { success: false, error: error.message });
             }
         });
@@ -1532,6 +1736,54 @@ class LocalWebServer {
             res.end(JSON.stringify(data));
         } else {
             console.error('❌ [sendJson] Cannot send - headers already sent!');
+        }
+    }
+    async handleDebugDB(res) {
+        try {
+            const db = this.dbManager.db;
+
+            // 1. Get total count
+            const count = db.prepare('SELECT COUNT(*) as count FROM reconciliations').get().count;
+
+            // 2. Get Max Reconciliation Number
+            const maxNum = db.prepare('SELECT MAX(reconciliation_number) as max FROM reconciliations').get().max;
+
+            // 3. Find duplicates
+            const duplicates = db.prepare(`
+                SELECT reconciliation_number, COUNT(*) as c 
+                FROM reconciliations 
+                WHERE reconciliation_number IS NOT NULL 
+                GROUP BY reconciliation_number 
+                HAVING c > 1
+            `).all();
+
+            // 4. Find NULL numbers
+            const nulls = db.prepare(`
+                SELECT id, status, created_at FROM reconciliations WHERE reconciliation_number IS NULL
+            `).all();
+
+            // 5. Get gaps (optional, simple check)
+            const gapAnalysis = {
+                expected_count: maxNum,
+                actual_count: count,
+                gap_size: maxNum - count
+            };
+
+            const report = {
+                success: true,
+                analysis: {
+                    total_records: count,
+                    max_reconciliation_number: maxNum,
+                    duplicates: duplicates,
+                    records_without_number: nulls,
+                    gap_analysis: gapAnalysis
+                }
+            };
+
+            this.sendJson(res, report);
+
+        } catch (error) {
+            this.sendJson(res, { success: false, error: error.message, stack: error.stack });
         }
     }
 }

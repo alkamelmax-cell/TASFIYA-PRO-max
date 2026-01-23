@@ -99,13 +99,15 @@
             });
         }
 
-        async function loadRequests() {
+        async function loadRequests(silent = false) {
             const tbody = document.getElementById('requestsTableBody');
             const cardsContainer = document.getElementById('mobileCardsContainer');
 
-            const loadingHtml = '<tr><td colspan="5" class="text-center py-4 text-muted">جاري التحميل...</td></tr>';
-            tbody.innerHTML = loadingHtml;
-            cardsContainer.innerHTML = '<div class="text-center py-4 text-muted"><i class="fas fa-spinner fa-spin me-2"></i>جاري التحميل...</div>';
+            if (!silent) {
+                const loadingHtml = '<tr><td colspan="5" class="text-center py-4 text-muted">جاري التحميل...</td></tr>';
+                tbody.innerHTML = loadingHtml;
+                cardsContainer.innerHTML = '<div class="text-center py-4 text-muted"><i class="fas fa-spinner fa-spin me-2"></i>جاري التحميل...</div>';
+            }
 
             try {
                 const res = await fetch('/api/reconciliation-requests');
@@ -263,6 +265,14 @@
 
         // Load on start
         loadRequests();
+
+        // Auto-refresh every 5 seconds to show real-time updates
+        setInterval(() => {
+            // Only refresh if no modal/alert is open to avoid disrupting user
+            if (!document.querySelector('.swal2-container')) {
+                loadRequests(true); // Pass true to indicate silent refresh
+            }
+        }, 5000);
     </script>
 </body>
 
