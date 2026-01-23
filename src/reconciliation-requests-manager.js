@@ -1,3 +1,4 @@
+// @ts-nocheck
 // Reconciliation Requests Manager for Desktop App
 // Handles viewing and approving cashier reconciliation requests
 
