@@ -157,6 +157,12 @@ class LocalWebServer {
                     return;
                 }
 
+                // Allow clients to update status (Sync back)
+                else if (pathname === '/api/sync/update-status' && req.method === 'POST') {
+                    await this.handleUpdateRequestStatus(req, res);
+                    return;
+                }
+
                 // Debug DB Route
                 else if (pathname === '/api/debug-db') {
                     await this.handleDebugDB(res);
@@ -1593,11 +1599,6 @@ class LocalWebServer {
                         { name: 'id' }, { name: 'customer_name' }, { name: 'amount' },
                         { name: 'reason' }, { name: 'created_at' }
                     ]);
-                }
-
-                else if (pathname === '/api/sync/update-status' && req.method === 'POST') {
-                    await this.handleUpdateRequestStatus(req, res);
-                    return;
                 }
                 // Sync reconciliation requests (especially status updates)
                 if (data.reconciliation_requests) {
