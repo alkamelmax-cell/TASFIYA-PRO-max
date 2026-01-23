@@ -170,25 +170,73 @@
                         <div class="mb-3">
                             <label class="form-label text-secondary fw-bold mb-2">الصلاحيات (الصفحات المسموحة)</label>
                             <div class="bg-black bg-opacity-25 p-3 rounded border border-secondary">
-                                <div class="form-check mb-2">
-                                    <input class="form-check-input permission-check" type="checkbox"
-                                        value="atm-reports.html" id="perm_atm">
-                                    <label class="form-check-label text-white" for="perm_atm">تقرير الصراف</label>
+                                <!-- Main Pages -->
+                                <div class="mb-3">
+                                    <h6 class="text-info small mb-2"><i class="fas fa-layer-group me-1"></i> الصفحات
+                                        الرئيسية</h6>
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input permission-check" type="checkbox"
+                                            value="index.html" id="perm_index">
+                                        <label class="form-check-label text-white" for="perm_index">الصفحة الرئيسية
+                                            (القوائم)</label>
+                                    </div>
                                 </div>
-                                <div class="form-check mb-2">
-                                    <input class="form-check-input permission-check" type="checkbox"
-                                        value="customer-ledger.html" id="perm_ledger">
-                                    <label class="form-check-label text-white" for="perm_ledger">دفتر العملاء</label>
+
+                                <!-- Reports -->
+                                <div class="mb-3 pt-2 border-top border-secondary">
+                                    <h6 class="text-success small mb-2"><i class="fas fa-chart-line me-1"></i> التقارير
+                                    </h6>
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input permission-check" type="checkbox"
+                                            value="atm-reports.html" id="perm_atm">
+                                        <label class="form-check-label text-white" for="perm_atm">تقرير الصراف
+                                            (ATM)</label>
+                                    </div>
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input permission-check" type="checkbox"
+                                            value="customer-ledger.html" id="perm_ledger">
+                                        <label class="form-check-label text-white" for="perm_ledger">دفتر العملاء
+                                            (Customer Ledger)</label>
+                                    </div>
                                 </div>
-                                <div class="form-check border-top border-secondary pt-2 mt-2">
-                                    <input class="form-check-input permission-check" type="checkbox"
-                                        value="users-management.html" id="perm_users">
-                                    <label class="form-check-label text-warning" for="perm_users">إدارة المستخدمين (Full
-                                        Admin)</label>
+
+                                <!-- Management Pages -->
+                                <div class="mb-3 pt-2 border-top border-secondary">
+                                    <h6 class="text-primary small mb-2"><i class="fas fa-cog me-1"></i> الإدارة</h6>
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input permission-check" type="checkbox"
+                                            value="cashiers-management.html" id="perm_cashiers">
+                                        <label class="form-check-label text-white" for="perm_cashiers">إدارة
+                                            الكاشير</label>
+                                    </div>
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input permission-check" type="checkbox"
+                                            value="reconciliation-requests.html" id="perm_rec_requests">
+                                        <label class="form-check-label text-white" for="perm_rec_requests">طلبات
+                                            التصفية</label>
+                                    </div>
+                                    <div class="form-check mb-2">
+                                        <input class="form-check-input permission-check" type="checkbox"
+                                            value="request-reconciliation.html" id="perm_req_rec">
+                                        <label class="form-check-label text-white" for="perm_req_rec">طلب تصفية
+                                            جديد</label>
+                                    </div>
+                                </div>
+
+                                <!-- Admin Only -->
+                                <div class="pt-2 border-top border-danger">
+                                    <h6 class="text-warning small mb-2"><i class="fas fa-shield-halved me-1"></i>
+                                        صلاحيات إدارية</h6>
+                                    <div class="form-check">
+                                        <input class="form-check-input permission-check" type="checkbox"
+                                            value="users-management.html" id="perm_users">
+                                        <label class="form-check-label text-warning" for="perm_users">إدارة المستخدمين
+                                            (Full Admin)</label>
+                                    </div>
                                 </div>
                             </div>
                             <div class="form-text text-white-50 small mt-2">
-                                * الصفحة الرئيسية متاحة للجميع افتراضياً.
+                                * يمكنك اختيار صفحة واحدة أو أكثر حسب دور المستخدم.
                             </div>
                         </div>
                     </form>
@@ -302,10 +350,14 @@
                 const tr = document.createElement('tr');
 
                 // Format permissions: compact view for multi-permissions
-                let permsDisplay = '<span class="text-secondary small">الرئيسية فقط</span>';
+                let permsDisplay = '<span class="text-secondary small">لا صلاحيات</span>';
                 const labelsMap = {
+                    'index.html': 'الرئيسية',
                     'atm-reports.html': 'تقرير الصراف',
                     'customer-ledger.html': 'دفتر العملاء',
+                    'cashiers-management.html': 'إدارة الكاشير',
+                    'reconciliation-requests.html': 'طلبات التصفية',
+                    'request-reconciliation.html': 'طلب تصفية',
                     'users-management.html': 'إدارة المستخدمين'
                 };
                 if (u.permissions && Array.isArray(u.permissions) && u.permissions.length > 0) {
