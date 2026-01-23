@@ -418,40 +418,67 @@ class LocalWebServer {
             if (query.branchId && query.branchId !== 'all') { whereClause += ` AND c.branch_id = ?`; params.push(query.branchId); }
             if (query.status && query.status !== 'all') { whereClause += ` AND r.status = ?`; params.push(query.status); }
 
-            // 1. Stats from Reconciliations Table
+            // Strategy: Fetch RAW data and sum in JS to handle any data type weirdness (String vs Number)
+
+            // 1. Get Main Totals (Fetch raw columns only)
             const sqlMain = `
                 SELECT 
-                    COUNT(*) as count,
-                    COALESCE(SUM(CAST(r.total_receipts AS NUMERIC)), 0) as totalReceipts,
-                    COALESCE(SUM(CAST(r.system_sales AS NUMERIC)), 0) as totalSales
+                    r.total_receipts,
+                    r.system_sales
                 FROM reconciliations r
                 LEFT JOIN cashiers c ON r.cashier_id = c.id
                 ${whereClause}
             `;
 
-            console.log('📊 [STATS] Params:', params);
-            const mainStats = this.dbManager.db.prepare(sqlMain).get(params);
-            console.log('📊 [STATS] Main:', mainStats);
+            console.log('📊 [STATS] Calculating via JS Loop...');
+            const mainRows = this.dbManager.db.prepare(sqlMain).all(params);
 
-            // 2. Stats from Cash Receipts (Total Cash)
-            // We join reconciliations to filter by same criteria
+            let count = 0;
+            let totalReceipts = 0;
+            let totalSales = 0;
+
+            // Safe Summation Function
+            const safeParse = (val) => {
+                if (val === null || val === undefined) return 0;
+                if (typeof val === 'number') return val;
+                // Clean string: remove commas, allow dots
+                const clean = String(val).replace(/,/g, '').trim();
+                const num = parseFloat(clean);
+                return isNaN(num) ? 0 : num;
+            };
+
+            mainRows.forEach(row => {
+                count++;
+                totalReceipts += safeParse(row.total_receipts);
+                totalSales += safeParse(row.system_sales);
+            });
+
+            console.log(`📊 [STATS] JS Result -> Count: ${count}, Receipts: ${totalReceipts}, Sales: ${totalSales}`);
+
+            // 2. Get Cash Totals (Fetch raw total_amount)
             const sqlCash = `
                 SELECT 
-                    COALESCE(SUM(CAST(cr.total_amount AS NUMERIC)), 0) as totalCash
+                    cr.total_amount
                 FROM cash_receipts cr
                 JOIN reconciliations r ON cr.reconciliation_id = r.id
                 LEFT JOIN cashiers c ON r.cashier_id = c.id
                 ${whereClause}
             `;
 
-            const cashStats = this.dbManager.db.prepare(sqlCash).get(params);
-            console.log('📊 [STATS] Cash:', cashStats);
+            const cashRows = this.dbManager.db.prepare(sqlCash).all(params);
+
+            let totalCash = 0;
+            cashRows.forEach(row => {
+                totalCash += safeParse(row.total_amount);
+            });
+
+            console.log(`📊 [STATS] JS Cash Result -> Rows: ${cashRows.length}, Total: ${totalCash}`);
 
             const result = {
-                count: mainStats.count,
-                totalReceipts: mainStats.totalReceipts,
-                totalSales: mainStats.totalSales,
-                totalCash: cashStats.totalCash
+                count: count,
+                totalReceipts: totalReceipts,
+                totalSales: totalSales,
+                totalCash: totalCash
             };
 
             this.sendJson(res, { success: true, stats: result });
