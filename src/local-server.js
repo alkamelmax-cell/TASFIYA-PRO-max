@@ -408,42 +408,49 @@ class LocalWebServer {
 
     async handleGetReconciliationsStats(res, query) {
         try {
-            let sql = `
+            const params = [];
+            let whereClause = "WHERE 1=1";
+
+            // Build WHERE clause reused for both queries
+            if (query.dateFrom) { whereClause += ` AND r.reconciliation_date >= ?`; params.push(query.dateFrom); }
+            if (query.dateTo) { whereClause += ` AND r.reconciliation_date <= ?`; params.push(query.dateTo); }
+            if (query.cashierId && query.cashierId !== 'all') { whereClause += ` AND r.cashier_id = ?`; params.push(query.cashierId); }
+            if (query.branchId && query.branchId !== 'all') { whereClause += ` AND c.branch_id = ?`; params.push(query.branchId); }
+            if (query.status && query.status !== 'all') { whereClause += ` AND r.status = ?`; params.push(query.status); }
+
+            // 1. Stats from Reconciliations Table
+            const sqlMain = `
                 SELECT 
                     COUNT(*) as count,
-                    COALESCE(SUM(r.total_receipts), 0) as totalReceipts,
-                    COALESCE(SUM(r.system_sales), 0) as totalSales,
-                    COALESCE(SUM((SELECT COALESCE(SUM(cr.total_amount), 0) FROM cash_receipts cr WHERE cr.reconciliation_id = r.id)), 0) as totalCash
+                    COALESCE(SUM(CAST(r.total_receipts AS DECIMAL)), 0) as totalReceipts,
+                    COALESCE(SUM(CAST(r.system_sales AS DECIMAL)), 0) as totalSales
                 FROM reconciliations r
                 LEFT JOIN cashiers c ON r.cashier_id = c.id
-                WHERE 1=1
+                ${whereClause}
             `;
 
-            const params = [];
+            const mainStats = this.dbManager.db.prepare(sqlMain).get(params);
 
-            // Apply same filters as main query (but no LIMIT)
-            if (query.dateFrom) {
-                sql += ` AND r.reconciliation_date >= ?`;
-                params.push(query.dateFrom);
-            }
-            if (query.dateTo) {
-                sql += ` AND r.reconciliation_date <= ?`;
-                params.push(query.dateTo);
-            }
-            if (query.cashierId && query.cashierId !== 'all') {
-                sql += ` AND r.cashier_id = ?`;
-                params.push(query.cashierId);
-            }
-            if (query.branchId && query.branchId !== 'all') {
-                sql += ` AND c.branch_id = ?`;
-                params.push(query.branchId);
-            }
-            if (query.status && query.status !== 'all') {
-                sql += ` AND r.status = ?`;
-                params.push(query.status);
-            }
+            // 2. Stats from Cash Receipts (Total Cash)
+            // We join reconciliations to filter by same criteria
+            const sqlCash = `
+                SELECT 
+                    COALESCE(SUM(CAST(cr.total_amount AS DECIMAL)), 0) as totalCash
+                FROM cash_receipts cr
+                JOIN reconciliations r ON cr.reconciliation_id = r.id
+                LEFT JOIN cashiers c ON r.cashier_id = c.id
+                ${whereClause}
+            `;
 
-            const result = await this.dbManager.db.prepare(sql).get(params);
+            const cashStats = this.dbManager.db.prepare(sqlCash).get(params);
+
+            const result = {
+                count: mainStats.count,
+                totalReceipts: mainStats.totalReceipts,
+                totalSales: mainStats.totalSales,
+                totalCash: cashStats.totalCash
+            };
+
             this.sendJson(res, { success: true, stats: result });
 
         } catch (error) {
