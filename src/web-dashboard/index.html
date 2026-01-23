@@ -173,6 +173,10 @@
                         <button class="btn btn-primary flex-grow-1 fw-bold" onclick="loadReconciliations()">
                             بحث
                         </button>
+                        <button class="btn btn-danger px-3" onclick="resetAllData()"
+                            title="حذف جميع البيانات وإعادة المزامنة">
+                            <i class="fas fa-trash-restore"></i>
+                        </button>
                     </div>
                 </div>
             </div>
@@ -573,6 +577,36 @@
             `;
 
             document.getElementById('modalBody').innerHTML = html;
+        }
+
+        async function resetAllData() {
+            const confirmed = confirm(
+                '⚠️ تحذير: هذا الإجراء سيحذف جميع التصفيات والبيانات المرتبطة بها من قاعدة البيانات!\n\n' +
+                'استخدم هذا الخيار فقط إذا كنت تريد إعادة المزامنة من الصفر.\n\n' +
+                'هل أنت متأكد من المتابعة؟'
+            );
+
+            if (!confirmed) return;
+
+            try {
+                showLoading(true);
+                const res = await fetch(`${API_URL}/reconciliations/reset`, {
+                    method: 'POST'
+                });
+                const result = await res.json();
+
+                if (result.success) {
+                    alert('✅ تم حذف جميع البيانات بنجاح!\n\nيمكنك الآن إعادة المزامنة من التطبيق المكتبي.');
+                    loadReconciliations(); // Reload to show empty table
+                } else {
+                    alert('❌ خطأ: ' + result.error);
+                }
+            } catch (error) {
+                console.error(error);
+                alert('❌ حدث خطأ في الاتصال');
+            } finally {
+                showLoading(false);
+            }
         }
 
         function formatCurrency(val) {

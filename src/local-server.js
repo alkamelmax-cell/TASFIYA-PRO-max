@@ -94,6 +94,10 @@ class LocalWebServer {
                     await this.handleGetReconciliations(res, parsedUrl.query);
                     return;
                 }
+                else if (pathname === '/api/reconciliations/reset' && req.method === 'POST') {
+                    await this.handleResetReconciliations(res);
+                    return;
+                }
                 else if (pathname === '/api/atm-report') {
                     await this.handleGetAtmReport(res, parsedUrl.query);
                     return;
@@ -488,6 +492,45 @@ class LocalWebServer {
 
         } catch (error) {
             console.error('Stats API Error:', error);
+            this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    async handleResetReconciliations(res) {
+        try {
+            console.log('🗑️ [RESET] Starting reconciliations reset...');
+
+            // Delete in correct order to avoid FK violations
+            // 1. Delete child records first
+            await this.dbManager.db.prepare('DELETE FROM cash_receipts').run();
+            console.log('✅ [RESET] Deleted cash_receipts');
+
+            await this.dbManager.db.prepare('DELETE FROM bank_receipts').run();
+            console.log('✅ [RESET] Deleted bank_receipts');
+
+            await this.dbManager.db.prepare('DELETE FROM postpaid_sales').run();
+            console.log('✅ [RESET] Deleted postpaid_sales');
+
+            await this.dbManager.db.prepare('DELETE FROM customer_receipts').run();
+            console.log('✅ [RESET] Deleted customer_receipts');
+
+            // 2. Delete parent records last
+            await this.dbManager.db.prepare('DELETE FROM reconciliations').run();
+            console.log('✅ [RESET] Deleted reconciliations');
+
+            // Reset auto-increment counter (SQLite specific)
+            await this.dbManager.db.prepare('DELETE FROM sqlite_sequence WHERE name IN (?, ?, ?, ?, ?)').run(
+                'reconciliations', 'cash_receipts', 'bank_receipts', 'postpaid_sales', 'customer_receipts'
+            );
+            console.log('✅ [RESET] Reset auto-increment counters');
+
+            this.sendJson(res, {
+                success: true,
+                message: 'All reconciliation data deleted successfully. Ready for fresh sync.'
+            });
+
+        } catch (error) {
+            console.error('❌ [RESET] Error:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
     }
