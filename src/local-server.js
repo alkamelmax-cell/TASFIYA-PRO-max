@@ -1535,8 +1535,16 @@ class LocalWebServer {
                 }
 
                 if (data.reconciliations) {
-                    // 1. Identify IDs of incoming items
-                    const incomingIds = data.reconciliations.map(r => r.id).filter(id => id);
+                    // **FIX**: Filter out reconciliations without a valid ID to prevent duplicates
+                    const validReconciliations = data.reconciliations.filter(r => r.id && r.id > 0);
+                    const skippedCount = data.reconciliations.length - validReconciliations.length;
+
+                    if (skippedCount > 0) {
+                        console.log(`⚠️ [SYNC] Skipped ${skippedCount} reconciliations without valid ID`);
+                    }
+
+                    // 1. Identify IDs of incoming items (use filtered list)
+                    const incomingIds = validReconciliations.map(r => r.id).filter(id => id);
                     let newReconciliationsCount = 0;
                     let firstNewRec = null;
 
@@ -1557,7 +1565,7 @@ class LocalWebServer {
                             const existingIdsSet = new Set(existingResult.rows.map(row => row.id));
 
                             // Filter incoming items that are NOT in the existing set -> THESE ARE NEW
-                            const newItems = data.reconciliations.filter(r => !existingIdsSet.has(r.id));
+                            const newItems = validReconciliations.filter(r => !existingIdsSet.has(r.id));
 
                             newReconciliationsCount = newItems.length;
                             if (newReconciliationsCount > 0) {
@@ -1570,8 +1578,8 @@ class LocalWebServer {
                         }
                     }
 
-                    // 3. Perform the Sync (Save Data)
-                    await syncTable('reconciliations', data.reconciliations, [
+                    // 3. Perform the Sync (Save Data) - USE FILTERED LIST
+                    await syncTable('reconciliations', validReconciliations, [
                         { name: 'id' }, { name: 'reconciliation_number' }, { name: 'cashier_id' },
                         { name: 'accountant_id' }, { name: 'reconciliation_date' }, { name: 'system_sales' },
                         { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' }
