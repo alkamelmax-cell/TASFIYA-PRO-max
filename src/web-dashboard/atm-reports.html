@@ -576,9 +576,9 @@
             const maxAmount = count > 0 ? Math.max(...data.map(r => Number(r.amount || 0))) : 0;
 
             document.getElementById('statsAtmOps').textContent = formatNum(count);
-            document.getElementById('statsAtmTotal').textContent = formatNum(totalAmount);
-            document.getElementById('statsAtmAvg').textContent = formatNum(avgAmount);
-            document.getElementById('statsAtmMax').textContent = formatNum(maxAmount);
+            document.getElementById('statsAtmTotal').textContent = formatCurrency(totalAmount);
+            document.getElementById('statsAtmAvg').textContent = formatCurrency(avgAmount);
+            document.getElementById('statsAtmMax').textContent = formatCurrency(maxAmount);
         }
 
         function formatCurrency(val) {

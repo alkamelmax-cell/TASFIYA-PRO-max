@@ -416,11 +416,9 @@
 
         function calculateStatsFromAPI(stats) {
             document.getElementById('statsTotalCount').textContent = formatNum(stats.count);
-            document.getElementById('statsTotalReceipts').textContent = formatNum(stats.totalReceipts);
-            document.getElementById('statsTotalSales').textContent = formatNum(stats.totalSales); // Note: Server returns totalSales
-            // Ensure ID matches HTML. Usually statsTotalCash or similar. Checking index.html... 
-            // In calculateStats: document.getElementById('statsTotalCash')
-            document.getElementById('statsTotalCash').textContent = formatNum(stats.totalCash);
+            document.getElementById('statsTotalReceipts').textContent = formatCurrency(stats.totalReceipts);
+            document.getElementById('statsTotalSales').textContent = formatCurrency(stats.totalSales);
+            document.getElementById('statsTotalCash').textContent = formatCurrency(stats.totalCash);
         }
 
         function renderTable(data) {
@@ -467,9 +465,9 @@
             const totalCash = data.reduce((sum, r) => sum + Number(r.cash_total || 0), 0);
 
             document.getElementById('statsTotalCount').textContent = formatNum(count);
-            document.getElementById('statsTotalReceipts').textContent = formatNum(totalReceipts); // Short format
-            document.getElementById('statsTotalSales').textContent = formatNum(totalSales);
-            document.getElementById('statsTotalCash').textContent = formatNum(totalCash);
+            document.getElementById('statsTotalReceipts').textContent = formatCurrency(totalReceipts);
+            document.getElementById('statsTotalSales').textContent = formatCurrency(totalSales);
+            document.getElementById('statsTotalCash').textContent = formatCurrency(totalCash);
         }
 
         async function openDetails(id) {

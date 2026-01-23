@@ -474,10 +474,13 @@ class LocalWebServer {
 
             const cashRows = await this.dbManager.db.prepare(sqlCash).all(params);
 
+            console.log(`📊 [STATS] Cash Rows Found: ${cashRows.length}`);
+
             let totalCash = 0;
             cashRows.forEach(row => {
                 totalCash += safeParse(row.total_amount);
             });
+            console.log(`📊 [STATS] Total Cash Calculated: ${totalCash}`);
 
             console.log(`📊 [STATS] JS Cash Result -> Rows: ${cashRows.length}, Total: ${totalCash}`);
 
@@ -1916,10 +1919,14 @@ class LocalWebServer {
                 gap_size: maxNum - count
             };
 
+            // 6. Check Child Tables
+            const cashCount = db.prepare('SELECT COUNT(*) as count FROM cash_receipts').get().count;
+
             const report = {
                 success: true,
                 analysis: {
                     total_records: count,
+                    total_cash_receipts: cashCount,
                     max_reconciliation_number: maxNum,
                     duplicates: duplicates,
                     records_without_number: nulls,
