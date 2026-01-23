@@ -1460,3 +1460,48 @@ input[type="date"].custom-input {
 ::-webkit-scrollbar-track {
     background: var(--bg-dark);
 }
+
+/* ==============================================
+   Fix for Stat Cards Overflow on Mobile (Decimals)
+   ============================================== */
+@media (max-width: 768px) {
+    .stat-value {
+        font-size: 1.2rem !important;
+        /* Reduced from 1.7rem to fit 123,456.78 */
+        white-space: normal !important;
+        /* Allow wrapping if absolutely necessary */
+        line-height: 1.2;
+        word-break: break-all;
+        /* Prevent overflow */
+    }
+
+    .stat-box {
+        padding: 1rem !important;
+        /* Reduce padding to give more space for text */
+        min-height: 110px;
+        /* Ensure consistent height */
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+
+    .stat-label {
+        font-size: 0.8rem !important;
+        /* Slightly smaller label */
+        margin-bottom: 0.3rem !important;
+    }
+
+    .stat-box .icon-wrapper {
+        font-size: 4rem;
+        /* Smaller background icon */
+        top: -10px;
+        left: -10px;
+    }
+}
+
+@media (max-width: 480px) {
+    .stat-value {
+        font-size: 1.05rem !important;
+        /* Even smaller for very narrow screens */
+    }
+}
