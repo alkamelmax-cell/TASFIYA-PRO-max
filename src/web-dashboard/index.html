@@ -168,7 +168,7 @@
                 <!-- Buttons Row -->
                 <div class="col-12 mt-3">
                     <div class="d-flex gap-2">
-                        <button class="btn btn-secondary px-3" onclick="loadReconciliations()">
+                        <button id="refreshBtn" type="button" class="btn btn-secondary px-3" onclick="handleRefresh()">
                             <i class="fas fa-sync-alt"></i>
                         </button>
                         <button class="btn btn-primary flex-grow-1 fw-bold" onclick="loadReconciliations()">
@@ -616,6 +616,45 @@
         function showLoading(show) {
             document.getElementById('loading').style.display = show ? 'flex' : 'none';
         }
+
+        async function handleRefresh() {
+            const btn = document.getElementById('refreshBtn');
+            const icon = btn.querySelector('i');
+
+            // Add spinning animation
+            icon.classList.add('fa-spin');
+            btn.disabled = true;
+
+            try {
+                await loadReconciliations();
+
+                // Optional: Show toast or feedback
+                // alert('تم تحديث البيانات'); 
+            } catch (e) {
+                console.error(e);
+            } finally {
+                // Remove animation after short delay
+                setTimeout(() => {
+                    icon.classList.remove('fa-spin');
+                    btn.disabled = false;
+                }, 500);
+            }
+        }
+
+        // Smart Navigation Logic
+        document.addEventListener('DOMContentLoaded', () => {
+            const homeLink = document.querySelector('a[href="index.html"]');
+            if (homeLink) {
+                homeLink.addEventListener('click', (e) => {
+                    // If we are already on index.html (or root), prevent reload and just refresh data
+                    const currentPath = window.location.pathname;
+                    if (currentPath.endsWith('index.html') || currentPath === '/') {
+                        e.preventDefault();
+                        handleRefresh();
+                    }
+                });
+            }
+        });
     </script>
 </body>
 
