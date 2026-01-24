@@ -820,7 +820,7 @@ class LocalWebServer {
             const greatestFunc = isPostgres ? 'GREATEST' : 'MAX';
             const defaultDate = isPostgres ? "'1970-01-01 00:00:00'" : "''";
 
-            // Unified calculation query using UNION ALL (Matches Desktop Logic)
+            // Unified calculation query using UNION ALL (Matches Desktop Logic) - SIMPLIFIED
             const sql = `
             SELECT 
                 t.customer_name,
@@ -829,23 +829,15 @@ class LocalWebServer {
                 COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END), 0) as balance,
                 ${greatestFunc}(MAX(t.created_at), ${defaultDate}) as last_transaction,
                 COUNT(*) as transaction_count,
-                (
-                    SELECT b.branch_name 
-                    FROM branches b
-                    JOIN cashiers c ON c.branch_id = b.id
-                    JOIN reconciliations r ON r.cashier_id = c.id
-                    JOIN postpaid_sales ps ON ps.reconciliation_id = r.id
-                    WHERE ps.customer_name = t.customer_name
-                    ORDER BY ps.created_at DESC LIMIT 1
-                ) as branch_name
+                'الفرع الرئيسي' as branch_name 
             FROM (
-                SELECT customer_name, amount, 'debit' as type, created_at FROM postpaid_sales
+                SELECT customer_name, amount, 'debit' as type, created_at FROM postpaid_sales WHERE customer_name IS NOT NULL
                 UNION ALL
-                SELECT customer_name, amount, 'debit' as type, created_at FROM manual_postpaid_sales
+                SELECT customer_name, amount, 'debit' as type, created_at FROM manual_postpaid_sales WHERE customer_name IS NOT NULL
                 UNION ALL
-                SELECT customer_name, amount, 'credit' as type, created_at FROM customer_receipts
+                SELECT customer_name, amount, 'credit' as type, created_at FROM customer_receipts WHERE customer_name IS NOT NULL
                 UNION ALL
-                SELECT customer_name, amount, 'credit' as type, created_at FROM manual_customer_receipts
+                SELECT customer_name, amount, 'credit' as type, created_at FROM manual_customer_receipts WHERE customer_name IS NOT NULL
             ) t
             GROUP BY t.customer_name
             HAVING balance != 0 OR transaction_count > 0
