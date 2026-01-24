@@ -8,7 +8,7 @@
     <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="css/custom.css?v=17">
+    <link rel="stylesheet" href="css/custom.css?v=21">
 
     <style>
         /* Global Reset */
@@ -29,24 +29,22 @@
 
         html,
         body {
-            height: 100%;
-            height: 100dvh;
+            min-height: 100vh;
+            min-height: 100dvh;
             width: 100vw;
             margin: 0;
             padding: 0;
-            /* Removed padding to prevent width + padding overflow */
-            overflow: hidden !important;
             background: #020617;
-            touch-action: none;
-            /* Optional: disables default pan gestures */
-            position: fixed;
-            /* Lock body */
+            font-family: 'Tajawal', sans-serif;
+            overflow-x: hidden;
         }
 
         body {
             display: flex;
+            flex-direction: column;
             align-items: center;
             justify-content: center;
+            padding: 2rem 1rem;
         }
 
         /* Abstract Background blobs */
@@ -172,18 +170,23 @@
         }
 
         .logo-area {
-            width: 80px;
-            height: 80px;
+            width: 120px;
+            height: 120px;
             margin: 0 auto 1.5rem;
-            background: linear-gradient(135deg, var(--primary) 0%, #2563eb 100%);
-            border-radius: 20px;
+            background: transparent;
             display: flex;
             align-items: center;
             justify-content: center;
-            box-shadow: 0 0 30px var(--primary-glow);
             font-size: 2rem;
             color: white;
-            transform: rotate(-10deg);
+        }
+
+        /* Professional shadow for login page logo */
+        .logo-area img {
+            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.2));
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
         }
 
         .form-floating>.form-control {
@@ -249,81 +252,89 @@
 <body>
 
     <!-- Background Blobs -->
-    <div class="blob blob-1"></div>
-    <div class="blob blob-2"></div>
-    <div class="blob blob-3"></div>
-
-    <div class="login-card text-center">
-        <div class="logo-area">
-            <img src="assets/logo.png" alt="تصفية برو"
-                style="width: 100%; height: 100%; object-fit: contain; transform: rotate(10deg);">
-        </div>
-
-        <h3 class="fw-bold mb-4 text-white">تصفية برو</h3>
-
-        <!-- Error Message Alert -->
-        <div id="errorMessage" class="alert alert-danger d-none animate__animated animate__shakeX" role="alert"
-            style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.3); color: #fca5a5; font-size: 0.9rem;">
-        </div>
-
-        <ul class="nav nav-pills mb-4 justify-content-center bg-black bg-opacity-25 p-1 rounded-4" id="loginTypeTab"
-            role="tablist">
-            <li class="nav-item flex-grow-1" role="presentation">
-                <button class="nav-link w-100 active" id="admin-tab" data-bs-toggle="pill" data-bs-target="#admin-login"
-                    type="button" role="tab">
-                    <i class="fas fa-user-shield me-2"></i>الإدارة
-                </button>
-            </li>
-            <li class="nav-item flex-grow-1" role="presentation">
-                <button class="nav-link w-100" id="cashier-tab" data-bs-toggle="pill" data-bs-target="#cashier-login"
-                    type="button" role="tab" onclick="loadCashiers()">
-                    <i class="fas fa-cash-register me-2"></i>الكاشير
-                </button>
-            </li>
-        </ul>
-
-        <div class="tab-content" id="loginTabContent">
-            <!-- Admin Login -->
-            <div class="tab-pane fade show active" id="admin-login" role="tabpanel">
-                <form id="loginForm">
-                    <div class="form-floating mb-3 text-start">
-                        <input type="text" class="form-control" id="username" placeholder="اسم المستخدم" required>
-                        <label for="username">اسم المستخدم</label>
-                    </div>
-
-                    <div class="form-floating mb-4 text-start">
-                        <input type="password" class="form-control" id="password" placeholder="كلمة المرور" required>
-                        <label for="password">كلمة المرور</label>
-                    </div>
-
-                    <button type="submit" class="btn btn-primary btn-login w-100">
-                        دخول النظام <i class="fas fa-arrow-left ms-2"></i>
-                    </button>
-                </form>
+    <div class="login-wrapper d-flex flex-column align-items-center gap-4 w-100">
+        <div class="login-card text-center">
+            <div class="logo-area">
+                <img src="assets/logo.png" alt="تصفية برو">
             </div>
 
-            <!-- Cashier Login -->
-            <div class="tab-pane fade" id="cashier-login" role="tabpanel">
-                <form id="cashierLoginForm">
-                    <div class="form-floating mb-3 text-start">
-                        <select class="form-select" id="cashierSelect" required>
-                            <option value="" disabled selected>اختر الكاشير...</option>
-                        </select>
-                        <label for="cashierSelect">اسم الكاشير</label>
-                    </div>
+            <h3 class="fw-bold mb-4 text-white">تصفية برو</h3>
 
-                    <div class="form-floating mb-4 text-start">
-                        <input type="password" class="form-control font-monospace text-center fs-4" id="cashierPin"
-                            placeholder="رمز الدخول" required maxlength="6" inputmode="numeric">
-                        <label for="cashierPin">رمز الدخول (PIN)</label>
-                    </div>
-
-                    <button type="submit" class="btn btn-success btn-login w-100"
-                        style="background: linear-gradient(90deg, #059669 0%, #10b981 100%); box-shadow: 0 10px 25px -5px rgba(16, 185, 129, 0.4);">
-                        دخول الكاشير <i class="fas fa-sign-in-alt ms-2"></i>
-                    </button>
-                </form>
+            <!-- Error Message Alert -->
+            <div id="errorMessage" class="alert alert-danger d-none animate__animated animate__shakeX" role="alert"
+                style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.3); color: #fca5a5; font-size: 0.9rem;">
             </div>
+
+            <ul class="nav nav-pills mb-4 justify-content-center bg-black bg-opacity-25 p-1 rounded-4" id="loginTypeTab"
+                role="tablist">
+                <li class="nav-item flex-grow-1" role="presentation">
+                    <button class="nav-link w-100 active" id="admin-tab" data-bs-toggle="pill"
+                        data-bs-target="#admin-login" type="button" role="tab">
+                        <i class="fas fa-user-shield me-2"></i>الإدارة
+                    </button>
+                </li>
+                <li class="nav-item flex-grow-1" role="presentation">
+                    <button class="nav-link w-100" id="cashier-tab" data-bs-toggle="pill"
+                        data-bs-target="#cashier-login" type="button" role="tab" onclick="loadCashiers()">
+                        <i class="fas fa-cash-register me-2"></i>الكاشير
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content" id="loginTabContent">
+                <!-- Admin Login -->
+                <div class="tab-pane fade show active" id="admin-login" role="tabpanel">
+                    <form id="loginForm">
+                        <div class="form-floating mb-3 text-start">
+                            <input type="text" class="form-control" id="username" placeholder="اسم المستخدم" required>
+                            <label for="username">اسم المستخدم</label>
+                        </div>
+
+                        <div class="form-floating mb-4 text-start">
+                            <input type="password" class="form-control" id="password" placeholder="كلمة المرور"
+                                required>
+                            <label for="password">كلمة المرور</label>
+                        </div>
+
+                        <button type="submit" class="btn btn-primary btn-login w-100">
+                            دخول النظام <i class="fas fa-arrow-left ms-2"></i>
+                        </button>
+                    </form>
+                </div>
+
+                <!-- Cashier Login -->
+                <div class="tab-pane fade" id="cashier-login" role="tabpanel">
+                    <form id="cashierLoginForm">
+                        <div class="form-floating mb-3 text-start">
+                            <select class="form-select" id="cashierSelect" required>
+                                <option value="" disabled selected>اختر الكاشير...</option>
+                            </select>
+                            <label for="cashierSelect">اسم الكاشير</label>
+                        </div>
+
+                        <div class="form-floating mb-4 text-start">
+                            <input type="password" class="form-control font-monospace text-center fs-4" id="cashierPin"
+                                placeholder="رمز الدخول" required maxlength="6" inputmode="numeric">
+                            <label for="cashierPin">رمز الدخول (PIN)</label>
+                        </div>
+
+                        <button type="submit" class="btn btn-success btn-login w-100"
+                            style="background: linear-gradient(90deg, #059669 0%, #10b981 100%); box-shadow: 0 10px 25px -5px rgba(16, 185, 129, 0.4);">
+                            دخول الكاشير <i class="fas fa-sign-in-alt ms-2"></i>
+                        </button>
+                    </form>
+                </div>
+            </div>
+        </div>
+
+        <!-- Copyright Footer -->
+        <div class="copyright-footer text-center pb-2 px-3" style="max-width: 400px; opacity: 0.8;">
+            <p class="mb-1 text-white-50 small fw-bold" style="letter-spacing: 0.5px;">جميع حقوق التطوير محفوظة © ٢٠٢٦
+            </p>
+            <p class="mb-1 text-primary small fw-bold" style="filter: brightness(1.2);">برمجة وتطوير: محمد أمين الكامل
+            </p>
+            <p class="mb-0 text-white-50" style="font-size: 0.7rem; opacity: 0.4;">يمنع منعاً باتاً النسخ أو التعديل دون
+                إذن كتابي</p>
         </div>
     </div>
 

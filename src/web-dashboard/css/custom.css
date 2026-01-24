@@ -24,20 +24,18 @@
     --text-muted: #64748b;
     /* Slate 500 */
 
-    /* Brand Colors - Indigo/Violet Vibe */
-    --primary: #6366f1;
-    /* Indigo 500 */
-    --primary-dark: #4f46e5;
-    /* Indigo 600 */
-    --primary-glow: rgba(99, 102, 241, 0.5);
+    /* Brand Colors - Teal/Blue to Match Logo */
+    --primary: #1e40af;
+    /* Blue 800 */
+    --primary-dark: #1e3a8a;
+    --primary-glow: rgba(30, 64, 175, 0.5);
 
     /* Brighter Success/Danger */
-    --success: #22c55e;
-    /* Green 500 brighter */
-    --success-glow: rgba(34, 197, 94, 0.55);
+    --success: #10b981;
+    /* Green 500 */
+    --success-glow: rgba(16, 185, 129, 0.55);
 
-    --danger: #f43f5e;
-    /* Rose 500 brighter */
+    --danger: #ef4444;
     --warning: #f59e0b;
     /* Amber 500 */
 
@@ -97,7 +95,7 @@
 body {
     background-color: var(--bg-main);
     background-image:
-        radial-gradient(circle at 10% 20%, rgba(99, 102, 241, 0.1) 0%, transparent 40%),
+        radial-gradient(circle at 10% 20%, rgba(30, 64, 175, 0.1) 0%, transparent 40%),
         radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 40%);
     color: var(--text-primary);
     font-family: 'IBM Plex Sans Arabic', 'Cairo', system-ui, -apple-system, Segoe UI, Roboto, 'Almarai', sans-serif;
@@ -224,7 +222,25 @@ body {
     display: flex;
     align-items: center;
     gap: 0.8rem;
-    text-shadow: 0 0 20px rgba(59, 130, 246, 0.3);
+    /* Multi-layer text shadow for maximum visibility */
+    text-shadow:
+        0 2px 4px rgba(0, 0, 0, 0.5),
+        0 4px 8px rgba(0, 0, 0, 0.4),
+        0 8px 16px rgba(0, 0, 0, 0.3),
+        0 0 30px rgba(99, 102, 241, 0.4),
+        0 0 60px rgba(99, 102, 241, 0.2);
+}
+
+/* Professional drop shadow for logo image */
+.brand-logo img {
+    filter:
+        drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5)) drop-shadow(0 4px 8px rgba(0, 0, 0, 0.4)) drop-shadow(0 8px 16px rgba(0, 0, 0, 0.3)) drop-shadow(0 0 20px rgba(99, 102, 241, 0.5)) drop-shadow(0 0 40px rgba(99, 102, 241, 0.3));
+    transition: filter 0.3s ease;
+}
+
+.brand-logo img:hover {
+    filter:
+        drop-shadow(0 4px 8px rgba(0, 0, 0, 0.6)) drop-shadow(0 8px 16px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 30px rgba(99, 102, 241, 0.7)) drop-shadow(0 0 60px rgba(99, 102, 241, 0.5));
 }
 
 .user-profile-btn {
