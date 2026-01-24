@@ -19193,7 +19193,14 @@ async function toggleSync() {
             const message = newState ? 'تم تفعيل المزامنة بنجاح ✅' : 'تم إيقاف المزامنة مؤقتاً ⏸️';
             const alertType = newState ? 'success' : 'warning';
 
-            showAlert(message, alertType);
+            Swal.fire({
+                icon: alertType,
+                title: message,
+                timer: 2000,
+                showConfirmButton: false,
+                position: 'top-end',
+                toast: true
+            });
 
             // تحديث الواجهة بعد ثانية
             setTimeout(() => updateSyncUI(), 1000);
@@ -19202,7 +19209,12 @@ async function toggleSync() {
         }
     } catch (error) {
         console.error('❌ [SYNC-TOGGLE] خطأ في تبديل المزامنة:', error);
-        showAlert('حدث خطأ في تبديل حالة المزامنة: ' + error.message, 'danger');
+        Swal.fire({
+            icon: 'error',
+            title: 'خطأ',
+            text: 'حدث خطأ في تبديل حالة المزامنة: ' + error.message,
+            confirmButtonText: 'حسناً'
+        });
 
         // إعادة تفعيل الزر
         const toggleSyncBtn = document.getElementById('toggleSyncBtn');
