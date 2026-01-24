@@ -1448,7 +1448,13 @@ class LocalWebServer {
 
                     console.log(`🔄 [SYNC] Syncing ${table} (${items.length} items) in batches...`);
                     const cols = columns.map(c => c.name);
-                    const updateSets = cols.map(c => `${c} = EXCLUDED.${c}`).join(', ');
+                    const updateSets = columns.map(col => {
+                        if (col.preserveIfNull) {
+                            // Preserve existing value if new value is NULL or empty string
+                            return `${col.name} = COALESCE(NULLIF(EXCLUDED.${col.name}, ''), NULLIF(EXCLUDED.${col.name}, 'null'), ${table}.${col.name})`;
+                        }
+                        return `${col.name} = EXCLUDED.${col.name}`;
+                    }).join(', ');
 
                     // Process in batches of 200 to avoid query parameter limits and timeouts
                     const BATCH_SIZE = 200;
@@ -1534,7 +1540,8 @@ class LocalWebServer {
                 if (data.cashiers) {
                     await syncTable('cashiers', data.cashiers, [
                         { name: 'id' }, { name: 'name' }, { name: 'cashier_number' },
-                        { name: 'branch_id' }, { name: 'active' }, { name: 'pin_code' }
+                        { name: 'branch_id' }, { name: 'active' },
+                        { name: 'pin_code', preserveIfNull: true }
                     ]);
                 }
 
