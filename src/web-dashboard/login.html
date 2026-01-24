@@ -5,345 +5,272 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>تصفية برو - تسجيل الدخول</title>
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@300;400;700;800&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Almarai:wght@300;400;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="css/custom.css?v=21">
 
     <style>
-        /* Global Reset */
-        * {
-            box-sizing: border-box;
-            scrollbar-width: none;
-            /* Firefox */
-            -ms-overflow-style: none;
-            /* IE 10+ */
+        :root {
+            --primary-color: #2563eb;
+            --secondary-color: #1e293b;
+            --accent-color: #3b82f6;
+            --bg-dark: #0f172a;
+            --card-bg: rgba(30, 41, 59, 0.7);
+            --text-light: #f8fafc;
+            --input-bg: #e2e8f0;
         }
 
-        /* Chrome/Safari */
-        *::-webkit-scrollbar {
-            display: none;
-            width: 0;
-            height: 0;
-        }
-
-        html,
         body {
-            min-height: 100vh;
-            min-height: 100dvh;
-            width: 100vw;
             margin: 0;
             padding: 0;
-            background: #020617;
-            font-family: 'Tajawal', sans-serif;
-            overflow-x: hidden;
-        }
-
-        body {
+            font-family: 'Almarai', sans-serif;
+            background-color: var(--bg-dark);
+            background-image:
+                radial-gradient(at 0% 0%, rgba(37, 99, 235, 0.15) 0px, transparent 50%),
+                radial-gradient(at 100% 100%, rgba(16, 185, 129, 0.1) 0px, transparent 50%);
+            min-height: 100vh;
             display: flex;
-            flex-direction: column;
             align-items: center;
             justify-content: center;
-            padding: 2rem 1rem;
+            overflow: hidden;
         }
 
-        /* Abstract Background blobs */
-        .blob {
-            position: absolute;
-            border-radius: 50%;
-            filter: blur(80px);
-            z-index: -1;
-            /* Improved z-index */
-            animation: float 20s infinite alternate;
-            opacity: 0.6;
-        }
-
-        .blob-1 {
-            top: -10%;
-            right: -10%;
-            width: 500px;
-            height: 500px;
-            background: rgba(59, 130, 246, 0.2);
-            animation-delay: 0s;
-        }
-
-        .blob-2 {
-            bottom: -10%;
-            left: -10%;
-            width: 400px;
-            height: 400px;
-            background: rgba(16, 185, 129, 0.15);
-            animation-delay: -5s;
-        }
-
-        .blob-3 {
-            top: 40%;
-            left: 40%;
-            width: 300px;
-            height: 300px;
-            background: rgba(245, 158, 11, 0.1);
-            animation-delay: -10s;
-        }
-
-        @keyframes float {
-            0% {
-                transform: translate(0, 0) rotate(0deg);
-            }
-
-            100% {
-                transform: translate(50px, 50px) rotate(20deg);
-            }
+        .login-container {
+            width: 100%;
+            max-width: 400px;
+            padding: 20px;
+            perspective: 1000px;
         }
 
         .login-card {
-            width: 100%;
-            max-width: 420px;
-            padding: 3rem 2rem;
-            margin: auto;
-            /* Ensure centering */
+            background: var(--card-bg);
+            backdrop-filter: blur(16px);
+            -webkit-backdrop-filter: blur(16px);
             border-radius: 24px;
-            background: rgba(30, 41, 59, 0.4);
-            backdrop-filter: blur(20px);
-            -webkit-backdrop-filter: blur(20px);
-            border: 1px solid rgba(255, 255, 255, 0.1);
+            padding: 40px 30px;
             box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.5);
-            position: relative;
-            z-index: 10;
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            transform: translateY(0);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
         }
 
-        @media (max-width: 576px) {
-            .login-card {
-                padding: 1.5rem 1rem;
-                /* Compact padding */
-                width: 95%;
-                /* Better than max-width: 100% for edges */
-                max-width: 100%;
-                margin: auto;
-                max-height: 90dvh;
-                /* Ensure it fits */
-
-                /* Adaptive scaling for very small screens */
-                display: flex;
-                flex-direction: column;
-                justify-content: center;
-            }
-
-            .logo-area {
-                width: 50px;
-                /* Smaller Logo */
-                height: 50px;
-                font-size: 1.2rem;
-                margin-bottom: 0.8rem;
-            }
-
-            h3 {
-                font-size: 1.3rem;
-                /* Smaller Title */
-                margin-bottom: 0.5rem !important;
-                /* reduce spacing */
-            }
-
-            .nav-pills {
-                margin-bottom: 0.9rem !important;
-            }
-
-            .nav-pills .nav-link {
-                padding: 0.4rem;
-                font-size: 0.85rem;
-            }
-
-            .btn-login {
-                height: 44px;
-                /* Compact Button */
-                font-size: 0.95rem;
-                margin-top: 0.5rem !important;
-            }
-
-            .form-floating>.form-control {
-                height: calc(3rem + 2px);
-                line-height: normal;
-            }
-
-            .form-floating>label {
-                padding: 0.8rem 0.75rem;
-            }
+        .login-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 30px 60px -12px rgba(0, 0, 0, 0.6);
         }
 
-        .logo-area {
-            width: 120px;
-            height: 120px;
-            margin: 0 auto 1.5rem;
-            background: transparent;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 2rem;
-            color: white;
+        .logo-container {
+            text-align: center;
+            margin-bottom: 30px;
         }
 
-        /* Professional shadow for login page logo */
-        .logo-area img {
-            filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.2));
-            max-width: 100%;
-            max-height: 100%;
-            object-fit: contain;
+        .logo-img {
+            width: 80px;
+            height: auto;
+            margin-bottom: 15px;
+            filter: drop-shadow(0 0 15px rgba(59, 130, 246, 0.3));
         }
 
-        .form-floating>.form-control {
+        .app-title {
+            color: var(--text-light);
+            font-weight: 800;
+            font-size: 1.8rem;
+            margin-bottom: 5px;
+            letter-spacing: -0.5px;
+        }
+
+        .role-switch {
             background: rgba(15, 23, 42, 0.6);
+            border-radius: 12px;
+            padding: 4px;
+            display: flex;
+            margin-bottom: 30px;
             border: 1px solid rgba(255, 255, 255, 0.05);
-            color: white;
-            border-radius: 12px;
         }
 
-        .form-floating>.form-control:focus {
-            background: rgba(15, 23, 42, 0.8);
-            box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.15);
-            border-color: var(--primary);
-        }
-
-        .form-floating>label {
-            color: #94a3b8;
-        }
-
-        .form-floating>.form-control:focus~label {
-            color: var(--primary);
-        }
-
-        .btn-login {
-            background: linear-gradient(90deg, var(--primary) 0%, #2563eb 100%);
+        .role-btn {
+            flex: 1;
             border: none;
-            height: 54px;
-            font-size: 1.1rem;
-            font-weight: 700;
-            border-radius: 14px;
-            margin-top: 1rem;
-            box-shadow: 0 10px 25px -5px rgba(37, 99, 235, 0.4);
-            transition: 0.3s;
-        }
-
-        .btn-login:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 15px 30px -5px rgba(37, 99, 235, 0.6);
-        }
-
-        /* Tabs Styling */
-        .nav-pills .nav-link {
+            background: transparent;
             color: #94a3b8;
-            border-radius: 12px;
-            padding: 0.75rem 1rem;
-            font-weight: 600;
-            transition: 0.3s;
+            padding: 10px;
+            border-radius: 10px;
+            font-weight: 700;
+            transition: all 0.3s ease;
         }
 
-        .nav-pills .nav-link.active {
-            background-color: var(--primary);
+        .role-btn.active {
+            background: var(--primary-color);
             color: white;
             box-shadow: 0 4px 12px rgba(37, 99, 235, 0.3);
         }
 
-        .nav-pills .nav-link:hover:not(.active) {
-            background-color: rgba(255, 255, 255, 0.05);
+        .role-btn:hover:not(.active) {
             color: white;
+        }
+
+        .form-floating {
+            margin-bottom: 20px;
+        }
+
+        .form-control {
+            background-color: var(--input-bg);
+            border: none;
+            border-radius: 12px;
+            height: 55px;
+            padding-right: 20px;
+            color: #334155;
+            font-weight: 600;
+            font-family: inherit;
+        }
+
+        .form-control:focus {
+            background-color: #f1f5f9;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2);
+            color: #1e293b;
+        }
+
+        .form-label {
+            padding-right: 20px;
+            color: #64748b;
+        }
+
+        .btn-submit {
+            width: 100%;
+            height: 55px;
+            border-radius: 12px;
+            background: linear-gradient(135deg, #2563eb, #1d4ed8);
+            border: none;
+            color: white;
+            font-weight: 700;
+            font-size: 1.1rem;
+            margin-top: 10px;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+        }
+
+        .btn-submit:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(37, 99, 235, 0.4);
+            background: linear-gradient(135deg, #1d4ed8, #1e40af);
+        }
+
+        .btn-submit:active {
+            transform: translateY(0);
+        }
+
+        .footer-text {
+            text-align: center;
+            color: #64748b;
+            font-size: 0.8rem;
+            margin-top: 30px;
+            opacity: 0.8;
+        }
+
+        /* Disable scroll on number input */
+        input[type=number]::-webkit-inner-spin-button,
+        input[type=number]::-webkit-outer-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+
+        .pin-input {
+            letter-spacing: 10px;
+            font-size: 1.5rem !important;
+            text-align: center;
+            padding-right: 0 !important;
         }
     </style>
 </head>
 
 <body>
 
-    <!-- Background Blobs -->
-    <div class="login-wrapper d-flex flex-column align-items-center gap-4 w-100">
-        <div class="login-card text-center">
-            <div class="logo-area">
-                <img src="assets/logo.png" alt="تصفية برو">
+    <div class="login-container">
+        <div class="login-card">
+
+            <!-- Header -->
+            <div class="logo-container">
+                <img src="assets/logo.png" alt="Logo" class="logo-img">
+                <div class="app-title">تصفية برو</div>
             </div>
 
-            <h3 class="fw-bold mb-4 text-white">تصفية برو</h3>
-
-            <!-- Error Message Alert -->
-            <div id="errorMessage" class="alert alert-danger d-none animate__animated animate__shakeX" role="alert"
-                style="background: rgba(239, 68, 68, 0.2); border: 1px solid rgba(239, 68, 68, 0.3); color: #fca5a5; font-size: 0.9rem;">
+            <!-- Error Message -->
+            <div id="errorMessage" class="alert alert-danger d-none mb-4 text-center py-2" role="alert"
+                style="border-radius: 12px; font-size: 0.9rem; background: rgba(239, 68, 68, 0.1); border: 1px solid rgba(239, 68, 68, 0.2); color: #fca5a5;">
             </div>
 
-            <ul class="nav nav-pills mb-4 justify-content-center bg-black bg-opacity-25 p-1 rounded-4" id="loginTypeTab"
-                role="tablist">
-                <li class="nav-item flex-grow-1" role="presentation">
-                    <button class="nav-link w-100 active" id="admin-tab" data-bs-toggle="pill"
-                        data-bs-target="#admin-login" type="button" role="tab">
-                        <i class="fas fa-user-shield me-2"></i>الإدارة
-                    </button>
-                </li>
-                <li class="nav-item flex-grow-1" role="presentation">
-                    <button class="nav-link w-100" id="cashier-tab" data-bs-toggle="pill"
-                        data-bs-target="#cashier-login" type="button" role="tab" onclick="loadCashiers()">
-                        <i class="fas fa-cash-register me-2"></i>الكاشير
-                    </button>
-                </li>
-            </ul>
+            <!-- Role Switch -->
+            <div class="role-switch nav nav-pills" id="loginTypeTab" role="tablist">
+                <button class="role-btn nav-link active" id="admin-tab" data-bs-toggle="pill"
+                    data-bs-target="#admin-login" type="button" role="tab">
+                    <i class="fas fa-user-shield me-2"></i>الإدارة
+                </button>
+                <button class="role-btn nav-link" id="cashier-tab" data-bs-toggle="pill" data-bs-target="#cashier-login"
+                    type="button" role="tab" onclick="loadCashiers()">
+                    <i class="fas fa-cash-register me-2"></i>الكاشير
+                </button>
+            </div>
 
+            <!-- Tab Content -->
             <div class="tab-content" id="loginTabContent">
-                <!-- Admin Login -->
+
+                <!-- Admin Form -->
                 <div class="tab-pane fade show active" id="admin-login" role="tabpanel">
                     <form id="loginForm">
-                        <div class="form-floating mb-3 text-start">
+                        <div class="form-floating">
                             <input type="text" class="form-control" id="username" placeholder="اسم المستخدم" required>
-                            <label for="username">اسم المستخدم</label>
+                            <label for="username" class="form-label">اسم المستخدم</label>
                         </div>
-
-                        <div class="form-floating mb-4 text-start">
+                        <div class="form-floating">
                             <input type="password" class="form-control" id="password" placeholder="كلمة المرور"
                                 required>
-                            <label for="password">كلمة المرور</label>
+                            <label for="password" class="form-label">كلمة المرور</label>
                         </div>
-
-                        <button type="submit" class="btn btn-primary btn-login w-100">
+                        <button type="submit" class="btn-submit btn-login">
                             دخول النظام <i class="fas fa-arrow-left ms-2"></i>
                         </button>
                     </form>
                 </div>
 
-                <!-- Cashier Login -->
+                <!-- Cashier Form -->
                 <div class="tab-pane fade" id="cashier-login" role="tabpanel">
                     <form id="cashierLoginForm">
-                        <div class="form-floating mb-3 text-start">
-                            <select class="form-select" id="cashierSelect" required>
+                        <div class="form-floating">
+                            <select class="form-control form-select" id="cashierSelect" required
+                                style="padding-top: 1.625rem; padding-bottom: 0.625rem;">
                                 <option value="" disabled selected>اختر الكاشير...</option>
                             </select>
-                            <label for="cashierSelect">اسم الكاشير</label>
+                            <label for="cashierSelect" class="form-label">اسم الكاشير</label>
                         </div>
-
-                        <div class="form-floating mb-4 text-start">
-                            <input type="password" class="form-control font-monospace text-center fs-4" id="cashierPin"
-                                placeholder="رمز الدخول" required maxlength="6" inputmode="numeric">
-                            <label for="cashierPin">رمز الدخول (PIN)</label>
+                        <div class="form-floating">
+                            <input type="password" class="form-control pin-input" id="cashierPin" placeholder="PIN"
+                                required maxlength="6" inputmode="numeric">
+                            <label for="cashierPin" class="form-label text-center w-100" style="padding-right:0;">رمز
+                                الدخول (PIN)</label>
                         </div>
-
-                        <button type="submit" class="btn btn-success btn-login w-100"
-                            style="background: linear-gradient(90deg, #059669 0%, #10b981 100%); box-shadow: 0 10px 25px -5px rgba(16, 185, 129, 0.4);">
+                        <button type="submit" class="btn-submit btn-login"
+                            style="background: linear-gradient(135deg, #10b981, #059669);">
                             دخول الكاشير <i class="fas fa-sign-in-alt ms-2"></i>
                         </button>
                     </form>
                 </div>
-            </div>
-        </div>
 
-        <!-- Copyright Footer -->
-        <div class="copyright-footer text-center pb-2 px-3" style="max-width: 400px; opacity: 0.8;">
-            <p class="mb-1 text-white-50 small fw-bold" style="letter-spacing: 0.5px;">جميع حقوق التطوير محفوظة © ٢٠٢٦
-            </p>
-            <p class="mb-1 text-primary small fw-bold" style="filter: brightness(1.2);">برمجة وتطوير: محمد أمين الكامل
-            </p>
-            <p class="mb-0 text-white-50" style="font-size: 0.7rem; opacity: 0.4;">يمنع منعاً باتاً النسخ أو التعديل دون
-                إذن كتابي</p>
+            </div>
+
+            <!-- Footer -->
+            <div class="footer-text">
+                <div>جميع حقوق التطوير محفوظة © ٢٠٢٦</div>
+                <div style="font-size: 0.7rem; margin-top: 5px;">Mohamed Amin Alkamel</div>
+            </div>
+
         </div>
     </div>
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <!-- Add Animate.css for shake effect -->
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css" />
-
     <script>
+        // --- Logic Preserved Exactly As Is ---
+
         // Admin Login
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
             e.preventDefault();
@@ -363,12 +290,9 @@
 
         function showError(message) {
             const errorDiv = document.getElementById('errorMessage');
-            errorDiv.innerHTML = `<i class="fas fa-exclamation-circle me-2"></i> ${message}`;
+            errorDiv.innerHTML = `<i class="fas fa-exclamation-triangle me-2"></i> ${message}`;
             errorDiv.classList.remove('d-none');
-            // Re-trigger animation
-            errorDiv.classList.remove('animate__shakeX');
-            void errorDiv.offsetWidth; // trigger reflow
-            errorDiv.classList.add('animate__shakeX');
+            // Check for animation lib if available, simplified here
         }
 
         function hideError() {
@@ -384,6 +308,7 @@
             const originalContent = btn.innerHTML;
             btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> جاري التحقق...';
             btn.disabled = true;
+            btn.style.opacity = '0.8';
             hideError();
 
             try {
@@ -407,6 +332,7 @@
             } finally {
                 btn.innerHTML = originalContent;
                 btn.disabled = false;
+                btn.style.opacity = '1';
             }
         }
 
@@ -418,6 +344,8 @@
                 const data = await res.json();
                 if (data.success && data.cashiers) {
                     const select = document.getElementById('cashierSelect');
+                    // Clear loading if any
+                    // select.innerHTML = '<option value="" disabled selected>اختر الكاشير...</option>';
                     data.cashiers.forEach(c => {
                         const opt = document.createElement('option');
                         opt.value = c.id;
