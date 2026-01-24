@@ -221,8 +221,14 @@ function renderLedgerTable(data) {
         const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '-';
 
         const isManual = row.type === 'مبيعات يدوية' || row.type === 'سند قبض يدوي';
-        // Edit manual transactions disabled on web for security/sync integrity
-        const editBtn = '';
+
+        // Check if running on Web (Remote) vs Desktop (Localhost)
+        const isWeb = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+
+        // Show edit button ONLY on Desktop/Local
+        const editBtn = (isManual && !isWeb) ?
+            `<button class="btn btn-sm btn-link text-warning p-0 ms-2" onclick="openEditModal(${row.id}, '${row.type}', '${row.created_at}', ${debit > 0 ? debit : credit}, '${(row.description || '').replace(/'/g, "\\'")}')" title="تعديل"><i class="fas fa-edit"></i></button>`
+            : '';
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -259,7 +265,13 @@ function renderLedgerTable(data) {
             const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '';
 
             const isManual = row.type === 'مبيعات يدوية' || row.type === 'سند قبض يدوي';
-            const editBtnMobile = '';
+            // Variable isWeb is not defined in this scope loop, recalculating or assuming global scope if available. 
+            // Better to recalc distinct checks to be safe inside this loop:
+            const isWebMobile = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+
+            const editBtnMobile = (isManual && !isWebMobile) ?
+                `<button class="btn btn-sm btn-ghost text-warning ms-1 p-0" style="width:24px;height:24px;" onclick="openEditModal(${row.id}, '${row.type}', '${row.created_at}', ${amount}, '${(row.description || '').replace(/'/g, "\\'")}')"><i class="fas fa-edit fa-xs"></i></button>`
+                : '';
 
             const card = document.createElement('div');
             card.className = 'ledger-card';
