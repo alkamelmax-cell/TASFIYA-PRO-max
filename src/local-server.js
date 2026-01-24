@@ -820,55 +820,35 @@ class LocalWebServer {
             const greatestFunc = isPostgres ? 'GREATEST' : 'MAX';
             const defaultDate = isPostgres ? "'1970-01-01 00:00:00'" : "''";
 
-            // Complex query to get balance (Sales - Receipts) + Manual Entries
+            // Unified calculation query using UNION ALL (Matches Desktop Logic)
             const sql = `
             SELECT 
-                c.name as customer_name,
-                COALESCE(sales.total_debit, 0) + COALESCE(manual_sales.total_debit, 0) as total_debit,
-                COALESCE(receipts.total_credit, 0) + COALESCE(manual_receipts.total_credit, 0) as total_credit,
-                (COALESCE(sales.total_debit, 0) + COALESCE(manual_sales.total_debit, 0)) - (COALESCE(receipts.total_credit, 0) + COALESCE(manual_receipts.total_credit, 0)) as balance,
-                ${greatestFunc}(
-                    COALESCE(sales.last_date, ${defaultDate}), 
-                    COALESCE(receipts.last_date, ${defaultDate}), 
-                    COALESCE(manual_sales.last_date, ${defaultDate}), 
-                    COALESCE(manual_receipts.last_date, ${defaultDate})
-                ) as last_transaction,
-                (COALESCE(sales.count, 0) + COALESCE(manual_sales.count, 0) + COALESCE(receipts.count, 0) + COALESCE(manual_receipts.count, 0)) as transaction_count,
-                 (
+                t.customer_name,
+                COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) as total_debit,
+                COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as total_credit,
+                COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END), 0) as balance,
+                ${greatestFunc}(MAX(t.created_at), ${defaultDate}) as last_transaction,
+                COUNT(*) as transaction_count,
+                (
                     SELECT b.branch_name 
-                    FROM postpaid_sales ps
-                    LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id 
-                    LEFT JOIN cashiers ca ON r.cashier_id = ca.id
-                    LEFT JOIN branches b ON ca.branch_id = b.id
-                    WHERE ps.customer_name = c.name 
-                    ORDER BY ps.created_at DESC 
-                    LIMIT 1
-                 ) as branch_name
+                    FROM branches b
+                    JOIN cashiers c ON c.branch_id = b.id
+                    JOIN reconciliations r ON r.cashier_id = c.id
+                    JOIN postpaid_sales ps ON ps.reconciliation_id = r.id
+                    WHERE ps.customer_name = t.customer_name
+                    ORDER BY ps.created_at DESC LIMIT 1
+                ) as branch_name
             FROM (
-                SELECT DISTINCT customer_name as name FROM postpaid_sales
-                UNION 
-                SELECT DISTINCT customer_name as name FROM customer_receipts
-                UNION
-                SELECT DISTINCT customer_name as name FROM manual_postpaid_sales
-                UNION
-                SELECT DISTINCT customer_name as name FROM manual_customer_receipts
-            ) c
-            LEFT JOIN (
-                SELECT customer_name, SUM(amount) as total_debit, MAX(created_at) as last_date, COUNT(*) as count 
-                FROM postpaid_sales GROUP BY customer_name
-            ) sales ON c.name = sales.customer_name
-            LEFT JOIN (
-                SELECT customer_name, SUM(amount) as total_debit, MAX(created_at) as last_date, COUNT(*) as count 
-                FROM manual_postpaid_sales GROUP BY customer_name
-            ) manual_sales ON c.name = manual_sales.customer_name
-            LEFT JOIN (
-                SELECT customer_name, SUM(amount) as total_credit, MAX(created_at) as last_date, COUNT(*) as count 
-                FROM customer_receipts GROUP BY customer_name
-            ) receipts ON c.name = receipts.customer_name
-            LEFT JOIN (
-                SELECT customer_name, SUM(amount) as total_credit, MAX(created_at) as last_date, COUNT(*) as count 
-                FROM manual_customer_receipts GROUP BY customer_name
-            ) manual_receipts ON c.name = manual_receipts.customer_name
+                SELECT customer_name, amount, 'debit' as type, created_at FROM postpaid_sales
+                UNION ALL
+                SELECT customer_name, amount, 'debit' as type, created_at FROM manual_postpaid_sales
+                UNION ALL
+                SELECT customer_name, amount, 'credit' as type, created_at FROM customer_receipts
+                UNION ALL
+                SELECT customer_name, amount, 'credit' as type, created_at FROM manual_customer_receipts
+            ) t
+            GROUP BY t.customer_name
+            HAVING balance != 0 OR transaction_count > 0
             ORDER BY balance DESC
             `;
 
