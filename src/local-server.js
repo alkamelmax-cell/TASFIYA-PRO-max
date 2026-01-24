@@ -820,7 +820,8 @@ class LocalWebServer {
             const greatestFunc = isPostgres ? 'GREATEST' : 'MAX';
             const defaultDate = isPostgres ? "'1970-01-01 00:00:00'" : "''";
 
-            // Unified calculation query with wrapper for Postgres compatibility (HAVING alias issue fix)
+            // Unified calculation query with wrapper for Postgres compatibility
+            // Fixed: Restored Branch Name logic using a more robust join technique
             const sql = `
             SELECT * FROM (
                 SELECT 
@@ -830,7 +831,15 @@ class LocalWebServer {
                     COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END), 0) as balance,
                     ${greatestFunc}(MAX(t.created_at), ${defaultDate}) as last_transaction,
                     COUNT(*) as transaction_count,
-                    'الفرع الرئيسي' as branch_name 
+                    (
+                        SELECT b.branch_name 
+                        FROM postpaid_sales ps
+                        JOIN reconciliations r ON ps.reconciliation_id = r.id
+                        JOIN cashiers c ON r.cashier_id = c.id
+                        JOIN branches b ON c.branch_id = b.id
+                        WHERE ps.customer_name = t.customer_name
+                        ORDER BY ps.created_at DESC LIMIT 1
+                    ) as branch_name 
                 FROM (
                     SELECT customer_name, amount, 'debit' as type, created_at FROM postpaid_sales WHERE customer_name IS NOT NULL
                     UNION ALL
