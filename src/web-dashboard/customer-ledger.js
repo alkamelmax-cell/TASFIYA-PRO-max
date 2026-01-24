@@ -111,7 +111,9 @@ function renderCustomersTable(data) {
             <td class="text-center" style="text-align: center !important;">
                 <div class="d-flex justify-content-center"><span dir="ltr">${formatCurrency(row.balance)}</span></div>
             </td>
-            <td class="d-none d-md-table-cell text-center" style="text-align: center !important;">${row.last_transaction ? new Date(row.last_transaction).toLocaleDateString('en-GB') : '-'}</td>
+            <td class="d-none d-md-table-cell text-center" style="text-align: center !important;">
+                ${row.last_transaction && row.last_transaction !== "''" ? new Date(row.last_transaction).toLocaleString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '-'}
+            </td>
             <td class="d-none d-md-table-cell text-center" style="text-align: center !important;">${row.transaction_count}</td>
             <td class="text-center" style="text-align: center !important;">
                 <button class="btn btn-sm btn-primary btn-action-mobile" onclick="viewCustomerStatement('${row.customer_name}')">
