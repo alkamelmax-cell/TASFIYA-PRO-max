@@ -12,7 +12,50 @@ class LocalWebServer {
         this.server = null;
     }
 
-    start() {
+    async ensureIndexes() {
+        try {
+            console.log('🚀 [PERF] Checking database indexes...');
+            const pool = this.dbManager.pool; // Check if running on Postgres (Render)
+
+            const indexes = [
+                // Reconciliations
+                "CREATE INDEX IF NOT EXISTS idx_reconciliations_date ON reconciliations(reconciliation_date)",
+                "CREATE INDEX IF NOT EXISTS idx_reconciliations_status ON reconciliations(status)",
+                "CREATE INDEX IF NOT EXISTS idx_reconciliations_cashier ON reconciliations(cashier_id)",
+
+                // Sales & Receipts (CRITICAL for Customer Ledger)
+                "CREATE INDEX IF NOT EXISTS idx_postpaid_customer ON postpaid_sales(customer_name)",
+                "CREATE INDEX IF NOT EXISTS idx_postpaid_rec_id ON postpaid_sales(reconciliation_id)",
+                "CREATE INDEX IF NOT EXISTS idx_receipts_customer ON customer_receipts(customer_name)",
+                "CREATE INDEX IF NOT EXISTS idx_receipts_rec_id ON customer_receipts(reconciliation_id)",
+
+                // Manual Transactions
+                "CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer ON manual_postpaid_sales(customer_name)",
+                "CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer ON manual_customer_receipts(customer_name)"
+            ];
+
+            if (pool) {
+                // Postgres
+                for (const sql of indexes) {
+                    await pool.query(sql);
+                }
+                console.log('✅ [PERF] Indexes verified on PostgreSQL');
+            } else {
+                // SQLite
+                for (const sql of indexes) {
+                    this.dbManager.db.prepare(sql).run();
+                }
+                console.log('✅ [PERF] Indexes verified on SQLite');
+            }
+        } catch (error) {
+            console.error('⚠️ [PERF] Failed to create indexes:', error.message);
+        }
+    }
+
+    async start() {
+        // Optimize Database Performance on Startup
+        await this.ensureIndexes();
+
         this.server = http.createServer(async (req, res) => {
             // Enable CORS
             res.setHeader('Access-Control-Allow-Origin', '*');
