@@ -19202,8 +19202,12 @@ async function toggleSync() {
                 toast: true
             });
 
-            // تحديث الواجهة بعد ثانية
-            setTimeout(() => updateSyncUI(), 1000);
+            // تحديث الواجهة فوراً
+            updateSyncUI();
+
+            // إعادة تفعيل الزر فوراً للسماح بالتبديل السريع
+            toggleSyncBtn.disabled = false;
+            syncBtnSpinner.classList.add('d-none');
         } else {
             throw new Error(result.error || 'فشل تبديل حالة المزامنة');
         }
