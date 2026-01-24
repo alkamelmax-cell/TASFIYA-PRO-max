@@ -3362,6 +3362,40 @@
                                             </div>
                                         </div>
 
+                                        <!-- Web Sync Control -->
+                                        <div class="col-12">
+                                            <div class="card border-info">
+                                                <div class="card-header bg-info text-white">
+                                                    <h6 class="mb-0">🔄 المزامنة مع تطبيق الويب</h6>
+                                                </div>
+                                                <div class="card-body">
+                                                    <div class="row align-items-center">
+                                                        <div class="col-md-8">
+                                                            <div class="info-item mb-2">
+                                                                <strong>الحالة:</strong>
+                                                                <span id="syncStatusBadge"
+                                                                    class="badge bg-secondary">جاري التحقق...</span>
+                                                            </div>
+                                                            <p class="text-muted mb-0" style="font-size: 0.9rem;">
+                                                                تتيح لك المزامنة التلقائية عرض البيانات على تطبيق الويب.
+                                                                يمكنك إيقافها مؤقتاً إذا كنت لا تحتاج إليها.
+                                                            </p>
+                                                        </div>
+                                                        <div class="col-md-4 text-center">
+                                                            <button type="button" class="btn btn-lg w-100"
+                                                                id="toggleSyncBtn">
+                                                                <span class="spinner-border spinner-border-sm d-none"
+                                                                    id="syncBtnSpinner"></span>
+                                                                <span id="syncBtnText">جاري التحميل...</span>
+                                                            </button>
+                                                            <small class="text-muted d-block mt-2"
+                                                                id="syncLastUpdate">آخر مزامنة: غير معروف</small>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
                                         <!-- License and Support -->
                                         <div class="col-12">
 

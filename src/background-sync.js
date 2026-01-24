@@ -22,8 +22,15 @@ class BackgroundSync {
     }
 
     stop() {
-        if (this.interval) clearInterval(this.interval);
+        if (this.interval) {
+            clearInterval(this.interval);
+            this.interval = null;
+        }
         console.log('⏹️ [SYNC] Background sync stopped.');
+    }
+
+    get isRunning() {
+        return !!this.interval;
     }
 
     async doSync() {
@@ -219,9 +226,22 @@ let syncInstance = null;
 
 function startBackgroundSync(dbManager) {
     if (!syncInstance) {
+        if (!dbManager) return;
         syncInstance = new BackgroundSync(dbManager);
+    }
+    if (!syncInstance.isRunning) {
         syncInstance.start();
     }
 }
 
-module.exports = { startBackgroundSync };
+function stopBackgroundSync() {
+    if (syncInstance) {
+        syncInstance.stop();
+    }
+}
+
+function getSyncStatus() {
+    return syncInstance ? syncInstance.isRunning : false;
+}
+
+module.exports = { startBackgroundSync, stopBackgroundSync, getSyncStatus };
