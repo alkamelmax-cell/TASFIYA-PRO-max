@@ -186,6 +186,7 @@ async function loadCustomerLedger(customerName) {
 let currentLedgerData = [];
 
 function renderLedgerTable(data) {
+    const isElectron = /Electron/i.test(navigator.userAgent);
     const tbody = document.getElementById('ledgerTableBody');
     const cardsContainer = document.getElementById('ledgerCardsContainer');
 
@@ -222,11 +223,8 @@ function renderLedgerTable(data) {
 
         const isManual = row.type === 'مبيعات يدوية' || row.type === 'سند قبض يدوي';
 
-        // Check if running on Web (Remote) vs Desktop (Localhost)
-        const isWeb = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
-
-        // Show edit button ONLY on Desktop/Local
-        const editBtn = (isManual && !isWeb) ?
+        // Show edit button ONLY inside the Desktop App Window
+        const editBtn = (isManual && isElectron) ?
             `<button class="btn btn-sm btn-link text-warning p-0 ms-2" onclick="openEditModal(${row.id}, '${row.type}', '${row.created_at}', ${debit > 0 ? debit : credit}, '${(row.description || '').replace(/'/g, "\\'")}')" title="تعديل"><i class="fas fa-edit"></i></button>`
             : '';
 
@@ -265,11 +263,9 @@ function renderLedgerTable(data) {
             const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '';
 
             const isManual = row.type === 'مبيعات يدوية' || row.type === 'سند قبض يدوي';
-            // Variable isWeb is not defined in this scope loop, recalculating or assuming global scope if available. 
-            // Better to recalc distinct checks to be safe inside this loop:
-            const isWebMobile = window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
 
-            const editBtnMobile = (isManual && !isWebMobile) ?
+            // Use parent scope isElectron
+            const editBtnMobile = (isManual && isElectron) ?
                 `<button class="btn btn-sm btn-ghost text-warning ms-1 p-0" style="width:24px;height:24px;" onclick="openEditModal(${row.id}, '${row.type}', '${row.created_at}', ${amount}, '${(row.description || '').replace(/'/g, "\\'")}')"><i class="fas fa-edit fa-xs"></i></button>`
                 : '';
 
