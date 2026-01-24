@@ -820,27 +820,29 @@ class LocalWebServer {
             const greatestFunc = isPostgres ? 'GREATEST' : 'MAX';
             const defaultDate = isPostgres ? "'1970-01-01 00:00:00'" : "''";
 
-            // Unified calculation query using UNION ALL (Matches Desktop Logic) - SIMPLIFIED
+            // Unified calculation query with wrapper for Postgres compatibility (HAVING alias issue fix)
             const sql = `
-            SELECT 
-                t.customer_name,
-                COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) as total_debit,
-                COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as total_credit,
-                COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END), 0) as balance,
-                ${greatestFunc}(MAX(t.created_at), ${defaultDate}) as last_transaction,
-                COUNT(*) as transaction_count,
-                'الفرع الرئيسي' as branch_name 
-            FROM (
-                SELECT customer_name, amount, 'debit' as type, created_at FROM postpaid_sales WHERE customer_name IS NOT NULL
-                UNION ALL
-                SELECT customer_name, amount, 'debit' as type, created_at FROM manual_postpaid_sales WHERE customer_name IS NOT NULL
-                UNION ALL
-                SELECT customer_name, amount, 'credit' as type, created_at FROM customer_receipts WHERE customer_name IS NOT NULL
-                UNION ALL
-                SELECT customer_name, amount, 'credit' as type, created_at FROM manual_customer_receipts WHERE customer_name IS NOT NULL
-            ) t
-            GROUP BY t.customer_name
-            HAVING balance != 0 OR transaction_count > 0
+            SELECT * FROM (
+                SELECT 
+                    t.customer_name,
+                    COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) as total_debit,
+                    COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as total_credit,
+                    COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END), 0) as balance,
+                    ${greatestFunc}(MAX(t.created_at), ${defaultDate}) as last_transaction,
+                    COUNT(*) as transaction_count,
+                    'الفرع الرئيسي' as branch_name 
+                FROM (
+                    SELECT customer_name, amount, 'debit' as type, created_at FROM postpaid_sales WHERE customer_name IS NOT NULL
+                    UNION ALL
+                    SELECT customer_name, amount, 'debit' as type, created_at FROM manual_postpaid_sales WHERE customer_name IS NOT NULL
+                    UNION ALL
+                    SELECT customer_name, amount, 'credit' as type, created_at FROM customer_receipts WHERE customer_name IS NOT NULL
+                    UNION ALL
+                    SELECT customer_name, amount, 'credit' as type, created_at FROM manual_customer_receipts WHERE customer_name IS NOT NULL
+                ) t
+                GROUP BY t.customer_name
+            ) AS final_result
+            WHERE balance != 0 OR transaction_count > 0
             ORDER BY balance DESC
             `;
 
