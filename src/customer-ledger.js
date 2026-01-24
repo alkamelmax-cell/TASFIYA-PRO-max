@@ -1661,6 +1661,21 @@ async function editManualTransaction(id, type, customerName) {
     const currentReason = tx.reason || '';
     const currentCreatedAt = tx.created_at;
 
+    // Convert SQL date to input datetime-local format (YYYY-MM-DDTHH:MM)
+    let dateValue = '';
+    if (currentCreatedAt) {
+      const dateObj = new Date(currentCreatedAt);
+      if (!isNaN(dateObj.getTime())) {
+        // Adjust to local time string for input
+        const yyyy = dateObj.getFullYear();
+        const MM = String(dateObj.getMonth() + 1).padStart(2, '0');
+        const dd = String(dateObj.getDate()).padStart(2, '0');
+        const hh = String(dateObj.getHours()).padStart(2, '0');
+        const mm = String(dateObj.getMinutes()).padStart(2, '0');
+        dateValue = `${yyyy}-${MM}-${dd}T${hh}:${mm}`;
+      }
+    }
+
     // إنشاء نافذة التعديل
     const modalId = 'editManualTxModal';
     // إزالة النافذة القديمة إن وجدت
@@ -1686,7 +1701,6 @@ async function editManualTransaction(id, type, customerName) {
             <div class="modal-body">
               <form id="editManualTxForm">
                 <input type="hidden" id="editTxOldType" value="${type}">
-                <input type="hidden" id="editTxCreatedAt" value="${escapeAttr(currentCreatedAt)}">
                 
                 <div class="mb-3">
                   <label class="form-label">نوع الحركة</label>
@@ -1695,6 +1709,12 @@ async function editManualTransaction(id, type, customerName) {
                     <option value="receipt" ${type === 'receipt' ? 'selected' : ''}>مقبوض عميل</option>
                   </select>
                 </div>
+                
+                <div class="mb-3">
+                  <label class="form-label">تاريخ الحركة</label>
+                  <input type="datetime-local" class="form-control" id="editTxDate" value="${dateValue}" required>
+                </div>
+
                 <div class="mb-3">
                   <label class="form-label">المبلغ</label>
                   <input type="number" class="form-control" id="editTxAmount" value="${currentAmount}" step="0.01" required>
@@ -1768,7 +1788,7 @@ async function updateManualTransaction(id, initialType, customerName) {
     const amount = document.getElementById('editTxAmount').value;
     const newType = document.getElementById('editTxType').value;
     const oldType = document.getElementById('editTxOldType').value;
-    const createdAt = document.getElementById('editTxCreatedAt').value;
+    const dateInput = document.getElementById('editTxDate').value;
 
     const reasonSelect = document.getElementById('editTxReason').value;
     let finalReason = reasonSelect;
@@ -1783,12 +1803,22 @@ async function updateManualTransaction(id, initialType, customerName) {
       return;
     }
 
+    if (!dateInput) {
+      showEditTxAlert('الرجاء إدخال التاريخ', 'danger');
+      if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save"></i> حفظ التعديلات'; }
+      return;
+    }
+
+    // Convert input date (YYYY-MM-DDTHH:MM) to DB format (YYYY-MM-DD HH:MM:SS) if possible
+    // Adding :00 for seconds to be consistent
+    const finalDate = dateInput.replace('T', ' ') + ':00';
+
     // التحقق مما إذا كان النوع قد تغير
     if (newType === oldType) {
       // تحديث عادي في نفس الجدول
       const table = newType === 'postpaid' ? 'manual_postpaid_sales' : 'manual_customer_receipts';
-      const sql = `UPDATE ${table} SET amount = ?, reason = ? WHERE id = ?`;
-      await ledgerIpc.invoke('db-run', sql, [amount, finalReason, id]);
+      const sql = `UPDATE ${table} SET amount = ?, reason = ?, created_at = ? WHERE id = ?`;
+      await ledgerIpc.invoke('db-run', sql, [amount, finalReason, finalDate, id]);
 
     } else {
       // تغيير النوع يتطلب النقل من جدول لآخر
@@ -1797,9 +1827,9 @@ async function updateManualTransaction(id, initialType, customerName) {
       const oldTable = oldType === 'postpaid' ? 'manual_postpaid_sales' : 'manual_customer_receipts';
       const newTable = newType === 'postpaid' ? 'manual_postpaid_sales' : 'manual_customer_receipts';
 
-      // 1. إضافة سجل جديد في الجدول الجديد (مع الحفاظ على التاريخ الأصلي)
+      // 1. إضافة سجل جديد في الجدول الجديد (مع استخدام التاريخ الجديد)
       const insertSql = `INSERT INTO ${newTable} (customer_name, amount, reason, created_at) VALUES (?, ?, ?, ?)`;
-      await ledgerIpc.invoke('db-run', insertSql, [customerName, amount, finalReason, createdAt]);
+      await ledgerIpc.invoke('db-run', insertSql, [customerName, amount, finalReason, finalDate]);
 
       // 2. حذف السجل من الجدول القديم
       const deleteSql = `DELETE FROM ${oldTable} WHERE id = ?`;
