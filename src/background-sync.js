@@ -53,12 +53,35 @@ class BackgroundSync {
 
             await this.sendPayload({ admins, branches, cashiers, accountants, atms });
 
-            // 2. NEW: Send ALL active Reconciliation IDs for Mirror Sync (Deletion Handling)
-            // This allows the server to identify and delete local records that are no longer present on desktop
-            const allReconciliationIds = db.prepare("SELECT id FROM reconciliations").all().map(r => r.id);
-            if (allReconciliationIds.length > 0) {
-                // Send IDs as a separate payload to avoid batch size limits
-                await this.sendPayload({ active_reconciliation_ids: allReconciliationIds });
+            // 2. Mirror Sync: Send ALL active IDs first to allow server to clean up deleted records
+            // This is the robust way to handle deletions without risking data loss during chunked upload
+            const idTables = [
+                'reconciliations',
+                'postpaid_sales',
+                'customer_receipts',
+                'manual_postpaid_sales',
+                'manual_customer_receipts',
+                'cash_receipts',
+                'bank_receipts'
+            ];
+
+            const allIdsPayload = {};
+            let hasIds = false;
+
+            for (const table of idTables) {
+                try {
+                    const ids = db.prepare(`SELECT id FROM ${table}`).all().map(r => r.id);
+                    if (ids.length > 0) {
+                        allIdsPayload[`active_${table}_ids`] = ids;
+                        hasIds = true;
+                    }
+                } catch (e) { console.error(`Error fetching IDs for ${table}:`, e.message); }
+            }
+
+            if (hasIds) {
+                console.log('🧹 [SYNC] Sending ID lists for mirror cleanup...');
+                // We send this as a separate payload type so the server knows it's an ID list, not full data
+                await this.sendPayload(allIdsPayload);
             }
 
             // 3. Fetch & Send Reconciliations (Chunked) - ALL History

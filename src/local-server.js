@@ -1416,49 +1416,28 @@ class LocalWebServer {
                     throw new Error('Database pool not available');
                 }
 
-                // Helper to perform MIRROR SYNC (Delete missing + Upsert)
-                const mirrorTable = async (table, items, columns, conflictCol = 'id') => {
-                    if (!items) return; // If undefined, skip (don't delete)
+                // Helper to perform safe cleanup based on Full ID Lists
+                const handleCleanup = async (table, activeIds) => {
+                    if (!activeIds || !Array.isArray(activeIds)) return;
 
-                    // 1. Delete Orphaned Records (Mirror logic)
-                    // If items is empty array [], it means "clear table"
                     try {
-                        const incomingIds = items.map(i => i.id).filter(id => id); // Get all IDs
-
-                        if (incomingIds.length > 0) {
-                            // Delete IDs NOT in the incoming list
-                            // Using NOT IN with large arrays can be slow, but for expected volumes (<10k) it's acceptable.
-                            // For massive datasets, we'd use a temp table logic.
-
-                            // Splitting into chunks for safety not to hit param limit on DELETE
-                            const CHUNK_SIZE = 1000;
-                            for (let i = 0; i < incomingIds.length; i += CHUNK_SIZE) {
-                                const chunk = incomingIds.slice(i, i + CHUNK_SIZE);
-                                // Logic: We can't easily do "DELETE WHERE ID NOT IN [...chunk]" because that would delete records from OTHER chunks.
-                                // CORRECT LOGIC: "DELETE FROM table WHERE id NOT IN (ALL incoming IDs)"
+                        if (activeIds.length > 0) {
+                            // Delete records NOT in the activeIds list (Mirror Sync)
+                            // "DELETE FROM table WHERE id NOT IN (...)"
+                            // Optimized for Postgres using ANY/ALL
+                            const result = await pool.query(
+                                `DELETE FROM ${table} WHERE id != ALL($1::int[])`,
+                                [activeIds]
+                            );
+                            if (result.rowCount > 0) {
+                                console.log(`🧹 [SYNC] Cleaned ${result.rowCount} orphaned records from ${table}.`);
                             }
-
-                            // Better approach for Postgres efficient deletion:
-                            // DELETE FROM table WHERE id NOT IN (SELECT unnest($1::int[]))
-                            await pool.query(`DELETE FROM ${table} WHERE ${conflictCol} != ALL($1::int[])`, [incomingIds]);
-                            console.log(`🧹 [SYNC] Mirrored ${table}: Cleaned records not in sync payload.`);
-                        } else if (items.length === 0) {
-                            // If empty list explicitly sent, table should be cleared? 
-                            // Dangerous if network error sends partial. Let's assume explicit empty array means clear.
-                            // await pool.query(`DELETE FROM ${table}`); 
-                            // console.log(`🧹 [SYNC] Mirrored ${table}: Cleared all records (received empty list).`);
-
-                            // SKIPPING DELETE ALL for safety unless we are sure.
+                        } else {
+                            // Empty list logic skipped for safety
                         }
-                    } catch (delErr) {
-                        console.error(`⚠️ [SYNC] Mirror Cleanup Failed for ${table}:`, delErr.message);
+                    } catch (err) {
+                        console.error(`⚠️ [SYNC] Cleanup failed for ${table}:`, err.message);
                     }
-
-                    if (items.length === 0) return;
-
-                    // 2. Perform Upsert (Existing Logic)
-                    // ... (Proceed to syncTable logic structure below)
-                    await syncTable(table, items, columns, conflictCol);
                 };
 
                 // Helper to sync table using Optimized Batch INSERT
@@ -1547,6 +1526,16 @@ class LocalWebServer {
                         { name: 'id' }, { name: 'name' }, { name: 'active' }
                     ]);
                 }
+
+                // --- 1. PERFORM CLEANUP (Mirror Logic) ---
+                if (data.active_reconciliations_ids) await handleCleanup('reconciliations', data.active_reconciliations_ids);
+                if (data.active_postpaid_sales_ids) await handleCleanup('postpaid_sales', data.active_postpaid_sales_ids);
+                if (data.active_customer_receipts_ids) await handleCleanup('customer_receipts', data.active_customer_receipts_ids);
+                if (data.active_manual_postpaid_sales_ids) await handleCleanup('manual_postpaid_sales', data.active_manual_postpaid_sales_ids);
+                if (data.active_manual_customer_receipts_ids) await handleCleanup('manual_customer_receipts', data.active_manual_customer_receipts_ids);
+                if (data.active_cash_receipts_ids) await handleCleanup('cash_receipts', data.active_cash_receipts_ids);
+                if (data.active_bank_receipts_ids) await handleCleanup('bank_receipts', data.active_bank_receipts_ids);
+
 
                 if (data.admins) {
                     // For admins, use username as conflict key to handle duplicate usernames
@@ -1748,49 +1737,49 @@ class LocalWebServer {
                 }
 
                 if (data.cash_receipts) {
-                    await mirrorTable('cash_receipts', data.cash_receipts, [
+                    await syncTable('cash_receipts', data.cash_receipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'denomination' },
                         { name: 'quantity' }, { name: 'total_amount' }
                     ]);
                 }
 
                 if (data.bank_receipts) {
-                    await mirrorTable('bank_receipts', data.bank_receipts, [
+                    await syncTable('bank_receipts', data.bank_receipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'operation_type' },
                         { name: 'atm_id' }, { name: 'amount' }
                     ]);
                 }
 
                 if (data.postpaid_sales) {
-                    await mirrorTable('postpaid_sales', data.postpaid_sales, [
+                    await syncTable('postpaid_sales', data.postpaid_sales, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_name' },
                         { name: 'amount' } //, {name: 'notes'}
                     ]);
                 }
 
                 if (data.customer_receipts) {
-                    await mirrorTable('customer_receipts', data.customer_receipts, [
+                    await syncTable('customer_receipts', data.customer_receipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_name' },
                         { name: 'amount' }, { name: 'payment_type' } //, {name: 'notes'}
                     ]);
                 }
 
                 if (data.manual_postpaid_sales) {
-                    await mirrorTable('manual_postpaid_sales', data.manual_postpaid_sales, [
+                    await syncTable('manual_postpaid_sales', data.manual_postpaid_sales, [
                         { name: 'id' }, { name: 'customer_name' }, { name: 'amount' },
                         { name: 'reason' }, { name: 'created_at' }
                     ]);
                 }
 
                 if (data.manual_customer_receipts) {
-                    await mirrorTable('manual_customer_receipts', data.manual_customer_receipts, [
+                    await syncTable('manual_customer_receipts', data.manual_customer_receipts, [
                         { name: 'id' }, { name: 'customer_name' }, { name: 'amount' },
                         { name: 'reason' }, { name: 'created_at' }
                     ]);
                 }
                 // Sync reconciliation requests (especially status updates)
                 if (data.reconciliation_requests) {
-                    await mirrorTable('reconciliation_requests', data.reconciliation_requests, [
+                    await syncTable('reconciliation_requests', data.reconciliation_requests, [
                         { name: 'id' }, { name: 'cashier_id' }, { name: 'system_sales' },
                         { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json' },
                         { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
