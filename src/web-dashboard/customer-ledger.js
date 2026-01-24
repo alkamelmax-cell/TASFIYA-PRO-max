@@ -221,11 +221,8 @@ function renderLedgerTable(data) {
         const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '-';
 
         const isManual = row.type === 'مبيعات يدوية' || row.type === 'سند قبض يدوي';
-        // Safe way to pass data: identify by unique properties or index in currentLedgerData if synced
-        // But here we are iterating reversedData. Let's pass the ID and Type directly.
-        const editBtn = isManual ?
-            `<button class="btn btn-sm btn-link text-warning p-0 ms-2" onclick="openEditModal(${row.id}, '${row.type}', '${row.created_at}', ${debit > 0 ? debit : credit}, '${(row.description || '').replace(/'/g, "\\'")}')" title="تعديل"><i class="fas fa-edit"></i></button>`
-            : '';
+        // Edit manual transactions disabled on web for security/sync integrity
+        const editBtn = '';
 
         const tr = document.createElement('tr');
         tr.innerHTML = `
@@ -262,9 +259,7 @@ function renderLedgerTable(data) {
             const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '';
 
             const isManual = row.type === 'مبيعات يدوية' || row.type === 'سند قبض يدوي';
-            const editBtnMobile = isManual ?
-                `<button class="btn btn-sm btn-ghost text-warning ms-1 p-0" style="width:24px;height:24px;" onclick="openEditModal(${row.id}, '${row.type}', '${row.created_at}', ${amount}, '${(row.description || '').replace(/'/g, "\\'")}')"><i class="fas fa-edit fa-xs"></i></button>`
-                : '';
+            const editBtnMobile = '';
 
             const card = document.createElement('div');
             card.className = 'ledger-card';
