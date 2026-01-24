@@ -19103,3 +19103,140 @@ Object.assign(window.appAPI, {
 });
 
 console.log('✅ Full AppAPI extensions loaded');
+
+// ============================================
+// WEB SYNC CONTROL
+// ============================================
+
+/**
+ * تحديث واجهة حالة المزامنة
+ */
+async function updateSyncUI() {
+    try {
+        const syncStatusBadge = document.getElementById('syncStatusBadge');
+        const toggleSyncBtn = document.getElementById('toggleSyncBtn');
+        const syncBtnText = document.getElementById('syncBtnText');
+        const syncBtnSpinner = document.getElementById('syncBtnSpinner');
+
+        if (!syncStatusBadge || !toggleSyncBtn) return;
+
+        // الحصول على حالة المزامنة
+        const result = await ipcRenderer.invoke('get-sync-status');
+
+        if (result.success) {
+            const { isRunning, isEnabled } = result;
+
+            // تحديث شارة الحالة
+            if (isRunning) {
+                syncStatusBadge.className = 'badge bg-success';
+                syncStatusBadge.textContent = '✅ نشطة';
+            } else {
+                syncStatusBadge.className = 'badge bg-warning text-dark';
+                syncStatusBadge.textContent = '⏸️ متوقفة';
+            }
+
+            // تحديث نص ولون الزر
+            if (isEnabled) {
+                toggleSyncBtn.className = 'btn btn-lg w-100 btn-warning';
+                syncBtnText.textContent = '⏸️ إيقاف المزامنة';
+            } else {
+                toggleSyncBtn.className = 'btn btn-lg w-100 btn-success';
+                syncBtnText.textContent = '▶️ تفعيل المزامنة';
+            }
+
+            // تحديث وقت آخر مزامنة
+            const syncLastUpdate = document.getElementById('syncLastUpdate');
+            if (syncLastUpdate) {
+                const now = new Date().toLocaleString('ar-SA', {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: true
+                });
+                syncLastUpdate.textContent = `آخر تحديث: ${now}`;
+            }
+        }
+    } catch (error) {
+        console.error('❌ [SYNC-UI] خطأ في تحديث واجهة المزامنة:', error);
+    }
+}
+
+/**
+ * تبديل حالة المزامنة
+ */
+async function toggleSync() {
+    try {
+        const toggleSyncBtn = document.getElementById('toggleSyncBtn');
+        const syncBtnText = document.getElementById('syncBtnText');
+        const syncBtnSpinner = document.getElementById('syncBtnSpinner');
+
+        if (!toggleSyncBtn) return;
+
+        // تعطيل الزر وإظهار السبينر
+        toggleSyncBtn.disabled = true;
+        syncBtnSpinner.classList.remove('d-none');
+        syncBtnText.textContent = 'جاري العملية...';
+
+        // الحصول على الحالة الحالية
+        const statusResult = await ipcRenderer.invoke('get-sync-status');
+        if (!statusResult.success) {
+            throw new Error('فشل الحصول على حالة المزامنة');
+        }
+
+        const currentlyEnabled = statusResult.isEnabled;
+        const newState = !currentlyEnabled;
+
+        // تنفيذ التبديل
+        const result = await ipcRenderer.invoke('toggle-sync', newState);
+
+        if (result.success) {
+            // إظهار رسالة نجاح
+            const message = newState ? 'تم تفعيل المزامنة بنجاح ✅' : 'تم إيقاف المزامنة مؤقتاً ⏸️';
+            const alertType = newState ? 'success' : 'warning';
+
+            showAlert(message, alertType);
+
+            // تحديث الواجهة بعد ثانية
+            setTimeout(() => updateSyncUI(), 1000);
+        } else {
+            throw new Error(result.error || 'فشل تبديل حالة المزامنة');
+        }
+    } catch (error) {
+        console.error('❌ [SYNC-TOGGLE] خطأ في تبديل المزامنة:', error);
+        showAlert('حدث خطأ في تبديل حالة المزامنة: ' + error.message, 'danger');
+
+        // إعادة تفعيل الزر
+        const toggleSyncBtn = document.getElementById('toggleSyncBtn');
+        const syncBtnSpinner = document.getElementById('syncBtnSpinner');
+
+        if (toggleSyncBtn) toggleSyncBtn.disabled = false;
+        if (syncBtnSpinner) syncBtnSpinner.classList.add('d-none');
+
+        updateSyncUI();
+    }
+}
+
+// تهيئة عناصر التحكم في المزامنة عند تحميل الصفحة
+document.addEventListener('DOMContentLoaded', function () {
+    const toggleSyncBtn = document.getElementById('toggleSyncBtn');
+
+    if (toggleSyncBtn) {
+        // إضافة مستمع حدث النقر
+        toggleSyncBtn.addEventListener('click', toggleSync);
+
+        // تحديث الواجهة عند فتح تبويب الإعدادات
+        const systemTab = document.getElementById('system-tab');
+        if (systemTab) {
+            systemTab.addEventListener('click', function () {
+                setTimeout(() => updateSyncUI(), 100);
+            });
+        }
+
+        // تحديث أولي
+        updateSyncUI();
+
+        // تحديث دوري كل 30 ثانية
+        setInterval(updateSyncUI, 30000);
+    }
+});
+
+console.log('✅ Web Sync Control UI initialized');

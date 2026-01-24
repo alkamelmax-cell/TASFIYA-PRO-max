@@ -15,7 +15,7 @@ const PDFGenerator = require('./pdf-generator');
 const PrintManager = require('./print-manager');
 const ThermalPrinter80mm = require('./thermal-printer-80mm');
 const LocalWebServer = require('./local-server');
-const { startBackgroundSync } = require('./background-sync');
+const { startBackgroundSync, stopBackgroundSync, getSyncStatus } = require('./background-sync');
 
 /**
  * Safe console logging that won't crash on EPIPE errors
@@ -493,11 +493,20 @@ app.whenReady().then(() => {
     }
 
     // Start background synchronization
+    // Start background synchronization
     try {
-        const { startBackgroundSync } = require('./background-sync');
         if (dbManager) {
-            startBackgroundSync(dbManager);
-            console.log('✅ [APP] Background Sync Service Started');
+            // Check if sync is enabled in settings (Default: true)
+            const syncSetting = dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
+            const isSyncEnabled = !syncSetting || syncSetting.setting_value === 'true';
+
+            if (isSyncEnabled) {
+                const { startBackgroundSync } = require('./background-sync');
+                startBackgroundSync(dbManager);
+                console.log('✅ [APP] Background Sync Service Started (Auto)');
+            } else {
+                console.log('⏸️ [APP] Background Sync is disabled in settings');
+            }
         } else {
             console.error('❌ [APP] Cannot start sync: dbManager is null');
         }
@@ -2644,6 +2653,58 @@ function createReportPrintPreviewWindow(printData) {
         return null;
     }
 }
+
+
+// --- SYNC CONTROL IPC Handlers ---
+
+ipcMain.handle('get-sync-status', async () => {
+    try {
+        const isRunning = getSyncStatus();
+
+        // Also check persisted setting
+        let isEnabled = true;
+        if (dbManager) {
+            const row = dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
+            if (row && row.setting_value === 'false') isEnabled = false;
+        }
+
+        return { success: true, isRunning, isEnabled };
+    } catch (e) {
+        console.error('Error checking sync status:', e);
+        return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('toggle-sync', async (event, enable) => {
+    try {
+        console.log(`🔄 [APP] Toggling sync to: ${enable}`);
+        if (!dbManager) throw new Error('Database not initialized');
+
+        // 1. Save setting settings
+        const stmt = dbManager.db.prepare(`
+            INSERT INTO system_settings (category, setting_key, setting_value, updated_at)
+            VALUES ('general', 'sync_enabled', ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(category, setting_key) DO UPDATE SET
+            setting_value = excluded.setting_value,
+            updated_at = CURRENT_TIMESTAMP
+        `);
+        stmt.run(enable ? 'true' : 'false');
+
+        // 2. Perform Action
+        if (enable) {
+            const { startBackgroundSync } = require('./background-sync');
+            startBackgroundSync(dbManager);
+        } else {
+            const { stopBackgroundSync } = require('./background-sync');
+            stopBackgroundSync();
+        }
+
+        return { success: true, isEnabled: enable };
+    } catch (e) {
+        console.error('Error toggling sync:', e);
+        return { success: false, error: e.message };
+    }
+});
 
 // Close print preview window
 ipcMain.handle('close-print-preview', async (event) => {
