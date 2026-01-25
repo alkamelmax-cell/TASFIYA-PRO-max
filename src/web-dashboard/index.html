@@ -299,33 +299,56 @@
                 indicator.title = 'App Mode Detected';
                 document.body.appendChild(indicator);
 
-                // Aggressive Tagging Loop (Try 4 times)
+                // Aggressive Registration Loop (Tags + External ID)
                 let attempts = 0;
                 const tagInterval = setInterval(() => {
                     attempts++;
-                    console.log(`📱 Tagging Attempt ${attempts}/4`);
+                    console.log(`📱 Registration Attempt ${attempts}/5`);
 
+                    const userIdStr = user.id ? String(user.id) : null;
                     const tagsData = {
                         "role": "admin",
-                        "userId": user.id ? String(user.id) : "unknown"
+                        "userId": userIdStr,
+                        "force_tag": "true"
                     };
 
-                    // Try JS Bridge
-                    if (window.gonative && window.gonative.onesignal) {
-                        window.gonative.onesignal.tags.setTags(tagsData);
-                        console.log("✅ Tags sent via JS Bridge");
+                    if (userIdStr) {
+                        try {
+                            // 1. Set External ID (Critical for merging user)
+                            // JS Bridge
+                            if (window.gonative && window.gonative.onesignal) {
+                                window.gonative.onesignal.user.setExternalId({ externalId: userIdStr });
+                                window.gonative.onesignal.tags.setTags(tagsData);
+                                console.log("✅ Sent ID & Tags via JS Bridge");
+                            }
+
+                            // URL Protocol (Force Backup)
+                            const jsonTags = JSON.stringify(tagsData);
+
+                            // A. Send Tags
+                            const iframeTags = document.createElement("iframe");
+                            iframeTags.style.display = "none";
+                            iframeTags.src = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
+                            document.body.appendChild(iframeTags);
+
+                            // B. Send External ID (The Magic Fix)
+                            setTimeout(() => {
+                                const iframeId = document.createElement("iframe");
+                                iframeId.style.display = "none";
+                                iframeId.src = `gonative://onesignal/user/setExternalId?externalId=${encodeURIComponent(userIdStr)}`;
+                                document.body.appendChild(iframeId);
+
+                                setTimeout(() => {
+                                    if (document.body.contains(iframeTags)) document.body.removeChild(iframeTags);
+                                    if (document.body.contains(iframeId)) document.body.removeChild(iframeId);
+                                }, 1500);
+                            }, 500); // Slight delay between commands
+
+                        } catch (e) { console.error(e); }
                     }
 
-                    // Try URL Protocol (Invisible Iframe)
-                    const jsonTags = JSON.stringify(tagsData);
-                    const iframe = document.createElement("iframe");
-                    iframe.style.display = "none";
-                    iframe.src = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
-                    document.body.appendChild(iframe);
-                    setTimeout(() => document.body.removeChild(iframe), 1000);
-
-                    if (attempts >= 4) clearInterval(tagInterval);
-                }, 3000); // Every 3 seconds
+                    if (attempts >= 5) clearInterval(tagInterval);
+                }, 4000); // Every 4 seconds
             }
             else {
                 // BROWSER MODE: Initialize Web Push

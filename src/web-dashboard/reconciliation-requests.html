@@ -114,9 +114,15 @@
                 };
 
                 setTimeout(() => {
-                    // Always try URL scheme
+                    // Try to send Tags AND External ID via URL Scheme
                     const jsonTags = JSON.stringify(tagsData);
                     window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
+
+                    if (user.id) {
+                        setTimeout(() => {
+                            window.location.href = `gonative://onesignal/user/setExternalId?externalId=${user.id}`;
+                        }, 500);
+                    }
                 }, 2000);
             }
             else {
