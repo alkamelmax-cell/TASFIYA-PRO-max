@@ -329,12 +329,39 @@
                     }
                 };
 
-                // Request Info manually if callback doesn't fire
+                // Advanced Diagnosis Logic
                 setTimeout(() => {
-                    if (document.getElementById('debugPlayerId').textContent === "Waiting...") {
-                        window.location.href = 'gonative://onesignal/info';
+                    const debugId = document.getElementById('debugPlayerId');
+                    const debugStatus = document.getElementById('debugStatus');
+
+                    if (!window.gonative) {
+                        debugId.textContent = "❌ No Bridge";
+                        debugId.style.color = "red";
+                        debugStatus.textContent = "Not App?";
+                        return;
                     }
-                }, 2000);
+
+                    if (!window.gonative.onesignal) {
+                        debugId.textContent = "❌ No Plugin";
+                        debugId.style.color = "red";
+                        debugStatus.textContent = "Rebuild Req.";
+                        alert("⚠️ تنبيه هام:\nOneSignal Plugin غير موجود في التطبيق!\n\nيجب عليك:\n1. التأكد من تفعيله في Median.\n2. عمل Rebuild Binary.\n3. تحديث التطبيق.");
+                        return;
+                    }
+
+                    // If we are here, everything is installed!
+                    debugId.textContent = "✅ Installed";
+                    debugStatus.textContent = "Fetching...";
+
+                    // Try to get info directly via object
+                    window.gonative.onesignal.info().then(data => {
+                        if (data && data.oneSignalUserId) {
+                            debugId.textContent = data.oneSignalUserId.substring(0, 8);
+                            debugStatus.textContent = "ACTIVE!";
+                        }
+                    });
+
+                }, 1500);
             }
             else {
                 // BROWSER MODE: Initialize Web Push
