@@ -81,12 +81,22 @@
         // 1. Official Callback
         window.median_onesignal_info = function (data) {
             console.log("📱 Median App Detected via Official Callback", data);
+
+            const tagsData = {
+                "role": "admin",
+                "userId": user.id ? String(user.id) : "unknown"
+            };
+
+            // Strategy A
             if (window.gonative && window.gonative.onesignal) {
-                window.gonative.onesignal.tags.setTags({
-                    "role": "admin",
-                    "userId": user.id ? String(user.id) : "unknown"
-                });
+                window.gonative.onesignal.tags.setTags(tagsData);
             }
+
+            // Strategy B (Backup)
+            setTimeout(() => {
+                const jsonTags = JSON.stringify(tagsData);
+                window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
+            }, 1000);
         };
 
         // 2. Initialize Logic
