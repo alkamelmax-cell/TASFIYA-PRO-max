@@ -286,69 +286,66 @@
             if (isMedianApp) {
                 console.log("📱 Running in App Mode");
 
-                // Add Visual Indicator (Green Dot)
-                const indicator = document.createElement('div');
-                indicator.style.position = 'fixed';
-                indicator.style.bottom = '10px';
-                indicator.style.left = '10px';
-                indicator.style.width = '10px';
-                indicator.style.height = '10px';
-                indicator.style.backgroundColor = '#10b981'; // Green
-                indicator.style.borderRadius = '50%';
-                indicator.style.zIndex = '9999';
-                indicator.title = 'App Mode Detected';
-                document.body.appendChild(indicator);
+                // Create Diagnostic Bar
+                const debugBar = document.createElement('div');
+                debugBar.style.position = 'fixed';
+                debugBar.style.bottom = '0';
+                debugBar.style.left = '0';
+                debugBar.style.width = '100%';
+                debugBar.style.backgroundColor = '#1e293b';
+                debugBar.style.color = '#fff';
+                debugBar.style.padding = '10px';
+                debugBar.style.fontSize = '12px';
+                debugBar.style.zIndex = '99999';
+                debugBar.style.borderTop = '1px solid #334155';
+                debugBar.style.display = 'flex';
+                debugBar.style.justifyContent = 'space-between';
+                debugBar.style.alignItems = 'center';
 
-                // Aggressive Registration Loop (Tags + External ID)
-                let attempts = 0;
-                const tagInterval = setInterval(() => {
-                    attempts++;
-                    console.log(`📱 Registration Attempt ${attempts}/5`);
+                const userIdStr = user.id ? String(user.id) : "MISSING";
+                debugBar.innerHTML = `
+                    <div>
+                        <span style="color: #10b981">● App Active</span> | 
+                        User: <b style="color: #fbbf24">${userIdStr}</b> | 
+                        Bridge: <span id="bridgeStatus">Checking...</span>
+                    </div>
+                    <button id="forceLinkBtn" style="background:#2563eb; color:white; border:none; padding:5px 10px; border-radius:4px;">
+                        🔗 Force Link
+                    </button>
+                `;
+                document.body.appendChild(debugBar);
 
-                    const userIdStr = user.id ? String(user.id) : null;
-                    const tagsData = {
-                        "role": "admin",
-                        "userId": userIdStr,
-                        "force_tag": "true"
-                    };
+                // Check Bridge
+                setTimeout(() => {
+                    const hasBridge = window.gonative && window.gonative.onesignal;
+                    document.getElementById('bridgeStatus').textContent = hasBridge ? "✅ Ready" : "⚠️ Via URL";
+                    document.getElementById('bridgeStatus').style.color = hasBridge ? "#10b981" : "#f87171";
+                }, 2000);
 
-                    if (userIdStr) {
-                        try {
-                            // 1. Set External ID (Critical for merging user)
-                            // JS Bridge
-                            if (window.gonative && window.gonative.onesignal) {
-                                window.gonative.onesignal.user.setExternalId({ externalId: userIdStr });
-                                window.gonative.onesignal.tags.setTags(tagsData);
-                                console.log("✅ Sent ID & Tags via JS Bridge");
-                            }
+                // FORCE LINK FUNCTION
+                const forceLink = () => {
+                    if (!user.id) { alert("خطأ: لا يوجد معرف مستخدم!"); return; }
 
-                            // URL Protocol (Force Backup)
-                            const jsonTags = JSON.stringify(tagsData);
+                    const btn = document.getElementById('forceLinkBtn');
+                    btn.textContent = "Sending...";
 
-                            // A. Send Tags
-                            const iframeTags = document.createElement("iframe");
-                            iframeTags.style.display = "none";
-                            iframeTags.src = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
-                            document.body.appendChild(iframeTags);
+                    // 1. Send External ID (Direct URL)
+                    window.location.href = `gonative://onesignal/user/setExternalId?externalId=${user.id}`;
 
-                            // B. Send External ID (The Magic Fix)
-                            setTimeout(() => {
-                                const iframeId = document.createElement("iframe");
-                                iframeId.style.display = "none";
-                                iframeId.src = `gonative://onesignal/user/setExternalId?externalId=${encodeURIComponent(userIdStr)}`;
-                                document.body.appendChild(iframeId);
+                    // 2. Send Tags (Delayed)
+                    setTimeout(() => {
+                        const tags = JSON.stringify({ "role": "admin", "userId": String(user.id), "force": Date.now() });
+                        window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(tags)}`;
+                        btn.textContent = "✅ Sent!";
+                        setTimeout(() => btn.textContent = "🔗 Force Link", 2000);
+                    }, 1000);
+                };
 
-                                setTimeout(() => {
-                                    if (document.body.contains(iframeTags)) document.body.removeChild(iframeTags);
-                                    if (document.body.contains(iframeId)) document.body.removeChild(iframeId);
-                                }, 1500);
-                            }, 500); // Slight delay between commands
+                // Add Click Event
+                document.getElementById('forceLinkBtn').onclick = forceLink;
 
-                        } catch (e) { console.error(e); }
-                    }
-
-                    if (attempts >= 5) clearInterval(tagInterval);
-                }, 4000); // Every 4 seconds
+                // Auto-try once on load
+                setTimeout(forceLink, 3000);
             }
             else {
                 // BROWSER MODE: Initialize Web Push
