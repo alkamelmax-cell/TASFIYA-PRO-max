@@ -1987,8 +1987,10 @@ class LocalWebServer {
                 android_visibility: 1,
                 lockscreen_visibility: 1,
                 // Target only users tagged as admin
-                // Target ALL Active Users (Bypassing Tags issues)
-                included_segments: ["Active Users"]
+                // Target only users tagged as admin (Revert to Tags)
+                filters: [
+                    { field: "tag", key: "role", relation: "=", value: "admin" }
+                ]
             };
 
             const response = await fetch('https://onesignal.com/api/v1/notifications', {
