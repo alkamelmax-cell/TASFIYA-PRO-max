@@ -329,6 +329,60 @@
                     }
                 };
 
+                // FORCE LINK FUNCTION (Multi-API Shotgun)
+                const forceLink = () => {
+                    const btn = document.getElementById('forceLinkBtn');
+                    btn.textContent = "Processing...";
+
+                    if (!window.gonative || !window.gonative.onesignal) {
+                        alert("⚠️ Plugin not ready yet. Wait for 'Installed' status.");
+                        return;
+                    }
+
+                    const uid = String(user.id);
+                    let log = [];
+
+                    try {
+                        // Method 1: New API (User Namespace)
+                        if (window.gonative.onesignal.user && window.gonative.onesignal.user.setExternalId) {
+                            window.gonative.onesignal.user.setExternalId({ externalId: uid });
+                            log.push("Method 1 (User API)");
+                        }
+
+                        // Method 2: Old API (Root Level)
+                        if (window.gonative.onesignal.setExternalUserId) {
+                            window.gonative.onesignal.setExternalUserId({ externalId: uid });
+                            log.push("Method 2 (Root API)");
+                        }
+
+                        // Method 3: Tags (Universal)
+                        if (window.gonative.onesignal.tags && window.gonative.onesignal.tags.setTags) {
+                            window.gonative.onesignal.tags.setTags({ "role": "admin", "userId": uid, "force": "shotgun" });
+                            log.push("Method 3 (Tags)");
+                        }
+
+                        // Method 4: Registration (Legacy)
+                        if (window.gonative.onesignal.register) {
+                            window.gonative.onesignal.register();
+                            log.push("Method 4 (Register)");
+                        }
+
+                        alert(`✅ تم إرسال الأوامر!\n\nطرق التنفيذ:\n${log.join('\n')}\n\nافحص OneSignal الآن.`);
+                        btn.textContent = "✅ SENT ALL";
+
+                    } catch (e) {
+                        alert("Error: " + e.message);
+                    }
+                };
+
+                // Attach event listener to the button
+                document.addEventListener('DOMContentLoaded', () => {
+                    const forceLinkBtn = document.getElementById('forceLinkBtn');
+                    if (forceLinkBtn) {
+                        forceLinkBtn.addEventListener('click', forceLink);
+                    }
+                });
+
                 // Advanced Diagnosis Logic
                 setTimeout(() => {
                     const debugId = document.getElementById('debugPlayerId');
