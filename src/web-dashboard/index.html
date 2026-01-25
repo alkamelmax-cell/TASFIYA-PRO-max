@@ -301,10 +301,21 @@
 
                 // Placeholder
                 debugBar.innerHTML = `
-                    <div>ID: <span id="debugPlayerId" style="color:yellow">Waiting...</span></div>
-                    <div>Status: <span id="debugStatus">Init</span></div>
+                    <div style="display:flex; gap:10px;">
+                        <div>ID: <span id="debugPlayerId" style="color:yellow">Waiting...</span></div>
+                        <div>Status: <span id="debugStatus">Init</span></div>
+                    </div>
+                    <button id="forceLinkBtn" style="background:#2563eb; color:white; border:none; padding:4px 8px; border-radius:4px; font-weight:bold;">
+                        🔗 LINK
+                    </button>
                 `;
                 document.body.appendChild(debugBar);
+
+                // Re-bind click event to be safe
+                setTimeout(() => {
+                    const btn = document.getElementById('forceLinkBtn');
+                    if (btn) btn.onclick = forceLink;
+                }, 500);
 
                 // Define Standard Callback (This receives the ID)
                 window.median_onesignal_info = function (data) {
