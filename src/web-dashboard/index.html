@@ -243,28 +243,29 @@
 
         // Initialize OneSignal
         if (user.role === 'admin' || !user.role) {
-            // 1. Median.co (GoNative) Native Push Logic
-            if (navigator.userAgent.indexOf('gonative') > -1 || window.gonative) {
-                // Wait for OneSignal info to return (Median specific)
-                function onGonativeOneSignal(data) {
-                    if (window.gonative && window.gonative.onesignal) {
-                        window.gonative.onesignal.tags.setTags({
-                            "role": "admin",
-                            "userId": user.id ? String(user.id) : "unknown"
-                        });
-                    }
+            // 1. Median.co (GoNative) Native Push Logic - ROBUST METHOD
+            if (navigator.userAgent.indexOf('gonative') > -1) {
+                // Prepare Tags Data
+                const tagsData = {
+                    "role": "admin",
+                    "userId": user.id ? String(user.id) : "unknown"
+                };
+
+                // Method A: Direct JS Bridge (If available)
+                if (window.gonative && window.gonative.onesignal) {
+                    window.gonative.onesignal.tags.setTags(tagsData);
                 }
 
-                // If Median OneSignal plugin is active, register callback
-                if (window.gonative) {
-                    // Force register if needed or simply set tags
-                    if (window.gonative.onesignal) {
-                        window.gonative.onesignal.tags.setTags({
-                            "role": "admin",
-                            "userId": user.id ? String(user.id) : "unknown"
-                        });
-                    }
-                }
+                // Method B: URL Protocol Bridge (Fail-safe for Median)
+                // This forces Median to register tags even if JS object isn't ready
+                try {
+                    const jsonTags = JSON.stringify(tagsData);
+                    // Slight delay to ensure app is ready
+                    setTimeout(() => {
+                        window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
+                        console.log("Sent Median Tags via URL");
+                    }, 1000);
+                } catch (e) { console.error("Median URL Error", e); }
             }
 
             // 2. Standard Web Push Logic (Fallback & Web Browser)
