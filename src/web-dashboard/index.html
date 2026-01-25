@@ -280,6 +280,7 @@
         if (user.role === 'admin' || !user.role) {
 
             // Expanded Check: User Agent OR window.gonative existence
+            const ua = navigator.userAgent.toLowerCase();
             const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1 || window.gonative;
 
             if (isMedianApp) {
