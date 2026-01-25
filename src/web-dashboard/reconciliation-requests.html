@@ -99,29 +99,31 @@
                         window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
                     }, 1000);
                 } catch (e) { console.error("Median URL Error", e); }
+
+                // ⛔ STOP for App: Do NOT run web init
             }
+            else {
+                // IS BROWSER? -> Run Web Push Init
+                window.OneSignalDeferred = window.OneSignalDeferred || [];
+                OneSignalDeferred.push(async function (OneSignal) {
+                    try {
+                        await OneSignal.init({
+                            appId: "1b7778f5-0f25-4df8-a281-611b682a964c",
+                            allowLocalhostAsSecureOrigin: true,
+                        });
 
-            // 2. Standard Web Push Logic
-            window.OneSignalDeferred = window.OneSignalDeferred || [];
-            OneSignalDeferred.push(async function (OneSignal) {
-                try {
-                    await OneSignal.init({
-                        appId: "1b7778f5-0f25-4df8-a281-611b682a964c",
-                        allowLocalhostAsSecureOrigin: true,
-                    });
+                        await OneSignal.User.addTag("role", "admin");
+                        const userId = user.id ? String(user.id) : "unknown";
+                        await OneSignal.User.addTag("userId", userId);
 
-                    await OneSignal.User.addTag("role", "admin");
-                    const userId = user.id ? String(user.id) : "unknown";
-                    await OneSignal.User.addTag("userId", userId);
-
-                    // Request notification permission
-                    if (OneSignal.Notifications.permission === "default") {
-                        await OneSignal.Notifications.requestPermission();
+                        if (OneSignal.Notifications.permission === "default") {
+                            await OneSignal.Notifications.requestPermission();
+                        }
+                    } catch (error) {
+                        console.error("OneSignal Error:", error);
                     }
-                } catch (error) {
-                    console.error("OneSignal Error:", error);
-                }
-            });
+                });
+            }
         }
 
         async function loadRequests(silent = false) {
