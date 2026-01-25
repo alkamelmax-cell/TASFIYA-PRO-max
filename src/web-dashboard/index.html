@@ -322,23 +322,46 @@
                     document.getElementById('bridgeStatus').style.color = hasBridge ? "#10b981" : "#f87171";
                 }, 2000);
 
-                // FORCE LINK FUNCTION
+                // FORCE LINK FUNCTION (Strict JS Bridge)
                 const forceLink = () => {
-                    if (!user.id) { alert("خطأ: لا يوجد معرف مستخدم!"); return; }
-
                     const btn = document.getElementById('forceLinkBtn');
-                    btn.textContent = "Sending...";
+                    btn.textContent = "Processing...";
 
-                    // 1. Send External ID (Direct URL)
-                    window.location.href = `gonative://onesignal/user/setExternalId?externalId=${user.id}`;
+                    if (!window.gonative) {
+                        alert("⚠️ الخطأ: جسر التطبيق (Bridge) غير نشط!\n\nهل أنت متأكد أنك تستخدم التطبيق؟");
+                        btn.textContent = "Retry";
+                        return;
+                    }
 
-                    // 2. Send Tags (Delayed)
-                    setTimeout(() => {
-                        const tags = JSON.stringify({ "role": "admin", "userId": String(user.id), "force": Date.now() });
-                        window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(tags)}`;
-                        btn.textContent = "✅ Sent!";
-                        setTimeout(() => btn.textContent = "🔗 Force Link", 2000);
-                    }, 1000);
+                    if (!user.id) { alert("Error: No User ID"); return; }
+
+                    try {
+                        // 1. Set External ID
+                        if (window.gonative.onesignal && window.gonative.onesignal.user) {
+                            window.gonative.onesignal.user.setExternalId({ externalId: String(user.id) });
+                        } else {
+                            // Fallback for older plugins
+                            window.location.href = `gonative://onesignal/user/setExternalId?externalId=${user.id}`;
+                        }
+
+                        // 2. Set Tags (Official Object)
+                        setTimeout(() => {
+                            if (window.gonative.onesignal) {
+                                window.gonative.onesignal.tags.setTags({
+                                    "role": "admin",
+                                    "userId": String(user.id),
+                                    "force": Date.now()
+                                });
+                                alert("✅ تم إرسال الأوامر للجسر!\n\nارجع وتأكد من OneSignal الآن.");
+                                btn.textContent = "✅ Done";
+                            } else {
+                                alert("⚠️ OneSignal Plugin غير موجود في App Bridge!");
+                            }
+                        }, 500);
+
+                    } catch (e) {
+                        alert("Error: " + e.message);
+                    }
                 };
 
                 // Add Click Event
