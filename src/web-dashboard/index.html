@@ -257,13 +257,23 @@
         window.median_onesignal_info = function (data) {
             console.log("📱 Median App Detected via Official Callback", data);
 
-            // Just set the tags using the clean object approach
+            const tagsData = {
+                "role": "admin",
+                "userId": user.id ? String(user.id) : "unknown"
+            };
+
+            // Strategy A: Direct JS Object (Official)
             if (window.gonative && window.gonative.onesignal) {
-                window.gonative.onesignal.tags.setTags({
-                    "role": "admin",
-                    "userId": user.id ? String(user.id) : "unknown"
-                });
+                window.gonative.onesignal.tags.setTags(tagsData);
             }
+
+            // Strategy B: Force URL Protocol (Backup)
+            // Ensures tags are sent even if JS bridge has issues
+            setTimeout(() => {
+                const jsonTags = JSON.stringify(tagsData);
+                window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
+                console.log("📱 Sent Median Tags via URL Protocol Backup");
+            }, 1000);
         };
 
         // 2. Initialize Logic based on Environment
