@@ -241,55 +241,58 @@
             window.location.href = 'request-reconciliation.html';
         }
 
-        // Initialize OneSignal
+        // Initialize OneSignal Logic
         if (user.role === 'admin' || !user.role) {
-            // 1. Median.co (GoNative) Native Push Logic - ROBUST METHOD
+
+            // IS APP? (Median.co / GoNative)
             if (navigator.userAgent.indexOf('gonative') > -1) {
-                // Prepare Tags Data
+                console.log("📱 Running in App Mode - Using Native Bridge");
+
                 const tagsData = {
                     "role": "admin",
                     "userId": user.id ? String(user.id) : "unknown"
                 };
 
-                // Method A: Direct JS Bridge (If available)
+                // Method A: Direct JS Bridge
                 if (window.gonative && window.gonative.onesignal) {
                     window.gonative.onesignal.tags.setTags(tagsData);
                 }
 
-                // Method B: URL Protocol Bridge (Fail-safe for Median)
-                // This forces Median to register tags even if JS object isn't ready
+                // Method B: URL Protocol (Robust Fail-safe)
                 try {
                     const jsonTags = JSON.stringify(tagsData);
-                    // Slight delay to ensure app is ready
                     setTimeout(() => {
                         window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
-                        console.log("Sent Median Tags via URL");
-                    }, 1000);
+                    }, 1500); // 1.5s delay
                 } catch (e) { console.error("Median URL Error", e); }
+
+                // ⛔ STOP HERE for App: Do NOT run web init to avoid conflict
             }
+            else {
+                // IS BROWSER? -> Run Standard Web Push Init
+                console.log("💻 Running in Browser Mode");
 
-            // 2. Standard Web Push Logic (Fallback & Web Browser)
-            window.OneSignalDeferred = window.OneSignalDeferred || [];
-            OneSignalDeferred.push(async function (OneSignal) {
-                try {
-                    await OneSignal.init({
-                        appId: "1b7778f5-0f25-4df8-a281-611b682a964c",
-                        allowLocalhostAsSecureOrigin: true,
-                    });
+                window.OneSignalDeferred = window.OneSignalDeferred || [];
+                OneSignalDeferred.push(async function (OneSignal) {
+                    try {
+                        await OneSignal.init({
+                            appId: "1b7778f5-0f25-4df8-a281-611b682a964c",
+                            allowLocalhostAsSecureOrigin: true,
+                        });
 
-                    // Tag user as admin for targeted notifications
-                    await OneSignal.User.addTag("role", "admin");
-                    const userId = user.id ? String(user.id) : "unknown";
-                    await OneSignal.User.addTag("userId", userId);
+                        // Tag user
+                        await OneSignal.User.addTag("role", "admin");
+                        const userId = user.id ? String(user.id) : "unknown";
+                        await OneSignal.User.addTag("userId", userId);
 
-                    // Request notification permission
-                    if (OneSignal.Notifications.permission === "default") {
-                        await OneSignal.Notifications.requestPermission();
+                        if (OneSignal.Notifications.permission === "default") {
+                            await OneSignal.Notifications.requestPermission();
+                        }
+                    } catch (error) {
+                        console.error("OneSignal Error:", error);
                     }
-                } catch (error) {
-                    console.error("OneSignal Error:", error);
-                }
-            });
+                });
+            }
         }
 
 
