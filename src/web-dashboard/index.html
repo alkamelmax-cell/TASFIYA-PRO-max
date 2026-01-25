@@ -279,31 +279,52 @@
         // 2. Initialize Logic based on Environment
         if (user.role === 'admin' || !user.role) {
 
-            // Check if we are in Median App (by User Agent)
-            const ua = navigator.userAgent.toLowerCase();
-            const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1;
+            // Expanded Check: User Agent OR window.gonative existence
+            const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1 || window.gonative;
 
             if (isMedianApp) {
-                console.log("📱 Running in App Mode - Force setting tags...");
+                console.log("📱 Running in App Mode");
 
-                // FORCE TAGS IMMEDIATELY (Don't just wait for callback)
-                const tagsData = {
-                    "role": "admin",
-                    "userId": user.id ? String(user.id) : "unknown",
-                    "force": Date.now() // Ensure uniqueness to force update
-                };
+                // Add Visual Indicator (Green Dot)
+                const indicator = document.createElement('div');
+                indicator.style.position = 'fixed';
+                indicator.style.bottom = '10px';
+                indicator.style.left = '10px';
+                indicator.style.width = '10px';
+                indicator.style.height = '10px';
+                indicator.style.backgroundColor = '#10b981'; // Green
+                indicator.style.borderRadius = '50%';
+                indicator.style.zIndex = '9999';
+                indicator.title = 'App Mode Detected';
+                document.body.appendChild(indicator);
 
-                setTimeout(() => {
-                    // Try JS Bridge first
+                // Aggressive Tagging Loop (Try 4 times)
+                let attempts = 0;
+                const tagInterval = setInterval(() => {
+                    attempts++;
+                    console.log(`📱 Tagging Attempt ${attempts}/4`);
+
+                    const tagsData = {
+                        "role": "admin",
+                        "userId": user.id ? String(user.id) : "unknown"
+                    };
+
+                    // Try JS Bridge
                     if (window.gonative && window.gonative.onesignal) {
                         window.gonative.onesignal.tags.setTags(tagsData);
+                        console.log("✅ Tags sent via JS Bridge");
                     }
 
-                    // ALWAYS fire the URL Scheme as fail-safe
+                    // Try URL Protocol (Invisible Iframe)
                     const jsonTags = JSON.stringify(tagsData);
-                    window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
-                    console.log("📱 Forced Median Tags via URL");
-                }, 2000); // 2 seconds delay to ensure app is fully loaded
+                    const iframe = document.createElement("iframe");
+                    iframe.style.display = "none";
+                    iframe.src = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
+                    document.body.appendChild(iframe);
+                    setTimeout(() => document.body.removeChild(iframe), 1000);
+
+                    if (attempts >= 4) clearInterval(tagInterval);
+                }, 3000); // Every 3 seconds
             }
             else {
                 // BROWSER MODE: Initialize Web Push
