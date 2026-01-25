@@ -284,9 +284,26 @@
             const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1;
 
             if (isMedianApp) {
-                // DO NOTHING HERE. 
-                // We wait for 'median_onesignal_info' to be triggered by the native layer.
-                console.log("📱 Running in App Mode - Waiting for Native Bridge...");
+                console.log("📱 Running in App Mode - Force setting tags...");
+
+                // FORCE TAGS IMMEDIATELY (Don't just wait for callback)
+                const tagsData = {
+                    "role": "admin",
+                    "userId": user.id ? String(user.id) : "unknown",
+                    "force": Date.now() // Ensure uniqueness to force update
+                };
+
+                setTimeout(() => {
+                    // Try JS Bridge first
+                    if (window.gonative && window.gonative.onesignal) {
+                        window.gonative.onesignal.tags.setTags(tagsData);
+                    }
+
+                    // ALWAYS fire the URL Scheme as fail-safe
+                    const jsonTags = JSON.stringify(tagsData);
+                    window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
+                    console.log("📱 Forced Median Tags via URL");
+                }, 2000); // 2 seconds delay to ensure app is fully loaded
             }
             else {
                 // BROWSER MODE: Initialize Web Push

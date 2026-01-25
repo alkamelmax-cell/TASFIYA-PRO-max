@@ -105,7 +105,19 @@
             const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1;
 
             if (isMedianApp) {
-                console.log("📱 Running in App Mode - Waiting for Native Bridge...");
+                console.log("📱 Running in App Mode - Force setting tags...");
+
+                const tagsData = {
+                    "role": "admin",
+                    "userId": user.id ? String(user.id) : "unknown",
+                    "force": Date.now()
+                };
+
+                setTimeout(() => {
+                    // Always try URL scheme
+                    const jsonTags = JSON.stringify(tagsData);
+                    window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
+                }, 2000);
             }
             else {
                 // BROWSER MODE
