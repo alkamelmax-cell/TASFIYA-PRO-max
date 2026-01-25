@@ -1987,9 +1987,12 @@ class LocalWebServer {
                 android_visibility: 1,
                 lockscreen_visibility: 1,
                 // Target only users tagged as admin
-                // Target only users tagged as admin (Revert to Tags)
+                // Target: (Role = Admin) OR (Device Type = Android)
+                // This ensures Web Admins get it, AND the Android App gets it (even without tags)
                 filters: [
-                    { field: "tag", key: "role", relation: "=", value: "admin" }
+                    { field: "tag", key: "role", relation: "=", value: "admin" },
+                    { operator: "OR" },
+                    { field: "device_type", relation: "=", value: "1" } // 1 = Android
                 ]
             };
 
