@@ -77,33 +77,28 @@
         if (!userStr) window.location.href = '/login.html';
         const user = JSON.parse(userStr);
 
-        // Initialize OneSignal for Admin users
-        if (user.role === 'admin' || !user.role) {
-            // 1. Median.co (GoNative) Native Push Logic - ROBUST METHOD
-            if (navigator.userAgent.indexOf('gonative') > -1) {
-                // Prepare Tags Data
-                const tagsData = {
+        // Initialize OneSignal Logic (Official)
+        // 1. Official Callback
+        window.median_onesignal_info = function (data) {
+            console.log("📱 Median App Detected via Official Callback", data);
+            if (window.gonative && window.gonative.onesignal) {
+                window.gonative.onesignal.tags.setTags({
                     "role": "admin",
                     "userId": user.id ? String(user.id) : "unknown"
-                };
+                });
+            }
+        };
 
-                // Method A: Bridge
-                if (window.gonative && window.gonative.onesignal) {
-                    window.gonative.onesignal.tags.setTags(tagsData);
-                }
+        // 2. Initialize Logic
+        if (user.role === 'admin' || !user.role) {
+            const ua = navigator.userAgent.toLowerCase();
+            const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1;
 
-                // Method B: URL Protocol (Fail-safe)
-                try {
-                    const jsonTags = JSON.stringify(tagsData);
-                    setTimeout(() => {
-                        window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
-                    }, 1000);
-                } catch (e) { console.error("Median URL Error", e); }
-
-                // ⛔ STOP for App: Do NOT run web init
+            if (isMedianApp) {
+                console.log("📱 Running in App Mode - Waiting for Native Bridge...");
             }
             else {
-                // IS BROWSER? -> Run Web Push Init
+                // BROWSER MODE
                 window.OneSignalDeferred = window.OneSignalDeferred || [];
                 OneSignalDeferred.push(async function (OneSignal) {
                     try {
@@ -111,17 +106,13 @@
                             appId: "1b7778f5-0f25-4df8-a281-611b682a964c",
                             allowLocalhostAsSecureOrigin: true,
                         });
-
                         await OneSignal.User.addTag("role", "admin");
                         const userId = user.id ? String(user.id) : "unknown";
-                        await OneSignal.User.addTag("userId", userId);
 
                         if (OneSignal.Notifications.permission === "default") {
                             await OneSignal.Notifications.requestPermission();
                         }
-                    } catch (error) {
-                        console.error("OneSignal Error:", error);
-                    }
+                    } catch (error) { console.error("OneSignal Web Error:", error); }
                 });
             }
         }
