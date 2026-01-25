@@ -88,6 +88,13 @@
                 <i class="fas fa-chevron-down small opacity-50"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end bg-card border-secondary shadow-lg mt-2">
+                <!-- Manual Push Registration Button -->
+                <li><a class="dropdown-item d-flex align-items-center gap-2" href="#" onclick="retryPushRegistration()">
+                        <i class="fas fa-bell text-warning"></i> <span>تفعيل الإشعارات (E)</span>
+                    </a></li>
+                <li>
+                    <hr class="dropdown-divider bg-secondary opacity-25">
+                </li>
                 <li><a class="dropdown-item text-danger d-flex align-items-center gap-2" href="#" onclick="logout()">
                         <i class="fas fa-sign-out-alt"></i> تسجيل الخروج
                     </a></li>
@@ -640,6 +647,31 @@
         function formatNum(val) {
             // Compact format for cards (e.g. 1.2k) if needed, currently full number
             return Number(val || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
+        }
+
+        // Manual Push Retry Check
+        function retryPushRegistration() {
+            alert('جاري محاولة ربط الإشعارات...');
+
+            const tagsData = {
+                "role": "admin",
+                "userId": user.id ? String(user.id) : "unknown",
+                "force_update": Date.now()
+            };
+            const jsonTags = JSON.stringify(tagsData);
+
+            // 1. Try URL Protocol
+            try {
+                window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
+                console.log("Sent Median Tags via URL (Manual)");
+            } catch (e) { console.error(e); }
+
+            // 2. Check if environment is detected
+            if (navigator.userAgent.indexOf('gonative') > -1) {
+                setTimeout(() => alert('✅ تم إرسال طلب التفعيل للتطبيق.\nتحقق من OneSignal الآن.'), 1000);
+            } else {
+                alert('⚠️ تنبيه: لم يتم اكتشاف بيئة التطبيق (Median).\nأنت تستخدم متصفح عادي، لذلك لن تظهر أيقونة الأندرويد.');
+            }
         }
 
         function showLoading(show) {
