@@ -249,188 +249,41 @@
         }
 
         // ==========================================
-        //  CLEAN & OFFICIAL ONESIGNAL INTEGRATION
+        //  ROOT CAUSE FIX: STRICT ISOLATION
         // ==========================================
 
-        // 1. Define the Official Callback for Median App
-        // This function is automatically called by the App when OneSignal is ready.
+        // 1. Define Callback first
         window.median_onesignal_info = function (data) {
-            console.log("📱 Median App Detected via Official Callback", data);
+            // This proves we are in the App
+            console.log("📱 App Callback Received:", data);
+            window.isMedianAppConfirmed = true;
 
-            const tagsData = {
-                "role": "admin",
-                "userId": user.id ? String(user.id) : "unknown"
-            };
-
-            // Strategy A: Direct JS Object (Official)
+            // Simple Clean Tagging (No complex objects)
             if (window.gonative && window.gonative.onesignal) {
-                window.gonative.onesignal.tags.setTags(tagsData);
-            }
+                window.gonative.onesignal.tags.setTags({ "role": "admin" });
 
-            // Strategy B: Force URL Protocol (Backup)
-            // Ensures tags are sent even if JS bridge has issues
-            setTimeout(() => {
-                const jsonTags = JSON.stringify(tagsData);
-                window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
-                console.log("📱 Sent Median Tags via URL Protocol Backup");
-            }, 1000);
+                // Optional: Set External ID separately if supported
+                if (user.id && window.gonative.onesignal.user) {
+                    window.gonative.onesignal.user.setExternalId({ externalId: String(user.id) });
+                }
+            }
         };
 
-        // 2. Initialize Logic based on Environment
-        if (user.role === 'admin' || !user.role) {
+        // 2. Wait and Decide (Prevent Race Condition)
+        setTimeout(() => {
+            const isMedian = window.gonative || window.isMedianAppConfirmed || navigator.userAgent.indexOf('gonative') > -1;
 
-            // Expanded Check: User Agent OR window.gonative existence
-            const ua = navigator.userAgent.toLowerCase();
-            const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1 || window.gonative;
-
-            if (isMedianApp) {
-                // Create Diagnostic Bar
-                const debugBar = document.createElement('div');
-                debugBar.style.position = 'fixed';
-                debugBar.style.bottom = '0';
-                debugBar.style.left = '0';
-                debugBar.style.width = '100%';
-                debugBar.style.backgroundColor = '#000';
-                debugBar.style.color = '#fff';
-                debugBar.style.padding = '8px';
-                debugBar.style.fontSize = '11px';
-                debugBar.style.zIndex = '99999';
-                debugBar.style.display = 'flex';
-                debugBar.style.justifyContent = 'space-between';
-                debugBar.style.alignItems = 'center';
-
-                // Placeholder
-                debugBar.innerHTML = `
-                    <div style="display:flex; gap:10px;">
-                        <div>ID: <span id="debugPlayerId" style="color:yellow">Waiting...</span></div>
-                        <div>Status: <span id="debugStatus">Init</span></div>
-                    </div>
-                    <button id="forceLinkBtn" style="background:#2563eb; color:white; border:none; padding:4px 8px; border-radius:4px; font-weight:bold;">
-                        🔗 LINK
-                    </button>
-                `;
-                document.body.appendChild(debugBar);
-
-                // Re-bind click event to be safe
-                setTimeout(() => {
-                    const btn = document.getElementById('forceLinkBtn');
-                    if (btn) btn.onclick = forceLink;
-                }, 500);
-
-                // Define Standard Callback (This receives the ID)
-                window.median_onesignal_info = function (data) {
-                    console.log("CALLBACK DATA:", data);
-
-                    if (data && data.oneSignalUserId) {
-                        const pid = data.oneSignalUserId;
-                        document.getElementById('debugPlayerId').textContent = pid.substring(0, 8) + "...";
-
-                        // We got the ID! Now try to tag again
-                        document.getElementById('debugStatus').textContent = "Got ID!";
-
-                        if (window.gonative && window.gonative.onesignal) {
-                            window.gonative.onesignal.tags.setTags({
-                                "role": "admin",
-                                "userId": String(user.id),
-                                "force_update": "v3"
-                            });
-                            document.getElementById('debugStatus').textContent = "Tags Sent";
-                            document.getElementById('debugStatus').style.color = "#10b981";
-                        }
-                    }
-                };
-
-                // FORCE LINK FUNCTION (Multi-API Shotgun)
-                const forceLink = () => {
-                    const btn = document.getElementById('forceLinkBtn');
-                    btn.textContent = "Processing...";
-
-                    if (!window.gonative || !window.gonative.onesignal) {
-                        alert("⚠️ Plugin not ready yet. Wait for 'Installed' status.");
-                        return;
-                    }
-
-                    const uid = String(user.id);
-                    let log = [];
-
-                    try {
-                        // Method 1: New API (User Namespace)
-                        if (window.gonative.onesignal.user && window.gonative.onesignal.user.setExternalId) {
-                            window.gonative.onesignal.user.setExternalId({ externalId: uid });
-                            log.push("Method 1 (User API)");
-                        }
-
-                        // Method 2: Old API (Root Level)
-                        if (window.gonative.onesignal.setExternalUserId) {
-                            window.gonative.onesignal.setExternalUserId({ externalId: uid });
-                            log.push("Method 2 (Root API)");
-                        }
-
-                        // Method 3: Tags (Universal)
-                        if (window.gonative.onesignal.tags && window.gonative.onesignal.tags.setTags) {
-                            window.gonative.onesignal.tags.setTags({ "role": "admin", "userId": uid, "force": "shotgun" });
-                            log.push("Method 3 (Tags)");
-                        }
-
-                        // Method 4: Registration (Legacy)
-                        if (window.gonative.onesignal.register) {
-                            window.gonative.onesignal.register();
-                            log.push("Method 4 (Register)");
-                        }
-
-                        alert(`✅ تم إرسال الأوامر!\n\nطرق التنفيذ:\n${log.join('\n')}\n\nافحص OneSignal الآن.`);
-                        btn.textContent = "✅ SENT ALL";
-
-                    } catch (e) {
-                        alert("Error: " + e.message);
-                    }
-                };
-
-                // Attach event listener to the button
-                document.addEventListener('DOMContentLoaded', () => {
-                    const forceLinkBtn = document.getElementById('forceLinkBtn');
-                    if (forceLinkBtn) {
-                        forceLinkBtn.addEventListener('click', forceLink);
-                    }
-                });
-
-                // Advanced Diagnosis Logic
-                setTimeout(() => {
-                    const debugId = document.getElementById('debugPlayerId');
-                    const debugStatus = document.getElementById('debugStatus');
-
-                    if (!window.gonative) {
-                        debugId.textContent = "❌ No Bridge";
-                        debugId.style.color = "red";
-                        debugStatus.textContent = "Not App?";
-                        return;
-                    }
-
-                    if (!window.gonative.onesignal) {
-                        debugId.textContent = "❌ No Plugin";
-                        debugId.style.color = "red";
-                        debugStatus.textContent = "Rebuild Req.";
-                        alert("⚠️ تنبيه هام:\nOneSignal Plugin غير موجود في التطبيق!\n\nيجب عليك:\n1. التأكد من تفعيله في Median.\n2. عمل Rebuild Binary.\n3. تحديث التطبيق.");
-                        return;
-                    }
-
-                    // If we are here, everything is installed!
-                    debugId.textContent = "✅ Installed";
-                    debugStatus.textContent = "Fetching...";
-
-                    // Try to get info directly via object
-                    window.gonative.onesignal.info().then(data => {
-                        if (data && data.oneSignalUserId) {
-                            debugId.textContent = data.oneSignalUserId.substring(0, 8);
-                            debugStatus.textContent = "ACTIVE!";
-                        }
-                    });
-
-                }, 1500);
+            if (isMedian) {
+                console.log("📱 APP MODE DETECTED - Web SDK Blocked");
+                // Do absolutely nothing else. Wait for the bridge.
+                // Re-trigger tags just in case callback was missed
+                if (window.gonative && window.gonative.onesignal) {
+                    window.gonative.onesignal.tags.setTags({ "role": "admin" });
+                }
             }
             else {
-                // BROWSER MODE: Initialize Web Push
-                console.log("💻 Running in Browser Mode - Initializing Web SDK");
+                console.log("💻 BROWSER MODE - Initializing Web SDK");
+                // Only NOW do we load the Web SDK
                 window.OneSignalDeferred = window.OneSignalDeferred || [];
                 OneSignalDeferred.push(async function (OneSignal) {
                     try {
@@ -439,16 +292,15 @@
                             allowLocalhostAsSecureOrigin: true,
                         });
                         await OneSignal.User.addTag("role", "admin");
-                        const userId = user.id ? String(user.id) : "unknown";
-                        await OneSignal.User.addTag("userId", userId);
+                        await OneSignal.User.addTag("userId", String(user.id || "unknown"));
 
                         if (OneSignal.Notifications.permission === "default") {
                             await OneSignal.Notifications.requestPermission();
                         }
-                    } catch (error) { console.error("OneSignal Web Error:", error); }
+                    } catch (error) { console.error("Web SDK Error:", error); }
                 });
             }
-        }
+        }, 1500); // 1.5s delay to allow Bridge to inject
 
 
         // Check Permissions
