@@ -666,11 +666,13 @@
                 console.log("Sent Median Tags via URL (Manual)");
             } catch (e) { console.error(e); }
 
-            // 2. Check if environment is detected
-            if (navigator.userAgent.indexOf('gonative') > -1) {
+            // 2. Check if environment is detected (gonative OR median)
+            const isApp = navigator.userAgent.toLowerCase().includes('gonative') || navigator.userAgent.toLowerCase().includes('median');
+
+            if (isApp) {
                 setTimeout(() => alert('✅ تم إرسال طلب التفعيل للتطبيق.\nتحقق من OneSignal الآن.'), 1000);
             } else {
-                alert('⚠️ تنبيه: لم يتم اكتشاف بيئة التطبيق (Median).\nأنت تستخدم متصفح عادي، لذلك لن تظهر أيقونة الأندرويد.');
+                alert('⚠️ لم يتم اكتشاف التوقيع (UserAgent) تلقائياً، ولكن تم إرسال أمر التفعيل "بالقوة" عبر البروتوكول.\n\nإذا ظهرت أيقونة الأندرويد في OneSignal، فهذا يعني النجاح!');
             }
         }
 
