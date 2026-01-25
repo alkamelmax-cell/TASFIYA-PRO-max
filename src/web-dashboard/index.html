@@ -241,8 +241,33 @@
             window.location.href = 'request-reconciliation.html';
         }
 
-        // Initialize OneSignal for Admin users only
+        // Initialize OneSignal
         if (user.role === 'admin' || !user.role) {
+            // 1. Median.co (GoNative) Native Push Logic
+            if (navigator.userAgent.indexOf('gonative') > -1 || window.gonative) {
+                // Wait for OneSignal info to return (Median specific)
+                function onGonativeOneSignal(data) {
+                    if (window.gonative && window.gonative.onesignal) {
+                        window.gonative.onesignal.tags.setTags({
+                            "role": "admin",
+                            "userId": user.id ? String(user.id) : "unknown"
+                        });
+                    }
+                }
+
+                // If Median OneSignal plugin is active, register callback
+                if (window.gonative) {
+                    // Force register if needed or simply set tags
+                    if (window.gonative.onesignal) {
+                        window.gonative.onesignal.tags.setTags({
+                            "role": "admin",
+                            "userId": user.id ? String(user.id) : "unknown"
+                        });
+                    }
+                }
+            }
+
+            // 2. Standard Web Push Logic (Fallback & Web Browser)
             window.OneSignalDeferred = window.OneSignalDeferred || [];
             OneSignalDeferred.push(async function (OneSignal) {
                 try {
