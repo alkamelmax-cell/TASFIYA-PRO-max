@@ -284,91 +284,57 @@
             const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1 || window.gonative;
 
             if (isMedianApp) {
-                console.log("📱 Running in App Mode");
-
                 // Create Diagnostic Bar
                 const debugBar = document.createElement('div');
                 debugBar.style.position = 'fixed';
                 debugBar.style.bottom = '0';
                 debugBar.style.left = '0';
                 debugBar.style.width = '100%';
-                debugBar.style.backgroundColor = '#1e293b';
+                debugBar.style.backgroundColor = '#000';
                 debugBar.style.color = '#fff';
-                debugBar.style.padding = '10px';
-                debugBar.style.fontSize = '12px';
+                debugBar.style.padding = '8px';
+                debugBar.style.fontSize = '11px';
                 debugBar.style.zIndex = '99999';
-                debugBar.style.borderTop = '1px solid #334155';
                 debugBar.style.display = 'flex';
                 debugBar.style.justifyContent = 'space-between';
                 debugBar.style.alignItems = 'center';
 
-                const userIdStr = user.id ? String(user.id) : "MISSING";
+                // Placeholder
                 debugBar.innerHTML = `
-                    <div>
-                        <span style="color: #10b981">● App Active</span> | 
-                        User: <b style="color: #fbbf24">${userIdStr}</b> | 
-                        Bridge: <span id="bridgeStatus">Checking...</span>
-                    </div>
-                    <button id="forceLinkBtn" style="background:#2563eb; color:white; border:none; padding:5px 10px; border-radius:4px;">
-                        🔗 Force Link
-                    </button>
+                    <div>ID: <span id="debugPlayerId" style="color:yellow">Waiting...</span></div>
+                    <div>Status: <span id="debugStatus">Init</span></div>
                 `;
                 document.body.appendChild(debugBar);
 
-                // Check Bridge
-                setTimeout(() => {
-                    const hasBridge = window.gonative && window.gonative.onesignal;
-                    document.getElementById('bridgeStatus').textContent = hasBridge ? "✅ Ready" : "⚠️ Via URL";
-                    document.getElementById('bridgeStatus').style.color = hasBridge ? "#10b981" : "#f87171";
-                }, 2000);
+                // Define Standard Callback (This receives the ID)
+                window.median_onesignal_info = function (data) {
+                    console.log("CALLBACK DATA:", data);
 
-                // FORCE LINK FUNCTION (Strict JS Bridge)
-                const forceLink = () => {
-                    const btn = document.getElementById('forceLinkBtn');
-                    btn.textContent = "Processing...";
+                    if (data && data.oneSignalUserId) {
+                        const pid = data.oneSignalUserId;
+                        document.getElementById('debugPlayerId').textContent = pid.substring(0, 8) + "...";
 
-                    if (!window.gonative) {
-                        alert("⚠️ الخطأ: جسر التطبيق (Bridge) غير نشط!\n\nهل أنت متأكد أنك تستخدم التطبيق؟");
-                        btn.textContent = "Retry";
-                        return;
-                    }
+                        // We got the ID! Now try to tag again
+                        document.getElementById('debugStatus').textContent = "Got ID!";
 
-                    if (!user.id) { alert("Error: No User ID"); return; }
-
-                    try {
-                        // 1. Set External ID
-                        if (window.gonative.onesignal && window.gonative.onesignal.user) {
-                            window.gonative.onesignal.user.setExternalId({ externalId: String(user.id) });
-                        } else {
-                            // Fallback for older plugins
-                            window.location.href = `gonative://onesignal/user/setExternalId?externalId=${user.id}`;
+                        if (window.gonative && window.gonative.onesignal) {
+                            window.gonative.onesignal.tags.setTags({
+                                "role": "admin",
+                                "userId": String(user.id),
+                                "force_update": "v3"
+                            });
+                            document.getElementById('debugStatus').textContent = "Tags Sent";
+                            document.getElementById('debugStatus').style.color = "#10b981";
                         }
-
-                        // 2. Set Tags (Official Object)
-                        setTimeout(() => {
-                            if (window.gonative.onesignal) {
-                                window.gonative.onesignal.tags.setTags({
-                                    "role": "admin",
-                                    "userId": String(user.id),
-                                    "force": Date.now()
-                                });
-                                alert("✅ تم الربط بنجاح!\n(v2.0)\n\nافحص OneSignal الآن.");
-                                btn.textContent = "✅ LINKED!";
-                            } else {
-                                alert("⚠️ OneSignal Plugin غير موجود في App Bridge!");
-                            }
-                        }, 500);
-
-                    } catch (e) {
-                        alert("Error: " + e.message);
                     }
                 };
 
-                // Add Click Event
-                document.getElementById('forceLinkBtn').onclick = forceLink;
-
-                // Auto-try once on load
-                setTimeout(forceLink, 3000);
+                // Request Info manually if callback doesn't fire
+                setTimeout(() => {
+                    if (document.getElementById('debugPlayerId').textContent === "Waiting...") {
+                        window.location.href = 'gonative://onesignal/info';
+                    }
+                }, 2000);
             }
             else {
                 // BROWSER MODE: Initialize Web Push
