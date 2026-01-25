@@ -660,10 +660,17 @@
             };
             const jsonTags = JSON.stringify(tagsData);
 
-            // 1. Try URL Protocol
+            // 1. Try URL Protocol (Register FIRST, then Tags)
             try {
-                window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
-                console.log("Sent Median Tags via URL (Manual)");
+                // Force Registration
+                window.location.href = 'gonative://onesignal/register';
+                console.log("Sent Register Command");
+
+                // Send Tags after short delay to allow registration
+                setTimeout(() => {
+                    window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
+                    console.log("Sent Median Tags via URL (Manual)");
+                }, 2000);
             } catch (e) { console.error(e); }
 
             // 2. Check if environment is detected (gonative OR median)
