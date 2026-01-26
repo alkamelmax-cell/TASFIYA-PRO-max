@@ -19,7 +19,8 @@
     <!-- Custom CSS -->
     <link rel="stylesheet" href="css/custom.css?v=21">
 
-    <!-- OneSignal SDK - Loaded Dynamically (See script below) -->
+    <!-- OneSignal SDK -->
+    <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 
 </head>
 
@@ -248,89 +249,62 @@
         }
 
         // ==========================================
-        //  OPTIMIZED ONESIGNAL INTEGRATION (LAZY LOAD)
+        //  ONESIGNAL INTEGRATION
         // ==========================================
-
-        // Helper function to lazy load OneSignal SDK
-        function loadOneSignalSDK() {
-            return new Promise((resolve, reject) => {
-                if (window.OneSignal) {
-                    resolve();
-                    return;
-                }
-                const script = document.createElement('script');
-                script.src = 'https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js';
-                script.async = true;
-                script.onload = resolve;
-                script.onerror = reject;
-                document.head.appendChild(script);
-            });
-        }
 
         // 1. Define the Official Callback for Median App
         window.median_onesignal_info = function (data) {
             console.log("📱 Median App Detected via Official Callback", data);
             if (window.gonative && window.gonative.onesignal) {
                 window.gonative.onesignal.tags.setTags({
-                    "role": "admin",
+                    "role": "أدمن",
                     "userId": user.id ? String(user.id) : "unknown"
                 });
             }
         };
 
-        // 2. Initialize Logic based on Environment (LAZY)
+        // 2. Initialize based on Environment
         if (user.role === 'admin' || !user.role) {
             const ua = navigator.userAgent.toLowerCase();
             const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1;
 
             if (isMedianApp) {
-                console.log("📱 Running in App Mode - Waiting for Native Bridge...");
+                console.log("📱 Running in App Mode");
 
                 if (window.gonative && window.gonative.onesignal) {
                     window.gonative.onesignal.tags.setTags({
-                        "role": "admin",
+                        "role": "أدمن",
                         "userId": user.id ? String(user.id) : "unknown"
                     });
-                    console.log("📱 Tags set immediately via existing Bridge");
                 }
 
                 setTimeout(() => {
                     if (window.gonative && window.gonative.onesignal) {
                         window.gonative.onesignal.tags.setTags({
-                            "role": "admin",
+                            "role": "أدمن",
                             "userId": user.id ? String(user.id) : "unknown"
                         });
-                        console.log("📱 Tags set via Timeout Fallback");
                     }
                 }, 3000);
             }
             else {
-                // BROWSER MODE: Load SDK after page is ready
-                console.log("💻 Browser Mode - Will load OneSignal after page ready");
-
-                window.addEventListener('load', async () => {
+                console.log("💻 Running in Browser Mode");
+                window.OneSignalDeferred = window.OneSignalDeferred || [];
+                OneSignalDeferred.push(async function (OneSignal) {
                     try {
-                        await loadOneSignalSDK();
-                        console.log("✅ OneSignal SDK loaded");
-
-                        window.OneSignalDeferred = window.OneSignalDeferred || [];
-                        OneSignalDeferred.push(async function (OneSignal) {
-                            try {
-                                await OneSignal.init({
-                                    appId: "1b7778f5-0f25-4df8-a281-611b682a964c",
-                                    allowLocalhostAsSecureOrigin: true,
-                                });
-                                await OneSignal.User.addTag("role", "admin");
-                                const userId = user.id ? String(user.id) : "unknown";
-                                await OneSignal.User.addTag("userId", userId);
-
-                                if (OneSignal.Notifications.permission === "default") {
-                                    await OneSignal.Notifications.requestPermission();
-                                }
-                            } catch (error) { console.error("OneSignal Init Error:", error); }
+                        await OneSignal.init({
+                            appId: "1b7778f5-0f25-4df8-a281-611b682a964c",
+                            allowLocalhostAsSecureOrigin: true,
                         });
+                        await OneSignal.User.addTag("role", "أدمن");
+                        await OneSignal.User.addTag("userId", user.id ? String(user.id) : "unknown");
+
+                        if (OneSignal.Notifications.permission === "default") {
+                            await OneSignal.Notifications.requestPermission();
+                        }
+                        console.log("✅ OneSignal initialized successfully");
                     } catch (error) {
-                        console.error("Failed to load OneSignal SDK:", error);
+                        console.error("OneSignal Error:", error);
                     }
                 });
             }
