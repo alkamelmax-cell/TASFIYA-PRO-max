@@ -1986,10 +1986,9 @@ class LocalWebServer {
                 priority: 10,
                 android_visibility: 1,
                 lockscreen_visibility: 1,
-                // Target only users tagged as admin
-                // Target only users tagged as admin
+                // Target only users tagged as admin (Arabic tag value)
                 filters: [
-                    { field: "tag", key: "role", relation: "=", value: "admin" }
+                    { field: "tag", key: "role", relation: "=", value: "أدمن" }
                 ]
             };
 
