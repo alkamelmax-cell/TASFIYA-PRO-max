@@ -249,41 +249,56 @@
         }
 
         // ==========================================
-        //  ROOT CAUSE FIX: STRICT ISOLATION
+        //  CLEAN & OFFICIAL ONESIGNAL INTEGRATION
         // ==========================================
 
-        // 1. Define Callback first
+        // 1. Define the Official Callback for Median App
+        // This function is automatically called by the App when OneSignal is ready.
         window.median_onesignal_info = function (data) {
-            // This proves we are in the App
-            console.log("📱 App Callback Received:", data);
-            window.isMedianAppConfirmed = true;
+            console.log("📱 Median App Detected via Official Callback", data);
 
-            // Simple Clean Tagging (No complex objects)
+            // Just set the tags using the clean object approach
             if (window.gonative && window.gonative.onesignal) {
-                window.gonative.onesignal.tags.setTags({ "role": "admin" });
-
-                // Optional: Set External ID separately if supported
-                if (user.id && window.gonative.onesignal.user) {
-                    window.gonative.onesignal.user.setExternalId({ externalId: String(user.id) });
-                }
+                window.gonative.onesignal.tags.setTags({
+                    "role": "admin",
+                    "userId": user.id ? String(user.id) : "unknown"
+                });
             }
         };
 
-        // 2. Wait and Decide (Prevent Race Condition)
-        setTimeout(() => {
-            const isMedian = window.gonative || window.isMedianAppConfirmed || navigator.userAgent.indexOf('gonative') > -1;
+        // 2. Initialize Logic based on Environment
+        if (user.role === 'admin' || !user.role) {
 
-            if (isMedian) {
-                console.log("📱 APP MODE DETECTED - Web SDK Blocked");
-                // Do absolutely nothing else. Wait for the bridge.
-                // Re-trigger tags just in case callback was missed
+            // Check if we are in Median App (by User Agent)
+            const ua = navigator.userAgent.toLowerCase();
+            const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1;
+
+            if (isMedianApp) {
+                console.log("📱 Running in App Mode - Waiting for Native Bridge...");
+
+                // EXTENDED: Try to set tags immediately if bridge is already ready
                 if (window.gonative && window.gonative.onesignal) {
-                    window.gonative.onesignal.tags.setTags({ "role": "admin" });
+                    window.gonative.onesignal.tags.setTags({
+                        "role": "admin",
+                        "userId": user.id ? String(user.id) : "unknown"
+                    });
+                    console.log("📱 Tags set immediately via existing Bridge");
                 }
+
+                // Fallback: Check again after 3 seconds
+                setTimeout(() => {
+                    if (window.gonative && window.gonative.onesignal) {
+                        window.gonative.onesignal.tags.setTags({
+                            "role": "admin",
+                            "userId": user.id ? String(user.id) : "unknown"
+                        });
+                        console.log("📱 Tags set via Timeout Fallback");
+                    }
+                }, 3000);
             }
             else {
-                console.log("💻 BROWSER MODE - Initializing Web SDK");
-                // Only NOW do we load the Web SDK
+                // BROWSER MODE: Initialize Web Push
+                console.log("💻 Running in Browser Mode - Initializing Web SDK");
                 window.OneSignalDeferred = window.OneSignalDeferred || [];
                 OneSignalDeferred.push(async function (OneSignal) {
                     try {
@@ -292,15 +307,16 @@
                             allowLocalhostAsSecureOrigin: true,
                         });
                         await OneSignal.User.addTag("role", "admin");
-                        await OneSignal.User.addTag("userId", String(user.id || "unknown"));
+                        const userId = user.id ? String(user.id) : "unknown";
+                        await OneSignal.User.addTag("userId", userId);
 
                         if (OneSignal.Notifications.permission === "default") {
                             await OneSignal.Notifications.requestPermission();
                         }
-                    } catch (error) { console.error("Web SDK Error:", error); }
+                    } catch (error) { console.error("OneSignal Web Error:", error); }
                 });
             }
-        }, 1500); // 1.5s delay to allow Bridge to inject
+        }
 
 
         // Check Permissions
