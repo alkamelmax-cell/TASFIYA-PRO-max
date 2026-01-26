@@ -1986,10 +1986,8 @@ class LocalWebServer {
                 priority: 10,
                 android_visibility: 1,
                 lockscreen_visibility: 1,
-                // Target only users tagged as admin (Arabic tag value)
-                filters: [
-                    { field: "tag", key: "role", relation: "=", value: "أدمن" }
-                ]
+                // Send to all subscribed users (no filter)
+                included_segments: ["All"]
             };
 
             const response = await fetch('https://onesignal.com/api/v1/notifications', {
