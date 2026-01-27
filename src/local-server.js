@@ -982,60 +982,11 @@ class LocalWebServer {
         }
     }
 
-    async handleSaveUser(req, res) {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', () => {
-            try {
-                const userData = JSON.parse(body);
-                const { id, name, username, password, role, permissions } = userData;
 
-                // Convert permissions array to JSON string
-                const permsStr = permissions ? JSON.stringify(permissions) : null;
 
-                if (!name || !username) {
-                    this.sendJson(res, { success: false, error: 'الاسم واسم المستخدم مطلوبان' });
-                    return;
-                }
 
-                if (id) {
-                    // Update
-                    let sql = "UPDATE admins SET name = ?, username = ?, role = ?, permissions = ? WHERE id = ?";
-                    let params = [name, username, role || 'admin', permsStr, id];
 
-                    if (password && password.trim() !== '') {
-                        sql = "UPDATE admins SET name = ?, username = ?, role = ?, permissions = ?, password = ? WHERE id = ?";
-                        params = [name, username, role || 'admin', permsStr, password, id];
-                    }
 
-                    this.dbManager.db.prepare(sql).run(...params);
-                } else {
-                    // Create
-                    if (!password) {
-                        this.sendJson(res, { success: false, error: 'كلمة المرور مطلوبة للمستخدم الجديد' });
-                        return;
-                    }
-                    this.dbManager.db.prepare(
-                        "INSERT INTO admins (name, username, password, role, permissions, active) VALUES (?, ?, ?, ?, ?, 1)"
-                    ).run(name, username, password, role || 'admin', permsStr);
-                }
-
-                this.sendJson(res, { success: true });
-            } catch (error) {
-                console.error('Save User Error:', error);
-                this.sendJson(res, { success: false, error: error.message });
-            }
-        });
-    }
-
-    async handleDeleteUser(res, id) {
-        try {
-            this.dbManager.db.prepare("DELETE FROM admins WHERE id = ?").run(id);
-            this.sendJson(res, { success: true });
-        } catch (error) {
-            this.sendJson(res, { success: false, error: error.message });
-        }
-    }
 
     // ======================================
     // Reconciliation Requests Logic
