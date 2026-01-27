@@ -147,8 +147,32 @@
         const user = JSON.parse(userStr || '{}');
         document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
 
+        // Navbar Protection Logic
+        const protectedPages = [
+            'atm-reports.html',
+            'customer-ledger.html',
+            'users-management.html',
+            'cashiers-management.html',
+            'reconciliation-requests.html',
+            'request-reconciliation.html'
+        ];
+
+        if (user.permissions && Array.isArray(user.permissions)) {
+            protectedPages.forEach(page => {
+                if (!user.permissions.includes(page)) {
+                    const el = document.querySelector(`a[href="${page}"]`);
+                    if (el) el.classList.add('d-none');
+                }
+            });
+        } else if (user.role && user.role !== 'admin') {
+            protectedPages.forEach(page => {
+                const el = document.querySelector(`a[href="${page}"]`);
+                if (el) el.classList.add('d-none');
+            });
+        }
+
         // Permissions Check
-        const isAdmin = (user.role === 'admin') || (user.permissions && user.permissions.includes('users-management.html'));
+        const isAdmin = (user.role === 'admin') || (user.permissions && user.permissions.includes('cashiers-management.html'));
         if (!isAdmin) {
             alert('ليس لديك صلاحية للوصول لهذه الصفحة');
             window.location.href = 'index.html';

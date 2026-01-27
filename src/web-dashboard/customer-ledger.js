@@ -10,6 +10,30 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (document.getElementById('userNameDisplay'))
         document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
 
+    // Navbar Protection Logic
+    const protectedPages = [
+        'atm-reports.html',
+        'customer-ledger.html',
+        'users-management.html',
+        'cashiers-management.html',
+        'reconciliation-requests.html',
+        'request-reconciliation.html'
+    ];
+
+    if (user.permissions && Array.isArray(user.permissions)) {
+        protectedPages.forEach(page => {
+            if (!user.permissions.includes(page)) {
+                const el = document.querySelector(`a[href="${page}"]`);
+                if (el) el.classList.add('d-none');
+            }
+        });
+    } else if (user.role && user.role !== 'admin') {
+        protectedPages.forEach(page => {
+            const el = document.querySelector(`a[href="${page}"]`);
+            if (el) el.classList.add('d-none');
+        });
+    }
+
     const isAllowed = (user.role === 'admin') || (user.permissions && user.permissions.includes('customer-ledger.html'));
     if (!isAllowed) {
         console.warn('⛔ وصول غير مصرح به. إعادة التوجيه للصفحة الرئيسية.');
