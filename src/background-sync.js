@@ -29,6 +29,12 @@ class BackgroundSync {
         console.log('⏹️ [SYNC] Background sync stopped.');
     }
 
+    // Force immediate sync (for instant updates on critical events)
+    forceSyncNow() {
+        console.log('⚡ [SYNC] Force sync triggered...');
+        this.doSync();
+    }
+
     get isRunning() {
         return !!this.interval;
     }
@@ -267,4 +273,10 @@ function getSyncStatus() {
     return syncInstance ? syncInstance.isRunning : false;
 }
 
-module.exports = { startBackgroundSync, stopBackgroundSync, getSyncStatus };
+function triggerInstantSync() {
+    if (syncInstance) {
+        syncInstance.forceSyncNow();
+    }
+}
+
+module.exports = { startBackgroundSync, stopBackgroundSync, getSyncStatus, triggerInstantSync };

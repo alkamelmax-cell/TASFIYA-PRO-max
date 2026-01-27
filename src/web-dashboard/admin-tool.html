@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>أدوات المسؤول - تصفية برو</title>
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="css/custom.css?v=21" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <style>
+        .danger-zone-card {
+            border: 1px solid #dc3545;
+            box-shadow: 0 0 15px rgba(220, 53, 69, 0.2);
+        }
+
+        .danger-zone-header {
+            background-color: rgba(220, 53, 69, 0.1);
+            color: #ff6b6b;
+        }
+    </style>
+</head>
+
+<body class="bg-dark text-light">
+
+    <!-- Navbar -->
+    <nav class="custom-navbar navbar-layout d-flex justify-content-between align-items-center mb-5">
+        <div class="navbar-brand-section">
+            <div class="brand-logo">
+                <img src="assets/logo.png" alt="TP"
+                    style="height: 40px; width: auto; margin-left: 10px; border-radius: 8px;">أدوات المسؤول
+            </div>
+        </div>
+        <div>
+            <a href="index.html" class="btn btn-outline-light btn-sm rounded-pill">
+                <i class="fas fa-arrow-right me-1"></i> عودة للرئيسية
+            </a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="row justify-content-center">
+            <div class="col-md-8 col-lg-6">
+                <!-- Factory Reset Card -->
+                <div class="card glass-card danger-zone-card mb-4">
+                    <div class="card-header danger-zone-header py-3">
+                        <h5 class="mb-0"><i class="fas fa-exclamation-triangle me-2"></i> منطقة الخطر: إعادة ضبط المصنع
+                        </h5>
+                    </div>
+                    <div class="card-body text-center p-4">
+                        <div class="mb-4">
+                            <i class="fas fa-database fa-4x text-danger mb-3"></i>
+                            <h4 class="card-title text-white">مسح جميع البيانات</h4>
+                            <p class="card-text text-muted">
+                                سيقوم هذا الإجراء بمسح جميع بيانات المبيعات، الفواتير، والطلبات بشكل نهائي.
+                                <br>
+                                <strong class="text-danger">لا يمكن التراجع عن هذا الإجراء!</strong>
+                            </p>
+                        </div>
+
+                        <div class="form-group mb-4 text-start">
+                            <label for="adminKey" class="form-label text-secondary">مفتاح الأمان (Master Key)</label>
+                            <input type="password" class="form-control bg-dark text-white border-secondary"
+                                id="adminKey" placeholder="أدخل مفتاح المسؤول لتأكيد العملية">
+                        </div>
+
+                        <button onclick="confirmReset()" class="btn btn-danger w-100 py-2 fw-bold">
+                            <i class="fas fa-trash-alt me-2"></i> تنفيذ إعادة ضبط المصنع
+                        </button>
+                    </div>
+                </div>
+
+                <div class="alert alert-info border-info glass-card">
+                    <i class="fas fa-info-circle me-2"></i>
+                    تلميح: يتم تسجيل جميع محاولات إعادة الضبط في سجلات النظام.
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function confirmReset() {
+            const keyInput = document.getElementById('adminKey');
+            const secretKey = keyInput.value.trim();
+
+            if (!secretKey) {
+                Swal.fire({
+                    icon: 'warning',
+                    title: 'مطلوب مفتاح الأمان',
+                    text: 'يرجى إدخال مفتاح المسؤول للمتابعة.',
+                    confirmButtonText: 'حسناً',
+                    confirmButtonColor: '#3085d6'
+                });
+                return;
+            }
+
+            // Confirmation Dialog
+            const result = await Swal.fire({
+                title: 'هل أنت متأكد تماماً؟',
+                text: "سيتم مسح جميع البيانات ولن تتمكن من استعادتها!",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                cancelButtonColor: '#3085d6',
+                confirmButtonText: 'نعم، مسح كل شيء!',
+                cancelButtonText: 'إلغاء'
+            });
+
+            if (result.isConfirmed) {
+                performFactoryReset(secretKey);
+            }
+        }
+
+        async function performFactoryReset(key) {
+            // Show Loading
+            Swal.fire({
+                title: 'جاري التنفيذ...',
+                text: 'يرجى الانتظار بينما يتم مسح البيانات.',
+                allowOutsideClick: false,
+                didOpen: () => {
+                    Swal.showLoading();
+                }
+            });
+
+            try {
+                const response = await fetch('/api/system/factory-reset', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                        'x-admin-secret': key
+                    }
+                });
+
+                const data = await response.json();
+
+                if (response.ok && data.success) {
+                    Swal.fire({
+                        icon: 'success',
+                        title: 'تم بنجاح!',
+                        text: 'تم إعادة ضبط المصنع ومسح جميع البيانات.',
+                        confirmButtonText: 'ممتاز',
+                        confirmButtonColor: '#28a745'
+                    }).then(() => {
+                        // Clear input
+                        document.getElementById('adminKey').value = '';
+                    });
+                } else {
+                    throw new Error(data.error || 'حدث خطأ غير معروف');
+                }
+
+            } catch (error) {
+                console.error('Reset Error:', error);
+                Swal.fire({
+                    icon: 'error',
+                    title: 'فشلت العملية',
+                    text: error.message || 'تعذر الاتصال بالخادم.',
+                    confirmButtonText: 'حاوْل مرة أخرى',
+                    confirmButtonColor: '#d33'
+                });
+            }
+        }
+    </script>
+</body>
+
+</html>
