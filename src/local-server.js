@@ -128,10 +128,7 @@ class LocalWebServer {
                     return;
                 }
 
-                if (pathname === '/admin-tool.html') {
-                    this.serveFile(res, path.join(__dirname, 'web-dashboard', 'admin-tool.html'), 'text/html');
-                    return;
-                }
+
 
                 // API endpoints
                 if (pathname === '/api/reconciliations/stats') {
@@ -243,6 +240,8 @@ class LocalWebServer {
                     await this.handleSyncUsers(req, res);
                     return;
                 }
+
+
                 // DEBUG ROUTE: Test Notification directly
                 else if (pathname === '/api/test-notification') {
                     console.log('🔔 Manual test notification requested');
