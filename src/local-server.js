@@ -1622,7 +1622,7 @@ class LocalWebServer {
                     // For admins, use username as conflict key to handle duplicate usernames
                     await syncTable('admins', data.admins, [
                         { name: 'id' }, { name: 'name' }, { name: 'username' },
-                        { name: 'password' }, { name: 'role' }, { name: 'active' }, { name: 'permissions' }
+                        { name: 'password' }, { name: 'role' }, { name: 'active' } // Permissions excluded to protect web edits
                     ], 'username'); // Use username instead of id to avoid constraint violations
                 }
 
