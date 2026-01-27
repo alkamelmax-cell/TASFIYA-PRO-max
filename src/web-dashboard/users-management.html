@@ -347,21 +347,31 @@
             const tbody = document.getElementById('usersTableBody');
             tbody.innerHTML = '';
 
+            const labelsMap = {
+                'index.html': 'الرئيسية',
+                'atm-reports.html': 'تقرير الصراف',
+                'customer-ledger.html': 'دفتر العملاء',
+                'cashiers-management.html': 'إدارة الكاشير',
+                'reconciliation-requests.html': 'طلبات التصفية',
+                'request-reconciliation.html': 'طلب تصفية',
+                'users-management.html': 'إدارة المستخدمين'
+            };
+            const TOTAL_PERMISSIONS_COUNT = Object.keys(labelsMap).length;
+
             users.forEach((u, index) => {
                 const tr = document.createElement('tr');
 
-                // Format permissions: compact view for multi-permissions
+                // Format permissions
                 let permsDisplay = '<span class="text-secondary small">لا صلاحيات</span>';
-                const labelsMap = {
-                    'index.html': 'الرئيسية',
-                    'atm-reports.html': 'تقرير الصراف',
-                    'customer-ledger.html': 'دفتر العملاء',
-                    'cashiers-management.html': 'إدارة الكاشير',
-                    'reconciliation-requests.html': 'طلبات التصفية',
-                    'request-reconciliation.html': 'طلب تصفية',
-                    'users-management.html': 'إدارة المستخدمين'
-                };
-                if (u.permissions && Array.isArray(u.permissions) && u.permissions.length > 0) {
+
+                // Check if Full Admin (Legacy OR New with ALL permissions)
+                // Note: We check if permissions length matches total available
+                const isFullPermissions = (u.permissions && Array.isArray(u.permissions) && u.permissions.length === TOTAL_PERMISSIONS_COUNT);
+                const isLegacyAdmin = (!u.permissions && u.role === 'admin');
+
+                if (isFullPermissions || isLegacyAdmin) {
+                    permsDisplay = '<span class="badge bg-danger">مشرف (كامل الصلاحيات)</span>';
+                } else if (u.permissions && Array.isArray(u.permissions) && u.permissions.length > 0) {
                     if (u.permissions.length > 1) {
                         const fullList = u.permissions.map(p => labelsMap[p] || p).join('، ');
                         permsDisplay = `<span class="badge bg-secondary bg-opacity-50" title="${fullList}">صلاحيات متعددة (${u.permissions.length})</span>`;
@@ -371,8 +381,6 @@
                         if (p === 'users-management.html') label = '<span class="text-warning">إدارة المستخدمين</span>';
                         permsDisplay = `<span class="badge bg-secondary bg-opacity-50 me-1">${label}</span>`;
                     }
-                } else if (!u.permissions && u.role === 'admin') {
-                    permsDisplay = '<span class="badge bg-danger">مشرف (كامل الصلاحيات)</span>';
                 }
 
                 tr.innerHTML = `
