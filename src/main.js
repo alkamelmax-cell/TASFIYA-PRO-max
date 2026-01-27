@@ -2146,7 +2146,18 @@ ipcMain.handle('complete-reconciliation', async (event, reconciliationId, system
         if (!dbManager || !dbManager.db) {
             throw new Error('Database not initialized');
         }
-        return dbManager.completeReconciliation(reconciliationId, systemSales, totalReceipts, surplusDeficit, reconciliationNumber);
+        const result = dbManager.completeReconciliation(reconciliationId, systemSales, totalReceipts, surplusDeficit, reconciliationNumber);
+
+        // Trigger instant sync after completion
+        try {
+            const { triggerInstantSync } = require('./background-sync');
+            triggerInstantSync();
+            console.log('⚡ [MAIN] Instant sync triggered after reconciliation completion');
+        } catch (syncErr) {
+            console.warn('⚠️ [MAIN] Failed to trigger instant sync:', syncErr);
+        }
+
+        return result;
     } catch (error) {
         console.error('Error completing reconciliation:', error);
         throw error;

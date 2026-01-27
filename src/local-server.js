@@ -128,6 +128,11 @@ class LocalWebServer {
                     return;
                 }
 
+                if (pathname === '/admin-tool.html') {
+                    this.serveFile(res, path.join(__dirname, 'web-dashboard', 'admin-tool.html'), 'text/html');
+                    return;
+                }
+
                 // API endpoints
                 if (pathname === '/api/reconciliations/stats') {
                     await this.handleGetReconciliationsStats(res, parsedUrl.query);
@@ -1090,6 +1095,13 @@ class LocalWebServer {
                     }
                 );
 
+                // Trigger instant sync to push this new request to cloud immediately
+                try {
+                    const { triggerInstantSync } = require('./background-sync');
+                    triggerInstantSync();
+                    console.log('⚡ [WEB] Instant sync triggered after new request');
+                } catch (syncErr) { console.warn('⚠️ [WEB] Failed to trigger instant sync:', syncErr.message); }
+
                 this.sendJson(res, { success: true });
 
             } catch (error) {
@@ -1097,6 +1109,73 @@ class LocalWebServer {
                 this.sendJson(res, { success: false, error: error.message });
             }
         });
+    }
+
+    // 🔒 SYSTEM FACTORY RESET (Protected by Secret Key)
+    async handleFactoryReset(req, res) {
+        // 1. Security Check
+        const secretKey = req.headers['x-admin-secret'];
+        const MASTER_KEY = 'TASFIYA_MASTER_KEY_2025'; // المفتاح السري
+
+        if (secretKey !== MASTER_KEY) {
+            console.warn('⚠️ [SECURITY] محاولة غير مصرح بها لعمل إعادة ضبط المصنع');
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ success: false, error: 'غير مصرح: مفتاح الأمان غير صحيح' }));
+            return;
+        }
+
+        console.log('🚨 [DANGER] بدء عملية إعادة ضبط المصنع للسيرفر...');
+
+        try {
+            // 2. Clear All Data Tables (Keep settings and structure)
+            const tablesToClear = [
+                'reconciliation_requests',
+                'reconciliations',
+                'customer_receipts',
+                'postpaid_sales',
+                'manual_customer_receipts',
+                'manual_postpaid_sales',
+                'cash_receipts',
+                'bank_receipts',
+                'return_invoices',
+                'suppliers'
+            ];
+
+            const db = this.dbManager.db;
+
+            // Execute in Transaction
+            db.transaction(() => {
+                tablesToClear.forEach(table => {
+                    try {
+                        db.prepare(`DELETE FROM ${table}`).run();
+                        // Reset Sequence/ID if possible (for SQLite)
+                        try {
+                            db.prepare(`DELETE FROM sqlite_sequence WHERE name='${table}'`).run();
+                        } catch (e) { /* Ignore if sqlite_sequence doesn't exist or track this table */ }
+                    } catch (err) {
+                        console.error(`Error clearing ${table}:`, err.message);
+                    }
+                });
+            })();
+
+            /* Also clear users if needed, but usually we keep admins */
+            /* db.prepare("DELETE FROM users WHERE role != 'admin'").run(); */
+
+            console.log('✅ [RESET] تم مسح جميع البيانات بنجاح');
+
+            // Send OneSignal Notification to announce Reset
+            await this.sendOneSignalNotification(
+                '⚠️ تنبيه إداري',
+                'تم تنفيذ عملية إعادة ضبط المصنع للنظام. جميع البيانات تم مسحها.',
+                { type: 'system_reset' }
+            );
+
+            this.sendJson(res, { success: true, message: 'تم إعادة ضبط المصنع بنجاح' });
+
+        } catch (error) {
+            console.error('❌ [RESET] خطأ حرج:', error);
+            this.sendJson(res, { success: false, error: error.message });
+        }
     }
 
     async handleGetReconciliationRequests(res, query = {}) {
