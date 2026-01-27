@@ -77,6 +77,12 @@
         if (!userStr) window.location.href = '/login.html';
         const user = JSON.parse(userStr);
 
+        // Permission Check
+        const isAllowed = (user.role === 'admin') || (user.permissions && user.permissions.includes('reconciliation-requests.html'));
+        if (!isAllowed) {
+            window.location.href = 'index.html';
+        }
+
         // Initialize OneSignal Logic (Official)
         // 1. Official Callback
         window.median_onesignal_info = function (data) {
