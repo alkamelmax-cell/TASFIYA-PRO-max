@@ -410,13 +410,16 @@
 
             // Set Checkboxes
             document.querySelectorAll('.permission-check').forEach(cb => cb.checked = false);
+
+            // Logic Fix: Trust permissions array if it exists (even if empty)
             if (u.permissions && Array.isArray(u.permissions)) {
                 u.permissions.forEach(p => {
                     const cb = document.querySelector(`.permission-check[value="${p}"]`);
                     if (cb) cb.checked = true;
                 });
-            } else if (u.role === 'admin') {
-                // Legacy admin - check all
+            } else if (u.role === 'admin' && (!u.permissions)) {
+                // Legacy admin (null permissions) - check all
+                // Only if permissions is strictly missing/null
                 document.querySelectorAll('.permission-check').forEach(cb => cb.checked = true);
             }
 
