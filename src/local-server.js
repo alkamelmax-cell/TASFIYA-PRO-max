@@ -254,23 +254,6 @@ class LocalWebServer {
                     res.end(JSON.stringify(result));
                     return;
                 }
-
-                // TEMP RESET ROUTE (TO BE DELETED)
-                else if (pathname === '/api/temp-reset-now') {
-                    const pool = this.dbManager.pool; // Only work on Postgres/Render
-                    if (!pool) {
-                        this.sendJson(res, { success: false, error: 'Not Cloud Database' });
-                        return;
-                    }
-                    try {
-                        const tables = ['reconciliation_requests', 'reconciliations', 'customer_receipts', 'postpaid_sales', 'manual_customer_receipts', 'manual_postpaid_sales', 'cash_receipts', 'bank_receipts', 'return_invoices', 'suppliers'];
-                        for (const t of tables) await pool.query(`DELETE FROM ${t}`);
-                        this.sendJson(res, { success: true, message: 'CLOUD DB RESET DONE' });
-                    } catch (e) {
-                        this.sendJson(res, { success: false, error: e.message });
-                    }
-                    return;
-                }
                 else {
                     res.writeHead(404, { 'Content-Type': 'text/plain' });
                     res.end('Not Found');
