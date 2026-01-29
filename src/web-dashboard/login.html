@@ -349,7 +349,7 @@
         async function loadCashiers() {
             if (cashiersLoaded) return;
             try {
-                const res = await fetch('/api/lookups');
+                const res = await fetch('/api/lookups', { cache: 'no-store' });
                 const data = await res.json();
                 if (data.success && data.cashiers) {
                     const select = document.getElementById('cashierSelect');

@@ -525,7 +525,7 @@
         async function openDetails(id) {
             showLoading(true);
             try {
-                const res = await fetch(`${API_URL}/reconciliation/${id}`);
+                const res = await fetch(`${API_URL}/reconciliation/${id}`, { cache: 'no-store' });
                 const result = await res.json();
                 if (result.success) renderModalContent(result.data);
                 const modal = new bootstrap.Modal(document.getElementById('detailsModal'));

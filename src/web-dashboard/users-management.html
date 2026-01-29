@@ -316,7 +316,7 @@
 
         async function loadUsers() {
             try {
-                const res = await fetch(`${API_URL}/users`);
+                const res = await fetch(`${API_URL}/users`, { cache: 'no-store' });
                 const result = await res.json();
 
                 console.log('👥 [USERS] Full API Response:', JSON.stringify(result, null, 2)); // Detailed debugging

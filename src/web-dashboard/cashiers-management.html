@@ -195,7 +195,7 @@
 
         async function loadCashiers() {
             try {
-                const res = await fetch(`${API_URL}/lookups`);
+                const res = await fetch(`${API_URL}/lookups`, { cache: 'no-store' });
                 const result = await res.json();
 
                 if (result.success && result.cashiers) {
