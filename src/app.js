@@ -19255,4 +19255,132 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 });
 
+// ===================================================
+// Handle Save Reconciliation - MISSING FUNCTION FIX
+// ===================================================
+async function handleSaveReconciliation() {
+    if (!currentReconciliation) {
+        DialogUtils.showValidationError('لا توجد تصفية حالية للحفظ');
+        return;
+    }
+
+    try {
+        console.log('💾 [SAVE] بدء حفظ التصفية...');
+
+        // Get system sales value
+        const systemSales = parseFloat(document.getElementById('systemSales').value) || 0;
+
+        // Update reconciliation with system sales
+        await ipcRenderer.invoke('db-run',
+            'UPDATE reconciliations SET system_sales = ? WHERE id = ?',
+            [systemSales, currentReconciliation.id]
+        );
+
+        console.log('✅ [SAVE] تم حفظ التصفية بنجاح - ID:', currentReconciliation.id);
+
+        // If this was from a web request, mark it as completed
+        if (currentReconciliation.originRequestId) {
+            try {
+                console.log('🌐 [SAVE] تحديث حالة طلب الويب...');
+                const response = await fetch(`http://localhost:4000/api/reconciliation-requests/${currentReconciliation.originRequestId}/complete`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' }
+                });
+
+                if (response.ok) {
+                    console.log('✅ [SAVE] تم تحديث حالة الطلب على الويب');
+
+                    // Dispatch event for requests manager
+                    window.dispatchEvent(new CustomEvent('reconciliation-saved', {
+                        detail: { originRequestId: currentReconciliation.originRequestId }
+                    }));
+                } else {
+                    console.warn('⚠️ [SAVE] فشل في تحديث حالة الطلب على الويب');
+                }
+            } catch (error) {
+                console.warn('⚠️ [SAVE] خطأ في الاتصال بخادم الويب:', error);
+            }
+        }
+
+        DialogUtils.showSuccessToast('تم حفظ التصفية بنجاح');
+
+        // Show completion summary
+        const totalFound = calculateTotalFound();
+        const difference = totalFound - systemSales;
+
+        await Swal.fire({
+            icon: 'success',
+            title: '✅ تم حفظ التصفية بنجاح',
+            html: `
+                <div class="text-end" style="direction: rtl;">
+                    <p><strong>رقم التصفية:</strong> ${currentReconciliation.reconciliation_number || currentReconciliation.id}</p>
+                    <p><strong>مبيعات النظام:</strong> ${systemSales.toLocaleString('en-US', { minimumFractionDigits: 2 })} ريال</p>
+                    <p><strong>الموجود الفعلي:</strong> ${totalFound.toLocaleString('en-US', { minimumFractionDigits: 2 })} ريال</p>
+                    <p><strong>الفارق:</strong> <span style="color: ${difference >= 0 ? 'green' : 'red'}; font-weight: bold;">${difference.toLocaleString('en-US', { minimumFractionDigits: 2 })} ريال</span></p>
+                </div>
+            `,
+            confirmButtonText: 'حسناً',
+            confirmButtonColor: '#10b981'
+        });
+
+        // Reset to allow new reconciliation
+        resetSystemToNewReconciliationState();
+
+    } catch (error) {
+        console.error('❌ [SAVE] خطأ في حفظ التصفية:', error);
+        DialogUtils.showError('حدث خطأ أثناء حفظ التصفية: ' + error.message, 'خطأ في الحفظ');
+    }
+}
+
+// Helper function to calculate total found
+function calculateTotalFound() {
+    const totalCash = cashReceipts.reduce((sum, r) => sum + (r.total || 0), 0);
+    const totalBank = bankReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+    const totalPostpaid = postpaidSales.reduce((sum, r) => sum + (r.amount || 0), 0);
+    const totalCustomerReceipts = customerReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
+    const totalReturns = returnInvoices.reduce((sum, r) => sum + (r.amount || 0), 0);
+
+    return totalCash + totalBank + totalPostpaid + totalCustomerReceipts - totalReturns;
+}
+
+// Helper function to reset system to new reconciliation state
+function resetSystemToNewReconciliationState() {
+    // Clear current reconciliation
+    currentReconciliation = null;
+
+    // Reset all data arrays
+    bankReceipts = [];
+    cashReceipts = [];
+    postpaidSales = [];
+    customerReceipts = [];
+    returnInvoices = [];
+    suppliers = [];
+
+    // Clear all tables
+    updateBankReceiptsTable();
+    updateCashReceiptsTable();
+    updatePostpaidSalesTable();
+    updateCustomerReceiptsTable();
+    updateReturnInvoicesTable();
+    updateSuppliersTable();
+    updateSummary();
+
+    // Reset forms
+    document.getElementById('newReconciliationForm').reset();
+    document.getElementById('systemSales').value = '';
+    document.getElementById('reconciliationDate').value = new Date().toISOString().split('T')[0];
+
+    // Hide current reconciliation info
+    const infoDiv = document.getElementById('currentReconciliationInfo');
+    if (infoDiv) {
+        infoDiv.style.display = 'none';
+    }
+
+    // Update button states
+    updateButtonStates('INITIAL');
+
+    console.log('🔄 [RESET] تمت إعادة تعيين النظام للحالة الأولية');
+}
+
 console.log('✅ Web Sync Control UI initialized');
+
