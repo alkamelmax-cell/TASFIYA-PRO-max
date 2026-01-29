@@ -2061,6 +2061,49 @@ class LocalWebServer {
     }
 
 
+
+    async handleGetReconciliationRequests(res, query) {
+        try {
+            // Filter by status by default (pending only) unless specified
+            let statusFilter = 'pending';
+            if (query && query.status) statusFilter = query.status;
+
+            let sql = 'SELECT * FROM reconciliation_requests';
+            const params = [];
+
+            if (statusFilter !== 'all') {
+                sql += ' WHERE status = ?';
+                params.push(statusFilter);
+            }
+
+            sql += ' ORDER BY created_at DESC';
+
+            const requests = this.dbManager.db.prepare(sql).all(...params);
+
+            // Resolve cashier names
+            const cashierStmt = this.dbManager.db.prepare('SELECT name FROM cashiers WHERE id = ?');
+
+            const enrichedRequests = requests.map(req => {
+                let cashierName = 'غير معروف';
+                if (req.cashier_id) {
+                    const c = cashierStmt.get(req.cashier_id);
+                    if (c) cashierName = c.name;
+                }
+
+                return {
+                    ...req,
+                    cashier_name: cashierName,
+                    details: req.details_json ? JSON.parse(req.details_json) : {}
+                };
+            });
+
+            this.sendJson(res, { success: true, data: enrichedRequests });
+        } catch (error) {
+            console.error('Error fetching requests:', error);
+            this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
     // Mark reconciliation request as completed (used by Desktop App)
     async handleCompleteReconciliationRequest(res, id) {
         try {
