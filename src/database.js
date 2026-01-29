@@ -640,6 +640,51 @@ class DatabaseManager {
     } catch (error) {
       console.error('❌ [DB] خطأ في إضافة عمود الملاحظات إلى جدول المقبوضات:', error);
     }
+
+    // Migration: Add missing columns to suppliers table
+    try {
+      console.log('🔄 [DB] فحص جدول الموردين لإضافة الأعمدة المفقودة...');
+
+      const suppliersTableInfo = this.db.prepare("PRAGMA table_info(suppliers)").all();
+      const hasInvoiceNumber = suppliersTableInfo.some(col => col.name === 'invoice_number');
+      const hasNotes = suppliersTableInfo.some(col => col.name === 'notes');
+
+      if (!hasInvoiceNumber) {
+        console.log('🔄 [DB] إضافة عمود invoice_number إلى جدول الموردين...');
+        this.db.exec(`ALTER TABLE suppliers ADD COLUMN invoice_number TEXT`);
+        console.log('✅ [DB] تم إضافة عمود invoice_number إلى جدول الموردين بنجاح');
+      }
+
+      if (!hasNotes) {
+        console.log('🔄 [DB] إضافة عمود notes إلى جدول الموردين...');
+        this.db.exec(`ALTER TABLE suppliers ADD COLUMN notes TEXT`);
+        console.log('✅ [DB] تم إضافة عمود notes إلى جدول الموردين بنجاح');
+      }
+
+      if (hasInvoiceNumber && hasNotes) {
+        console.log('ℹ️ [DB] جميع الأعمدة موجودة في جدول الموردين');
+      }
+    } catch (error) {
+      console.error('❌ [DB] خطأ في إضافة الأعمدة إلى جدول الموردين:', error);
+    }
+
+    // Migration: Add missing notes column to return_invoices table
+    try {
+      console.log('🔄 [DB] فحص جدول المرتجعات لإضافة عمود الملاحظات...');
+
+      const returnInvoicesTableInfo = this.db.prepare("PRAGMA table_info(return_invoices)").all();
+      const hasNotes = returnInvoicesTableInfo.some(col => col.name === 'notes');
+
+      if (!hasNotes) {
+        console.log('🔄 [DB] إضافة عمود notes إلى جدول المرتجعات...');
+        this.db.exec(`ALTER TABLE return_invoices ADD COLUMN notes TEXT`);
+        console.log('✅ [DB] تم إضافة عمود notes إلى جدول المرتجعات بنجاح');
+      } else {
+        console.log('ℹ️ [DB] عمود الملاحظات موجود بالفعل في جدول المرتجعات');
+      }
+    } catch (error) {
+      console.error('❌ [DB] خطأ في إضافة عمود الملاحظات إلى جدول المرتجعات:', error);
+    }
   }
 
   insertDefaultData() {
