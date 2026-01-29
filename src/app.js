@@ -19348,10 +19348,31 @@ async function handleSaveReconciliation() {
         const systemSales = parseFloat(document.getElementById('systemSales').value) || 0;
 
         // Update reconciliation with system sales
+        // Update reconciliation with system sales AND status
+        // First, check if it needs a number
+        let recNumber = currentReconciliation.reconciliation_number;
+
+        if (!recNumber) {
+            // Get max number
+            const maxResult = await ipcRenderer.invoke('db-get',
+                'SELECT MAX(reconciliation_number) as max_num FROM reconciliations'
+            );
+            recNumber = (maxResult.max_num || 0) + 1;
+        }
+
         await ipcRenderer.invoke('db-run',
-            'UPDATE reconciliations SET system_sales = ? WHERE id = ?',
-            [systemSales, currentReconciliation.id]
+            `UPDATE reconciliations 
+             SET system_sales = ?, 
+                 status = 'completed', 
+                 reconciliation_number = ?,
+                 updated_at = CURRENT_TIMESTAMP 
+             WHERE id = ?`,
+            [systemSales, recNumber, currentReconciliation.id]
         );
+
+        // Update local object
+        currentReconciliation.status = 'completed';
+        currentReconciliation.reconciliation_number = recNumber;
 
         console.log('✅ [SAVE] تم حفظ التصفية بنجاح - ID:', currentReconciliation.id);
 
@@ -19411,13 +19432,15 @@ async function handleSaveReconciliation() {
 
 // Helper function to calculate total found
 function calculateTotalFound() {
-    const totalCash = cashReceipts.reduce((sum, r) => sum + (r.total || 0), 0);
+    const totalCash = cashReceipts.reduce((sum, r) => sum + (r.total_amount || r.total || 0), 0);
     const totalBank = bankReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
     const totalPostpaid = postpaidSales.reduce((sum, r) => sum + (r.amount || 0), 0);
     const totalCustomerReceipts = customerReceipts.reduce((sum, r) => sum + (r.amount || 0), 0);
     const totalReturns = returnInvoices.reduce((sum, r) => sum + (r.amount || 0), 0);
 
-    return totalCash + totalBank + totalPostpaid + totalCustomerReceipts - totalReturns;
+    // FORMULA MATCHING updateSummary:
+    // Total Found = Bank + Cash + Postpaid + Returns - Customer Receipts
+    return totalBank + totalCash + totalPostpaid + totalReturns - totalCustomerReceipts;
 }
 
 // Helper function to reset system to new reconciliation state
