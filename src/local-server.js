@@ -75,7 +75,7 @@ class LocalWebServer {
                 console.log(`📨 [REQUEST] ${req.method} ${pathname}`);
                 // Serve Static Files
                 // Serve Static Files
-                if (pathname.endsWith('.js') || pathname.startsWith('/css/') || pathname.startsWith('/js/') || pathname.startsWith('/assets/')) {
+                if (pathname.endsWith('.js') || pathname.endsWith('.json') || pathname.startsWith('/css/') || pathname.startsWith('/js/') || pathname.startsWith('/assets/')) {
                     this.serveStatic(res, pathname);
                     return;
                 }
@@ -311,6 +311,8 @@ class LocalWebServer {
         if (ext === '.png') contentType = 'image/png';
         if (ext === '.jpg') contentType = 'image/jpeg';
         if (ext === '.svg') contentType = 'image/svg+xml';
+        if (ext === '.json') contentType = 'application/json';
+        if (path.basename(filePath) === 'manifest.json') contentType = 'application/manifest+json';
 
         this.serveFile(res, filePath, contentType);
     }

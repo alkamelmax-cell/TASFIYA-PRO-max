@@ -1,7 +1,8 @@
 // Service Worker for Tasfiya Pro PWA
-// Version: 2.0 - Clean & Professional
+// Version: 2.1 - Clean & Professional + OneSignal Support
+importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDKWorker.js');
 
-const CACHE_NAME = 'tasfiya-pro-v2';
+const CACHE_NAME = 'tasfiya-pro-v2.1';
 const STATIC_ASSETS = [
     '/index.html',
     '/login.html',
