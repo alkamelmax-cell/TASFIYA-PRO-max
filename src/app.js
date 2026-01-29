@@ -19009,15 +19009,36 @@ window.appAPI = {
         if (el) el.value = notes;
     },
 
-    addCashReceipt: (val, qty) => {
+    addCashReceipt: async (val, qty) => {
+        if (!currentReconciliation || !currentReconciliation.id) {
+            console.warn('⚠️ No active reconciliation to add cash receipt to');
+            return;
+        }
+
         const total = val * qty;
-        cashReceipts.push({
-            id: Date.now() + Math.floor(Math.random() * 1000),
-            denomination: val,
-            quantity: qty,
-            total_amount: total
-        });
-        updateCashReceiptsTable();
+
+        try {
+            // Save to database
+            const result = await ipcRenderer.invoke('db-run',
+                'INSERT INTO cash_receipts (reconciliation_id, denomination, quantity, total_amount) VALUES (?, ?, ?, ?)',
+                [currentReconciliation.id, val, qty, total]
+            );
+
+            // Add to memory
+            cashReceipts.push({
+                id: result.lastInsertRowid,
+                reconciliation_id: currentReconciliation.id,
+                denomination: val,
+                quantity: qty,
+                total_amount: total
+            });
+
+            updateCashReceiptsTable();
+            updateSummary();
+            console.log('✅ Cash receipt saved to database');
+        } catch (error) {
+            console.error('❌ Error saving cash receipt:', error);
+        }
     },
 
     addBankReceipt: (amount) => {
@@ -19044,61 +19065,116 @@ console.log('✅ AppAPI exposed for external modules');
 
 Object.assign(window.appAPI, {
     // Add Postpaid Sale (مبيعات آجلة)
-    addPostpaidSale: (customerName, amount) => {
-        postpaidSales.push({
-            id: Date.now() + Math.random(),
-            customer_name: customerName,
-            amount: parseFloat(amount)
-        });
-        updatePostpaidSalesTable();
+    addPostpaidSale: async (customerName, amount) => {
+        if (!currentReconciliation || !currentReconciliation.id) return;
+        try {
+            const result = await ipcRenderer.invoke('db-run',
+                'INSERT INTO postpaid_sales (reconciliation_id, customer_name, amount) VALUES (?, ?, ?)',
+                [currentReconciliation.id, customerName, parseFloat(amount)]
+            );
+            postpaidSales.push({
+                id: result.lastInsertRowid,
+                reconciliation_id: currentReconciliation.id,
+                customer_name: customerName,
+                amount: parseFloat(amount)
+            });
+            updatePostpaidSalesTable();
+            updateSummary();
+        } catch (error) {
+            console.error('❌ Error saving postpaid sale:', error);
+        }
     },
 
     // Add Customer Receipt (مقبوضات عملاء)
-    addCustomerReceipt: (customerName, amount, paymentType, notes) => {
-        customerReceipts.push({
-            id: Date.now() + Math.random(),
-            customer_name: customerName,
-            amount: parseFloat(amount),
-            payment_type: paymentType || 'cash',
-            notes: notes || ''
-        });
-        updateCustomerReceiptsTable();
+    addCustomerReceipt: async (customerName, amount, paymentType, notes) => {
+        if (!currentReconciliation || !currentReconciliation.id) return;
+        try {
+            const result = await ipcRenderer.invoke('db-run',
+                'INSERT INTO customer_receipts (reconciliation_id, customer_name, amount, payment_type, notes) VALUES (?, ?, ?, ?, ?)',
+                [currentReconciliation.id, customerName, parseFloat(amount), paymentType || 'cash', notes || '']
+            );
+            customerReceipts.push({
+                id: result.lastInsertRowid,
+                reconciliation_id: currentReconciliation.id,
+                customer_name: customerName,
+                amount: parseFloat(amount),
+                payment_type: paymentType || 'cash',
+                notes: notes || ''
+            });
+            updateCustomerReceiptsTable();
+            updateSummary();
+        } catch (error) {
+            console.error('❌ Error saving customer receipt:', error);
+        }
     },
 
     // Add Return Invoice (مرتجع)
-    addReturnInvoice: (invoiceNo, amount, notes) => {
-        returnInvoices.push({
-            id: Date.now() + Math.random(),
-            invoice_number: invoiceNo,
-            amount: parseFloat(amount),
-            notes: notes || ''
-        });
-        updateReturnInvoicesTable();
+    addReturnInvoice: async (invoiceNo, amount, notes) => {
+        if (!currentReconciliation || !currentReconciliation.id) return;
+        try {
+            const result = await ipcRenderer.invoke('db-run',
+                'INSERT INTO return_invoices (reconciliation_id, invoice_number, amount, notes) VALUES (?, ?, ?, ?)',
+                [currentReconciliation.id, invoiceNo, parseFloat(amount), notes || '']
+            );
+            returnInvoices.push({
+                id: result.lastInsertRowid,
+                reconciliation_id: currentReconciliation.id,
+                invoice_number: invoiceNo,
+                amount: parseFloat(amount),
+                notes: notes || ''
+            });
+            updateReturnInvoicesTable();
+            updateSummary();
+        } catch (error) {
+            console.error('❌ Error saving return invoice:', error);
+        }
     },
 
     // Add Supplier/Expense (موردين/مصروفات)
-    addSupplier: (supplierName, invoiceNo, amount, vat, notes) => {
-        suppliers.push({
-            id: Date.now() + Math.random(),
-            supplier_name: supplierName,
-            invoice_number: invoiceNo,
-            amount: parseFloat(amount),
-            vat_amount: parseFloat(vat) || 0,
-            notes: notes || ''
-        });
-        updateSuppliersTable();
+    addSupplier: async (supplierName, invoiceNo, amount, vat, notes) => {
+        if (!currentReconciliation || !currentReconciliation.id) return;
+        try {
+            const result = await ipcRenderer.invoke('db-run',
+                'INSERT INTO suppliers (reconciliation_id, supplier_name, invoice_number, amount, vat_amount, notes) VALUES (?, ?, ?, ?, ?, ?)',
+                [currentReconciliation.id, supplierName, invoiceNo, parseFloat(amount), parseFloat(vat) || 0, notes || '']
+            );
+            suppliers.push({
+                id: result.lastInsertRowid,
+                reconciliation_id: currentReconciliation.id,
+                supplier_name: supplierName,
+                invoice_number: invoiceNo,
+                amount: parseFloat(amount),
+                vat_amount: parseFloat(vat) || 0,
+                notes: notes || ''
+            });
+            updateSuppliersTable();
+            updateSummary();
+        } catch (error) {
+            console.error('❌ Error saving supplier:', error);
+        }
     },
 
     // Add Bank Receipt with Details
-    addDetailedBankReceipt: (atmName, bankName, amount, operationType) => {
-        bankReceipts.push({
-            id: Date.now() + Math.random(),
-            operation_type: operationType || 'settlement',
-            atm_name: atmName,
-            bank_name: bankName,
-            amount: parseFloat(amount)
-        });
-        updateBankReceiptsTable();
+    addDetailedBankReceipt: async (atmName, bankName, amount, operationType) => {
+        if (!currentReconciliation || !currentReconciliation.id) return;
+        try {
+            const result = await ipcRenderer.invoke('db-run',
+                'INSERT INTO bank_receipts (reconciliation_id, operation_type, amount, atm_id) VALUES (?, ?, ?, NULL)',
+                [currentReconciliation.id, operationType || 'settlement', parseFloat(amount)]
+            );
+            bankReceipts.push({
+                id: result.lastInsertRowid,
+                reconciliation_id: currentReconciliation.id,
+                operation_type: operationType || 'settlement',
+                atm_name: atmName,
+                bank_name: bankName,
+                amount: parseFloat(amount)
+            });
+            updateBankReceiptsTable();
+            updateSummary();
+        } catch (error) {
+            console.error('❌ Error saving bank receipt:', error);
+        }
     }
 });
 
