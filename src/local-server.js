@@ -208,6 +208,11 @@ class LocalWebServer {
                     await this.handleApproveReconciliationRequest(res, id, req);
                     return;
                 }
+                else if (pathname.match(/^\/api\/reconciliation-requests\/\d+\/complete$/) && req.method === 'POST') {
+                    const id = pathname.split('/')[3]; // /api/reconciliation-requests/ID/complete
+                    await this.handleCompleteReconciliationRequest(res, id);
+                    return;
+                }
                 else if (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && req.method === 'DELETE') {
                     const id = pathname.split('/').pop();
                     await this.handleDeleteReconciliationRequest(res, id);
@@ -2054,6 +2059,29 @@ class LocalWebServer {
             console.error('❌ [sendJson] Cannot send - headers already sent!');
         }
     }
+
+
+    // Mark reconciliation request as completed (used by Desktop App)
+    async handleCompleteReconciliationRequest(res, id) {
+        try {
+            console.log(`📝 [API] Completing reconciliation request: ${id}`);
+
+            const stmt = this.dbManager.db.prepare('UPDATE reconciliation_requests SET status = "completed", updated_at = CURRENT_TIMESTAMP WHERE id = ?');
+            const result = stmt.run(id);
+
+            if (result.changes > 0) {
+                console.log(`✅ [API] Request ${id} updated to completed`);
+                this.sendJson(res, { success: true, message: 'Request marked as completed' });
+            } else {
+                console.warn(`⚠️ [API] Request ${id} not found to update`);
+                this.sendJson(res, { success: false, error: 'Request not found' });
+            }
+        } catch (error) {
+            console.error('❌ [API] Error completing request:', error);
+            this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
     async handleDebugDB(res) {
         try {
             const db = this.dbManager.db;
