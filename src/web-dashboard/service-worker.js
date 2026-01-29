@@ -1,6 +1,8 @@
 // Service Worker for Tasfiya Pro PWA
-const CACHE_NAME = 'tasfiya-pro-v1';
-const urlsToCache = [
+// Version: 2.0 - Clean & Professional
+
+const CACHE_NAME = 'tasfiya-pro-v2';
+const STATIC_ASSETS = [
     '/index.html',
     '/login.html',
     '/css/custom.css',
@@ -10,16 +12,17 @@ const urlsToCache = [
     '/assets/icon-512.png'
 ];
 
-// Install event - cache essential files
+// Install event - cache only static assets
 self.addEventListener('install', (event) => {
+    console.log('🔧 [SW] Installing Service Worker v2.0');
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => {
-                console.log('Opened cache');
-                return cache.addAll(urlsToCache);
+                console.log('✅ [SW] Caching static assets');
+                return cache.addAll(STATIC_ASSETS);
             })
             .catch((error) => {
-                console.log('Cache install failed:', error);
+                console.error('❌ [SW] Cache install failed:', error);
             })
     );
     self.skipWaiting();
@@ -27,12 +30,13 @@ self.addEventListener('install', (event) => {
 
 // Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
+    console.log('🔄 [SW] Activating Service Worker v2.0');
     event.waitUntil(
         caches.keys().then((cacheNames) => {
             return Promise.all(
                 cacheNames.map((cacheName) => {
                     if (cacheName !== CACHE_NAME) {
-                        console.log('Deleting old cache:', cacheName);
+                        console.log('🗑️ [SW] Deleting old cache:', cacheName);
                         return caches.delete(cacheName);
                     }
                 })
@@ -42,37 +46,49 @@ self.addEventListener('activate', (event) => {
     self.clients.claim();
 });
 
-// Fetch event - serve from cache, fallback to network
+// Fetch event - NEVER cache API requests
 self.addEventListener('fetch', (event) => {
+    const url = new URL(event.request.url);
+
+    // Strategy 1: API Requests - ALWAYS fetch from network, NEVER cache
+    if (url.pathname.startsWith('/api/')) {
+        console.log('🌐 [SW] API Request - Network Only:', url.pathname);
+        event.respondWith(
+            fetch(event.request)
+                .catch((error) => {
+                    console.error('❌ [SW] API Request failed:', error);
+                    return new Response(
+                        JSON.stringify({ success: false, error: 'Network error' }),
+                        { headers: { 'Content-Type': 'application/json' } }
+                    );
+                })
+        );
+        return;
+    }
+
+    // Strategy 2: Static Assets - Cache first, fallback to network
     event.respondWith(
         caches.match(event.request)
-            .then((response) => {
-                // Cache hit - return response
-                if (response) {
-                    return response;
+            .then((cachedResponse) => {
+                if (cachedResponse) {
+                    console.log('📦 [SW] Serving from cache:', url.pathname);
+                    return cachedResponse;
                 }
-                // Clone the request
-                const fetchRequest = event.request.clone();
 
-                return fetch(fetchRequest).then((response) => {
-                    // Check if valid response
-                    if (!response || response.status !== 200 || response.type !== 'basic') {
-                        return response;
-                    }
-
-                    // Clone the response
-                    const responseToCache = response.clone();
-
-                    caches.open(CACHE_NAME)
-                        .then((cache) => {
+                console.log('🌐 [SW] Fetching from network:', url.pathname);
+                return fetch(event.request).then((response) => {
+                    // Only cache successful responses for static assets
+                    if (response && response.status === 200 && response.type === 'basic') {
+                        const responseToCache = response.clone();
+                        caches.open(CACHE_NAME).then((cache) => {
                             cache.put(event.request, responseToCache);
                         });
-
+                    }
                     return response;
                 });
             })
             .catch(() => {
-                // Return offline page if available
+                console.log('🔌 [SW] Offline - serving fallback');
                 return caches.match('/index.html');
             })
     );
