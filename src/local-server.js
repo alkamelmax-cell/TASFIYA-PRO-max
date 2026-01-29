@@ -287,7 +287,14 @@ class LocalWebServer {
                     res.end('Error loading file');
                 }
             } else {
-                res.writeHead(200, { 'Content-Type': contentType });
+                // Prevent caching for HTML files to ensure updates are always loaded
+                const headers = { 'Content-Type': contentType };
+                if (contentType === 'text/html') {
+                    headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+                    headers['Pragma'] = 'no-cache';
+                    headers['Expires'] = '0';
+                }
+                res.writeHead(200, headers);
                 res.end(content, 'utf-8');
             }
         });
@@ -2053,7 +2060,12 @@ class LocalWebServer {
     sendJson(res, data) {
         console.log('📤 [sendJson] Sending:', Object.keys(data), res.headersSent ? '⚠️ Headers already sent!' : '✅ OK');
         if (!res.headersSent) {
-            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-cache, no-store, must-revalidate',
+                'Pragma': 'no-cache',
+                'Expires': '0'
+            });
             res.end(JSON.stringify(data));
         } else {
             console.error('❌ [sendJson] Cannot send - headers already sent!');
