@@ -2095,9 +2095,23 @@ class LocalWebServer {
             console.log('📋 [API] SQL:', sql, 'Params:', params);
 
             // Fix: Use .all() correctly - pass params as array if empty, or spread if not
-            const requests = params.length > 0
-                ? this.dbManager.db.prepare(sql).all(...params)
-                : this.dbManager.db.prepare(sql).all();
+            let requests;
+            try {
+                if (params.length > 0) {
+                    requests = this.dbManager.db.prepare(sql).all(...params);
+                } else {
+                    requests = this.dbManager.db.prepare(sql).all();
+                }
+            } catch (dbError) {
+                console.error('❌ [API] DB Query Error:', dbError);
+                requests = [];
+            }
+
+            // Ensure requests is an array
+            if (!Array.isArray(requests)) {
+                console.warn('⚠️ [API] DB returned non-array:', requests);
+                requests = [];
+            }
 
             console.log(`📋 [API] Found ${requests.length} requests`);
 
