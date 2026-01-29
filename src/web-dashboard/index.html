@@ -367,7 +367,7 @@
 
         async function loadLookups() {
             try {
-                const res = await fetch(`${API_URL}/lookups`);
+                const res = await fetch(`${API_URL}/lookups`, { cache: 'no-store' });
                 const data = await res.json();
                 if (data.success) {
                     const branchSelect = document.getElementById('filterBranch');
@@ -433,10 +433,10 @@
 
             showLoading(true);
             try {
-                // Fetch Data and Stats in parallel
+                // Fetch Data and Stats in parallel (with cache disabled)
                 const [listRes, statsRes] = await Promise.all([
-                    fetch(`${API_URL}/reconciliations?${params.toString()}`),
-                    fetch(`${API_URL}/reconciliations/stats?${statsParams.toString()}`)
+                    fetch(`${API_URL}/reconciliations?${params.toString()}`, { cache: 'no-store' }),
+                    fetch(`${API_URL}/reconciliations/stats?${statsParams.toString()}`, { cache: 'no-store' })
                 ]);
 
                 const listResult = await listRes.json();
