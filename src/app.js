@@ -19125,6 +19125,7 @@ Object.assign(window.appAPI, {
             });
             updateReturnInvoicesTable();
             updateSummary();
+            console.log('✅ Return invoice saved to database');
         } catch (error) {
             console.error('❌ Error saving return invoice:', error);
         }
@@ -19135,20 +19136,20 @@ Object.assign(window.appAPI, {
         if (!currentReconciliation || !currentReconciliation.id) return;
         try {
             const result = await ipcRenderer.invoke('db-run',
-                'INSERT INTO suppliers (reconciliation_id, supplier_name, invoice_number, amount, vat_amount, notes) VALUES (?, ?, ?, ?, ?, ?)',
-                [currentReconciliation.id, supplierName, invoiceNo, parseFloat(amount), parseFloat(vat) || 0, notes || '']
+                'INSERT INTO suppliers (reconciliation_id, supplier_name, invoice_number, amount, notes) VALUES (?, ?, ?, ?, ?)',
+                [currentReconciliation.id, supplierName, invoiceNo || '', parseFloat(amount), notes || '']
             );
             suppliers.push({
                 id: result.lastInsertRowid,
                 reconciliation_id: currentReconciliation.id,
                 supplier_name: supplierName,
-                invoice_number: invoiceNo,
+                invoice_number: invoiceNo || '',
                 amount: parseFloat(amount),
-                vat_amount: parseFloat(vat) || 0,
                 notes: notes || ''
             });
             updateSuppliersTable();
             updateSummary();
+            console.log('✅ Supplier saved to database');
         } catch (error) {
             console.error('❌ Error saving supplier:', error);
         }
