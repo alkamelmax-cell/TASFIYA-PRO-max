@@ -2076,6 +2076,8 @@ class LocalWebServer {
 
     async handleGetReconciliationRequests(res, query) {
         try {
+            console.log('📋 [API] Getting reconciliation requests, query:', query);
+
             // Filter by status by default (pending only) unless specified
             let statusFilter = 'pending';
             if (query && query.status) statusFilter = query.status;
@@ -2090,7 +2092,14 @@ class LocalWebServer {
 
             sql += ' ORDER BY created_at DESC';
 
-            const requests = this.dbManager.db.prepare(sql).all(...params);
+            console.log('📋 [API] SQL:', sql, 'Params:', params);
+
+            // Fix: Use .all() correctly - pass params as array if empty, or spread if not
+            const requests = params.length > 0
+                ? this.dbManager.db.prepare(sql).all(...params)
+                : this.dbManager.db.prepare(sql).all();
+
+            console.log(`📋 [API] Found ${requests.length} requests`);
 
             // Resolve cashier names
             const cashierStmt = this.dbManager.db.prepare('SELECT name FROM cashiers WHERE id = ?');
@@ -2109,9 +2118,10 @@ class LocalWebServer {
                 };
             });
 
+            console.log('✅ [API] Sending enriched requests');
             this.sendJson(res, { success: true, data: enrichedRequests });
         } catch (error) {
-            console.error('Error fetching requests:', error);
+            console.error('❌ [API] Error fetching requests:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
     }

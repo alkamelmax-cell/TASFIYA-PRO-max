@@ -174,30 +174,43 @@
                 const res = await fetch('/api/reconciliation-requests', { cache: 'no-store' });
                 const data = await res.json();
 
-                if (data.success) {
-                    if (data.data.length === 0) {
-                        const emptyHtml = '<tr><td colspan="5" class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</td></tr>';
-                        tbody.innerHTML = emptyHtml;
-                        cardsContainer.innerHTML = '<div class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</div>';
-                        return;
+                console.log('📋 [Frontend] API Response:', data);
+
+                // Safety check: Ensure data structure is correct
+                if (!data || typeof data !== 'object') {
+                    throw new Error('Invalid response format');
+                }
+
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to load requests');
+                }
+
+                // Safety: Ensure data.data exists and is an array
+                const requests = Array.isArray(data.data) ? data.data : [];
+
+                if (requests.length === 0) {
+                    const emptyHtml = '<tr><td colspan="5" class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</td></tr>';
+                    tbody.innerHTML = emptyHtml;
+                    cardsContainer.innerHTML = '<div class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</div>';
+                    return;
+                }
+
+                // Render Desktop Table
+                tbody.innerHTML = requests.map(req => {
+                    const details = req.details || {};
+                    let cashTotal = Number(req.total_cash);
+                    if (isNaN(cashTotal) || cashTotal === 0) {
+                        cashTotal = (details.cashItems || []).reduce((sum, item) => sum + (Number(item.sub) || 0), 0);
                     }
 
-                    // Render Desktop Table
-                    tbody.innerHTML = data.data.map(req => {
-                        const details = req.details || {};
-                        let cashTotal = Number(req.total_cash);
-                        if (isNaN(cashTotal) || cashTotal === 0) {
-                            cashTotal = (details.cashItems || []).reduce((sum, item) => sum + (Number(item.sub) || 0), 0);
-                        }
+                    // Date Formatting
+                    let dateStr = req.created_at;
+                    if (dateStr && !dateStr.endsWith('Z')) dateStr = dateStr.replace(' ', 'T') + 'Z';
+                    const date = new Date(dateStr);
+                    const formattedDate = date.toLocaleDateString('en-GB');
+                    const formattedTime = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
 
-                        // Date Formatting
-                        let dateStr = req.created_at;
-                        if (dateStr && !dateStr.endsWith('Z')) dateStr = dateStr.replace(' ', 'T') + 'Z';
-                        const date = new Date(dateStr);
-                        const formattedDate = date.toLocaleDateString('en-GB');
-                        const formattedTime = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
-
-                        return `
+                    return `
                             <tr>
                                 <td class="font-monospace fw-bold text-white">#${req.id}</td>
                                 <td class="text-white">
@@ -215,23 +228,23 @@
                                 </td>
                             </tr>
                         `;
-                    }).join('');
+                }).join('');
 
-                    // Render Mobile Cards
-                    cardsContainer.innerHTML = data.data.map(req => {
-                        const details = req.details || {};
-                        let cashTotal = Number(req.total_cash);
-                        if (isNaN(cashTotal) || cashTotal === 0) {
-                            cashTotal = (details.cashItems || []).reduce((sum, item) => sum + (Number(item.sub) || 0), 0);
-                        }
+                // Render Mobile Cards
+                cardsContainer.innerHTML = requests.map(req => {
+                    const details = req.details || {};
+                    let cashTotal = Number(req.total_cash);
+                    if (isNaN(cashTotal) || cashTotal === 0) {
+                        cashTotal = (details.cashItems || []).reduce((sum, item) => sum + (Number(item.sub) || 0), 0);
+                    }
 
-                        let dateStr = req.created_at;
-                        if (dateStr && !dateStr.endsWith('Z')) dateStr = dateStr.replace(' ', 'T') + 'Z';
-                        const date = new Date(dateStr);
-                        const formattedDate = date.toLocaleDateString('en-GB');
-                        const formattedTime = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true }); // AM/PM mostly preferred on mobile
+                    let dateStr = req.created_at;
+                    if (dateStr && !dateStr.endsWith('Z')) dateStr = dateStr.replace(' ', 'T') + 'Z';
+                    const date = new Date(dateStr);
+                    const formattedDate = date.toLocaleDateString('en-GB');
+                    const formattedTime = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true }); // AM/PM mostly preferred on mobile
 
-                        return `
+                    return `
                         <div class="card glass-card mb-3 border border-secondary border-opacity-25 shadow-lg overflow-hidden position-relative">
                             <!-- Card Decoration Line -->
                             <div class="position-absolute top-0 end-0 bottom-0 bg-success" style="width: 4px;"></div>
@@ -264,18 +277,13 @@
                             </div>
                         </div>
                         `;
-                    }).join('');
+                }).join('');
 
-                } else {
-                    const errorHtml = `<tr><td colspan="5" class="text-center text-danger">خطأ: ${data.error}</td></tr>`;
-                    tbody.innerHTML = errorHtml;
-                    cardsContainer.innerHTML = `<div class="alert alert-danger">خطأ: ${data.error}</div>`;
-                }
             } catch (error) {
-                console.error(error);
-                const failHtml = `<tr><td colspan="5" class="text-center text-danger">فشل الاتصال بالخادم</td></tr>`;
+                console.error('❌ [Frontend] Error loading requests:', error);
+                const failHtml = `<tr><td colspan="5" class="text-center text-danger">خطأ: ${error.message || 'فشل الاتصال بالخادم'}</td></tr>`;
                 tbody.innerHTML = failHtml;
-                cardsContainer.innerHTML = `<div class="alert alert-danger">فشل الاتصال بالخادم</div>`;
+                cardsContainer.innerHTML = `<div class="alert alert-danger">خطأ: ${error.message || 'فشل الاتصال بالخادم'}</div>`;
             }
         }
 
