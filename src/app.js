@@ -19411,8 +19411,8 @@ async function handleSaveReconciliation() {
         DialogUtils.showSuccessToast('تم حفظ التصفية بنجاح');
 
         // Show completion summary
-        const totalFound = calculateTotalFound();
-        const difference = totalFound - systemSales;
+        // Show completion summary
+        // Note: totalFound and surplusDeficit (difference) are already calculated above
 
         await Swal.fire({
             icon: 'success',
@@ -19422,7 +19422,7 @@ async function handleSaveReconciliation() {
                     <p><strong>رقم التصفية:</strong> ${currentReconciliation.reconciliation_number || currentReconciliation.id}</p>
                     <p><strong>مبيعات النظام:</strong> ${systemSales.toLocaleString('en-US', { minimumFractionDigits: 2 })} ريال</p>
                     <p><strong>الموجود الفعلي:</strong> ${totalFound.toLocaleString('en-US', { minimumFractionDigits: 2 })} ريال</p>
-                    <p><strong>الفارق:</strong> <span style="color: ${difference >= 0 ? 'green' : 'red'}; font-weight: bold;">${difference.toLocaleString('en-US', { minimumFractionDigits: 2 })} ريال</span></p>
+                    <p><strong>الفارق:</strong> <span style="color: ${surplusDeficit >= 0 ? 'green' : 'red'}; font-weight: bold;">${surplusDeficit.toLocaleString('en-US', { minimumFractionDigits: 2 })} ريال</span></p>
                 </div>
             `,
             confirmButtonText: 'حسناً',
