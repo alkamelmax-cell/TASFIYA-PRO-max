@@ -1,12 +1,13 @@
 // Service Worker for Tasfiya Pro PWA
-// Version: 2.2 - Robust Error Handling
+// Version: 2.3 - Fully Offline (Vendored SDK)
 try {
-    importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDKWorker.js');
+    // Import local SDK instead of CDN
+    importScripts('/OneSignalSDKWorker.js');
 } catch (e) {
-    console.warn('⚠️ [SW] OneSignal SDK failed to load. Push notifications might not work.', e);
+    console.warn('⚠️ [SW] Local OneSignal SDK failed to load.', e);
 }
 
-const CACHE_NAME = 'tasfiya-pro-v2.2';
+const CACHE_NAME = 'tasfiya-pro-v2.3';
 const STATIC_ASSETS = [
     '/index.html',
     '/login.html',
