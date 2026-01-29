@@ -19348,7 +19348,11 @@ async function handleSaveReconciliation() {
         const systemSales = parseFloat(document.getElementById('systemSales').value) || 0;
 
         // Update reconciliation with system sales
-        // Update reconciliation with system sales AND status
+        // Calculate Totals for the header record
+        const totalFound = calculateTotalFound();
+        const surplusDeficit = totalFound - systemSales;
+
+        // Update reconciliation with system sales, calculated totals, and status
         // First, check if it needs a number
         let recNumber = currentReconciliation.reconciliation_number;
 
@@ -19363,16 +19367,20 @@ async function handleSaveReconciliation() {
         await ipcRenderer.invoke('db-run',
             `UPDATE reconciliations 
              SET system_sales = ?, 
+                 total_receipts = ?,
+                 surplus_deficit = ?,
                  status = 'completed', 
                  reconciliation_number = ?,
                  updated_at = CURRENT_TIMESTAMP 
              WHERE id = ?`,
-            [systemSales, recNumber, currentReconciliation.id]
+            [systemSales, totalFound, surplusDeficit, recNumber, currentReconciliation.id]
         );
 
         // Update local object
         currentReconciliation.status = 'completed';
         currentReconciliation.reconciliation_number = recNumber;
+        currentReconciliation.total_receipts = totalFound;
+        currentReconciliation.surplus_deficit = surplusDeficit;
 
         console.log('✅ [SAVE] تم حفظ التصفية بنجاح - ID:', currentReconciliation.id);
 
