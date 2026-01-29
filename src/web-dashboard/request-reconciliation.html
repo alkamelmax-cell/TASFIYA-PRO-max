@@ -508,7 +508,7 @@
                 // Send cashier ID to filter by branch
                 const cashierId = user && user.id ? user.id : null;
                 const url = cashierId ? `/api/customers?cashierId=${cashierId}` : '/api/customers';
-                const res = await fetch(url);
+                const res = await fetch(url, { cache: 'no-store' });
                 const data = await res.json();
                 if (data.success && data.customers) {
                     const list = document.getElementById('customersList');
@@ -533,7 +533,7 @@
                 // and let server filter if that user is a cashier with a branch.
 
                 const url = cashierId ? `/api/atms?cashierId=${cashierId}` : '/api/atms';
-                const res = await fetch(url);
+                const res = await fetch(url, { cache: 'no-store' });
                 const data = await res.json();
                 if (data.success && data.atms) {
                     atmsData = data.atms;

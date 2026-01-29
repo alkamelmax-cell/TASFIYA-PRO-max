@@ -413,7 +413,7 @@
 
         async function loadLookups() {
             try {
-                const res = await fetch(`${API_URL}/lookups`);
+                const res = await fetch(`${API_URL}/lookups`, { cache: 'no-store' });
                 const data = await res.json();
                 if (data.success) {
                     // Populate Cashiers
@@ -471,7 +471,7 @@
 
             showLoading(true);
             try {
-                const res = await fetch(`${API_URL}/atm-report?${params.toString()}`);
+                const res = await fetch(`${API_URL}/atm-report?${params.toString()}`, { cache: 'no-store' });
                 const result = await res.json();
 
                 if (result.success) {
