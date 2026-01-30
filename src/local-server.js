@@ -2076,6 +2076,72 @@ class LocalWebServer {
 
 
 
+
+    async handleCreateReconciliationRequest(req, res) {
+        let body = '';
+        req.on('data', chunk => { body += chunk.toString(); });
+        req.on('end', async () => {
+            try {
+                const data = JSON.parse(body);
+                console.log('📝 [API] Received new reconciliation request:', data);
+
+                // Basic Validation
+                if (!data.cashier_id) {
+                    console.error('❌ [API] Missing cashier_id');
+                    return this.sendJson(res, { success: false, error: 'Missing cashier_id' });
+                }
+
+                // Determine "System Sales" vs "Actual Found"
+                const systemSales = parseFloat(data.system_sales) || 0;
+                const totalCash = parseFloat(data.total_cash) || 0;
+                const totalBank = parseFloat(data.total_bank) || 0;
+
+                // Prepare details JSON for all other lists
+                const details = {
+                    cash_breakdown: data.cash_breakdown || [],
+                    bank_receipts: data.bank_receipts || [],
+                    postpaid_items: data.postpaid_items || [],
+                    customer_receipts: data.customer_receipts || [],
+                    return_items: data.return_items || [],
+                    supplier_items: data.supplier_items || []
+                };
+
+                const detailsJson = JSON.stringify(details);
+                const notes = data.notes || '';
+
+                // Insert into DB (SQLite)
+                // Using CURRENT_DATE for standard YYYY-MM-DD
+                const stmt = this.dbManager.db.prepare(`
+                    INSERT INTO reconciliation_requests (
+                        cashier_id, request_date, system_sales, 
+                        total_cash, total_bank, details_json, 
+                        notes, status, created_at
+                    ) VALUES (?, CURRENT_DATE, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+                `);
+
+                const info = stmt.run(
+                    data.cashier_id, systemSales, totalCash, totalBank, detailsJson, notes
+                );
+
+                console.log('✅ [API] Reconciliation Request Saved. ID:', info.lastInsertRowid);
+
+                // --- TRIGGER NOTIFICATION (Notify Admin using OneSignal) ---
+                try {
+                    await this.sendOneSignalNotification(
+                        'طلب تصفية جديد 🔔',
+                        `وصل طلب تصفية جديد من الكاشير (رقم: ${data.cashier_id})`
+                    );
+                } catch (e) { console.error('Notification Error', e); }
+
+                this.sendJson(res, { success: true, id: info.lastInsertRowid });
+
+            } catch (error) {
+                console.error('❌ [API] Error creating reconciliation request:', error);
+                this.sendJson(res, { success: false, error: error.message });
+            }
+        });
+    }
+
     async handleGetReconciliationRequests(res, query) {
         try {
             console.log('📋 [API] Getting reconciliation requests, query:', query);

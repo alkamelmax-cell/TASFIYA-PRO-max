@@ -2624,6 +2624,7 @@ async function handleSaveReconciliation() {
 }
 
 // Comprehensive data clearing and system reset functions
+// Comprehensive data clearing and system reset functions
 async function clearAllReconciliationData() {
     console.log('🧹 [CLEAR] بدء تفريغ جميع بيانات التصفية...');
 
@@ -2636,23 +2637,41 @@ async function clearAllReconciliationData() {
         returnInvoices = [];
         suppliers = [];
 
-        // Clear all form fields
-        clearAllFormFields();
+        // Clear all form fields safely
+        try {
+            clearAllFormFields();
+        } catch (formError) {
+            console.error('⚠️ [CLEAR] خطأ جزئي في تفريغ النماذج:', formError);
+        }
 
-        // Clear all tables
-        clearAllTables();
+        // Clear all tables safely
+        try {
+            clearAllTables();
+        } catch (tableError) {
+            console.error('⚠️ [CLEAR] خطأ جزئي في تفريغ الجداول:', tableError);
+        }
 
-        // Reset all totals and summaries
-        resetAllTotalsAndSummaries();
+        // Reset all totals and summaries safely
+        try {
+            resetAllTotalsAndSummaries();
+        } catch (totalError) {
+            console.error('⚠️ [CLEAR] خطأ جزئي في تصفير المجاميع:', totalError);
+        }
 
-        // Reset current reconciliation
-        currentReconciliation = null;
-
-        console.log('✅ [CLEAR] تم تفريغ جميع البيانات بنجاح');
+        console.log('✅ [CLEAR] تم تفريغ البيانات (المحاولة) بنجاح');
 
     } catch (error) {
-        console.error('❌ [CLEAR] خطأ في تفريغ البيانات:', error);
-        throw error;
+        console.error('❌ [CLEAR] خطأ غير متوقع في تفريغ البيانات:', error);
+        // We still proceed to finally block
+    } finally {
+        // FORCE RESET - This ensures we never append to an old reconciliation
+        console.log('🔒 [CLEAR] إجبار تصفير كائن التصفية الحالية');
+        currentReconciliation = null;
+
+        // Also clear any legacy references if they exist
+        if (window.pendingReconciliationData) {
+            window.pendingReconciliationData = null;
+        }
     }
 }
 
