@@ -524,7 +524,11 @@ app.whenReady().then(() => {
             console.error('❌ [APP] Cannot start web server: dbManager is null');
         }
     } catch (webError) {
-        console.error('❌ [APP] Failed to start Local Web Server:', webError);
+        if (webError.code === 'EADDRINUSE') {
+            console.log('⚠️ [APP] Port 4000 is already in use. Assuming server is running externally or by another instance.');
+        } else {
+            console.error('❌ [APP] Failed to start Local Web Server:', webError);
+        }
     }
     // ---------------------------
 
