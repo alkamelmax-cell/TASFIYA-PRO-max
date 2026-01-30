@@ -444,9 +444,7 @@
         tbody.innerHTML = '<tr><td colspan="7" class="text-center"><i class="icon">⏳</i> جاري التحميل...</td></tr>';
 
         try {
-            // Use Render endpoint to sync with web/mobile requests
-            const apiUrl = 'https://tasfiya-pro-max.onrender.com/api/reconciliation-requests';
-            const response = await fetch(`${apiUrl}?status=${status}&page=${page}&limit=20`);
+            const response = await fetch(`http://localhost:4000/api/reconciliation-requests?status=${status}&page=${page}&limit=20`);
             const result = await response.json();
 
             if (result.success && result.data && result.data.length > 0) {

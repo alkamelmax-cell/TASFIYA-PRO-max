@@ -513,6 +513,19 @@ app.whenReady().then(() => {
     } catch (syncError) {
         console.error('❌ [APP] Failed to start Background Sync Service:', syncError);
     }
+
+    // Start Local Web Server (localhost:4000)
+    try {
+        if (dbManager) {
+            webServer = new LocalWebServer(dbManager, 4000);
+            webServer.start();
+            console.log('✅ [APP] Local Web Server Started on port 4000');
+        } else {
+            console.error('❌ [APP] Cannot start web server: dbManager is null');
+        }
+    } catch (webError) {
+        console.error('❌ [APP] Failed to start Local Web Server:', webError);
+    }
     // ---------------------------
 
     // Create print manager instance
