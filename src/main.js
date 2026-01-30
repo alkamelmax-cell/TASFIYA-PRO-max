@@ -1926,6 +1926,12 @@ app.on('window-all-closed', () => {
     if (process.platform !== 'darwin') {
         // Clean up resources properly
         try {
+            if (webServer) {
+                console.log('🔄 Stopping local web server...');
+                webServer.stop();
+                webServer = null;
+            }
+
             if (dbManager) {
                 console.log('🔄 Closing database connection...');
                 dbManager.close();
