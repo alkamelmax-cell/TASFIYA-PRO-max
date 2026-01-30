@@ -271,9 +271,29 @@ class LocalWebServer {
             }
         });
 
+        // Handle server errors (e.g. Port in use)
+        this.server.on('error', (e) => {
+            if (e.code === 'EADDRINUSE') {
+                console.log(`⚠️ [WEB APP] Port ${this.port} is in use, trying ${this.port + 1}...`);
+                this.port++;
+                this.server.listen(this.port);
+            } else {
+                console.error('❌ [WEB APP] Server error:', e);
+            }
+        });
+
         this.server.listen(this.port, () => {
             console.log(`🌐 [WEB APP] Server running at http://localhost:${this.port}`);
         });
+    }
+
+    stop() {
+        if (this.server) {
+            this.server.close(() => {
+                console.log('🌐 [WEB APP] Server stopped');
+            });
+            this.server = null;
+        }
     }
 
     serveFile(res, filePath, contentType) {
@@ -2109,21 +2129,42 @@ class LocalWebServer {
                 const detailsJson = JSON.stringify(details);
                 const notes = data.notes || '';
 
-                // Insert into DB (SQLite)
-                // Using CURRENT_DATE for standard YYYY-MM-DD
-                const stmt = this.dbManager.db.prepare(`
-                    INSERT INTO reconciliation_requests (
-                        cashier_id, request_date, system_sales, 
-                        total_cash, total_bank, details_json, 
-                        notes, status, created_at
-                    ) VALUES (?, CURRENT_DATE, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
-                `);
+                // Insert into DB
+                // Check Server Mode (Postgres)
+                const pool = this.dbManager.pool;
 
-                const info = stmt.run(
-                    data.cashier_id, systemSales, totalCash, totalBank, detailsJson, notes
-                );
+                let insertedId;
 
-                console.log('✅ [API] Reconciliation Request Saved. ID:', info.lastInsertRowid);
+                if (pool) {
+                    // PostgreSQL
+                    const sql = `
+                        INSERT INTO reconciliation_requests (
+                            cashier_id, request_date, system_sales, 
+                            total_cash, total_bank, details_json, 
+                            notes, status, created_at
+                        ) VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, 'pending', CURRENT_TIMESTAMP)
+                        RETURNING id
+                    `;
+                    const result = await pool.query(sql, [
+                        data.cashier_id, systemSales, totalCash, totalBank, detailsJson, notes
+                    ]);
+                    insertedId = result.rows[0].id;
+                } else {
+                    // SQLite
+                    const stmt = this.dbManager.db.prepare(`
+                        INSERT INTO reconciliation_requests (
+                            cashier_id, request_date, system_sales, 
+                            total_cash, total_bank, details_json, 
+                            notes, status, created_at
+                        ) VALUES (?, CURRENT_DATE, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+                    `);
+                    const info = stmt.run(
+                        data.cashier_id, systemSales, totalCash, totalBank, detailsJson, notes
+                    );
+                    insertedId = info.lastInsertRowid;
+                }
+
+                console.log('✅ [API] Reconciliation Request Saved. ID:', insertedId);
 
                 // --- TRIGGER NOTIFICATION (Notify Admin using OneSignal) ---
                 try {
@@ -2133,7 +2174,9 @@ class LocalWebServer {
                     );
                 } catch (e) { console.error('Notification Error', e); }
 
-                this.sendJson(res, { success: true, id: info.lastInsertRowid });
+                this.sendJson(res, { success: true, id: insertedId });
+
+
 
             } catch (error) {
                 console.error('❌ [API] Error creating reconciliation request:', error);
@@ -2146,59 +2189,52 @@ class LocalWebServer {
         try {
             console.log('📋 [API] Getting reconciliation requests, query:', query);
 
-            // Filter by status by default (pending only) unless specified
             let statusFilter = 'pending';
             if (query && query.status) statusFilter = query.status;
 
-            let sql = 'SELECT * FROM reconciliation_requests';
-            const params = [];
+            const pool = this.dbManager.pool;
+            let requests = [];
 
-            if (statusFilter !== 'all') {
-                sql += ' WHERE status = ?';
-                params.push(statusFilter);
-            }
-
-            sql += ' ORDER BY created_at DESC';
-
-            console.log('📋 [API] SQL:', sql, 'Params:', params);
-
-            // Fix: Use .all() correctly - pass params as array if empty, or spread if not
-            let requests;
-            try {
-                if (params.length > 0) {
-                    requests = this.dbManager.db.prepare(sql).all(...params);
-                } else {
-                    requests = this.dbManager.db.prepare(sql).all();
+            if (pool) {
+                // Postgres Logic
+                let sql = `
+                    SELECT r.*, c.name as cashier_name 
+                    FROM reconciliation_requests r
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                `;
+                const params = [];
+                if (statusFilter !== 'all') {
+                    sql += ' WHERE r.status = $1';
+                    params.push(statusFilter);
                 }
-            } catch (dbError) {
-                console.error('❌ [API] DB Query Error:', dbError);
-                requests = [];
-            }
+                sql += ' ORDER BY r.created_at DESC';
 
-            // Ensure requests is an array
-            if (!Array.isArray(requests)) {
-                console.warn('⚠️ [API] DB returned non-array:', requests);
-                requests = [];
+                const result = await pool.query(sql, params);
+                requests = result.rows;
+            } else {
+                // SQLite Logic
+                let sql = `
+                    SELECT r.*, c.name as cashier_name 
+                    FROM reconciliation_requests r
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                `;
+                const params = [];
+                if (statusFilter !== 'all') {
+                    sql += ' WHERE r.status = ?';
+                    params.push(statusFilter);
+                }
+                sql += ' ORDER BY r.created_at DESC';
+
+                requests = this.dbManager.db.prepare(sql).all(params);
             }
 
             console.log(`📋 [API] Found ${requests.length} requests`);
 
-            // Resolve cashier names
-            const cashierStmt = this.dbManager.db.prepare('SELECT name FROM cashiers WHERE id = ?');
-
-            const enrichedRequests = requests.map(req => {
-                let cashierName = 'غير معروف';
-                if (req.cashier_id) {
-                    const c = cashierStmt.get(req.cashier_id);
-                    if (c) cashierName = c.name;
-                }
-
-                return {
-                    ...req,
-                    cashier_name: cashierName,
-                    details: req.details_json ? JSON.parse(req.details_json) : {}
-                };
-            });
+            const enrichedRequests = requests.map(req => ({
+                ...req,
+                cashier_name: req.cashier_name || 'غير معروف',
+                details: req.details_json ? (typeof req.details_json === 'string' ? JSON.parse(req.details_json) : req.details_json) : {}
+            }));
 
             console.log('✅ [API] Sending enriched requests');
             this.sendJson(res, { success: true, data: enrichedRequests });
