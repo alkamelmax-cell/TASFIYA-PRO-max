@@ -10,7 +10,9 @@
     "start": "electron .",
     "start:web": "node src/start-web.js",
     "dev": "cross-env NODE_ENV=development electron . --dev",
-    "build-clean": "node build.js"
+    "build-clean": "node build.js",
+    "postinstall": "electron-builder install-app-deps",
+    "rebuild": "electron-rebuild -f -w better-sqlite3"
   },
   "keywords": [
     "cashier",
