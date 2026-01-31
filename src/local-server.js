@@ -1258,13 +1258,29 @@ class LocalWebServer {
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
+                console.log(`🛡️ [APPROVAL] Starting approval for request ${id}`);
                 const approvalData = JSON.parse(body);
 
                 // Fetch original request
-                const request = await this.dbManager.db.prepare("SELECT * FROM reconciliation_requests WHERE id = ?").get(id);
+                // Use a direct query that is compatible with both (simple SELECT)
+                let request;
+                if (this.dbManager.pool) {
+                    const res = await this.dbManager.pool.query("SELECT * FROM reconciliation_requests WHERE id = $1", [id]);
+                    request = res.rows[0];
+                } else {
+                    request = this.dbManager.db.prepare("SELECT * FROM reconciliation_requests WHERE id = ?").get(id);
+                }
+
                 if (!request) throw new Error('الطلب غير موجود');
 
                 const details = JSON.parse(request.details_json || '{}');
+
+                // Helper to sanitize amounts (remove commas, handle strings)
+                const safeFloat = (val) => {
+                    if (!val) return 0;
+                    if (typeof val === 'number') return val;
+                    return parseFloat(String(val).replace(/,/g, '')) || 0;
+                };
 
                 // Async Transaction
                 await this.dbManager.asyncTransaction(async (tx) => {
@@ -1276,13 +1292,13 @@ class LocalWebServer {
                     const returns = details.return_items || [];
                     const suppliers = details.supplier_items || [];
 
-                    // Calculate Totals
-                    const totalCash = Number(request.total_cash) || 0;
-                    const totalBank = Number(request.total_bank) || 0;
-                    const totalPostpaid = postpaidSales.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-                    const totalReturns = returns.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-                    const totalCustomerReceipts = customerReceipts.reduce((sum, item) => sum + (Number(item.amount) || 0), 0);
-                    const systemSales = Number(request.system_sales) || 0;
+                    // Calculate Totals safely
+                    const totalCash = safeFloat(request.total_cash);
+                    const totalBank = safeFloat(request.total_bank);
+                    const totalPostpaid = postpaidSales.reduce((sum, item) => sum + safeFloat(item.amount), 0);
+                    const totalReturns = returns.reduce((sum, item) => sum + safeFloat(item.amount), 0);
+                    const totalCustomerReceipts = customerReceipts.reduce((sum, item) => sum + safeFloat(item.amount), 0);
+                    const systemSales = safeFloat(request.system_sales);
 
                     const totalCollectedValue = totalCash + totalBank + totalPostpaid - totalCustomerReceipts + totalReturns;
                     const surplus = totalCollectedValue - systemSales;
@@ -1296,6 +1312,8 @@ class LocalWebServer {
                     const accountantId = approvalData.accountant_id || 1;
                     const date = new Date().toISOString().split('T')[0];
 
+                    console.log(`🛡️ [APPROVAL] Creating Reconciliation #${newRecNum} for Cashier ${cashierId}`);
+
                     const insertRec = tx.prepare(`
                         INSERT INTO reconciliations
                         (reconciliation_number, cashier_id, accountant_id, reconciliation_date, system_sales, total_receipts, surplus_deficit, status, notes, created_at)
@@ -1307,10 +1325,12 @@ class LocalWebServer {
                     );
                     const recId = recInfo.lastInsertRowid;
 
+                    console.log(`🛡️ [APPROVAL] Created Parent Record ID: ${recId}`);
+
                     // Insert Details
                     const insertCash = tx.prepare(`INSERT INTO cash_receipts(reconciliation_id, denomination, quantity, total_amount) VALUES(?, ?, ?, ?)`);
                     for (const item of cashBreakdown) {
-                        await insertCash.run(recId, item.value, item.count, item.total);
+                        await insertCash.run(recId, safeFloat(item.value), Number(item.count) || 0, safeFloat(item.total));
                     }
 
                     // Bank Receipts
@@ -1323,58 +1343,67 @@ class LocalWebServer {
                             const found = allAtms.find(a => a.name === item.atm_name);
                             if (found) atmId = found.id;
                         }
-                        if (!atmId && allAtms.length > 0) atmId = allAtms[0].id;
-                        await insertBank.run(recId, item.operation_type || 'Unknown', atmId, item.amount);
+                        if (!atmId && allAtms.length > 0) atmId = allAtms[0].id; // Fallback
+                        await insertBank.run(recId, item.operation_type || 'Unknown', atmId, safeFloat(item.amount));
                     }
 
                     // Postpaid
                     const insertPostpaid = tx.prepare(`INSERT INTO postpaid_sales(reconciliation_id, customer_name, amount, notes) VALUES(?, ?, ?, ?)`);
                     for (const item of postpaidSales) {
-                        await insertPostpaid.run(recId, item.customer_name, item.amount, item.notes || '');
+                        await insertPostpaid.run(recId, item.customer_name, safeFloat(item.amount), item.notes || '');
                     }
 
                     // Customer Receipts
                     const insertCustReceipt = tx.prepare(`INSERT INTO customer_receipts(reconciliation_id, customer_name, amount, payment_type, notes) VALUES(?, ?, ?, ?, ?)`);
                     for (const item of customerReceipts) {
-                        await insertCustReceipt.run(recId, item.customer_name, item.amount, item.payment_type || 'cash', item.notes || '');
+                        await insertCustReceipt.run(recId, item.customer_name, safeFloat(item.amount), item.payment_type || 'cash', item.notes || '');
                     }
 
                     // Returns
                     const insertReturn = tx.prepare(`INSERT INTO return_invoices(reconciliation_id, invoice_number, amount) VALUES(?, ?, ?)`);
                     for (const item of returns) {
-                        await insertReturn.run(recId, item.invoice_number || 'N/A', item.amount);
+                        await insertReturn.run(recId, item.invoice_number || 'N/A', safeFloat(item.amount));
                     }
 
                     // Suppliers
                     const insertSupplier = tx.prepare(`INSERT INTO suppliers(reconciliation_id, supplier_name, amount) VALUES(?, ?, ?)`);
                     for (const item of suppliers) {
-                        await insertSupplier.run(recId, item.supplier_name, item.amount);
+                        await insertSupplier.run(recId, item.supplier_name, safeFloat(item.amount));
                     }
 
-                    // Archive Request
+                    // Archive Request (Update status to approved)
+                    console.log(`🛡️ [APPROVAL] Archiving request ${id}...`);
                     await tx.prepare("UPDATE reconciliation_requests SET status = 'approved', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(id);
                 });
 
                 // Get cashier name for notification
-                const cashierInfo = await this.dbManager.db.prepare("SELECT name FROM cashiers WHERE id = ?").get(cashierId);
-                const cashierName = cashierInfo ? cashierInfo.name : 'كاشير';
+                let cashierName = 'كاشير';
+                try {
+                    // Safe lookup
+                    const cashierInfo = this.dbManager.pool
+                        ? (await this.dbManager.pool.query("SELECT name FROM cashiers WHERE id = $1", [request.cashier_id])).rows[0]
+                        : this.dbManager.db.prepare("SELECT name FROM cashiers WHERE id = ?").get(request.cashier_id);
+                    if (cashierInfo) cashierName = cashierInfo.name;
+                } catch (e) { console.warn('Cashier lookup failed', e); }
 
-                // Send notification about new completed reconciliation
-                await this.sendOneSignalNotification(
-                    '✅  تصفية جديدة مكتملة',
-                    `تم اعتماد تصفية رقم ${newRecNum} للكاشير ${cashierName}`,
-                    {
-                        type: 'reconciliation_approved',
-                        reconciliation_number: newRecNum,
-                        cashier_name: cashierName
-                    }
-                );
+                // Send notification
+                try {
+                    await this.sendOneSignalNotification(
+                        '✅  تصفية جديدة مكتملة',
+                        `تم اعتماد تصفية للكاشير ${cashierName}`,
+                        {
+                            type: 'reconciliation_approved',
+                            cashier_name: cashierName
+                        }
+                    );
+                } catch (e) { console.warn('Notification failed', e); }
 
+                console.log(`✅ [APPROVAL] Successfully approved request ${id}`);
                 this.sendJson(res, { success: true });
 
             } catch (error) {
-                console.error('Approval Error:', error);
-                this.sendJson(res, { success: false, error: error.message });
+                console.error('❌ [APPROVAL] Fatal Error:', error);
+                this.sendJson(res, { success: false, error: 'حدث خطأ أثناء اعتماد التصفية: ' + error.message });
             }
         });
     }
