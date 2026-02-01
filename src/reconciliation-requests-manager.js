@@ -798,12 +798,29 @@
             if (actionsCell) {
                 console.log('✏️ [UI] Updating actions cell...');
                 actionsCell.innerHTML = `
-                <span class="badge bg-success fs-6 px-3 py-2">
-                    <i class="icon">✅</i> تمت المراجعة
-                </span>
-            `;
+                    <div class="d-flex gap-2 justify-content-center align-items-center">
+                        <span class="req-status-badge req-completed-badge">
+                            ✅ تم الاعتماد
+                        </span>
+                        <button class="req-action-btn req-btn-danger" onclick="reconciliationRequests.deleteRequest(${reqIdStr})" title="حذف من الأرشيف">
+                            🗑️
+                        </button>
+                    </div>
+                `;
             }
         }
+
+        // 3. Update Status on Server (Crucial for Persistence so it moves to Archive)
+        fetch(`http://localhost:4000/api/reconciliation-requests/${requestId}/complete`, { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                if (data.success) {
+                    console.log('✅ [SERVER] Request marked as completed on server');
+                } else {
+                    console.error('❌ [SERVER] Failed to mark request as complete:', data.error);
+                }
+            })
+            .catch(err => console.error('❌ [SERVER] Network Error:', err));
     }
 
     async function deleteRequest(requestId) {

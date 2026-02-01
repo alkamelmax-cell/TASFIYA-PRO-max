@@ -1923,7 +1923,21 @@ class LocalWebServer {
                 }
                 // Sync reconciliation requests (especially status updates)
                 if (data.reconciliation_requests) {
-                    await syncTable('reconciliation_requests', data.reconciliation_requests, [
+                    // SANITIZE DATA: Ensure numeric fields are clean for Postgres (remove commas)
+                    const safeFloat = (val) => {
+                        if (!val) return 0;
+                        if (typeof val === 'number') return val;
+                        return parseFloat(String(val).replace(/,/g, '')) || 0;
+                    };
+
+                    const cleanRequests = data.reconciliation_requests.map(r => ({
+                        ...r,
+                        system_sales: safeFloat(r.system_sales),
+                        total_cash: safeFloat(r.total_cash),
+                        total_bank: safeFloat(r.total_bank)
+                    }));
+
+                    await syncTable('reconciliation_requests', cleanRequests, [
                         { name: 'id' }, { name: 'cashier_id' }, { name: 'system_sales' },
                         { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json' },
                         { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
@@ -2278,8 +2292,8 @@ class LocalWebServer {
         try {
             console.log(`📝 [API] Completing reconciliation request: ${id}`);
 
-            const stmt = this.dbManager.db.prepare('UPDATE reconciliation_requests SET status = "completed", updated_at = CURRENT_TIMESTAMP WHERE id = ?');
-            const result = stmt.run(id);
+            const stmt = this.dbManager.db.prepare("UPDATE reconciliation_requests SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+            const result = await stmt.run(id);
 
             if (result.changes > 0) {
                 console.log(`✅ [API] Request ${id} updated to completed`);
