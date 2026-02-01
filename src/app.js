@@ -1035,30 +1035,55 @@ async function handleNewReconciliation(event) {
                 window.appAPI.addDetailedBankReceipt('من طلب ويب قديم', 'تحويل', pData.total_bank, 'settlement');
             }
 
+            // Helper to clean corrupted text from web sync
+            const cleanWebText = (text) => {
+                if (!text) return '';
+                // Remove replacement characters, null bytes, and trim
+                return text.toString().replace(/\uFFFD/g, '').replace(/\u0000/g, '').trim();
+            };
+
             // Postpaid
             if (pDetails.postpaid_items) {
-                pDetails.postpaid_items.forEach(item => window.appAPI.addPostpaidSale(item.customer_name || item.name, item.amount));
+                pDetails.postpaid_items.forEach(item => {
+                    const name = cleanWebText(item.customer_name || item.name);
+                    window.appAPI.addPostpaidSale(name, item.amount);
+                });
             }
 
             // Customer Receipts
             if (pDetails.customer_receipts) {
-                pDetails.customer_receipts.forEach(item => window.appAPI.addCustomerReceipt(item.customer_name || item.name, item.amount, item.type));
+                pDetails.customer_receipts.forEach(item => {
+                    const name = cleanWebText(item.customer_name || item.name);
+                    const notes = cleanWebText(item.notes || '');
+                    window.appAPI.addCustomerReceipt(name, item.amount, item.type, notes);
+                });
             }
 
             // Returns
             if (pDetails.return_items) {
-                pDetails.return_items.forEach(item => window.appAPI.addReturnInvoice(item.invoice_number || item.num, item.amount, item.note));
+                pDetails.return_items.forEach(item => {
+                    const num = cleanWebText(item.invoice_number || item.num);
+                    const note = cleanWebText(item.note || '');
+                    window.appAPI.addReturnInvoice(num, item.amount, note);
+                });
             }
 
             // Suppliers
             if (pDetails.supplier_items) {
-                pDetails.supplier_items.forEach(item => window.appAPI.addSupplier(item.supplier_name || item.name, item.invoice_number || item.inv, item.amount, item.vat || 0));
+                pDetails.supplier_items.forEach(item => {
+                    const name = cleanWebText(item.supplier_name || item.name);
+                    const inv = cleanWebText(item.invoice_number || item.inv);
+                    const notes = cleanWebText(item.notes || '');
+                    window.appAPI.addSupplier(name, inv, item.amount, item.vat || 0, notes);
+                });
             }
 
             // Update UI again
             updateSummary();
 
-            // Clear pending
+            // Clear pending request data immediately to prevent re-population
+            // This is critical for the "save -> clear -> reset" flow to work correctly
+            console.log('🧹 [INIT] Clearing pendingReconciliationData from memory');
             window.pendingReconciliationData = null;
 
             DialogUtils.showSuccessToast('تم تحميل بيانات الطلب بنجاح');
@@ -1822,8 +1847,13 @@ async function removeSupplier(index) {
     }
 }
 
+// Flag to prevent summary updates during reset
+let isResetting = false;
+
 // Summary and calculation functions
 function updateSummary() {
+    if (isResetting) return;
+
     // Calculate totals
     const bankTotal = bankReceipts.reduce((sum, receipt) => sum + receipt.amount, 0);
     const cashTotal = cashReceipts.reduce((sum, receipt) => sum + receipt.total_amount, 0);
@@ -2592,6 +2622,12 @@ async function handleSaveReconciliation() {
             }
         }
 
+        // CRITICAL FIX: Ensure pending data is absolutely cleared so it doesn't leak into the next reconciliation
+        if (window.pendingReconciliationData) {
+            console.log('🧹 [SAVE] Ensuring pendingReconciliationData is fully cleared');
+            window.pendingReconciliationData = null;
+        }
+
         console.log('🧹 [SAVE] بدء تفريغ البيانات وإعادة التهيئة...');
 
         // Clear all data and reset system to new reconciliation state
@@ -2650,6 +2686,16 @@ async function clearAllReconciliationData() {
             clearAllTables();
         } catch (tableError) {
             console.error('⚠️ [CLEAR] خطأ جزئي في تفريغ الجداول:', tableError);
+        }
+
+        // Explicitly reset the main reconciliation form
+        try {
+            if (window.appAPI && typeof window.appAPI.resetReconciliationForm === 'function') {
+                console.log('🔄 [CLEAR] Calling resetReconciliationForm...');
+                window.appAPI.resetReconciliationForm();
+            }
+        } catch (formResetErr) {
+            console.error('⚠️ [CLEAR] Failed to reset reconciliation form:', formResetErr);
         }
 
         // Reset all totals and summaries safely
@@ -19183,17 +19229,33 @@ Object.assign(window.appAPI, {
     addDetailedBankReceipt: async (atmName, bankName, amount, operationType) => {
         if (!currentReconciliation || !currentReconciliation.id) return;
         try {
+            // Find ATM ID if possible (Best Effort)
+            let atmId = null;
+            if (atmName) {
+                try {
+                    const atm = await ipcRenderer.invoke('db-get',
+                        'SELECT id FROM atms WHERE name LIKE ? OR name LIKE ?',
+                        [atmName, `%${atmName}%`]
+                    );
+                    if (atm) atmId = atm.id;
+                } catch (e) {
+                    console.warn('⚠️ Could not resolve ATM ID for name:', atmName);
+                }
+            }
+
             const result = await ipcRenderer.invoke('db-run',
-                'INSERT INTO bank_receipts (reconciliation_id, operation_type, amount, atm_id) VALUES (?, ?, ?, NULL)',
-                [currentReconciliation.id, operationType || 'settlement', parseFloat(amount)]
+                'INSERT INTO bank_receipts (reconciliation_id, operation_type, amount, atm_id) VALUES (?, ?, ?, ?)',
+                [currentReconciliation.id, operationType || 'settlement', parseFloat(amount), atmId]
             );
+
             bankReceipts.push({
                 id: result.lastInsertRowid,
                 reconciliation_id: currentReconciliation.id,
                 operation_type: operationType || 'settlement',
-                atm_name: atmName,
+                atm_name: atmName || (atmId ? 'جهاز مسجل' : 'غير محدد'), // Fallback if name is missing but ID exists
                 bank_name: bankName,
-                amount: parseFloat(amount)
+                amount: parseFloat(amount),
+                atm_id: atmId // Store ID for consistency
             });
             updateBankReceiptsTable();
             updateSummary();
@@ -19477,6 +19539,8 @@ function calculateTotalFound() {
 
 // Helper function to reset system to new reconciliation state
 function resetSystemToNewReconciliationState() {
+    isResetting = true;
+
     // Clear current reconciliation
     currentReconciliation = null;
 
@@ -19495,24 +19559,60 @@ function resetSystemToNewReconciliationState() {
     updateCustomerReceiptsTable();
     updateReturnInvoicesTable();
     updateSuppliersTable();
-    updateSummary();
+
+    // Skip intermediate summary update - we do it at the end
+    // updateSummary(); 
 
     // Reset forms
     document.getElementById('newReconciliationForm').reset();
     document.getElementById('systemSales').value = '';
     document.getElementById('reconciliationDate').value = new Date().toISOString().split('T')[0];
 
-    // Hide current reconciliation info
-    const infoDiv = document.getElementById('currentReconciliationInfo');
-    if (infoDiv) {
-        infoDiv.style.display = 'none';
-    }
+    // Reset button states
+    updateButtonStates('RESET');
 
-    // Update button states
-    updateButtonStates('INITIAL');
+    // Enable updates again and force one final update
+    isResetting = false;
+    updateSummary();
 
-    console.log('🔄 [RESET] تمت إعادة تعيين النظام للحالة الأولية');
+    console.log('🔄 System reset to new reconciliation state');
 }
+
+// Expose resetSystemToNewReconciliationState and resetReconciliationForm to appAPI if not already
+if (window.appAPI) {
+    window.appAPI.resetReconciliationForm = () => {
+        const form = document.getElementById('newReconciliationForm');
+        if (form) form.reset();
+
+        const systemSalesInput = document.getElementById('systemSales');
+        if (systemSalesInput) systemSalesInput.value = '';
+
+        const dateInput = document.getElementById('reconciliationDate');
+        if (dateInput) dateInput.value = new Date().toISOString().split('T')[0];
+
+        // Reset selections if they exist
+        const cashierSelect = document.getElementById('cashierId');
+        if (cashierSelect) cashierSelect.value = '';
+
+        const accountantSelect = document.getElementById('accountantId');
+        if (accountantSelect) accountantSelect.value = '';
+
+        console.log('✅ Form explicitly reset via appAPI');
+    };
+
+    // Also expose the full system reset
+    window.appAPI.resetSystem = resetSystemToNewReconciliationState;
+}
+// Hide current reconciliation info
+const infoDiv = document.getElementById('currentReconciliationInfo');
+if (infoDiv) {
+    infoDiv.style.display = 'none';
+}
+
+// Update button states
+updateButtonStates('INITIAL');
+
+console.log('🔄 [RESET] تمت إعادة تعيين النظام للحالة الأولية');
 
 console.log('✅ Web Sync Control UI initialized');
 
