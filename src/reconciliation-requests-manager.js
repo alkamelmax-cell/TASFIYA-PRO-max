@@ -656,7 +656,7 @@
             notes: `📥 طلب من Web: ${request.cashier_name} (${new Date(request.created_at).toLocaleString('en-GB')})\n${request.notes || ''}`,
             cashierName: request.cashier_name,
             cashierId: request.cashier_id, // Ensure ID is passed
-            branchName: request.branch_name
+            branchId: request.branch_id // Use branch_id instead of branch_name
         };
 
         // 2. Pre-fill Header Form (The visible "Start New Reconciliation" card)
@@ -673,22 +673,37 @@
 
             // 3. Set Branch FIRST (To filter cashiers properly)
             const branchSelect = document.getElementById('branchSelect');
-            if (branchSelect && window.pendingReconciliationData.branchName) {
-                const branchToFind = window.pendingReconciliationData.branchName;
-                console.log('🏢 [REVIEW] Trying to set branch:', branchToFind);
 
+            // NEW APPROACH: Use branch_id directly instead of matching by name
+            if (branchSelect && window.pendingReconciliationData.branchId) {
+                const branchId = window.pendingReconciliationData.branchId;
+                console.log('🏢 [REVIEW] Setting branch by ID:', branchId);
+
+                // DEBUG: Log all available branch options
+                console.log('🏢 [DEBUG] Available branches in dropdown:');
                 for (let i = 0; i < branchSelect.options.length; i++) {
-                    const option = branchSelect.options[i];
-                    if (option.text.includes(branchToFind) || branchToFind.includes(option.text)) {
-                        branchSelect.value = option.value;
-                        console.log('✅ [REVIEW] Branch selected:', option.text);
-                        branchSelect.dispatchEvent(new Event('change'));
-                        break;
-                    }
+                    console.log(`  [${i}] value="${branchSelect.options[i].value}" text="${branchSelect.options[i].text}"`);
                 }
+
+                // Direct assignment by value (ID)
+                const optionExists = Array.from(branchSelect.options).some(opt => opt.value == branchId);
+                if (optionExists) {
+                    branchSelect.value = branchId;
+                    console.log('✅ [REVIEW] Branch selected by ID:', branchId);
+                    branchSelect.dispatchEvent(new Event('change'));
+                } else {
+                    console.warn('⚠️ [REVIEW] Branch ID', branchId, 'not found in dropdown. Available values:',
+                        Array.from(branchSelect.options).map(o => o.value));
+                    // Still trigger change to load cashiers
+                    branchSelect.dispatchEvent(new Event('change'));
+                }
+            } else {
+                console.log('🏢 [REVIEW] No branch ID provided or branchSelect not found');
+                // If no branch specified, ensure we trigger change to load all cashiers
+                if (branchSelect) branchSelect.dispatchEvent(new Event('change'));
             }
 
-            // 4. Set Cashier (Wait for branch change to propagate)
+            // 4. Set Cashier (Wait for branch change to propagate and populate list)
             setTimeout(() => {
                 const cashierSelect = document.getElementById('cashierSelect');
                 if (cashierSelect) {
@@ -723,10 +738,10 @@
                     if (found) {
                         cashierSelect.dispatchEvent(new Event('change'));
                     } else {
-                        console.warn('❌ [REVIEW] Cashier could not be auto-selected');
+                        console.warn('❌ [REVIEW] Cashier could not be auto-selected. List size:', cashierSelect.options.length);
                     }
                 }
-            }, 300); // Small delay to allow branch change to update cashier list
+            }, 800); // Increased delay to ensure branch change fully propagates and cashiers are loaded
 
             // Scroll to top
             window.scrollTo({ top: 0, behavior: 'smooth' });

@@ -121,20 +121,24 @@ class PDFGenerator {
 
         try {
             const page = await this.browser.newPage();
-            
+
             // Set page to A4 size
             await page.setViewport({ width: 794, height: 1123 });
-            
+
             // Generate HTML content with options
             const htmlContent = await this.generateReportHTML(reconciliationData, {});
-            
-            // Set content
-            await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
-            
+
+            // Set content with unlimited timeout and less strict wait condition for large data
+            await page.setContent(htmlContent, {
+                waitUntil: ['load', 'domcontentloaded'],
+                timeout: 0
+            });
+
             // Generate PDF with footer on every page
             const pdfBuffer = await page.pdf({
                 format: 'A4',
                 printBackground: true,
+                timeout: 0, // Unlimited timeout for PDF generation
                 margin: {
                     top: '20mm',
                     right: '15mm',
@@ -149,11 +153,11 @@ class PDFGenerator {
                 `,
                 headerTemplate: '<div></div>' // فوتر فارغ
             });
-            
+
             await page.close();
-            
+
             return pdfBuffer;
-            
+
         } catch (error) {
             console.error('Error generating PDF:', error);
             throw error;
@@ -174,13 +178,17 @@ class PDFGenerator {
             // Set page to A4 size
             await page.setViewport({ width: 794, height: 1123 });
 
-            // Set content
-            await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+            // Set content with unlimited timeout
+            await page.setContent(htmlContent, {
+                waitUntil: ['load', 'domcontentloaded'],
+                timeout: 0
+            });
 
             // Generate PDF with footer on every page
             const pdfBuffer = await page.pdf({
                 format: 'A4',
                 printBackground: true,
+                timeout: 0,
                 margin: {
                     top: '20mm',
                     right: '15mm',
@@ -635,10 +643,10 @@ class PDFGenerator {
                         <span class="info-label">النطاق الزمني:</span>
                         <span class="info-value">
                             ${data.timeRangeStart && data.timeRangeEnd ?
-                                `من ${data.timeRangeStart} إلى ${data.timeRangeEnd}` :
-                                data.timeRangeStart ? `من ${data.timeRangeStart}` :
-                                `إلى ${data.timeRangeEnd}`
-                            }
+                    `من ${data.timeRangeStart} إلى ${data.timeRangeEnd}` :
+                    data.timeRangeStart ? `من ${data.timeRangeStart}` :
+                        `إلى ${data.timeRangeEnd}`
+                }
                         </span>
                     </div>
                     ` : ''}
@@ -925,11 +933,11 @@ class PDFGenerator {
 
     generateSummarySection(summary) {
         const surplusDeficitClass = summary.surplusDeficit > 0 ? 'surplus' :
-                                   summary.surplusDeficit < 0 ? 'deficit' : 'balanced';
+            summary.surplusDeficit < 0 ? 'deficit' : 'balanced';
 
         const surplusDeficitText = summary.surplusDeficit > 0 ? `فائض: ${summary.surplusDeficit.toFixed(2)}` :
-                                  summary.surplusDeficit < 0 ? `عجز: ${Math.abs(summary.surplusDeficit).toFixed(2)}` :
-                                  'متوازن: 0.00';
+            summary.surplusDeficit < 0 ? `عجز: ${Math.abs(summary.surplusDeficit).toFixed(2)}` :
+                'متوازن: 0.00';
 
         return `
         <div class="section">

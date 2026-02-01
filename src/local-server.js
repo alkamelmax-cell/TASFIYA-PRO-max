@@ -2211,9 +2211,24 @@ class LocalWebServer {
 
                 // --- TRIGGER NOTIFICATION (Notify Admin using OneSignal) ---
                 try {
+                    let cashierName = `كاشير ${data.cashier_id}`;
+
+                    // Fetch Cashier Name
+                    try {
+                        if (pool) {
+                            const nameRes = await pool.query('SELECT name FROM cashiers WHERE id = $1', [data.cashier_id]);
+                            if (nameRes.rows.length > 0) cashierName = nameRes.rows[0].name;
+                        } else {
+                            const nameRes = this.dbManager.db.prepare('SELECT name FROM cashiers WHERE id = ?').get(data.cashier_id);
+                            if (nameRes) cashierName = nameRes.name;
+                        }
+                    } catch (dbErr) {
+                        console.warn('⚠️ Could not fetch cashier name for notification:', dbErr);
+                    }
+
                     await this.sendOneSignalNotification(
                         'طلب تصفية جديد 🔔',
-                        `وصل طلب تصفية جديد من الكاشير (رقم: ${data.cashier_id})`
+                        `قام ${cashierName} بإرسال طلب تصفية جديد. اضغط للمراجعة.`
                     );
                 } catch (e) { console.error('Notification Error', e); }
 
@@ -2238,37 +2253,66 @@ class LocalWebServer {
             const pool = this.dbManager.pool;
             let requests = [];
 
-            if (pool) {
-                // Postgres Logic
-                let sql = `
-                    SELECT r.*, c.name as cashier_name 
-                    FROM reconciliation_requests r
-                    LEFT JOIN cashiers c ON r.cashier_id = c.id
-                `;
-                const params = [];
-                if (statusFilter !== 'all') {
-                    sql += ' WHERE r.status = $1';
-                    params.push(statusFilter);
-                }
-                sql += ' ORDER BY r.created_at DESC';
+            // Try to fetch with branch info from cashiers table (no JOIN needed)
+            try {
+                if (pool) {
+                    // Postgres Logic
+                    let sql = `
+                        SELECT r.*, c.name as cashier_name, c.branch_id
+                        FROM reconciliation_requests r
+                        LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    `;
+                    const params = [];
+                    if (statusFilter !== 'all') {
+                        sql += ' WHERE r.status = $1';
+                        params.push(statusFilter);
+                    }
+                    sql += ' ORDER BY r.created_at DESC';
 
-                const result = await pool.query(sql, params);
-                requests = result.rows;
-            } else {
-                // SQLite Logic
-                let sql = `
-                    SELECT r.*, c.name as cashier_name 
-                    FROM reconciliation_requests r
-                    LEFT JOIN cashiers c ON r.cashier_id = c.id
-                `;
-                const params = [];
-                if (statusFilter !== 'all') {
-                    sql += ' WHERE r.status = ?';
-                    params.push(statusFilter);
-                }
-                sql += ' ORDER BY r.created_at DESC';
+                    const result = await pool.query(sql, params);
+                    requests = result.rows;
+                } else {
+                    // SQLite Logic
+                    let sql = `
+                        SELECT r.*, c.name as cashier_name, c.branch_id
+                        FROM reconciliation_requests r
+                        LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    `;
+                    const params = [];
+                    if (statusFilter !== 'all') {
+                        sql += ' WHERE r.status = ?';
+                        params.push(statusFilter);
+                    }
+                    sql += ' ORDER BY r.created_at DESC';
 
-                requests = this.dbManager.db.prepare(sql).all(params);
+                    requests = this.dbManager.db.prepare(sql).all(params);
+                }
+            } catch (queryError) {
+                console.warn('⚠️ [API] Could not fetch cashier info, falling back to basic query:', queryError.message);
+
+                // Fallback: Fetch without cashier info
+                if (pool) {
+                    let sql = `SELECT * FROM reconciliation_requests`;
+                    const params = [];
+                    if (statusFilter !== 'all') {
+                        sql += ' WHERE status = $1';
+                        params.push(statusFilter);
+                    }
+                    sql += ' ORDER BY created_at DESC';
+
+                    const result = await pool.query(sql, params);
+                    requests = result.rows;
+                } else {
+                    let sql = `SELECT * FROM reconciliation_requests`;
+                    const params = [];
+                    if (statusFilter !== 'all') {
+                        sql += ' WHERE status = ?';
+                        params.push(statusFilter);
+                    }
+                    sql += ' ORDER BY created_at DESC';
+
+                    requests = this.dbManager.db.prepare(sql).all(params);
+                }
             }
 
             console.log(`📋 [API] Found ${requests.length} requests`);
@@ -2276,6 +2320,7 @@ class LocalWebServer {
             const enrichedRequests = requests.map(req => ({
                 ...req,
                 cashier_name: req.cashier_name || 'غير معروف',
+                branch_id: req.branch_id || null, // Send branch_id instead of branch_name
                 details: req.details_json ? (typeof req.details_json === 'string' ? JSON.parse(req.details_json) : req.details_json) : {}
             }));
 
