@@ -1002,6 +1002,12 @@ async function handleNewReconciliation(event) {
             const pData = window.pendingReconciliationData;
             const pDetails = pData.details;
 
+            // Save Origin Request ID immediately to ensure it persists even if data processing errors
+            if (pData.requestId) {
+                currentReconciliation.originRequestId = pData.requestId;
+                console.log('🔗 [NEW] Linked to Request ID:', pData.requestId);
+            }
+
             // 1. Set System Sales
             const sysSalesInput = document.getElementById('systemSales');
             if (sysSalesInput) {
@@ -1051,11 +1057,6 @@ async function handleNewReconciliation(event) {
 
             // Update UI again
             updateSummary();
-
-            // Save Origin Request ID for later status update
-            if (pData.requestId) {
-                currentReconciliation.originRequestId = pData.requestId;
-            }
 
             // Clear pending
             window.pendingReconciliationData = null;
@@ -2813,6 +2814,10 @@ function resetAllTotalsAndSummaries() {
         const element = document.getElementById(totalId);
         if (element) {
             element.textContent = '0.00';
+            // Reset class for surplus/deficit element
+            if (totalId === 'surplusDeficit') {
+                element.className = 'summary-value';
+            }
         }
     });
 
