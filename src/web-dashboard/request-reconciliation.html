@@ -232,7 +232,7 @@
                                     <option value="transfer">تحويل بنكي</option>
                                 </select>
                             </div>
-                            <div class="col-md-6">
+                            <div class="col-md-6" id="atmFieldContainer">
                                 <label class="text-secondary small mb-1">جهاز الصراف / الماكينة</label>
                                 <select id="bankAtmName" class="form-select custom-input bg-dark text-white">
                                     <option value="" selected disabled>جاري تحميل الأجهزة...</option>
@@ -240,10 +240,11 @@
                             </div>
                         </div>
                         <div class="row g-3 mb-4 align-items-end">
-                            <div class="col-md-5">
+                            <div class="col-md-5" id="bankNameFieldContainer">
                                 <label class="text-secondary small mb-1">اسم البنك</label>
                                 <input type="text" id="input_bank_name_v2" class="form-control custom-input"
-                                    placeholder="اسم البنك">
+                                    placeholder="اسم البنك" readonly
+                                    style="background-color: #2d3748; cursor: not-allowed;">
                             </div>
                             <div class="col-md-5">
                                 <label class="text-secondary small mb-1">المبلغ</label>
@@ -560,6 +561,36 @@
         }
         loadAtms();
 
+        // Handle ATM field visibility based on payment type
+        const bankOpTypeSelect = document.getElementById('bankOpType');
+        const atmFieldContainer = document.getElementById('atmFieldContainer');
+        const bankNameFieldContainer = document.getElementById('bankNameFieldContainer');
+        const atmSelect = document.getElementById('bankAtmName');
+        const bankNameInput = document.getElementById('input_bank_name_v2');
+
+        if (bankOpTypeSelect && atmFieldContainer && bankNameFieldContainer) {
+            bankOpTypeSelect.addEventListener('change', function () {
+                const selectedType = this.value;
+                if (selectedType === 'transfer') {
+                    // Hide ATM and Bank Name fields for bank transfers
+                    atmFieldContainer.style.display = 'none';
+                    bankNameFieldContainer.style.display = 'none';
+                    atmSelect.value = ''; // Clear selection
+                    bankNameInput.value = ''; // Clear bank name
+                } else {
+                    // Show ATM and Bank Name fields for card payments
+                    atmFieldContainer.style.display = 'block';
+                    bankNameFieldContainer.style.display = 'block';
+                }
+            });
+
+            // Initialize visibility on page load
+            if (bankOpTypeSelect.value === 'transfer') {
+                atmFieldContainer.style.display = 'none';
+                bankNameFieldContainer.style.display = 'none';
+            }
+        }
+
         // --- Data Lists ---
         let cashItems = [];
         let bankItems = [];
@@ -726,7 +757,11 @@
                 return;
             }
 
-            bankItems.push({ op: opType, opText: opText, atm: atm || '-', entry_bank_name: bankVal || '-', amount: amt });
+            // For bank transfers, ATM is not required
+            // For card payments, ATM should be selected (optional validation)
+            const atmValue = (opType === 'transfer') ? 'تحويل بنكي' : (atm || '-');
+
+            bankItems.push({ op: opType, opText: opText, atm: atmValue, entry_bank_name: bankVal || '-', amount: amt });
             renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
 
             document.getElementById('input_bank_amount_v2').value = '';

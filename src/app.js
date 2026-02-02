@@ -4706,7 +4706,7 @@ async function prepareReconciliationDataById(id) {
     const bankReceipts = await ipcRenderer.invoke('db-query', `
         SELECT br.*, a.name as atm_name, a.bank_name
         FROM bank_receipts br
-        JOIN atms a ON br.atm_id = a.id
+        LEFT JOIN atms a ON br.atm_id = a.id
         WHERE br.reconciliation_id = ?
     `, [id]);
 
@@ -19230,8 +19230,11 @@ Object.assign(window.appAPI, {
         if (!currentReconciliation || !currentReconciliation.id) return;
         try {
             // Find ATM ID if possible (Best Effort)
+            // SKIP ATM lookup if this is a bank transfer
             let atmId = null;
-            if (atmName) {
+            const isTransfer = atmName === 'تحويل بنكي' || operationType === 'تحويل بنكي (Bank Transfer)';
+
+            if (atmName && !isTransfer) {
                 try {
                     const atm = await ipcRenderer.invoke('db-get',
                         'SELECT id FROM atms WHERE name LIKE ? OR name LIKE ?',
@@ -19241,6 +19244,8 @@ Object.assign(window.appAPI, {
                 } catch (e) {
                     console.warn('⚠️ Could not resolve ATM ID for name:', atmName);
                 }
+            } else if (isTransfer) {
+                console.log('📝 [BANK] تحويل بنكي - لا يتطلب ربط بجهاز ATM');
             }
 
             const result = await ipcRenderer.invoke('db-run',
@@ -19255,7 +19260,7 @@ Object.assign(window.appAPI, {
                 atm_name: atmName || (atmId ? 'جهاز مسجل' : 'غير محدد'), // Fallback if name is missing but ID exists
                 bank_name: bankName,
                 amount: parseFloat(amount),
-                atm_id: atmId // Store ID for consistency
+                atm_id: atmId // Store ID for consistency (NULL for transfers)
             });
             updateBankReceiptsTable();
             updateSummary();
