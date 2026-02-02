@@ -203,6 +203,11 @@ class LocalWebServer {
                     else if (req.method === 'DELETE') await this.handleDeleteAllReconciliationRequests(res);
                     return;
                 }
+                // Reset sequence endpoint
+                else if (pathname === '/api/reconciliation-requests/reset-sequence' && req.method === 'POST') {
+                    await this.handleResetRequestsSequence(res);
+                    return;
+                }
                 else if (pathname.match(/^\/api\/reconciliation-requests\/\d+\/approve$/) && req.method === 'POST') {
                     const id = pathname.split('/')[3]; // /api/reconciliation-requests/ID/approve
                     await this.handleApproveReconciliationRequest(res, id, req);
@@ -1454,6 +1459,34 @@ class LocalWebServer {
             this.sendJson(res, { success: false, error: error.message });
         }
     }
+
+    // 🔄 Reset Auto-increment Sequence for Reconciliation Requests
+    async handleResetRequestsSequence(res) {
+        try {
+            console.log('🔄 [RESET SEQ] إعادة ضبط تسلسل طلبات التصفية...');
+            const pool = this.dbManager.pool;
+
+            if (pool) {
+                // PostgreSQL Mode
+                await pool.query(`ALTER SEQUENCE reconciliation_requests_id_seq RESTART WITH 1`);
+                console.log('✅ [RESET SEQ] تم إعادة ضبط التسلسل (PostgreSQL)');
+            } else {
+                // SQLite Mode
+                // Delete the sequence entry to reset auto-increment
+                this.dbManager.db.prepare(`DELETE FROM sqlite_sequence WHERE name = 'reconciliation_requests'`).run();
+                console.log('✅ [RESET SEQ] تم إعادة ضبط التسلسل (SQLite)');
+            }
+
+            this.sendJson(res, {
+                success: true,
+                message: 'تم إعادة ضبط التسلسل بنجاح. الطلب التالي سيبدأ من رقم #1'
+            });
+        } catch (error) {
+            console.error('❌ [RESET SEQ] خطأ في إعادة ضبط التسلسل:', error);
+            this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
 
     async handleGetAtms(res, query) {
         try {
