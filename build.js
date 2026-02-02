@@ -3,8 +3,8 @@
  * تصفية برو - Tasfiya Pro
  * Build Script - سكريبت بناء نظيف وبسيط
  * ============================================================
- * إصدار: 4.0.0
- * التاريخ: 2025-11-14
+ * إصدار: 4.0.1
+ * التاريخ: 2026-02-02
  * ============================================================
  */
 
@@ -106,8 +106,9 @@ function rebuildNativeModules() {
 // الخطوة 5: بناء التطبيق
 // ============================================================
 function buildApplication() {
+  // استخدام الإعدادات من package.json مباشرة
   runCommand(
-    'cross-env NODE_ENV=production electron-builder --config electron-builder.config.js',
+    'npx electron-builder --win --x64',
     'بناء التطبيق (Electron Builder)'
   );
 }
