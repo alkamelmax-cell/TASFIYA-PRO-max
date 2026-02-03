@@ -1,0 +1,54 @@
+{
+    "appId": "com.tasfiyapro.reconciliation",
+    "productName": "تصفية برو - Tasfiya Pro",
+    "copyright": "Copyright © 2025 Mohamed Amin Al-Kamel. All rights reserved.",
+    "directories": {
+        "output": "dist",
+        "buildResources": "assets"
+    },
+    "files": [
+        "src/**/*",
+        "assets/**/*",
+        "node_modules/**/*",
+        "package.json",
+        "!src/**/*.test.js",
+        "!**/.*"
+    ],
+    "extraResources": [
+        {
+            "from": "assets",
+            "to": "assets",
+            "filter": [
+                "**/*"
+            ]
+        }
+    ],
+    "win": {
+        "target": [
+            {
+                "target": "nsis",
+                "arch": [
+                    "x64"
+                ]
+            },
+            {
+                "target": "portable",
+                "arch": [
+                    "x64"
+                ]
+            }
+        ],
+        "icon": "assets/icon.ico",
+        "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+        "oneClick": false,
+        "perMachine": false,
+        "allowToChangeInstallationDirectory": true,
+        "createDesktopShortcut": true,
+        "createStartMenuShortcut": true,
+        "shortcutName": "تصفية برو",
+        "deleteAppDataOnUninstall": false,
+        "language": "1025"
+    }
+}
