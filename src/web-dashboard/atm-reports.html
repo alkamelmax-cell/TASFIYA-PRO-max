@@ -217,6 +217,7 @@
                         <option value="mada">مدى</option>
                         <option value="visa">فيزا</option>
                         <option value="mastercard">ماستر كارد</option>
+                        <option value="transfer">تحويل</option>
                     </select>
                 </div>
                 <div class="col-6 col-md-3">
@@ -356,6 +357,7 @@
                     if (opType === 'mada') return rType.includes('مدى') || rType.includes('mada');
                     if (opType === 'visa') return rType.includes('فيزا') || rType.includes('visa');
                     if (opType === 'mastercard') return rType.includes('ماستر') || rType.includes('master');
+                    if (opType === 'transfer') return rType.includes('تحويل') || rType.includes('transfer');
                     return false;
                 });
                 isClientFiltered = true;
@@ -513,6 +515,8 @@
                     opBadge = '<span class="badge bg-primary text-white">فيزا</span>';
                 } else if (opType.includes('ماستر') || opType.includes('master')) {
                     opBadge = '<span class="badge bg-warning text-white">ماستركارد</span>';
+                } else if (opType.includes('تحويل') || opType.includes('transfer')) {
+                    opBadge = '<span class="badge bg-success text-white">تحويل</span>';
                 } else {
                     opBadge = `<span class="badge bg-secondary">${row.operation_type || '-'}</span>`;
                 }
@@ -568,6 +572,11 @@
                         colorClass = 'text-warning';
                         borderClass = 'border-warning';
                         glowColor = '#f59e0b'; // Amber
+                    } else if (opType.includes('تحويل') || opType.includes('transfer')) {
+                        iconClass = 'fas fa-exchange-alt';
+                        colorClass = 'text-success';
+                        borderClass = 'border-success';
+                        glowColor = '#198754'; // Green
                     }
 
                     const date = new Date(row.reconciliation_date);
