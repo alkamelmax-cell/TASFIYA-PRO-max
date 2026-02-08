@@ -5,9 +5,20 @@ class PostgresManager {
         this.pool = new Pool({
             connectionString: connectionString,
             ssl: {
-                rejectUnauthorized: false // Required for Neon
-            }
+                rejectUnauthorized: false // Required for Neon/Render
+            },
+            max: 10, // Max number of clients in the pool
+            idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
+            connectionTimeoutMillis: 5000, // Return an error after 5 seconds if connection could not be established
         });
+
+        // The pool will emit an error on behalf of any idle clients
+        // it contains if a backend error or network partition happens
+        this.pool.on('error', (err, client) => {
+            console.error('❌ [DB-POOL] Unexpected error on idle client', err);
+            // process.exit(-1); // Do not exit, just log it. The pool will discard the client.
+        });
+
         this.db = this;
     }
 
@@ -42,7 +53,7 @@ class PostgresManager {
                     WHERE a.id < b.id AND a.username = b.username
                 `);
                 console.log('[DB] Cleaned up duplicate usernames');
-                
+
                 // Now add UNIQUE constraint
                 await client.query('ALTER TABLE admins ADD CONSTRAINT admins_username_key UNIQUE (username)');
                 console.log('✅ [DB] Added UNIQUE constraint on admins.username');
