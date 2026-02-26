@@ -169,7 +169,7 @@ class LocalWebServer {
                     return;
                 }
                 else if (pathname === '/api/customers-summary') {
-                    await this.handleGetCustomersSummary(res);
+                    await this.handleGetCustomersSummary(res, parsedUrl.query);
                     return;
                 }
                 // User Management
@@ -897,7 +897,7 @@ class LocalWebServer {
             this.sendJson(res, { success: false, error: error.message });
         }
     }
-    async handleGetCustomersSummary(res) {
+    async handleGetCustomersSummary(res, query = {}) {
         try {
             // Determine DB type for compatibility
             // SQLite uses MAX(a,b,c), Postgres uses GREATEST(a,b,c)
@@ -905,6 +905,23 @@ class LocalWebServer {
             const isPostgres = !!process.env.DATABASE_URL;
             const greatestFunc = isPostgres ? 'GREATEST' : 'MAX';
             const defaultDate = isPostgres ? "'1970-01-01 00:00:00'" : "''";
+            const dateFrom = typeof query.dateFrom === 'string' ? query.dateFrom.trim() : '';
+            const dateToRaw = typeof query.dateTo === 'string' ? query.dateTo.trim() : '';
+
+            const params = [];
+            const dateFilters = [];
+            if (dateFrom) {
+                dateFilters.push('t.created_at >= ?');
+                params.push(dateFrom);
+            }
+            if (dateToRaw) {
+                const dateTo = dateToRaw.includes(' ') ? dateToRaw : `${dateToRaw} 23:59:59`;
+                dateFilters.push('t.created_at <= ?');
+                params.push(dateTo);
+            }
+            const dateWhereClause = dateFilters.length > 0
+                ? `AND ${dateFilters.join(' AND ')}`
+                : '';
 
             // Unified calculation query with wrapper for Postgres compatibility
             // Fixed: Restored Branch Name logic using a more robust join technique
@@ -935,13 +952,15 @@ class LocalWebServer {
                     UNION ALL
                     SELECT customer_name, amount, 'credit' as type, created_at FROM manual_customer_receipts WHERE customer_name IS NOT NULL
                 ) t
+                WHERE t.customer_name IS NOT NULL
+                ${dateWhereClause}
                 GROUP BY t.customer_name
             ) AS final_result
             WHERE balance != 0 OR transaction_count > 0
             ORDER BY balance DESC
             `;
 
-            const data = await this.dbManager.db.prepare(sql).all();
+            const data = await this.dbManager.db.prepare(sql).all(params);
             this.sendJson(res, { success: true, data });
         } catch (error) {
             console.error('[Customers Summary] Error:', error);
@@ -1424,15 +1443,30 @@ class LocalWebServer {
                 await this.dbManager.db.prepare("DELETE FROM reconciliation_requests WHERE id = ?").run(id);
             }
 
-            // CRITICAL: Also delete from remote server to prevent re-sync
+            // Check if sync is enabled before deleting from cloud
+            let syncEnabled = true;
             try {
-                const remoteUrl = 'https://tasfiya-pro-max.onrender.com/api/reconciliation-requests/' + id;
-                const fetch = require('node-fetch');
-                await fetch(remoteUrl, { method: 'DELETE' });
-                console.log(`✅ [DELETE] Also deleted from cloud: ID ${id}`);
-            } catch (cloudErr) {
-                console.warn(`⚠️ [DELETE] Cloud deletion failed (ID ${id}):`, cloudErr.message);
-                // Don't fail the whole request if cloud is down, but log it
+                const settingRow = this.dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
+                if (settingRow && settingRow.setting_value === 'false') {
+                    syncEnabled = false;
+                }
+            } catch (e) {
+                // If table doesn't exist or error, assume sync is enabled
+            }
+
+            // CRITICAL: Also delete from remote server to prevent re-sync (only if sync is enabled)
+            if (syncEnabled) {
+                try {
+                    const remoteUrl = 'https://tasfiya-pro-max.onrender.com/api/reconciliation-requests/' + id;
+                    const fetch = require('node-fetch');
+                    await fetch(remoteUrl, { method: 'DELETE' });
+                    console.log(`✅ [DELETE] Also deleted from cloud: ID ${id}`);
+                } catch (cloudErr) {
+                    console.warn(`⚠️ [DELETE] Cloud deletion failed (ID ${id}):`, cloudErr.message);
+                    // Don't fail the whole request if cloud is down, but log it
+                }
+            } else {
+                console.log(`⛔ [DELETE] Sync disabled - skipping cloud deletion for ID ${id}`);
             }
 
             this.sendJson(res, { success: true });

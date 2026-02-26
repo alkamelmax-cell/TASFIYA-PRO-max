@@ -231,22 +231,58 @@
                     قائمة العملاء والأرصدة
                 </div>
                 <div class="row g-3">
-                    <div class="col-md-4">
+                    <div class="col-12 col-md-3">
                         <label class="custom-label">بحث عن عميل</label>
                         <input type="text" class="custom-input w-100" id="searchCustomerInput"
                             placeholder="اكتب اسم العميل...">
                     </div>
-                    <div class="col-md-3">
+                    <div class="col-6 col-md-2">
                         <label class="custom-label">فلتر الفرع</label>
                         <select class="custom-input form-select w-100" id="filterBranchList">
                             <option value="all">جميع الفروع</option>
                         </select>
                     </div>
-                    <div class="col-md-2 d-flex align-items-end">
+                    <div class="col-6 col-md-2">
+                        <label class="custom-label">من تاريخ</label>
+                        <input type="date" class="custom-input w-100" id="filterListDateFrom">
+                    </div>
+                    <div class="col-6 col-md-2">
+                        <label class="custom-label">إلى تاريخ</label>
+                        <input type="date" class="custom-input w-100" id="filterListDateTo">
+                    </div>
+                    <div class="col-6 col-md-3 d-flex align-items-end">
                         <button class="btn-search w-100" onclick="filterCustomersList()">
                             بحث <i class="fas fa-search ms-1"></i>
                         </button>
                     </div>
+                </div>
+            </div>
+
+            <!-- List Stats Row -->
+            <div class="row g-3 mb-3">
+                <div class="col-6 col-lg-4">
+                    <div class="stat-box">
+                        <i class="fas fa-file-invoice-dollar icon-wrapper text-danger"></i>
+                        <div class="stat-label">إجمالي الآجل للفترة</div>
+                        <div class="stat-value text-danger" id="listStatsTotalDebit">0.00</div>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-4">
+                    <div class="stat-box">
+                        <i class="fas fa-hand-holding-usd icon-wrapper text-success"></i>
+                        <div class="stat-label">إجمالي التحصيلات للفترة</div>
+                        <div class="stat-value text-success" id="listStatsTotalCredit">0.00</div>
+                    </div>
+                </div>
+                <div class="col-12 col-lg-4">
+                    <div class="stat-box">
+                        <i class="fas fa-balance-scale icon-wrapper text-info"></i>
+                        <div class="stat-label">الصافي (الآجل - التحصيل)</div>
+                        <div class="stat-value text-info" id="listStatsNetBalance">0.00</div>
+                    </div>
+                </div>
+                <div class="col-12">
+                    <small class="text-secondary" id="listStatsPeriodLabel">الفترة: كل الفترات</small>
                 </div>
             </div>
 
@@ -426,7 +462,7 @@
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <script src="customer-ledger.js?v=21"></script>
+    <script src="customer-ledger.js?v=22"></script>
 </body>
 
 </html>
