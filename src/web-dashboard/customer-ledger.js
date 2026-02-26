@@ -44,6 +44,22 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Initial Load
     await loadBranches();
     await loadCustomersSummary();
+
+    // Fast local filtering (without reloading from API)
+    const searchInput = document.getElementById('searchCustomerInput');
+    const branchSelect = document.getElementById('filterBranchList');
+
+    if (searchInput) {
+        searchInput.addEventListener('input', () => {
+            filterCustomersList({ skipReload: true });
+        });
+    }
+
+    if (branchSelect) {
+        branchSelect.addEventListener('change', () => {
+            filterCustomersList({ skipReload: true });
+        });
+    }
 });
 
 function logout() {
@@ -54,6 +70,33 @@ function logout() {
 let allCustomersData = [];
 
 // ================== LIST VIEW LOGIC ==================
+
+function getListDateFilters() {
+    const dateFrom = (document.getElementById('filterListDateFrom')?.value || '').trim();
+    const dateTo = (document.getElementById('filterListDateTo')?.value || '').trim();
+    return { dateFrom, dateTo };
+}
+
+function formatDateLabel(dateStr) {
+    if (!dateStr) return '';
+    const dateObj = new Date(dateStr);
+    if (Number.isNaN(dateObj.getTime())) return dateStr;
+    return dateObj.toLocaleDateString('en-GB');
+}
+
+function getListPeriodLabel(dateFrom, dateTo) {
+    if (dateFrom && dateTo) return `${formatDateLabel(dateFrom)} - ${formatDateLabel(dateTo)}`;
+    if (dateFrom) return `من ${formatDateLabel(dateFrom)}`;
+    if (dateTo) return `حتى ${formatDateLabel(dateTo)}`;
+    return 'كل الفترات';
+}
+
+function toSafeNumber(value) {
+    if (value === null || value === undefined) return 0;
+    if (typeof value === 'number') return Number.isFinite(value) ? value : 0;
+    const parsed = parseFloat(String(value).replace(/,/g, '').trim());
+    return Number.isFinite(parsed) ? parsed : 0;
+}
 
 async function loadBranches() {
     try {
@@ -73,40 +116,103 @@ async function loadBranches() {
 }
 
 async function loadCustomersSummary() {
+    const { dateFrom, dateTo } = getListDateFilters();
     showLoading(true);
     try {
-        const res = await fetch(`${API_URL}/customers-summary`);
+        const params = new URLSearchParams();
+        if (dateFrom) params.append('dateFrom', dateFrom);
+        if (dateTo) params.append('dateTo', dateTo);
+
+        const query = params.toString();
+        const url = query ? `${API_URL}/customers-summary?${query}` : `${API_URL}/customers-summary`;
+        const res = await fetch(url, { cache: 'no-store' });
         const result = await res.json();
 
         if (result.success) {
-            allCustomersData = result.data;
-            renderCustomersTable(allCustomersData);
+            allCustomersData = Array.isArray(result.data) ? result.data : [];
+            applyAndRenderCustomersList();
         } else {
             console.error(result.error);
+            allCustomersData = [];
+            applyAndRenderCustomersList();
         }
     } catch (e) {
         console.error('Error loading summary:', e);
+        allCustomersData = [];
+        applyAndRenderCustomersList();
     } finally {
         showLoading(false);
     }
 }
 
-function filterCustomersList() {
+function applyAndRenderCustomersList() {
+    const filtered = applyCustomersListFilters(allCustomersData);
+    renderCustomersTable(filtered);
+    updateListStatsCards(filtered);
+}
+
+function applyCustomersListFilters(data) {
     const searchText = document.getElementById('searchCustomerInput').value.toLowerCase();
     const branchFilter = document.getElementById('filterBranchList').value;
 
-    const filtered = allCustomersData.filter(row => {
-        const nameMatch = row.customer_name.toLowerCase().includes(searchText);
-        // Note: Currently backend doesn't return branch_name, so it uses the fallback in render
-        // To make filter work effectively, we might need real branch data later.
-        // For now, it filters based on what will be displayed.
-        const rowBranch = row.branch_name || 'اسواق العواجي - الفرع الرئيسي';
+    return data.filter(row => {
+        const rowName = String(row.customer_name || '').toLowerCase();
+        const nameMatch = rowName.includes(searchText);
+        const rowBranch = row.branch_name || 'غير محدد';
         const branchMatch = branchFilter === 'all' || rowBranch === branchFilter;
-
         return nameMatch && branchMatch;
     });
+}
 
-    renderCustomersTable(filtered);
+async function filterCustomersList(options = {}) {
+    const { skipReload = false } = options;
+    if (skipReload) {
+        applyAndRenderCustomersList();
+        return;
+    }
+
+    const { dateFrom, dateTo } = getListDateFilters();
+    if (dateFrom && dateTo && dateFrom > dateTo) {
+        if (typeof Swal !== 'undefined') {
+            Swal.fire('تنبيه', 'تاريخ البداية يجب أن يكون قبل تاريخ النهاية', 'warning');
+        } else {
+            alert('تاريخ البداية يجب أن يكون قبل تاريخ النهاية');
+        }
+        return;
+    }
+
+    await loadCustomersSummary();
+}
+
+function updateListStatsCards(data) {
+    const totalDebit = data.reduce((sum, row) => sum + toSafeNumber(row.total_debit), 0);
+    const totalCredit = data.reduce((sum, row) => sum + toSafeNumber(row.total_credit), 0);
+    const netBalance = totalDebit - totalCredit;
+
+    const totalDebitEl = document.getElementById('listStatsTotalDebit');
+    const totalCreditEl = document.getElementById('listStatsTotalCredit');
+    const netBalanceEl = document.getElementById('listStatsNetBalance');
+    const periodLabelEl = document.getElementById('listStatsPeriodLabel');
+
+    if (totalDebitEl) totalDebitEl.textContent = formatCurrency(totalDebit);
+    if (totalCreditEl) totalCreditEl.textContent = formatCurrency(totalCredit);
+    if (netBalanceEl) {
+        netBalanceEl.textContent = formatCurrency(netBalance);
+        netBalanceEl.classList.remove('text-danger', 'text-success', 'text-info');
+
+        if (netBalance > 0) {
+            netBalanceEl.classList.add('text-danger');
+        } else if (netBalance < 0) {
+            netBalanceEl.classList.add('text-success');
+        } else {
+            netBalanceEl.classList.add('text-info');
+        }
+    }
+
+    if (periodLabelEl) {
+        const { dateFrom, dateTo } = getListDateFilters();
+        periodLabelEl.textContent = `الفترة: ${getListPeriodLabel(dateFrom, dateTo)} | عدد العملاء: ${data.length}`;
+    }
 }
 
 function renderCustomersTable(data) {
@@ -120,8 +226,7 @@ function renderCustomersTable(data) {
 
     data.forEach(row => {
         const tr = document.createElement('tr');
-        // Using static branch name for now as requested by user image style, or backend data if available
-        const branchName = row.branch_name || 'اسواق العواجي - الفرع الرئيسي';
+        const branchName = row.branch_name || 'غير محدد';
 
         tr.innerHTML = `
             <td class="fw-bold text-white text-center" style="text-align: center !important;">${row.customer_name}</td>
