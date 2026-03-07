@@ -19,6 +19,7 @@
     <link href="css/custom.css?v=21" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="/js/onesignal-bootstrap.js"></script>
 
     <!-- OneSignal SDK -->
     <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
@@ -142,21 +143,14 @@
             }
             else {
                 // BROWSER MODE
-                window.OneSignalDeferred = window.OneSignalDeferred || [];
-                OneSignalDeferred.push(async function (OneSignal) {
-                    try {
-                        await OneSignal.init({
-                            appId: "1b7778f5-0f25-4df8-a281-611b682a964c",
-                            allowLocalhostAsSecureOrigin: true,
-                        });
-                        await OneSignal.User.addTag("role", "admin");
-                        const userId = user.id ? String(user.id) : "unknown";
-
-                        if (OneSignal.Notifications.permission === "default") {
-                            await OneSignal.Notifications.requestPermission();
-                        }
-                    } catch (error) { console.error("OneSignal Web Error:", error); }
-                });
+                try {
+                    window.TasfiyaOneSignal.initBrowserUser(user, {
+                        role: "admin",
+                        requestPermission: true
+                    });
+                } catch (error) {
+                    console.error("OneSignal Web Error:", error);
+                }
             }
         }
 

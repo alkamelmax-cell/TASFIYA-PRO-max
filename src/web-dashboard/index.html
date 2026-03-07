@@ -52,7 +52,7 @@
         <!-- Brand Section -->
         <div class="navbar-brand-section">
             <div class="brand-logo">
-                <img src="assets/logo.png" alt="TP"
+                <img src="assets/logo-tasfia-pro.png" alt="TP"
                     style="height: 45px; width: auto; margin-left: 10px; border-radius: 8px;">تصفية برو
             </div>
         </div>
@@ -239,6 +239,7 @@
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/onesignal-bootstrap.js"></script>
     <script>
         // Auth Check
         const userStr = localStorage.getItem('user');
@@ -295,25 +296,14 @@
             }
             else {
                 console.log("💻 Running in Browser Mode");
-                // OneSignal Initialization - RE-ENABLED
-                window.OneSignalDeferred = window.OneSignalDeferred || [];
-                OneSignalDeferred.push(async function (OneSignal) {
-                    try {
-                        await OneSignal.init({
-                            appId: "1b7778f5-0f25-4df8-a281-611b682a964c",
-                            allowLocalhostAsSecureOrigin: true,
-                        });
-                        await OneSignal.User.addTag("role", "أدمن");
-                        await OneSignal.User.addTag("userId", user.id ? String(user.id) : "unknown");
-
-                        if (OneSignal.Notifications.permission === "default") {
-                            await OneSignal.Notifications.requestPermission();
-                        }
-                        console.log("✅ OneSignal initialized successfully");
-                    } catch (error) {
-                        console.error("OneSignal Error:", error);
-                    }
-                });
+                try {
+                    window.TasfiyaOneSignal.initBrowserUser(user, {
+                        role: "أدمن",
+                        requestPermission: true
+                    });
+                } catch (error) {
+                    console.error("OneSignal Error:", error);
+                }
             }
         }
 
@@ -743,40 +733,20 @@
             }
         });
 
-        // Register Service Worker for PWA
-        // PWA Service Worker - Force Update Strategy
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', async () => {
-                try {
-                    // 1. Unregister existing SWs to clear stale state
-                    const registrations = await navigator.serviceWorker.getRegistrations();
-                    for (let registration of registrations) {
-                        // Check if it's an old version or just force update
-                        await registration.update();
-                    }
+        window.addEventListener('load', async () => {
+            if (!window.TasfiyaPwa || typeof window.TasfiyaPwa.registerServiceWorker !== 'function') {
+                return;
+            }
 
-                    // 2. Force delete conflict caches if specific URL param is present or just run it
-                    // This is critical for the APK to clear old data
-                    const cacheKeys = await caches.keys();
-                    for (const key of cacheKeys) {
-                        if (key.includes('v1') || key === 'tasfiya-pro-v2') {
-                            console.log('🧹 Clearing old cache:', key);
-                            await caches.delete(key);
-                        }
-                    }
-
-                    // 3. Register new SW with version param to bypass generic cache
-                    const registration = await navigator.serviceWorker.register('/service-worker.js?v=4.0.1', {
-                        scope: '/',
-                        updateViaCache: 'none' // Critical: Don't check browser cache for SW file
-                    });
-
+            try {
+                const registration = await window.TasfiyaPwa.registerServiceWorker();
+                if (registration) {
                     console.log('✅ Service Worker registered with scope:', registration.scope);
-                } catch (error) {
-                    console.error('❌ Service Worker registration failed:', error);
                 }
-            });
-        }
+            } catch (error) {
+                console.error('❌ Service Worker registration failed:', error);
+            }
+        });
     </script>
 </body>
 

@@ -199,7 +199,7 @@
 
             <!-- Header -->
             <div class="logo-container">
-                <img src="assets/logo.png" alt="Logo" class="logo-img">
+                <img src="assets/logo-tasfia-pro.png" alt="Logo" class="logo-img">
                 <div class="app-title">تصفية برو</div>
             </div>
 
@@ -277,6 +277,7 @@
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/onesignal-bootstrap.js"></script>
     <script>
         // --- Logic Preserved Exactly As Is ---
 
@@ -375,40 +376,20 @@
             else window.location.href = '/';
         }
 
-        // Register Service Worker for PWA
-        // PWA Service Worker - Force Update Strategy
-        if ('serviceWorker' in navigator) {
-            window.addEventListener('load', async () => {
-                try {
-                    // 1. Unregister existing SWs to clear stale state
-                    const registrations = await navigator.serviceWorker.getRegistrations();
-                    for (let registration of registrations) {
-                        // Check if it's an old version or just force update
-                        await registration.update();
-                    }
+        window.addEventListener('load', async () => {
+            if (!window.TasfiyaPwa || typeof window.TasfiyaPwa.registerServiceWorker !== 'function') {
+                return;
+            }
 
-                    // 2. Force delete conflict caches if specific URL param is present or just run it
-                    // This is critical for the APK to clear old data
-                    const cacheKeys = await caches.keys();
-                    for (const key of cacheKeys) {
-                        if (key.includes('v1') || key === 'tasfiya-pro-v2') {
-                            console.log('🧹 Clearing old cache:', key);
-                            await caches.delete(key);
-                        }
-                    }
-
-                    // 3. Register new SW with version param to bypass generic cache
-                    const registration = await navigator.serviceWorker.register('/service-worker.js?v=4.0.1', {
-                        scope: '/',
-                        updateViaCache: 'none' // Critical: Don't check browser cache for SW file
-                    });
-
+            try {
+                const registration = await window.TasfiyaPwa.registerServiceWorker();
+                if (registration) {
                     console.log('✅ Service Worker registered with scope:', registration.scope);
-                } catch (error) {
-                    console.error('❌ Service Worker registration failed:', error);
                 }
-            });
-        }
+            } catch (error) {
+                console.error('❌ Service Worker registration failed:', error);
+            }
+        });
     </script>
 </body>
 
