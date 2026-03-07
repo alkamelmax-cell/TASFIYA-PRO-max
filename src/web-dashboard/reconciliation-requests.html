@@ -93,53 +93,33 @@
             window.location.href = 'index.html';
         }
 
+        function bootstrapNativeNotifications() {
+            return window.TasfiyaOneSignal.initNativeUser(user, {
+                role: "admin"
+            });
+        }
+
         // Initialize OneSignal Logic (Official)
         // 1. Official Callback
         window.median_onesignal_info = function (data) {
             console.log("📱 Median App Detected via Official Callback", data);
-
-            const tagsData = {
-                "role": "admin",
-                "userId": user.id ? String(user.id) : "unknown"
-            };
-
-            // Strategy A
-            if (window.gonative && window.gonative.onesignal) {
-                window.gonative.onesignal.tags.setTags(tagsData);
-            }
-
-            // Strategy B (Backup)
-            setTimeout(() => {
-                const jsonTags = JSON.stringify(tagsData);
-                window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
-            }, 1000);
+            bootstrapNativeNotifications();
         };
 
         // 2. Initialize Logic
         if (user.role === 'admin' || !user.role) {
-            const ua = navigator.userAgent.toLowerCase();
-            const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1;
+            const isMedianApp = window.TasfiyaOneSignal.isNativeEnvironment();
 
             if (isMedianApp) {
-                console.log("📱 Running in App Mode - Force setting tags...");
+                console.log("📱 Running in App Mode");
+                bootstrapNativeNotifications();
 
-                const tagsData = {
-                    "role": "admin",
-                    "userId": user.id ? String(user.id) : "unknown",
-                    "force": Date.now()
-                };
-
-                setTimeout(() => {
-                    // Try to send Tags AND External ID via URL Scheme
-                    const jsonTags = JSON.stringify(tagsData);
-                    window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
-
-                    if (user.id) {
-                        setTimeout(() => {
-                            window.location.href = `gonative://onesignal/user/setExternalId?externalId=${user.id}`;
-                        }, 500);
+                window.addEventListener('focus', bootstrapNativeNotifications);
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible') {
+                        bootstrapNativeNotifications();
                     }
-                }, 2000);
+                });
             }
             else {
                 // BROWSER MODE

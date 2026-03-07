@@ -5,8 +5,116 @@
     const SERVICE_WORKER_PATH = '/service-worker.js';
     const SERVICE_WORKER_SCOPE = '/';
     const LEGACY_CACHE_NAMES = new Set(['tasfiya-pro-v2']);
+    const NATIVE_BOOTSTRAP_COOLDOWN_MS = 15000;
 
     let serviceWorkerRegistrationPromise = null;
+
+    function isNativeAppEnvironment() {
+        const userAgent = String(windowObj.navigator.userAgent || '').toLowerCase();
+        return Boolean(windowObj.gonative) || userAgent.includes('gonative') || userAgent.includes('median');
+    }
+
+    function safeSessionStorageGet(key) {
+        try {
+            return windowObj.sessionStorage ? windowObj.sessionStorage.getItem(key) : null;
+        } catch (error) {
+            return null;
+        }
+    }
+
+    function safeSessionStorageSet(key, value) {
+        try {
+            if (windowObj.sessionStorage) {
+                windowObj.sessionStorage.setItem(key, value);
+            }
+        } catch (error) {
+            // Ignore storage failures in restricted contexts.
+        }
+    }
+
+    function dispatchNativeOneSignalUrl(url) {
+        try {
+            windowObj.location.href = url;
+            return true;
+        } catch (error) {
+            console.warn('[Tasfiya OneSignal] Native URL dispatch failed:', url, error);
+            return false;
+        }
+    }
+
+    function applyNativeTags(tags) {
+        if (
+            windowObj.gonative
+            && windowObj.gonative.onesignal
+            && windowObj.gonative.onesignal.tags
+            && typeof windowObj.gonative.onesignal.tags.setTags === 'function'
+        ) {
+            try {
+                windowObj.gonative.onesignal.tags.setTags(tags);
+            } catch (error) {
+                console.warn('[Tasfiya OneSignal] Native tag assignment failed:', error);
+            }
+        }
+
+        dispatchNativeOneSignalUrl(
+            `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(JSON.stringify(tags))}`
+        );
+    }
+
+    function applyNativeExternalId(externalId) {
+        if (!externalId) {
+            return;
+        }
+
+        dispatchNativeOneSignalUrl(
+            `gonative://onesignal/user/setExternalId?externalId=${encodeURIComponent(externalId)}`
+        );
+    }
+
+    function queueNativeBootstrap(user, options) {
+        if (!isNativeAppEnvironment()) {
+            return false;
+        }
+
+        const now = Date.now();
+        const lastBootstrapAt = Number(safeSessionStorageGet('tasfiya-native-onesignal-last-bootstrap') || '0');
+        if (lastBootstrapAt && (now - lastBootstrapAt) < NATIVE_BOOTSTRAP_COOLDOWN_MS) {
+            return true;
+        }
+
+        safeSessionStorageSet('tasfiya-native-onesignal-last-bootstrap', String(now));
+
+        const config = options || {};
+        const role = config.role || 'admin';
+        const userId = user && user.id ? String(user.id) : 'unknown';
+        const externalId = user && user.id ? String(user.id) : '';
+        const tags = Object.assign({
+            role,
+            userId
+        }, config.additionalTags || {});
+
+        dispatchNativeOneSignalUrl('gonative://onesignal/register');
+        applyNativeTags(tags);
+
+        windowObj.setTimeout(() => {
+            applyNativeExternalId(externalId);
+        }, 800);
+
+        // Retry after startup to survive slow WebView/plugin initialization.
+        windowObj.setTimeout(() => {
+            dispatchNativeOneSignalUrl('gonative://onesignal/register');
+        }, 2200);
+
+        windowObj.setTimeout(() => {
+            applyNativeTags(tags);
+        }, 3000);
+
+        windowObj.setTimeout(() => {
+            applyNativeExternalId(externalId);
+        }, 3800);
+
+        return true;
+    }
 
     function isLocalhostLike() {
         const hostname = String(windowObj.location.hostname || '').trim().toLowerCase();
@@ -116,6 +224,12 @@
     };
 
     windowObj.TasfiyaOneSignal = {
+        isNativeEnvironment() {
+            return isNativeAppEnvironment();
+        },
+        initNativeUser(user, options) {
+            return queueNativeBootstrap(user, options);
+        },
         initBrowserUser(user, options) {
             queueOneSignalInit(user, options);
         }

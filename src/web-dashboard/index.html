@@ -259,40 +259,32 @@
         //  ONESIGNAL INTEGRATION
         // ==========================================
 
+        function bootstrapNativeNotifications() {
+            return window.TasfiyaOneSignal.initNativeUser(user, {
+                role: "أدمن"
+            });
+        }
+
         // 1. Define the Official Callback for Median App
         window.median_onesignal_info = function (data) {
             console.log("📱 Median App Detected via Official Callback", data);
-            if (window.gonative && window.gonative.onesignal) {
-                window.gonative.onesignal.tags.setTags({
-                    "role": "أدمن",
-                    "userId": user.id ? String(user.id) : "unknown"
-                });
-            }
+            bootstrapNativeNotifications();
         };
 
         // 2. Initialize based on Environment
         if (user.role === 'admin' || !user.role) {
-            const ua = navigator.userAgent.toLowerCase();
-            const isMedianApp = ua.indexOf('gonative') > -1 || ua.indexOf('median') > -1;
+            const isMedianApp = window.TasfiyaOneSignal.isNativeEnvironment();
 
             if (isMedianApp) {
                 console.log("📱 Running in App Mode");
+                bootstrapNativeNotifications();
 
-                if (window.gonative && window.gonative.onesignal) {
-                    window.gonative.onesignal.tags.setTags({
-                        "role": "أدمن",
-                        "userId": user.id ? String(user.id) : "unknown"
-                    });
-                }
-
-                setTimeout(() => {
-                    if (window.gonative && window.gonative.onesignal) {
-                        window.gonative.onesignal.tags.setTags({
-                            "role": "أدمن",
-                            "userId": user.id ? String(user.id) : "unknown"
-                        });
+                window.addEventListener('focus', bootstrapNativeNotifications);
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible') {
+                        bootstrapNativeNotifications();
                     }
-                }, 3000);
+                });
             }
             else {
                 console.log("💻 Running in Browser Mode");
@@ -659,29 +651,7 @@
         // Manual Push Retry Check
         function retryPushRegistration() {
             alert('جاري محاولة ربط الإشعارات...');
-
-            const tagsData = {
-                "role": "admin",
-                "userId": user.id ? String(user.id) : "unknown",
-                "force_update": Date.now()
-            };
-            const jsonTags = JSON.stringify(tagsData);
-
-            // 1. Try URL Protocol (Register FIRST, then Tags)
-            try {
-                // Force Registration
-                window.location.href = 'gonative://onesignal/register';
-                console.log("Sent Register Command");
-
-                // Send Tags after short delay to allow registration
-                setTimeout(() => {
-                    window.location.href = `gonative://onesignal/tags/setTags?tags=${encodeURIComponent(jsonTags)}`;
-                    console.log("Sent Median Tags via URL (Manual)");
-                }, 2000);
-            } catch (e) { console.error(e); }
-
-            // 2. Check if environment is detected (gonative OR median)
-            const isApp = navigator.userAgent.toLowerCase().includes('gonative') || navigator.userAgent.toLowerCase().includes('median');
+            const isApp = bootstrapNativeNotifications();
 
             if (isApp) {
                 setTimeout(() => alert('✅ تم إرسال طلب التفعيل للتطبيق.\nتحقق من OneSignal الآن.'), 1000);
