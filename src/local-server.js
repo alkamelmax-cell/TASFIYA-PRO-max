@@ -123,6 +123,11 @@ class LocalWebServer {
                     return;
                 }
 
+                if (pathname === '/cashbox-reports.html') {
+                    this.serveFile(res, path.join(__dirname, 'web-dashboard', 'cashbox-reports.html'), 'text/html');
+                    return;
+                }
+
                 if (pathname === '/customer-ledger.html') {
                     this.serveFile(res, path.join(__dirname, 'web-dashboard', 'customer-ledger.html'), 'text/html');
                     return;
@@ -145,6 +150,10 @@ class LocalWebServer {
                 }
                 else if (pathname === '/api/atm-report') {
                     await this.handleGetAtmReport(res, parsedUrl.query);
+                    return;
+                }
+                else if (pathname === '/api/cashbox-report') {
+                    await this.handleGetCashboxReport(res, parsedUrl.query);
                     return;
                 }
                 else if (pathname.match(/^\/api\/reconciliation\/\d+$/)) {
@@ -697,6 +706,133 @@ class LocalWebServer {
 
         } catch (error) {
             console.error('[ATM Report] API Error:', error);
+            this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    async handleGetCashboxReport(res, query) {
+        try {
+            console.log('[Cashbox Report] Query params:', query);
+
+            const branchId = String(query?.branchId || '').trim();
+            const voucherType = String(query?.voucherType || '').trim();
+            const dateFrom = String(query?.dateFrom || '').trim();
+            const dateTo = String(query?.dateTo || '').trim();
+            const search = String(query?.search || '').trim();
+
+            const where = ['1=1'];
+            const params = [];
+
+            if (branchId && branchId !== 'all') {
+                where.push('v.branch_id = ?');
+                params.push(branchId);
+            }
+
+            if (voucherType && voucherType !== 'all') {
+                where.push('v.voucher_type = ?');
+                params.push(voucherType);
+            }
+
+            if (dateFrom) {
+                where.push('v.voucher_date >= ?');
+                params.push(dateFrom);
+            }
+
+            if (dateTo) {
+                where.push('v.voucher_date <= ?');
+                params.push(dateTo);
+            }
+
+            if (search) {
+                where.push(`(
+                    v.counterparty_name LIKE ?
+                    OR COALESCE(v.reference_no, '') LIKE ?
+                    OR COALESCE(v.description, '') LIKE ?
+                    OR CAST(COALESCE(v.voucher_sequence_number, v.voucher_number) AS TEXT) LIKE ?
+                )`);
+                const likeTerm = `%${search}%`;
+                params.push(likeTerm, likeTerm, likeTerm, likeTerm);
+            }
+
+            const whereClause = where.join(' AND ');
+            const vouchersSql = `
+                SELECT
+                    v.id,
+                    v.voucher_number,
+                    v.voucher_sequence_number,
+                    COALESCE(v.voucher_sequence_number, v.voucher_number) AS voucher_display_number,
+                    v.voucher_type,
+                    v.branch_id,
+                    COALESCE(b.branch_name, '-') AS branch_name,
+                    v.counterparty_type,
+                    v.counterparty_name,
+                    v.amount,
+                    v.reference_no,
+                    v.description,
+                    v.voucher_date,
+                    v.created_by,
+                    v.created_at
+                FROM cashbox_vouchers v
+                LEFT JOIN branches b ON b.id = v.branch_id
+                WHERE ${whereClause}
+                ORDER BY
+                    v.voucher_date DESC,
+                    COALESCE(v.voucher_sequence_number, v.voucher_number) DESC,
+                    v.id DESC
+            `;
+
+            const rows = await this.dbManager.db.prepare(vouchersSql).all(params);
+            const vouchers = Array.isArray(rows) ? rows : [];
+
+            const openingSql = `
+                SELECT COALESCE(SUM(opening_balance), 0) AS total_opening
+                FROM branch_cashboxes
+                ${branchId && branchId !== 'all' ? 'WHERE branch_id = ?' : ''}
+            `;
+            const openingParams = (branchId && branchId !== 'all') ? [branchId] : [];
+            const openingRow = await this.dbManager.db.prepare(openingSql).get(openingParams);
+
+            const openingBalance = Number(openingRow?.total_opening || 0);
+            const totalReceipts = vouchers.reduce((sum, row) => (
+                row?.voucher_type === 'receipt' ? sum + Number(row?.amount || 0) : sum
+            ), 0);
+            const totalPayments = vouchers.reduce((sum, row) => (
+                row?.voucher_type === 'payment' ? sum + Number(row?.amount || 0) : sum
+            ), 0);
+
+            this.sendJson(res, {
+                success: true,
+                data: vouchers,
+                summary: {
+                    openingBalance,
+                    totalReceipts,
+                    totalPayments,
+                    currentBalance: openingBalance + totalReceipts - totalPayments
+                }
+            });
+        } catch (error) {
+            const message = String(error?.message || '');
+            const missingCashboxTables = message.includes('no such table: cashbox_vouchers')
+                || message.includes('no such table: branch_cashboxes')
+                || message.includes('relation "cashbox_vouchers" does not exist')
+                || message.includes('relation "branch_cashboxes" does not exist');
+
+            if (missingCashboxTables) {
+                console.warn('[Cashbox Report] Cashbox tables are missing. Returning empty report.');
+                this.sendJson(res, {
+                    success: true,
+                    data: [],
+                    summary: {
+                        openingBalance: 0,
+                        totalReceipts: 0,
+                        totalPayments: 0,
+                        currentBalance: 0
+                    }
+                });
+                return;
+            }
+
+            console.error('[Cashbox Report] API Error:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
     }
