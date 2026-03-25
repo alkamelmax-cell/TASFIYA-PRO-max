@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>تصفية برو - تقارير الصناديق</title>
+    <link rel="icon" type="image/png" href="assets/favicon.png">
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#6366f1">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="تصفية برو">
+    <link rel="apple-touch-icon" href="assets/icon-512.png">
+
+    <!-- Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Almarai:wght@300;400;700;800&display=swap" rel="stylesheet">
+
+    <!-- Bootstrap RTL -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+
+    <!-- Icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+
+    <!-- Custom CSS -->
+    <link rel="stylesheet" href="css/custom.css?v=21">
+    <style>
+        .cashbox-report-table th,
+        .cashbox-report-table td {
+            text-align: center;
+            vertical-align: middle;
+        }
+
+        .cashbox-voucher-badge {
+            font-size: 0.78rem;
+            padding: 0.38rem 0.6rem;
+            border-radius: 999px;
+            font-weight: 700;
+        }
+    </style>
+</head>
+
+<body>
+    <!-- Loading Overlay -->
+    <div id="loading"
+        style="position:fixed;top:0;left:0;width:100%;height:100%;background:rgba(15,23,42,0.9);z-index:9999;display:none;align-items:center;justify-content:center;">
+        <div class="spinner-border text-primary" style="width:3rem;height:3rem;" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+
+    <!-- Navbar -->
+    <nav class="custom-navbar navbar-layout mb-4">
+        <div class="navbar-brand-section">
+            <div class="brand-logo">
+                <img src="assets/logo-tasfia-pro.png" alt="TP"
+                    style="height: 45px; width: auto; margin-left: 10px; border-radius: 8px;">تصفية برو
+            </div>
+        </div>
+
+        <div class="navbar-links-section">
+            <a href="index.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-home me-1"></i> الرئيسية
+            </a>
+            <a href="atm-reports.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-credit-card me-1"></i> تقرير الصراف
+            </a>
+            <a href="cashbox-reports.html"
+                class="btn btn-sm btn-primary fw-bold text-white px-3 py-2 rounded-pill shadow-sm">
+                <i class="fas fa-vault me-1"></i> تقارير الصناديق
+            </a>
+            <a href="customer-ledger.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-book me-1"></i> دفتر العملاء
+            </a>
+            <a href="users-management.html" id="navUsersMgmt"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-users-cog me-1"></i> إدارة المستخدمين
+            </a>
+            <a href="cashiers-management.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-cash-register me-1"></i> إدارة الكاشير
+            </a>
+        </div>
+
+        <div class="dropdown navbar-user-section">
+            <button class="user-profile-btn" type="button" data-bs-toggle="dropdown">
+                <div class="bg-primary rounded-circle d-flex align-items-center justify-content-center"
+                    style="width: 32px; height: 32px;">
+                    <i class="fas fa-user text-white"></i>
+                </div>
+                <span id="userNameDisplay" class="d-none d-md-inline fw-bold font-monospace small">Admin</span>
+                <i class="fas fa-chevron-down small opacity-50"></i>
+            </button>
+            <ul class="dropdown-menu dropdown-menu-end bg-card border-secondary shadow-lg mt-2">
+                <li><a class="dropdown-item text-danger d-flex align-items-center gap-2" href="#" onclick="logout()">
+                        <i class="fas fa-sign-out-alt"></i> تسجيل الخروج
+                    </a></li>
+            </ul>
+        </div>
+    </nav>
+
+    <div class="container-fluid px-3 px-md-4">
+        <!-- Stats Row -->
+        <div class="row g-3 mb-4">
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-wallet icon-wrapper text-primary"></i>
+                    <div class="stat-label">الرصيد الافتتاحي</div>
+                    <div class="stat-value text-primary" id="statOpeningBalance">0.00</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-arrow-down icon-wrapper text-success"></i>
+                    <div class="stat-label">إجمالي القبض</div>
+                    <div class="stat-value text-success" id="statTotalReceipts">0.00</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-arrow-up icon-wrapper text-danger"></i>
+                    <div class="stat-label">إجمالي الصرف</div>
+                    <div class="stat-value text-danger" id="statTotalPayments">0.00</div>
+                </div>
+            </div>
+            <div class="col-6 col-lg-3">
+                <div class="stat-box">
+                    <i class="fas fa-scale-balanced icon-wrapper text-info"></i>
+                    <div class="stat-label">الرصيد الحالي</div>
+                    <div class="stat-value text-info" id="statCurrentBalance">0.00</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Filters -->
+        <div class="filter-container mb-4">
+            <div class="section-title">
+                <i class="fas fa-filter small text-primary"></i>
+                فلاتر تقارير الصناديق
+            </div>
+            <div class="row g-3">
+                <div class="col-6 col-md-2">
+                    <label class="custom-label">الفرع</label>
+                    <select class="custom-input form-select w-100" id="filterBranch">
+                        <option value="all">جميع الفروع</option>
+                    </select>
+                </div>
+                <div class="col-6 col-md-2">
+                    <label class="custom-label">نوع السند</label>
+                    <select class="custom-input form-select w-100" id="filterVoucherType">
+                        <option value="all">الكل</option>
+                        <option value="receipt">سند قبض</option>
+                        <option value="payment">سند صرف</option>
+                    </select>
+                </div>
+                <div class="col-6 col-md-2">
+                    <label class="custom-label">من تاريخ</label>
+                    <input type="date" class="custom-input w-100" id="filterDateFrom">
+                </div>
+                <div class="col-6 col-md-2">
+                    <label class="custom-label">إلى تاريخ</label>
+                    <input type="date" class="custom-input w-100" id="filterDateTo">
+                </div>
+                <div class="col-12 col-md-3">
+                    <label class="custom-label">بحث</label>
+                    <input type="text" class="custom-input w-100" id="filterSearch"
+                        placeholder="رقم السند / الطرف / المرجع / البيان">
+                </div>
+                <div class="col-12 col-md-1 d-flex align-items-end">
+                    <button class="btn-search w-100" id="applyFiltersBtn">
+                        بحث
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Table -->
+        <div class="pro-card mb-4 min-vh-100">
+            <div class="p-3 border-bottom border-secondary d-flex justify-content-between align-items-center">
+                <div class="section-title mb-0">سجل سندات الصناديق</div>
+                <small class="text-secondary" id="recordCount">0 سند</small>
+            </div>
+
+            <div class="table-container border-0">
+                <table class="custom-table cashbox-report-table">
+                    <thead>
+                        <tr>
+                            <th>رقم السند</th>
+                            <th>النوع</th>
+                            <th>التاريخ</th>
+                            <th>الفرع</th>
+                            <th>الطرف</th>
+                            <th>المبلغ</th>
+                            <th>المرجع</th>
+                            <th>البيان</th>
+                            <th>المستخدم</th>
+                        </tr>
+                    </thead>
+                    <tbody id="cashboxReportTableBody">
+                        <tr>
+                            <td colspan="9" class="text-center py-5">
+                                <div class="text-muted opacity-50">جاري التحميل...</div>
+                            </td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        // Auth Check
+        const userStr = localStorage.getItem('user');
+        if (!userStr) {
+            window.location.href = '/login.html';
+        }
+        const user = JSON.parse(userStr || '{}');
+        document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
+
+        // Navbar Protection Logic
+        const protectedPages = [
+            'atm-reports.html',
+            'cashbox-reports.html',
+            'customer-ledger.html',
+            'users-management.html',
+            'cashiers-management.html',
+            'reconciliation-requests.html',
+            'request-reconciliation.html'
+        ];
+
+        if (user.permissions && Array.isArray(user.permissions)) {
+            protectedPages.forEach(page => {
+                if (!user.permissions.includes(page)) {
+                    const el = document.querySelector(`a[href="${page}"]`);
+                    if (el) el.classList.add('d-none');
+                }
+            });
+        } else if (user.role && user.role !== 'admin') {
+            protectedPages.forEach(page => {
+                const el = document.querySelector(`a[href="${page}"]`);
+                if (el) el.classList.add('d-none');
+            });
+        }
+
+        // Page-level permission check
+        const isAllowed = (user.role === 'admin') || (user.permissions && user.permissions.includes('cashbox-reports.html'));
+        if (!isAllowed) {
+            console.warn('⛔ وصول غير مصرح به. إعادة التوجيه للصفحة الرئيسية.');
+            window.location.href = 'index.html';
+        }
+
+        const API_URL = '/api';
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            document.getElementById('filterDateFrom').value = '';
+            document.getElementById('filterDateTo').value = '';
+
+            await loadLookups();
+            await loadCashboxReport();
+
+            const searchInput = document.getElementById('filterSearch');
+            if (searchInput) {
+                searchInput.addEventListener('keydown', (event) => {
+                    if (event.key === 'Enter') {
+                        event.preventDefault();
+                        loadCashboxReport();
+                    }
+                });
+            }
+
+            document.getElementById('applyFiltersBtn').addEventListener('click', () => loadCashboxReport());
+        });
+
+        function logout() {
+            localStorage.removeItem('user');
+            window.location.href = '/login.html';
+        }
+
+        function showLoading(show) {
+            document.getElementById('loading').style.display = show ? 'flex' : 'none';
+        }
+
+        async function loadLookups() {
+            try {
+                const res = await fetch(`${API_URL}/lookups`, { cache: 'no-store' });
+                const data = await res.json();
+                if (!data.success || !Array.isArray(data.branches)) return;
+
+                const branchSelect = document.getElementById('filterBranch');
+                data.branches.forEach((branch) => {
+                    const opt = document.createElement('option');
+                    opt.value = branch.id;
+                    opt.textContent = branch.name;
+                    branchSelect.appendChild(opt);
+                });
+            } catch (error) {
+                console.error('Failed to load lookups:', error);
+            }
+        }
+
+        function getFilters() {
+            return {
+                branchId: document.getElementById('filterBranch').value,
+                voucherType: document.getElementById('filterVoucherType').value,
+                dateFrom: document.getElementById('filterDateFrom').value,
+                dateTo: document.getElementById('filterDateTo').value,
+                search: document.getElementById('filterSearch').value.trim()
+            };
+        }
+
+        function buildVoucherLabel(row) {
+            const isReceipt = row.voucher_type === 'receipt';
+            const sequence = Number(row.voucher_display_number || row.voucher_sequence_number || row.voucher_number || 0);
+            if (isReceipt) return `قبض-${sequence}`;
+            return `صرف-${sequence}`;
+        }
+
+        function renderSummary(summary) {
+            const openingBalance = Number(summary?.openingBalance || 0);
+            const totalReceipts = Number(summary?.totalReceipts || 0);
+            const totalPayments = Number(summary?.totalPayments || 0);
+            const currentBalance = Number(summary?.currentBalance || 0);
+
+            document.getElementById('statOpeningBalance').textContent = formatCurrency(openingBalance);
+            document.getElementById('statTotalReceipts').textContent = formatCurrency(totalReceipts);
+            document.getElementById('statTotalPayments').textContent = formatCurrency(totalPayments);
+
+            const currentEl = document.getElementById('statCurrentBalance');
+            currentEl.textContent = formatCurrency(currentBalance);
+            currentEl.classList.remove('text-success', 'text-danger', 'text-info');
+            if (currentBalance > 0) currentEl.classList.add('text-success');
+            else if (currentBalance < 0) currentEl.classList.add('text-danger');
+            else currentEl.classList.add('text-info');
+        }
+
+        function renderTable(rows) {
+            const tbody = document.getElementById('cashboxReportTableBody');
+            const safeRows = Array.isArray(rows) ? rows : [];
+            tbody.innerHTML = '';
+
+            document.getElementById('recordCount').textContent = `${safeRows.length} سند`;
+
+            if (safeRows.length === 0) {
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="9" class="text-center py-5">
+                            <div class="text-muted opacity-50">
+                                <i class="fas fa-inbox fa-2x mb-2"></i><br>لا توجد سندات مطابقة للفلاتر
+                            </div>
+                        </td>
+                    </tr>
+                `;
+                return;
+            }
+
+            safeRows.forEach((row) => {
+                const isReceipt = row.voucher_type === 'receipt';
+                const typeBadge = isReceipt
+                    ? '<span class="cashbox-voucher-badge bg-success bg-opacity-25 text-success">سند قبض</span>'
+                    : '<span class="cashbox-voucher-badge bg-danger bg-opacity-25 text-danger">سند صرف</span>';
+
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="fw-bold font-monospace">${escapeHtml(buildVoucherLabel(row))}</td>
+                    <td>${typeBadge}</td>
+                    <td class="font-monospace">${escapeHtml(formatDate(row.voucher_date))}</td>
+                    <td>${escapeHtml(row.branch_name || '-')}</td>
+                    <td>${escapeHtml(row.counterparty_name || '-')}</td>
+                    <td class="font-monospace fw-bold ${isReceipt ? 'text-success' : 'text-danger'}">${formatCurrency(row.amount)}</td>
+                    <td>${escapeHtml(row.reference_no || '-')}</td>
+                    <td>${escapeHtml(row.description || '-')}</td>
+                    <td>${escapeHtml(row.created_by || '-')}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        async function loadCashboxReport() {
+            showLoading(true);
+            try {
+                const filters = getFilters();
+                const params = new URLSearchParams();
+
+                if (filters.branchId && filters.branchId !== 'all') params.append('branchId', filters.branchId);
+                if (filters.voucherType && filters.voucherType !== 'all') params.append('voucherType', filters.voucherType);
+                if (filters.dateFrom) params.append('dateFrom', filters.dateFrom);
+                if (filters.dateTo) params.append('dateTo', filters.dateTo);
+                if (filters.search) params.append('search', filters.search);
+
+                const query = params.toString();
+                const url = query ? `${API_URL}/cashbox-report?${query}` : `${API_URL}/cashbox-report`;
+                const res = await fetch(url, { cache: 'no-store' });
+                const result = await res.json();
+
+                if (!result.success) {
+                    throw new Error(result.error || 'تعذر تحميل تقارير الصناديق');
+                }
+
+                renderSummary(result.summary || {});
+                renderTable(result.data || []);
+            } catch (error) {
+                console.error('Cashbox report error:', error);
+                renderSummary({
+                    openingBalance: 0,
+                    totalReceipts: 0,
+                    totalPayments: 0,
+                    currentBalance: 0
+                });
+                renderTable([]);
+            } finally {
+                showLoading(false);
+            }
+        }
+
+        function formatDate(value) {
+            if (!value) return '-';
+            const parsed = new Date(value);
+            if (Number.isNaN(parsed.getTime())) return String(value);
+            return parsed.toLocaleDateString('en-GB');
+        }
+
+        function formatCurrency(val) {
+            return Number(val || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+    </script>
+</body>
+
+</html>
