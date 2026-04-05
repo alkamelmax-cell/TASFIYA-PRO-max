@@ -4,7 +4,10 @@
     const ONE_SIGNAL_APP_ID = '1b7778f5-0f25-4df8-a281-611b682a964c';
     const SERVICE_WORKER_PATH = '/service-worker.js';
     const SERVICE_WORKER_SCOPE = '/';
-    const LEGACY_CACHE_NAMES = new Set(['tasfiya-pro-v2']);
+    const LEGACY_CACHE_NAMES = new Set([
+        'tasfiya-pro-v2',
+        'tasfiya-pro-v2.6'
+    ]);
     const NATIVE_BOOTSTRAP_COOLDOWN_MS = 15000;
 
     let serviceWorkerRegistrationPromise = null;
