@@ -75,6 +75,10 @@ class LocalWebServer {
             || (pathname === '/api/cashiers-list' && method === 'GET')
             || (pathname === '/api/session' && method === 'GET')
             || (pathname === '/api/logout' && method === 'POST')
+            // Desktop-to-cloud sync bridge routes do not carry browser sessions.
+            || (pathname === '/api/sync/users' && method === 'POST')
+            || (pathname === '/api/reconciliation-requests' && method === 'GET')
+            || (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && method === 'DELETE')
         );
     }
 
