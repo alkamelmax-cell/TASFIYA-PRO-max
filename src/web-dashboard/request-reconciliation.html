@@ -98,7 +98,7 @@
     <nav class="custom-navbar navbar-layout d-flex justify-content-between align-items-center mb-4">
         <div class="navbar-brand-section">
             <div class="brand-logo">
-                <img src="assets/logo.png" alt="TP"
+                <img src="assets/logo-tasfia-pro.png" alt="TP"
                     style="height: 40px; width: auto; margin-left: 10px; border-radius: 8px;">تصفية برو
             </div>
         </div>
@@ -496,12 +496,44 @@
     <datalist id="customersList"></datalist>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/session-bootstrap.js"></script>
     <script>
         // --- User Initialization (Global) ---
-        const userStr = localStorage.getItem('user');
-        if (!userStr) window.location.href = '/login.html';
-        const user = JSON.parse(userStr);
-        document.getElementById('userNameDisplay').textContent = user.name;
+        const sessionHelper = window.TasfiyaSession || null;
+        let user = sessionHelper ? (sessionHelper.readStoredUser() || {}) : JSON.parse(localStorage.getItem('user') || '{}');
+        document.getElementById('userNameDisplay').textContent = user.name || '...';
+
+        function redirectToLogin() {
+            if (sessionHelper && typeof sessionHelper.redirectToLogin === 'function') {
+                sessionHelper.redirectToLogin();
+            } else {
+                localStorage.removeItem('user');
+                window.location.replace('/login.html');
+            }
+        }
+
+        async function requireActiveSession() {
+            if (sessionHelper && typeof sessionHelper.requireActiveSession === 'function') {
+                return sessionHelper.requireActiveSession();
+            }
+
+            const userStr = localStorage.getItem('user');
+            return userStr ? JSON.parse(userStr) : null;
+        }
+
+        async function performLogout() {
+            try {
+                await fetch('/api/logout', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    cache: 'no-store'
+                });
+            } catch (error) {
+                console.warn('Logout request failed:', error);
+            }
+
+            redirectToLogin();
+        }
 
         // --- Fetch Customers for Autocomplete ---
         async function loadCustomers() {
@@ -519,7 +551,6 @@
                 console.error('Failed to load customers', e);
             }
         }
-        loadCustomers();
 
         // --- Fetch ATMs ---
         let atmsData = [];
@@ -559,7 +590,6 @@
                 if (select) select.innerHTML = '<option disabled>فشل تحميل القائمة</option>';
             }
         }
-        loadAtms();
 
         // Handle ATM field visibility based on payment type
         const bankOpTypeSelect = document.getElementById('bankOpType');
@@ -602,7 +632,11 @@
         // --- Core Functions ---
 
         // Cashier UI Adjustments
-        if (user.role === 'cashier') {
+        function applyCashierUiAdjustments() {
+            if (user.role !== 'cashier') {
+                return;
+            }
+
             const backBtn = document.querySelector('nav .btn-outline-light');
             if (backBtn) {
                 backBtn.innerHTML = '<i class="fas fa-sign-out-alt me-1"></i> خروج';
@@ -622,13 +656,28 @@
                         cancelButtonText: 'إلغاء'
                     }).then((result) => {
                         if (result.isConfirmed) {
-                            localStorage.removeItem('user');
-                            window.location.href = '/login.html';
+                            performLogout();
                         }
                     });
                 };
             }
         }
+
+        async function bootstrapAuthenticatedRequestPage() {
+            const activeUser = await requireActiveSession();
+            if (!activeUser) {
+                return false;
+            }
+
+            user = activeUser;
+            document.getElementById('userNameDisplay').textContent = user.name || '...';
+            await loadCustomers();
+            await loadAtms();
+            applyCashierUiAdjustments();
+            return true;
+        }
+
+        bootstrapAuthenticatedRequestPage();
 
         function updateUI() {
             // Calculate Cash

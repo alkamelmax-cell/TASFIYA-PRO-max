@@ -26,7 +26,6 @@
     <!-- Icons -->
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
-
     <!-- Custom CSS -->
     <link rel="stylesheet" href="css/custom.css?v=21">
 
@@ -243,21 +242,12 @@
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/session-bootstrap.js"></script>
     <script src="/js/onesignal-bootstrap.js"></script>
     <script>
-        // Auth Check
-        const userStr = localStorage.getItem('user');
-        if (!userStr) {
-            window.location.href = '/login.html';
-        }
-        const user = JSON.parse(userStr || '{}');
+        const sessionHelper = window.TasfiyaSession || null;
+        let user = sessionHelper ? (sessionHelper.readStoredUser() || {}) : JSON.parse(localStorage.getItem('user') || '{}');
         document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
-
-
-        // Redirect Cashier Immediately
-        if (user.role === 'cashier') {
-            window.location.href = 'request-reconciliation.html';
-        }
 
         // ==========================================
         //  ONESIGNAL INTEGRATION
@@ -269,14 +259,13 @@
             });
         }
 
-        // 1. Define the Official Callback for Median App
-        window.median_onesignal_info = function (data) {
-            console.log("📱 Median App Detected via Official Callback", data);
-            bootstrapNativeNotifications();
-        };
+        function initializeUserNotifications() {
+            if (!window.TasfiyaOneSignal || user.role !== 'admin' || window.__tasfiyaUserNotificationsInitialized) {
+                return;
+            }
 
-        // 2. Initialize based on Environment
-        if (user.role === 'admin' || !user.role) {
+            window.__tasfiyaUserNotificationsInitialized = true;
+
             const isMedianApp = window.TasfiyaOneSignal.isNativeEnvironment();
 
             if (isMedianApp) {
@@ -303,8 +292,13 @@
             }
         }
 
+        // 1. Define the Official Callback for Median App
+        window.median_onesignal_info = function (data) {
+            console.log("📱 Median App Detected via Official Callback", data);
+            initializeUserNotifications();
+        };
 
-        // Check Permissions
+
         const protectedPages = [
             'atm-reports.html',
             'cashbox-reports.html',
@@ -315,30 +309,85 @@
             'request-reconciliation.html'
         ];
 
-        if (user.permissions && Array.isArray(user.permissions)) {
-            // New Logic: Check specific permissions
-            protectedPages.forEach(page => {
-                if (!user.permissions.includes(page)) {
-                    const el = document.querySelector(`a[href="${page}"]`);
-                    if (el) el.classList.add('d-none');
-                }
-            });
-        } else if (user.role && user.role !== 'admin') {
-            // Legacy Fallback: Hide all protected for non-admins
+        function applyUserAccess(activeUser) {
+            const currentUser = activeUser && typeof activeUser === 'object' ? activeUser : {};
+            document.getElementById('userNameDisplay').textContent = currentUser.name || 'Admin';
+
             protectedPages.forEach(page => {
                 const el = document.querySelector(`a[href="${page}"]`);
-                if (el) el.classList.add('d-none');
+                if (!el) {
+                    return;
+                }
+
+                el.classList.remove('d-none');
             });
+
+            if (currentUser.permissions && Array.isArray(currentUser.permissions)) {
+                protectedPages.forEach(page => {
+                    if (!currentUser.permissions.includes(page)) {
+                        const el = document.querySelector(`a[href="${page}"]`);
+                        if (el) el.classList.add('d-none');
+                    }
+                });
+            } else if (currentUser.role && currentUser.role !== 'admin') {
+                protectedPages.forEach(page => {
+                    const el = document.querySelector(`a[href="${page}"]`);
+                    if (el) el.classList.add('d-none');
+                });
+            }
         }
 
-        function logout() {
-            localStorage.removeItem('user');
-            window.location.href = '/login.html';
+        applyUserAccess(user);
+
+        function redirectToLogin() {
+            if (sessionHelper && typeof sessionHelper.redirectToLogin === 'function') {
+                sessionHelper.redirectToLogin();
+            } else {
+                localStorage.removeItem('user');
+                window.location.replace('/login.html');
+            }
+        }
+
+        async function requireActiveSession() {
+            if (sessionHelper && typeof sessionHelper.requireActiveSession === 'function') {
+                return sessionHelper.requireActiveSession();
+            }
+
+            const userStr = localStorage.getItem('user');
+            return userStr ? JSON.parse(userStr || '{}') : null;
+        }
+
+        async function logout() {
+            try {
+                await fetch('/api/logout', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    cache: 'no-store'
+                });
+            } catch (error) {
+                console.warn('Logout request failed:', error);
+            }
+
+            redirectToLogin();
         }
 
         const API_URL = '/api';
 
         document.addEventListener('DOMContentLoaded', async () => {
+            const activeUser = await requireActiveSession();
+            if (!activeUser) {
+                return;
+            }
+
+            user = activeUser;
+            applyUserAccess(user);
+            initializeUserNotifications();
+
+            if (user.role === 'cashier') {
+                window.location.replace('request-reconciliation.html');
+                return;
+            }
+
             // Defaults: This Month (Disabled to show all)
             // const date = new Date();
             // const firstDay = new Date(date.getFullYear(), date.getMonth(), 1).toISOString().split('T')[0];

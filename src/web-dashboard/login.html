@@ -277,9 +277,11 @@
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/session-bootstrap.js"></script>
     <script src="/js/onesignal-bootstrap.js"></script>
     <script>
         // --- Logic Preserved Exactly As Is ---
+        const sessionHelper = window.TasfiyaSession || null;
 
         // Admin Login
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
@@ -325,19 +327,30 @@
                 const response = await fetch(url, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
+                    credentials: 'same-origin',
+                    cache: 'no-store',
                     body: JSON.stringify(body)
                 });
 
                 const data = await response.json();
 
                 if (data.success) {
-                    localStorage.setItem('user', JSON.stringify(data.user));
-                    window.location.href = redirectUrl;
+                    if (sessionHelper && typeof sessionHelper.redirectToHomeForUser === 'function') {
+                        sessionHelper.redirectToHomeForUser(data.user, { redirectUrl });
+                    } else {
+                        localStorage.setItem('user', JSON.stringify(data.user));
+                        window.location.replace(redirectUrl);
+                    }
                 } else {
-                    showError(data.error || 'بيانات الدخول غير صحيحة');
+                    const rawError = String(data.error || '').trim();
+                    if (rawError.toLowerCase().includes('network error')) {
+                        showError('تعذر الاتصال بخادم النظام (API). تأكد من تشغيل الخادم أو إعداد الربط بشكل صحيح.');
+                    } else {
+                        showError(rawError || 'بيانات الدخول غير صحيحة');
+                    }
                 }
             } catch (error) {
-                showError('فشل الاتصال بالخادم، تأكد من تشغيل البرنامج');
+                showError('فشل الاتصال بخادم النظام (API). تأكد من تشغيل الخادم أو إعداد الربط بشكل صحيح.');
                 console.error(error);
             } finally {
                 btn.innerHTML = originalContent;
@@ -350,13 +363,11 @@
         async function loadCashiers() {
             if (cashiersLoaded) return;
             try {
-                const res = await fetch('/api/lookups', { cache: 'no-store' });
+                const res = await fetch('/api/cashiers-list', { cache: 'no-store' });
                 const data = await res.json();
-                if (data.success && data.cashiers) {
+                if (data.success && Array.isArray(data.data)) {
                     const select = document.getElementById('cashierSelect');
-                    // Clear loading if any
-                    // select.innerHTML = '<option value="" disabled selected>اختر الكاشير...</option>';
-                    data.cashiers.forEach(c => {
+                    data.data.forEach(c => {
                         const opt = document.createElement('option');
                         opt.value = c.id;
                         opt.textContent = c.name;
@@ -369,12 +380,42 @@
             }
         }
 
-        if (localStorage.getItem('user')) {
-            // Redirect based on role
-            const u = JSON.parse(localStorage.getItem('user'));
-            if (u.role === 'cashier') window.location.href = '/request-reconciliation.html';
-            else window.location.href = '/';
+        async function syncSessionRedirect() {
+            if (sessionHelper && typeof sessionHelper.hasRecentLoginAutoRedirect === 'function' && sessionHelper.hasRecentLoginAutoRedirect()) {
+                sessionHelper.clearLoginAutoRedirect();
+                return;
+            }
+
+            if (sessionHelper && typeof sessionHelper.requireActiveSession === 'function') {
+                const activeUser = await sessionHelper.requireActiveSession({ redirectOnFailure: false });
+                if (activeUser) {
+                    sessionHelper.redirectToHomeForUser(activeUser);
+                }
+                return;
+            }
+
+            try {
+                const response = await fetch('/api/session', {
+                    cache: 'no-store',
+                    credentials: 'same-origin'
+                });
+                if (!response.ok) {
+                    localStorage.removeItem('user');
+                    return;
+                }
+
+                const data = await response.json();
+                if (data.success && data.user) {
+                    localStorage.setItem('user', JSON.stringify(data.user));
+                    if (data.user.role === 'cashier') window.location.replace('/request-reconciliation.html');
+                    else window.location.replace('/');
+                }
+            } catch (error) {
+                localStorage.removeItem('user');
+            }
         }
+
+        syncSessionRedirect();
 
         window.addEventListener('load', async () => {
             if (!window.TasfiyaPwa || typeof window.TasfiyaPwa.registerServiceWorker !== 'function') {
