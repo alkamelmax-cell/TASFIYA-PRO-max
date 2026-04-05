@@ -12,6 +12,24 @@ class BackgroundSync {
         this.dbManager = dbManager;
         this.interval = null;
         this.isSyncing = false;
+        this.enabled = true; // Global flag to control sync
+    }
+
+    /**
+     * Set sync enabled/disabled
+     * @param {boolean} enabled - Whether sync is enabled
+     */
+    setEnabled(enabled) {
+        this.enabled = enabled;
+        console.log(`🔄 [SYNC] Sync ${enabled ? 'enabled' : 'disabled'}`);
+    }
+
+    /**
+     * Check if sync is enabled
+     * @returns {boolean}
+     */
+    isEnabled() {
+        return this.enabled;
     }
 
     start() {
@@ -31,6 +49,10 @@ class BackgroundSync {
 
     // Force immediate sync (for instant updates on critical events)
     forceSyncNow() {
+        if (!this.enabled) {
+            console.log('⛔ [SYNC] Force sync blocked - sync is disabled');
+            return;
+        }
         console.log('⚡ [SYNC] Force sync triggered...');
         this.doSync();
     }
@@ -40,6 +62,10 @@ class BackgroundSync {
     }
 
     async doSync() {
+        if (!this.enabled) {
+            console.log('⛔ [SYNC] Sync attempt blocked - sync is disabled');
+            return;
+        }
         if (this.isSyncing) return;
         this.isSyncing = true;
 
@@ -54,10 +80,11 @@ class BackgroundSync {
             const cashiers = db.prepare('SELECT * FROM cashiers').all();
             const accountants = db.prepare('SELECT * FROM accountants').all();
             const atms = db.prepare('SELECT * FROM atms').all();
+            const branch_cashboxes = db.prepare('SELECT * FROM branch_cashboxes').all();
 
-            console.log(`🔍 [SYNC] Local counts: admins=${admins.length}, branches=${branches.length}, cashiers=${cashiers.length}, accountants=${accountants.length}, atms=${atms.length}`);
+            console.log(`🔍 [SYNC] Local counts: admins=${admins.length}, branches=${branches.length}, cashiers=${cashiers.length}, accountants=${accountants.length}, atms=${atms.length}, branch_cashboxes=${branch_cashboxes.length}`);
 
-            await this.sendPayload({ admins, branches, cashiers, accountants, atms });
+            await this.sendPayload({ admins, branches, cashiers, accountants, atms, branch_cashboxes });
 
             // 2. Mirror Sync: Send ALL active IDs first to allow server to clean up deleted records
             // This is the robust way to handle deletions without risking data loss during chunked upload
@@ -68,7 +95,10 @@ class BackgroundSync {
                 'manual_postpaid_sales',
                 'manual_customer_receipts',
                 'cash_receipts',
-                'bank_receipts'
+                'bank_receipts',
+                'branch_cashboxes',
+                'cashbox_vouchers',
+                'cashbox_voucher_audit_log'
             ];
 
             const allIdsPayload = {};
@@ -114,6 +144,12 @@ class BackgroundSync {
             const bank_receipts = db.prepare('SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000').all();
             await this.sendInBatches('bank_receipts', bank_receipts, 500);
 
+            const cashbox_vouchers = db.prepare('SELECT * FROM cashbox_vouchers ORDER BY id DESC').all();
+            await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, 500);
+
+            const cashbox_voucher_audit_log = db.prepare('SELECT * FROM cashbox_voucher_audit_log ORDER BY id DESC').all();
+            await this.sendInBatches('cashbox_voucher_audit_log', cashbox_voucher_audit_log, 500);
+
             // 5. Push Reconciliation Requests Status Updates
             const reconciliation_requests = db.prepare('SELECT * FROM reconciliation_requests').all();
             if (reconciliation_requests && reconciliation_requests.length > 0) {
@@ -135,6 +171,12 @@ class BackgroundSync {
 
     // Helper: Send a specific payload
     async sendPayload(payload) {
+        // Check if sync is enabled before sending
+        if (!this.enabled) {
+            console.log('⛔ [SYNC] sendPayload blocked - sync is disabled');
+            return;
+        }
+
         // Filter out empty arrays to save bandwidth
         const dataToSend = {};
         let hasData = false;
@@ -162,6 +204,13 @@ class BackgroundSync {
                 body: JSON.stringify(dataToSend)
             });
             if (!res.ok) throw new Error(`HTTP Error: ${res.status} ${res.statusText}`);
+            const responseJson = await res.json().catch(() => null);
+            if (responseJson && responseJson.success === false) {
+                const failureSummary = Array.isArray(responseJson.failures) && responseJson.failures.length > 0
+                    ? ` | Failures: ${responseJson.failures.map(item => `${item.table}#${item.id ?? '?'}`).join(', ')}`
+                    : '';
+                throw new Error(`${responseJson.error || 'SYNC_FAILED'}${failureSummary}`);
+            }
             console.log(`✅ [SYNC] Server accepted: ${Object.keys(dataToSend).join(', ')}`);
         } catch (e) {
             console.error(`❌ [SYNC] Error sending ${Object.keys(dataToSend).join(', ')}:`, e.message);
@@ -266,11 +315,23 @@ function startBackgroundSync(dbManager) {
 function stopBackgroundSync() {
     if (syncInstance) {
         syncInstance.stop();
+        syncInstance.setEnabled(false);
     }
 }
 
 function getSyncStatus() {
     return syncInstance ? syncInstance.isRunning : false;
+}
+
+function getSyncEnabled() {
+    return syncInstance ? syncInstance.isEnabled() : true;
+}
+
+function setSyncEnabled(enabled) {
+    if (syncInstance) {
+        syncInstance.setEnabled(enabled);
+        console.log(`🔄 [SYNC] Global sync ${enabled ? 'enabled' : 'disabled'}`);
+    }
 }
 
 function triggerInstantSync() {
@@ -279,4 +340,11 @@ function triggerInstantSync() {
     }
 }
 
-module.exports = { startBackgroundSync, stopBackgroundSync, getSyncStatus, triggerInstantSync };
+module.exports = {
+    startBackgroundSync,
+    stopBackgroundSync,
+    getSyncStatus,
+    getSyncEnabled,
+    setSyncEnabled,
+    triggerInstantSync
+};

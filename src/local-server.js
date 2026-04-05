@@ -4,12 +4,161 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { parse } = require('url');
+const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
+const { WebSessionStore } = require('./security/web-session-store');
+
+const SESSION_COOKIE_NAME = 'tasfiya_session';
+const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 class LocalWebServer {
     constructor(dbManager, port = 4000) {
         this.dbManager = dbManager;
         this.port = port;
         this.server = null;
+        this.sessionStore = new WebSessionStore({ ttlMs: SESSION_TTL_MS });
+    }
+
+    parseCookies(req) {
+        const cookieHeader = req && req.headers ? req.headers.cookie : '';
+        if (!cookieHeader) {
+            return {};
+        }
+
+        return cookieHeader.split(';').reduce((cookies, part) => {
+            const separatorIndex = part.indexOf('=');
+            if (separatorIndex === -1) {
+                return cookies;
+            }
+
+            const key = part.slice(0, separatorIndex).trim();
+            const value = part.slice(separatorIndex + 1).trim();
+
+            if (key) {
+                cookies[key] = decodeURIComponent(value);
+            }
+
+            return cookies;
+        }, {});
+    }
+
+    getSessionToken(req) {
+        const cookies = this.parseCookies(req);
+        return cookies[SESSION_COOKIE_NAME] || '';
+    }
+
+    buildSessionCookie(token) {
+        const maxAgeSeconds = Math.floor(SESSION_TTL_MS / 1000);
+        return `${SESSION_COOKIE_NAME}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${maxAgeSeconds}`;
+    }
+
+    buildExpiredSessionCookie() {
+        return `${SESSION_COOKIE_NAME}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`;
+    }
+
+    getAuthenticatedUser(req) {
+        const sessionToken = this.getSessionToken(req);
+        const session = this.sessionStore.getSession(sessionToken);
+
+        if (!session || !session.user) {
+            return null;
+        }
+
+        return { ...session.user };
+    }
+
+    isPublicRoute(pathname, method) {
+        return (
+            pathname === '/login.html'
+            || pathname === '/login'
+            || (pathname === '/api/login' && method === 'POST')
+            || (pathname === '/api/cashier-login' && method === 'POST')
+            || (pathname === '/api/cashiers-list' && method === 'GET')
+            || (pathname === '/api/session' && method === 'GET')
+            || (pathname === '/api/logout' && method === 'POST')
+        );
+    }
+
+    getAccessLevel(pathname, method) {
+        if (this.isPublicRoute(pathname, method)) {
+            return 'public';
+        }
+
+        if (
+            pathname === '/request-reconciliation.html'
+            || (pathname === '/api/customers' && method === 'GET')
+            || (pathname === '/api/atms' && method === 'GET')
+            || (pathname === '/api/reconciliation-requests' && method === 'POST')
+        ) {
+            return 'authenticated';
+        }
+
+        return 'admin';
+    }
+
+    requireAuthorization(req, res, pathname, method) {
+        const accessLevel = this.getAccessLevel(pathname, method);
+        if (accessLevel === 'public') {
+            return { accessLevel, user: null };
+        }
+
+        const user = this.getAuthenticatedUser(req);
+        if (!user) {
+            if (pathname.startsWith('/api/')) {
+                this.sendJson(
+                    res,
+                    { success: false, error: 'غير مصرح، يرجى تسجيل الدخول مرة أخرى' },
+                    {
+                        statusCode: 401,
+                        headers: { 'Set-Cookie': this.buildExpiredSessionCookie() }
+                    }
+                );
+            } else {
+                res.writeHead(302, {
+                    Location: '/login.html',
+                    'Set-Cookie': this.buildExpiredSessionCookie()
+                });
+                res.end();
+            }
+
+            return null;
+        }
+
+        if (accessLevel === 'admin' && user.role === 'cashier') {
+            if (pathname.startsWith('/api/')) {
+                this.sendJson(res, { success: false, error: 'غير مصرح بهذه العملية' }, { statusCode: 403 });
+            } else {
+                res.writeHead(302, { Location: '/request-reconciliation.html' });
+                res.end();
+            }
+
+            return null;
+        }
+
+        req.authUser = user;
+        return { accessLevel, user };
+    }
+
+    async handleGetSession(req, res) {
+        const user = this.getAuthenticatedUser(req);
+        if (!user) {
+            this.sendJson(
+                res,
+                { success: false, error: 'لا توجد جلسة نشطة' },
+                {
+                    statusCode: 401,
+                    headers: { 'Set-Cookie': this.buildExpiredSessionCookie() }
+                }
+            );
+            return;
+        }
+
+        this.sendJson(res, { success: true, user });
+    }
+
+    async handleLogout(req, res) {
+        const sessionToken = this.getSessionToken(req);
+        this.sessionStore.destroySession(sessionToken);
+        this.sendJson(res, { success: true }, { headers: { 'Set-Cookie': this.buildExpiredSessionCookie() } });
     }
 
     async ensureIndexes() {
@@ -97,6 +246,26 @@ class LocalWebServer {
                     return;
                 }
 
+                if (pathname === '/api/session' && req.method === 'GET') {
+                    await this.handleGetSession(req, res);
+                    return;
+                }
+
+                if (pathname === '/api/logout' && req.method === 'POST') {
+                    await this.handleLogout(req, res);
+                    return;
+                }
+
+                if (pathname === '/api/cashiers-list' && req.method === 'GET') {
+                    await this.handleGetCashiersList(res);
+                    return;
+                }
+
+                const authContext = this.requireAuthorization(req, res, pathname, req.method);
+                if (!authContext) {
+                    return;
+                }
+
                 if (pathname === '/api/cashiers/set-pin' && req.method === 'POST') {
                     await this.handleSetCashierPin(req, res);
                     return;
@@ -107,12 +276,7 @@ class LocalWebServer {
                     return;
                 }
 
-                if (pathname === '/api/cashiers-list' && req.method === 'GET') {
-                    await this.handleGetCashiersList(res);
-                    return;
-                }
-
-                // Protected Routes (Basic check, real auth would verify token)
+                // Protected Routes
                 if (pathname === '/' || pathname === '/index.html') {
                     this.serveFile(res, path.join(__dirname, 'web-dashboard', 'index.html'), 'text/html');
                     return;
@@ -248,11 +412,11 @@ class LocalWebServer {
                 // --- End Reconciliation Requests Feature ---
                 else if (pathname === '/api/customers') {
                     console.log('🔥 [ROUTER] /api/customers route HIT!');
-                    await this.handleGetCustomerList(res, parsedUrl.query);
+                    await this.handleGetCustomerList(req, res, parsedUrl.query);
                     return;
                 }
                 else if (pathname === '/api/atms') {
-                    await this.handleGetAtms(res, parsedUrl.query);
+                    await this.handleGetAtms(req, res, parsedUrl.query);
                     return;
                 }
                 else if (pathname === '/api/sync/users' && req.method === 'POST') {
@@ -357,15 +521,42 @@ class LocalWebServer {
         req.on('end', async () => {
             try {
                 const { username, password } = JSON.parse(body);
-                // Check admins table
-                const admin = await this.dbManager.db.prepare("SELECT id, name, username, COALESCE(role, 'admin') as role, permissions FROM admins WHERE username = ? AND password = ?").get(username, password);
+                const adminRecord = await this.dbManager.db.prepare(`
+                    SELECT id, name, username, password, COALESCE(role, 'admin') as role, permissions
+                    FROM admins
+                    WHERE username = ? AND active = 1
+                    LIMIT 1
+                `).get(username);
 
-                if (admin) {
-                    // Parse permissions if string
+                const authResult = verifySecret(adminRecord ? adminRecord.password : '', password);
+
+                if (adminRecord && authResult.ok) {
+                    if (authResult.needsRehash) {
+                        await this.dbManager.db.prepare(`
+                            UPDATE admins
+                            SET password = ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        `).run(hashSecret(password), adminRecord.id);
+                    }
+
+                    const admin = {
+                        id: adminRecord.id,
+                        name: adminRecord.name,
+                        username: adminRecord.username,
+                        role: adminRecord.role,
+                        permissions: adminRecord.permissions
+                    };
+
                     if (admin.permissions && typeof admin.permissions === 'string') {
                         try { admin.permissions = JSON.parse(admin.permissions); } catch (e) { }
                     }
-                    this.sendJson(res, { success: true, user: admin });
+
+                    const session = this.sessionStore.createSession(admin);
+                    this.sendJson(
+                        res,
+                        { success: true, user: admin },
+                        { headers: { 'Set-Cookie': this.buildSessionCookie(session.token) } }
+                    );
                 } else {
                     this.sendJson(res, { success: false, error: 'اسم المستخدم أو كلمة المرور غير صحيحة' });
                 }
@@ -386,7 +577,12 @@ class LocalWebServer {
                     return this.sendJson(res, { success: false, error: 'البيانات غير مكتملة' });
                 }
 
-                const cashier = await this.dbManager.db.prepare("SELECT * FROM cashiers WHERE id = ?").get(cashierId);
+                const cashier = await this.dbManager.db.prepare(`
+                    SELECT id, name, cashier_number, branch_id, pin_code, active
+                    FROM cashiers
+                    WHERE id = ? AND active = 1
+                    LIMIT 1
+                `).get(cashierId);
 
                 if (!cashier) {
                     return this.sendJson(res, { success: false, error: 'الكاشير غير موجود' });
@@ -396,7 +592,17 @@ class LocalWebServer {
                     return this.sendJson(res, { success: false, error: 'لم يتم تعيين رمز لهذا الكاشير بعد' });
                 }
 
-                if (String(cashier.pin_code) === String(pin)) {
+                const authResult = verifySecret(cashier.pin_code, pin);
+
+                if (authResult.ok) {
+                    if (authResult.needsRehash) {
+                        await this.dbManager.db.prepare(`
+                            UPDATE cashiers
+                            SET pin_code = ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        `).run(hashSecret(pin), cashier.id);
+                    }
+
                     // Success
                     // Return user object similar to admin but with role 'cashier'
                     const userObj = {
@@ -407,7 +613,12 @@ class LocalWebServer {
                         permissions: ['request-reconciliation.html'], // Only access to request form
                         branch_id: cashier.branch_id
                     };
-                    this.sendJson(res, { success: true, user: userObj });
+                    const session = this.sessionStore.createSession(userObj);
+                    this.sendJson(
+                        res,
+                        { success: true, user: userObj },
+                        { headers: { 'Set-Cookie': this.buildSessionCookie(session.token) } }
+                    );
                 } else {
                     this.sendJson(res, { success: false, error: 'رمز الدخول غير صحيح' });
                 }
@@ -423,7 +634,16 @@ class LocalWebServer {
         req.on('end', async () => {
             try {
                 const { cashierId, pin } = JSON.parse(body);
-                this.dbManager.db.prepare("UPDATE cashiers SET pin_code = ? WHERE id = ?").run(pin, cashierId);
+                const normalizedPin = String(pin || '').trim();
+                if (!cashierId || !/^\d{4,6}$/.test(normalizedPin)) {
+                    throw new Error('رمز الدخول يجب أن يكون من 4 إلى 6 أرقام');
+                }
+
+                await this.dbManager.db.prepare(`
+                    UPDATE cashiers
+                    SET pin_code = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                `).run(hashSecret(normalizedPin), cashierId);
                 this.sendJson(res, { success: true });
             } catch (error) {
                 this.sendJson(res, { success: false, error: error.message });
@@ -433,7 +653,7 @@ class LocalWebServer {
 
     async handleGetCashiersList(res) {
         try {
-            const cashiers = this.dbManager.db.prepare(`
+            const cashiers = await this.dbManager.db.prepare(`
                 SELECT c.id, c.name, c.cashier_number, c.active, c.pin_code, b.branch_name 
                 FROM cashiers c 
                 LEFT JOIN branches b ON c.branch_id = b.id
@@ -1178,93 +1398,17 @@ class LocalWebServer {
 
 
 
-
-
-
-
-    // ======================================
-    // Reconciliation Requests Logic
-    // ======================================
-
-    async handleCreateReconciliationRequest(req, res) {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', async () => {
-            try {
-                const data = JSON.parse(body);
-                // Validate
-                // Validate (Allow system_sales to be 0 or missing)
-                if (!data.cashier_id) {
-                    throw new Error('بيانات غير مكتملة: الكاشير مطلوب');
-                }
-
-                const stmt = this.dbManager.db.prepare(`
-                    INSERT INTO reconciliation_requests
-                (cashier_id, system_sales, total_cash, total_bank, details_json, notes, status, request_date)
-            VALUES(?, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
-                `);
-
-                // Save ALL details, not just cash/bank
-                const details = JSON.stringify({
-                    cash_breakdown: data.cash_breakdown || [],
-                    bank_receipts: data.bank_receipts || [],
-                    postpaid_items: data.postpaid_items || [],          // Added
-                    customer_receipts: data.customer_receipts || [],    // Added
-                    return_items: data.return_items || [],              // Added
-                    supplier_items: data.supplier_items || []           // Added
-                });
-
-                await stmt.run(
-                    data.cashier_id,
-                    data.system_sales,
-                    data.total_cash || 0,
-                    data.total_bank || 0,
-                    details,
-                    data.notes || ''
-                );
-
-
-                // Get cashier name for notification
-                const cashier = await this.dbManager.db.prepare("SELECT name FROM cashiers WHERE id = ?").get(data.cashier_id);
-                const cashierName = cashier ? cashier.name : 'كاشير';
-
-                // Send OneSignal notification to admins
-                await this.sendOneSignalNotification(
-                    '📋 طلب تصفية جديد',
-                    `تم استلام طلب تصفية جديد من ${cashierName}`,
-                    {
-                        type: 'new_reconciliation_request',
-                        cashier_id: data.cashier_id,
-                        cashier_name: cashierName
-                    }
-                );
-
-                // Trigger instant sync to push this new request to cloud immediately
-                try {
-                    const { triggerInstantSync } = require('./background-sync');
-                    triggerInstantSync();
-                    console.log('⚡ [WEB] Instant sync triggered after new request');
-                } catch (syncErr) { console.warn('⚠️ [WEB] Failed to trigger instant sync:', syncErr.message); }
-
-                this.sendJson(res, { success: true });
-
-            } catch (error) {
-                console.error('Create Request Error:', error);
-                this.sendJson(res, { success: false, error: error.message });
-            }
-        });
-    }
-
     // 🔒 SYSTEM FACTORY RESET (Protected by Secret Key)
     async handleFactoryReset(req, res) {
-        // 1. Security Check
+        const authUser = req && req.authUser ? req.authUser : null;
         const secretKey = req.headers['x-admin-secret'];
-        const MASTER_KEY = 'TASFIYA_MASTER_KEY_2025'; // المفتاح السري
+        const configuredResetKey = String(process.env.TASFIYA_FACTORY_RESET_KEY || '').trim();
+        const hasValidConfiguredKey = configuredResetKey && secretKey === configuredResetKey;
+        const isAdminSession = authUser && authUser.role !== 'cashier';
 
-        if (secretKey !== MASTER_KEY) {
+        if (!isAdminSession && !hasValidConfiguredKey) {
             console.warn('⚠️ [SECURITY] محاولة غير مصرح بها لعمل إعادة ضبط المصنع');
-            res.writeHead(403, { 'Content-Type': 'application/json' });
-            res.end(JSON.stringify({ success: false, error: 'غير مصرح: مفتاح الأمان غير صحيح' }));
+            this.sendJson(res, { success: false, error: 'غير مصرح: يلزم جلسة أدمن أو مفتاح مضبوط عبر البيئة' }, { statusCode: 403 });
             return;
         }
 
@@ -1318,97 +1462,6 @@ class LocalWebServer {
 
         } catch (error) {
             console.error('❌ [RESET] خطأ حرج:', error);
-            this.sendJson(res, { success: false, error: error.message });
-        }
-    }
-
-    async handleGetReconciliationRequests(res, query = {}) {
-        try {
-            const statusFilter = query.status || 'pending';
-            const page = parseInt(query.page) || 1;
-            const limit = parseInt(query.limit) || 20;
-            const offset = (page - 1) * limit;
-
-            const pool = this.dbManager.pool;
-
-            if (pool) {
-                // POSTGRESQL MODE
-                // Count total
-                const countSql = `SELECT COUNT(*) as total FROM reconciliation_requests WHERE status = $1`;
-                const countResult = await pool.query(countSql, [statusFilter]);
-                const total = parseInt(countResult.rows[0].total);
-
-                // Get paginated data
-                const sql = `
-                    SELECT r.*, c.name as cashier_name, b.branch_name 
-                    FROM reconciliation_requests r
-                    LEFT JOIN cashiers c ON r.cashier_id = c.id
-                    LEFT JOIN branches b ON c.branch_id = b.id
-                    WHERE r.status = $1
-                    ORDER BY r.created_at DESC
-                    LIMIT $2 OFFSET $3
-                `;
-                const result = await pool.query(sql, [statusFilter, limit, offset]);
-                const requests = result.rows;
-
-                requests.forEach(r => {
-                    try {
-                        if (typeof r.details_json === 'string') {
-                            r.details = JSON.parse(r.details_json);
-                        } else {
-                            r.details = r.details_json || {};
-                        }
-                    } catch (e) { r.details = {}; }
-                });
-
-                this.sendJson(res, {
-                    success: true,
-                    data: requests,
-                    pagination: {
-                        page,
-                        limit,
-                        total,
-                        totalPages: Math.ceil(total / limit)
-                    }
-                });
-
-            } else {
-                // SQLITE MODE
-                // Count total
-                const countSql = `SELECT COUNT(*) as total FROM reconciliation_requests WHERE status = ?`;
-                const countResult = this.dbManager.db.prepare(countSql).get(statusFilter);
-                const total = countResult.total;
-
-                // Get paginated data
-                const sql = `
-                    SELECT r.*, c.name as cashier_name, b.branch_name 
-                    FROM reconciliation_requests r
-                    LEFT JOIN cashiers c ON r.cashier_id = c.id
-                    LEFT JOIN branches b ON c.branch_id = b.id
-                    WHERE r.status = ?
-                    ORDER BY r.created_at DESC
-                    LIMIT ? OFFSET ?
-                `;
-                const requests = await this.dbManager.db.prepare(sql).all(statusFilter, limit, offset);
-
-                requests.forEach(r => {
-                    try { r.details = JSON.parse(r.details_json); } catch (e) { r.details = {}; }
-                });
-
-                this.sendJson(res, {
-                    success: true,
-                    data: requests,
-                    pagination: {
-                        page,
-                        limit,
-                        total,
-                        totalPages: Math.ceil(total / limit)
-                    }
-                });
-            }
-
-        } catch (error) {
-            console.error('[Get Requests] Error:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
     }
@@ -1658,14 +1711,18 @@ class LocalWebServer {
     }
 
 
-    async handleGetAtms(res, query) {
+    async handleGetAtms(req, res, query) {
         try {
             let atms;
+            const authUser = req && req.authUser ? req.authUser : null;
+            const effectiveCashierId = authUser && authUser.role === 'cashier'
+                ? authUser.id
+                : (query && query.cashierId ? query.cashierId : null);
 
             // If cashierId is provided, filter by their branch
-            if (query && query.cashierId) {
+            if (effectiveCashierId) {
                 // 1. Get Cashier Branch
-                const cashier = await this.dbManager.db.prepare("SELECT branch_id FROM cashiers WHERE id = ?").get(query.cashierId);
+                const cashier = await this.dbManager.db.prepare("SELECT branch_id FROM cashiers WHERE id = ?").get(effectiveCashierId);
 
                 if (cashier && cashier.branch_id) {
                     // 2. Get ATMs for this branch
@@ -1687,14 +1744,18 @@ class LocalWebServer {
         }
     }
 
-    async handleGetCustomerList(res, queryParams = {}) {
+    async handleGetCustomerList(req, res, queryParams = {}) {
         try {
             console.log('🔍 [Customers API] Params:', queryParams);
             let customers = [];
+            const authUser = req && req.authUser ? req.authUser : null;
+            const effectiveCashierId = authUser && authUser.role === 'cashier'
+                ? authUser.id
+                : (queryParams && queryParams.cashierId ? queryParams.cashierId : null);
 
             // Check if we should filter by cashier's branch
-            if (queryParams && queryParams.cashierId) {
-                const cashier = await this.dbManager.db.prepare('SELECT branch_id FROM cashiers WHERE id = ?').get(queryParams.cashierId);
+            if (effectiveCashierId) {
+                const cashier = await this.dbManager.db.prepare('SELECT branch_id FROM cashiers WHERE id = ?').get(effectiveCashierId);
 
                 if (cashier && cashier.branch_id) {
                     const branchId = cashier.branch_id;
@@ -1758,9 +1819,88 @@ class LocalWebServer {
 
                 // **ROOT FIX**: Use pool.query() directly for PostgreSQL
                 const pool = this.dbManager.pool || this.dbManager.db.pool;
+                const syncFailures = [];
 
                 if (!pool) {
                     throw new Error('Database pool not available');
+                }
+
+                const ensureCashboxSyncSchema = async () => {
+                    const statements = [
+                        `CREATE TABLE IF NOT EXISTS branch_cashboxes (
+                            id SERIAL PRIMARY KEY,
+                            branch_id INTEGER NOT NULL UNIQUE REFERENCES branches(id) ON DELETE CASCADE,
+                            cashbox_name TEXT NOT NULL,
+                            opening_balance DECIMAL(10,2) NOT NULL DEFAULT 0,
+                            is_active INTEGER DEFAULT 1,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )`,
+                        `CREATE TABLE IF NOT EXISTS cashbox_vouchers (
+                            id SERIAL PRIMARY KEY,
+                            voucher_number INTEGER NOT NULL UNIQUE,
+                            voucher_sequence_number INTEGER,
+                            voucher_type TEXT NOT NULL,
+                            cashbox_id INTEGER NOT NULL REFERENCES branch_cashboxes(id) ON DELETE CASCADE,
+                            branch_id INTEGER NOT NULL REFERENCES branches(id),
+                            counterparty_type TEXT NOT NULL,
+                            counterparty_name TEXT NOT NULL,
+                            cashier_id INTEGER REFERENCES cashiers(id) ON DELETE SET NULL,
+                            amount DECIMAL(10,2) NOT NULL,
+                            reference_no TEXT,
+                            description TEXT,
+                            voucher_date DATE NOT NULL,
+                            created_by TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            source_reconciliation_id INTEGER,
+                            source_entry_key TEXT,
+                            is_auto_generated INTEGER DEFAULT 0
+                        )`,
+                        `CREATE TABLE IF NOT EXISTS cashbox_voucher_audit_log (
+                            id SERIAL PRIMARY KEY,
+                            voucher_id INTEGER,
+                            voucher_number INTEGER,
+                            voucher_sequence_number INTEGER,
+                            voucher_type TEXT NOT NULL,
+                            branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+                            action_type TEXT NOT NULL,
+                            action_by TEXT,
+                            action_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            payload_json TEXT,
+                            notes TEXT
+                        )`,
+                        'CREATE INDEX IF NOT EXISTS idx_branch_cashboxes_branch_id ON branch_cashboxes(branch_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_branch_date ON cashbox_vouchers(branch_id, voucher_date)',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_cashbox_date ON cashbox_vouchers(cashbox_id, voucher_date)',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_date ON cashbox_vouchers(voucher_type, voucher_date)',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence ON cashbox_vouchers(voucher_type, voucher_sequence_number)',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_counterparty_name ON cashbox_vouchers(counterparty_name)',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_reconciliation ON cashbox_vouchers(source_reconciliation_id, source_entry_key)',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_auto_generated ON cashbox_vouchers(is_auto_generated, source_reconciliation_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_voucher_action ON cashbox_voucher_audit_log(voucher_id, action_at DESC)',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_branch_action ON cashbox_voucher_audit_log(branch_id, action_at DESC)',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_action_type ON cashbox_voucher_audit_log(action_type, action_at DESC)',
+                        'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence_unique ON cashbox_vouchers(voucher_type, voucher_sequence_number)',
+                        'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_unique ON cashbox_vouchers(source_reconciliation_id, source_entry_key)'
+                    ];
+
+                    for (const statement of statements) {
+                        await pool.query(statement);
+                    }
+                };
+
+                const hasCashboxPayload = Boolean(
+                    data.branch_cashboxes
+                    || data.cashbox_vouchers
+                    || data.cashbox_voucher_audit_log
+                    || data.active_branch_cashboxes_ids
+                    || data.active_cashbox_vouchers_ids
+                    || data.active_cashbox_voucher_audit_log_ids
+                );
+
+                if (hasCashboxPayload) {
+                    await ensureCashboxSyncSchema();
                 }
 
                 // Helper to perform safe cleanup based on Full ID Lists
@@ -1816,6 +1956,12 @@ class LocalWebServer {
                             const rowParams = [];
                             cols.forEach(col => {
                                 let val = item[col];
+                                if (table === 'admins' && col === 'password' && val) {
+                                    val = hashSecretIfNeeded(val);
+                                }
+                                if (table === 'cashiers' && col === 'pin_code' && val) {
+                                    val = hashSecretIfNeeded(val);
+                                }
                                 if (typeof val === 'object' && val !== null) val = JSON.stringify(val);
                                 if (val === undefined) val = null;
                                 values.push(val);
@@ -1841,6 +1987,12 @@ class LocalWebServer {
                                 try {
                                     const singleVals = cols.map(c => {
                                         let v = item[c];
+                                        if (table === 'admins' && c === 'password' && v) {
+                                            v = hashSecretIfNeeded(v);
+                                        }
+                                        if (table === 'cashiers' && c === 'pin_code' && v) {
+                                            v = hashSecretIfNeeded(v);
+                                        }
                                         if (typeof v === 'object' && v !== null) return JSON.stringify(v);
                                         if (v === undefined) return null;
                                         return v;
@@ -1850,14 +2002,19 @@ class LocalWebServer {
                                     successCount++;
                                 } catch (e) {
                                     errorCount++;
-                                    if (table === 'admins') {
-                                        console.error(`❌ [SYNC] Admin insert failed:`, e.message, 'Data:', item);
-                                    }
+                                    const failedItemId = item && item.id != null ? item.id : null;
+                                    const failure = {
+                                        table,
+                                        id: failedItemId,
+                                        error: e.message
+                                    };
+                                    syncFailures.push(failure);
+                                    console.error(`❌ [SYNC] Row insert failed for ${table}:`, e.message, 'Data:', item);
                                 }
                             }
                         }
                     }
-                    console.log(`✅ [SYNC] ${table}: Processed ${successCount} items.`);
+                    console.log(`✅ [SYNC] ${table}: Processed ${successCount} items.${errorCount > 0 ? ` Failed ${errorCount} items.` : ''}`);
                 };
 
                 // Sync all tables in dependency order
@@ -1882,13 +2039,16 @@ class LocalWebServer {
                 if (data.active_manual_customer_receipts_ids) await handleCleanup('manual_customer_receipts', data.active_manual_customer_receipts_ids);
                 if (data.active_cash_receipts_ids) await handleCleanup('cash_receipts', data.active_cash_receipts_ids);
                 if (data.active_bank_receipts_ids) await handleCleanup('bank_receipts', data.active_bank_receipts_ids);
+                if (data.active_cashbox_voucher_audit_log_ids) await handleCleanup('cashbox_voucher_audit_log', data.active_cashbox_voucher_audit_log_ids);
+                if (data.active_cashbox_vouchers_ids) await handleCleanup('cashbox_vouchers', data.active_cashbox_vouchers_ids);
+                if (data.active_branch_cashboxes_ids) await handleCleanup('branch_cashboxes', data.active_branch_cashboxes_ids);
 
 
                 if (data.admins) {
                     // For admins, use username as conflict key to handle duplicate usernames
                     await syncTable('admins', data.admins, [
                         { name: 'id' }, { name: 'name' }, { name: 'username' },
-                        { name: 'password' }, { name: 'role' }, { name: 'active' } // Permissions excluded to protect web edits
+                        { name: 'password', preserveIfNull: true }, { name: 'role' }, { name: 'active' } // Permissions excluded to protect web edits
                     ], 'username'); // Use username instead of id to avoid constraint violations
                 }
 
@@ -1904,6 +2064,14 @@ class LocalWebServer {
                     await syncTable('atms', data.atms, [
                         { name: 'id' }, { name: 'name' }, { name: 'bank_name' },
                         { name: 'location' }, { name: 'branch_id' }, { name: 'active' }
+                    ]);
+                }
+
+                if (data.branch_cashboxes) {
+                    await syncTable('branch_cashboxes', data.branch_cashboxes, [
+                        { name: 'id' }, { name: 'branch_id' }, { name: 'cashbox_name' },
+                        { name: 'opening_balance' }, { name: 'is_active' },
+                        { name: 'created_at' }, { name: 'updated_at' }
                     ]);
                 }
 
@@ -2097,6 +2265,27 @@ class LocalWebServer {
                     ]);
                 }
 
+                if (data.cashbox_vouchers) {
+                    await syncTable('cashbox_vouchers', data.cashbox_vouchers, [
+                        { name: 'id' }, { name: 'voucher_number' }, { name: 'voucher_sequence_number' },
+                        { name: 'voucher_type' }, { name: 'cashbox_id' }, { name: 'branch_id' },
+                        { name: 'counterparty_type' }, { name: 'counterparty_name' }, { name: 'cashier_id' },
+                        { name: 'amount' }, { name: 'reference_no' }, { name: 'description' },
+                        { name: 'voucher_date' }, { name: 'created_by' }, { name: 'created_at' },
+                        { name: 'updated_at' }, { name: 'source_reconciliation_id' }, { name: 'source_entry_key' },
+                        { name: 'is_auto_generated' }
+                    ]);
+                }
+
+                if (data.cashbox_voucher_audit_log) {
+                    await syncTable('cashbox_voucher_audit_log', data.cashbox_voucher_audit_log, [
+                        { name: 'id' }, { name: 'voucher_id' }, { name: 'voucher_number' },
+                        { name: 'voucher_sequence_number' }, { name: 'voucher_type' }, { name: 'branch_id' },
+                        { name: 'action_type' }, { name: 'action_by' }, { name: 'action_at' },
+                        { name: 'payload_json' }, { name: 'notes' }
+                    ]);
+                }
+
                 if (data.postpaid_sales) {
                     await syncTable('postpaid_sales', data.postpaid_sales, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_name' },
@@ -2148,6 +2337,17 @@ class LocalWebServer {
                     ]);
                 }
 
+                if (syncFailures.length > 0) {
+                    console.error('❌ [SYNC] Full sync completed with failures:', syncFailures.slice(0, 10));
+                    this.sendJson(res, {
+                        success: false,
+                        error: 'SYNC_PARTIAL_FAILURE',
+                        failuresCount: syncFailures.length,
+                        failures: syncFailures.slice(0, 20)
+                    });
+                    return;
+                }
+
                 console.log('✅ [SYNC] Full sync completed successfully');
                 this.sendJson(res, { success: true, message: 'Full sync completed' });
             } catch (error) {
@@ -2193,22 +2393,54 @@ class LocalWebServer {
         req.on('end', async () => {
             try {
                 const user = JSON.parse(body);
+                const normalizedPassword = String(user.password || '').trim();
+                const isActive = user.active === undefined ? 1 : (user.active ? 1 : 0);
 
                 if (user.id) {
-                    // Update
-                    this.dbManager.db.prepare(`
-                        UPDATE admins 
-                        SET name = ?, username = ?, role = ?, active = ?, permissions = ?
-                        WHERE id = ?
-                    `).run(user.name, user.username, user.role, user.active ? 1 : 0,
-                        JSON.stringify(user.permissions || []), user.id);
+                    if (normalizedPassword) {
+                        await this.dbManager.db.prepare(`
+                            UPDATE admins 
+                            SET name = ?, username = ?, password = ?, role = ?, active = ?, permissions = ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        `).run(
+                            user.name,
+                            user.username,
+                            hashSecretIfNeeded(normalizedPassword),
+                            user.role,
+                            isActive,
+                            JSON.stringify(user.permissions || []),
+                            user.id
+                        );
+                    } else {
+                        await this.dbManager.db.prepare(`
+                            UPDATE admins 
+                            SET name = ?, username = ?, role = ?, active = ?, permissions = ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        `).run(
+                            user.name,
+                            user.username,
+                            user.role,
+                            isActive,
+                            JSON.stringify(user.permissions || []),
+                            user.id
+                        );
+                    }
                 } else {
-                    // Insert
-                    this.dbManager.db.prepare(`
+                    if (!normalizedPassword) {
+                        throw new Error('كلمة المرور مطلوبة للمستخدم الجديد');
+                    }
+
+                    await this.dbManager.db.prepare(`
                         INSERT INTO admins (name, username, password, role, active, permissions)
                         VALUES (?, ?, ?, ?, ?, ?)
-                    `).run(user.name, user.username, user.password || 'admin123',
-                        user.role, user.active ? 1 : 0, JSON.stringify(user.permissions || []));
+                    `).run(
+                        user.name,
+                        user.username,
+                        hashSecretIfNeeded(normalizedPassword),
+                        user.role,
+                        isActive,
+                        JSON.stringify(user.permissions || [])
+                    );
                 }
 
                 this.sendJson(res, { success: true });
@@ -2325,14 +2557,15 @@ class LocalWebServer {
         }
     }
 
-    sendJson(res, data) {
+    sendJson(res, data, options = {}) {
         console.log('📤 [sendJson] Sending:', Object.keys(data), res.headersSent ? '⚠️ Headers already sent!' : '✅ OK');
         if (!res.headersSent) {
-            res.writeHead(200, {
+            res.writeHead(options.statusCode || 200, {
                 'Content-Type': 'application/json',
                 'Cache-Control': 'no-cache, no-store, must-revalidate',
                 'Pragma': 'no-cache',
-                'Expires': '0'
+                'Expires': '0',
+                ...(options.headers || {})
             });
             res.end(JSON.stringify(data));
         } else {
@@ -2349,6 +2582,12 @@ class LocalWebServer {
         req.on('end', async () => {
             try {
                 const data = JSON.parse(body);
+                const authUser = req && req.authUser ? req.authUser : null;
+
+                if (authUser && authUser.role === 'cashier') {
+                    data.cashier_id = authUser.id;
+                }
+
                 console.log('📝 [API] Received new reconciliation request:', data);
 
                 // Basic Validation
