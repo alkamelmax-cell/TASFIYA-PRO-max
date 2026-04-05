@@ -220,7 +220,7 @@
         if (!userStr) {
             window.location.href = '/login.html';
         }
-        const user = JSON.parse(userStr || '{}');
+        let user = JSON.parse(userStr || '{}');
         document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
 
         // Navbar Protection Logic
@@ -258,6 +258,13 @@
         const API_URL = '/api';
 
         document.addEventListener('DOMContentLoaded', async () => {
+            const activeUser = await requireActiveSession();
+            if (!activeUser) {
+                return;
+            }
+
+            user = activeUser;
+            document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
             document.getElementById('filterDateFrom').value = '';
             document.getElementById('filterDateTo').value = '';
 
@@ -277,9 +284,72 @@
             document.getElementById('applyFiltersBtn').addEventListener('click', () => loadCashboxReport());
         });
 
-        function logout() {
+        async function logout() {
+            try {
+                await fetch('/api/logout', { method: 'POST', credentials: 'same-origin' });
+            } catch (error) {
+                console.warn('Logout request failed:', error);
+            }
+
             localStorage.removeItem('user');
             window.location.href = '/login.html';
+        }
+
+        function redirectToLogin() {
+            localStorage.removeItem('user');
+            window.location.href = '/login.html';
+        }
+
+        async function requireActiveSession() {
+            try {
+                const response = await fetch('/api/session', {
+                    cache: 'no-store',
+                    credentials: 'same-origin'
+                });
+
+                if (!response.ok) {
+                    redirectToLogin();
+                    return null;
+                }
+
+                const result = await response.json();
+                if (!result.success || !result.user) {
+                    redirectToLogin();
+                    return null;
+                }
+
+                localStorage.setItem('user', JSON.stringify(result.user));
+                return result.user;
+            } catch (error) {
+                redirectToLogin();
+                return null;
+            }
+        }
+
+        async function fetchJsonWithSession(url, init = {}) {
+            const response = await fetch(url, {
+                cache: 'no-store',
+                credentials: 'same-origin',
+                ...init
+            });
+
+            if (response.status === 401) {
+                redirectToLogin();
+                return null;
+            }
+
+            const result = await response.json();
+            if (!response.ok && response.status === 401) {
+                redirectToLogin();
+                return null;
+            }
+
+            if (result && result.success === false && String(result.error || '').includes('غير مصرح')) {
+                redirectToLogin();
+                return null;
+            }
+
+            return result;
         }
 
         function showLoading(show) {
@@ -288,8 +358,10 @@
 
         async function loadLookups() {
             try {
-                const res = await fetch(`${API_URL}/lookups`, { cache: 'no-store' });
-                const data = await res.json();
+                const data = await fetchJsonWithSession(`${API_URL}/lookups`);
+                if (!data) {
+                    return;
+                }
                 if (!data.success || !Array.isArray(data.branches)) return;
 
                 const branchSelect = document.getElementById('filterBranch');
@@ -395,8 +467,10 @@
 
                 const query = params.toString();
                 const url = query ? `${API_URL}/cashbox-report?${query}` : `${API_URL}/cashbox-report`;
-                const res = await fetch(url, { cache: 'no-store' });
-                const result = await res.json();
+                const result = await fetchJsonWithSession(url);
+                if (!result) {
+                    return;
+                }
 
                 if (!result.success) {
                     throw new Error(result.error || 'تعذر تحميل تقارير الصناديق');
