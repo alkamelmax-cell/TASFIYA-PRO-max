@@ -1,4 +1,6 @@
 const { Pool } = require('pg');
+const { resolveAdminSeedPolicy } = require('./security/admin-seed-policy');
+const { hashSecret, isHashedSecret } = require('./security/auth-service');
 
 class PostgresManager {
     constructor(connectionString) {
@@ -30,6 +32,7 @@ class PostgresManager {
             await this.createTables();
             await this.migrateSchema();
             await this.insertDefaultData();
+            await this.migrateSensitiveCredentials();
             return true;
         } catch (error) {
             console.error('❌ [DB] Connection to Neon failed:', error);
@@ -201,6 +204,15 @@ class PostgresManager {
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
+            `CREATE TABLE IF NOT EXISTS branch_cashboxes (
+                id SERIAL PRIMARY KEY,
+                branch_id INTEGER NOT NULL UNIQUE REFERENCES branches(id) ON DELETE CASCADE,
+                cashbox_name TEXT NOT NULL,
+                opening_balance DECIMAL(10,2) NOT NULL DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )`,
             `CREATE TABLE IF NOT EXISTS cashiers (
                 id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -281,6 +293,40 @@ class PostgresManager {
                 total_amount DECIMAL(10,2) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
+            `CREATE TABLE IF NOT EXISTS cashbox_vouchers (
+                id SERIAL PRIMARY KEY,
+                voucher_number INTEGER NOT NULL UNIQUE,
+                voucher_sequence_number INTEGER,
+                voucher_type TEXT NOT NULL,
+                cashbox_id INTEGER NOT NULL REFERENCES branch_cashboxes(id) ON DELETE CASCADE,
+                branch_id INTEGER NOT NULL REFERENCES branches(id),
+                counterparty_type TEXT NOT NULL,
+                counterparty_name TEXT NOT NULL,
+                cashier_id INTEGER REFERENCES cashiers(id) ON DELETE SET NULL,
+                amount DECIMAL(10,2) NOT NULL,
+                reference_no TEXT,
+                description TEXT,
+                voucher_date DATE NOT NULL,
+                created_by TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                source_reconciliation_id INTEGER,
+                source_entry_key TEXT,
+                is_auto_generated INTEGER DEFAULT 0
+            )`,
+            `CREATE TABLE IF NOT EXISTS cashbox_voucher_audit_log (
+                id SERIAL PRIMARY KEY,
+                voucher_id INTEGER,
+                voucher_number INTEGER,
+                voucher_sequence_number INTEGER,
+                voucher_type TEXT NOT NULL,
+                branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+                action_type TEXT NOT NULL,
+                action_by TEXT,
+                action_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                payload_json TEXT,
+                notes TEXT
+            )`,
             `CREATE TABLE IF NOT EXISTS postpaid_sales (
                 id SERIAL PRIMARY KEY,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
@@ -338,6 +384,26 @@ class PostgresManager {
         for (const q of queries) {
             await this.pool.query(q);
         }
+
+        const indexQueries = [
+            'CREATE INDEX IF NOT EXISTS idx_branch_cashboxes_branch_id ON branch_cashboxes(branch_id)',
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_branch_date ON cashbox_vouchers(branch_id, voucher_date)',
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_cashbox_date ON cashbox_vouchers(cashbox_id, voucher_date)',
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_date ON cashbox_vouchers(voucher_type, voucher_date)',
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence ON cashbox_vouchers(voucher_type, voucher_sequence_number)',
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_counterparty_name ON cashbox_vouchers(counterparty_name)',
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_reconciliation ON cashbox_vouchers(source_reconciliation_id, source_entry_key)',
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_auto_generated ON cashbox_vouchers(is_auto_generated, source_reconciliation_id)',
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_voucher_action ON cashbox_voucher_audit_log(voucher_id, action_at DESC)',
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_branch_action ON cashbox_voucher_audit_log(branch_id, action_at DESC)',
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_action_type ON cashbox_voucher_audit_log(action_type, action_at DESC)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence_unique ON cashbox_vouchers(voucher_type, voucher_sequence_number)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_unique ON cashbox_vouchers(source_reconciliation_id, source_entry_key)'
+        ];
+
+        for (const query of indexQueries) {
+            await this.pool.query(query);
+        }
     }
 
     async insertDefaultData() {
@@ -345,9 +411,14 @@ class PostgresManager {
             // Insert default admin if not exists
             const adminCount = await this.prepare('SELECT COUNT(*) as count FROM admins').get();
             if (adminCount.count == 0) { // == loose check for string/int return
-                await this.prepare(`INSERT INTO admins (name, username, password) VALUES (?, ?, ?)`)
-                    .run('المدير العام', 'admin', 'admin123');
-                console.log('✅ Default admin created');
+                const adminSeed = resolveAdminSeedPolicy({ env: process.env });
+                if (adminSeed.shouldSeed) {
+                    await this.prepare(`INSERT INTO admins (name, username, password) VALUES (?, ?, ?)`)
+                        .run(adminSeed.name, adminSeed.username, hashSecret(adminSeed.password));
+                    console.log(`✅ Default admin created (${adminSeed.source})`);
+                } else {
+                    console.log('⚠️ [DB] Default admin credentials disabled in this environment');
+                }
             }
 
             // Insert default branch
@@ -386,6 +457,52 @@ class PostgresManager {
 
         } catch (error) {
             console.error('❌ Error inserting default data:', error);
+        }
+    }
+
+    async migrateSensitiveCredentials() {
+        try {
+            const adminRows = await this.prepare(`
+                SELECT id, password
+                FROM admins
+                WHERE password IS NOT NULL AND TRIM(password) != ''
+            `).all();
+
+            let migratedAdmins = 0;
+            for (const admin of adminRows) {
+                if (!isHashedSecret(admin.password)) {
+                    await this.prepare(`
+                        UPDATE admins
+                        SET password = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    `).run(hashSecret(admin.password), admin.id);
+                    migratedAdmins += 1;
+                }
+            }
+
+            const cashierRows = await this.prepare(`
+                SELECT id, pin_code
+                FROM cashiers
+                WHERE pin_code IS NOT NULL AND TRIM(pin_code) != ''
+            `).all();
+
+            let migratedCashiers = 0;
+            for (const cashier of cashierRows) {
+                if (!isHashedSecret(cashier.pin_code)) {
+                    await this.prepare(`
+                        UPDATE cashiers
+                        SET pin_code = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    `).run(hashSecret(cashier.pin_code), cashier.id);
+                    migratedCashiers += 1;
+                }
+            }
+
+            if (migratedAdmins > 0 || migratedCashiers > 0) {
+                console.log(`🔐 [DB] Migrated sensitive credentials on PostgreSQL: admins=${migratedAdmins}, cashiers=${migratedCashiers}`);
+            }
+        } catch (error) {
+            console.error('⚠️ [DB] Failed to migrate sensitive credentials on PostgreSQL:', error);
         }
     }
 }
