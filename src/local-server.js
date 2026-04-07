@@ -57,7 +57,9 @@ class LocalWebServer {
 
     getAuthenticatedUser(req) {
         const sessionToken = this.getSessionToken(req);
-        const session = this.sessionStore.getSession(sessionToken);
+        const session = typeof this.sessionStore.touchSession === 'function'
+            ? this.sessionStore.touchSession(sessionToken)
+            : this.sessionStore.getSession(sessionToken);
 
         if (!session || !session.user) {
             return null;
@@ -139,6 +141,10 @@ class LocalWebServer {
         }
 
         req.authUser = user;
+        const refreshedToken = this.getSessionToken(req);
+        if (refreshedToken) {
+            res.setHeader('Set-Cookie', this.buildSessionCookie(refreshedToken));
+        }
         return { accessLevel, user };
     }
 

@@ -10,6 +10,7 @@
     <!-- PWA Manifest -->
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#6366f1">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="تصفية برو">
@@ -483,7 +484,7 @@
                         <textarea id="notes" class="form-control custom-input" rows="2"></textarea>
                     </div>
 
-                    <button class="btn btn-primary w-100 py-3 mt-3 fw-bold rounded-pill shadow-lg"
+                    <button id="submitReconciliationRequestBtn" class="btn btn-primary w-100 py-3 mt-3 fw-bold rounded-pill shadow-lg"
                         onclick="submitFullRequest()">
                         <i class="fas fa-paper-plane me-2"></i> إرسال التصفية للمراجعة
                     </button>
@@ -535,19 +536,68 @@
             redirectToLogin();
         }
 
+        function createUnauthorizedError() {
+            const error = new Error('UNAUTHORIZED');
+            error.code = 401;
+            return error;
+        }
+
+        async function fetchWithSessionGuard(url, options = {}, runtimeOptions = {}) {
+            const shouldRedirectOnUnauthorized = runtimeOptions.redirectOnUnauthorized !== false;
+            const requestOptions = {
+                cache: 'no-store',
+                credentials: 'same-origin',
+                ...options
+            };
+
+            const response = await fetch(url, requestOptions);
+            if (response.status === 401) {
+                if (shouldRedirectOnUnauthorized) {
+                    redirectToLogin();
+                }
+                throw createUnauthorizedError();
+            }
+
+            return response;
+        }
+
+        function updateSubmitRequestButtonState(isSubmitting) {
+            const submitBtn = document.getElementById('submitReconciliationRequestBtn');
+            if (!submitBtn) {
+                return;
+            }
+
+            if (isSubmitting) {
+                if (!submitBtn.dataset.originalHtml) {
+                    submitBtn.dataset.originalHtml = submitBtn.innerHTML;
+                }
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2" role="status" aria-hidden="true"></span> جاري الإرسال...';
+                return;
+            }
+
+            submitBtn.disabled = false;
+            if (submitBtn.dataset.originalHtml) {
+                submitBtn.innerHTML = submitBtn.dataset.originalHtml;
+            }
+        }
+
         // --- Fetch Customers for Autocomplete ---
         async function loadCustomers() {
             try {
                 // Send cashier ID to filter by branch
                 const cashierId = user && user.id ? user.id : null;
                 const url = cashierId ? `/api/customers?cashierId=${cashierId}` : '/api/customers';
-                const res = await fetch(url, { cache: 'no-store' });
+                const res = await fetchWithSessionGuard(url);
                 const data = await res.json();
                 if (data.success && data.customers) {
                     const list = document.getElementById('customersList');
                     list.innerHTML = data.customers.map(name => `<option value="${name}">`).join('');
                 }
             } catch (e) {
+                if (e && e.code === 401) {
+                    return;
+                }
                 console.error('Failed to load customers', e);
             }
         }
@@ -565,7 +615,7 @@
                 // and let server filter if that user is a cashier with a branch.
 
                 const url = cashierId ? `/api/atms?cashierId=${cashierId}` : '/api/atms';
-                const res = await fetch(url, { cache: 'no-store' });
+                const res = await fetchWithSessionGuard(url);
                 const data = await res.json();
                 if (data.success && data.atms) {
                     atmsData = data.atms;
@@ -585,6 +635,9 @@
                     });
                 }
             } catch (e) {
+                if (e && e.code === 401) {
+                    return;
+                }
                 console.error('Failed to load ATMs', e);
                 const select = document.getElementById('bankAtmName');
                 if (select) select.innerHTML = '<option disabled>فشل تحميل القائمة</option>';
@@ -993,8 +1046,14 @@
             showToast('info', 'تم الحذف');
         };
 
+        let isSubmittingRequest = false;
+
         // --- Submit ---
         async function submitFullRequest() {
+            if (isSubmittingRequest) {
+                return;
+            }
+
             // System sales is optional now, defaulting to 0 if empty
             const systemSales = parseFloat(document.getElementById('systemSales').value) || 0;
 
@@ -1042,6 +1101,9 @@
             };
 
             try {
+                isSubmittingRequest = true;
+                updateSubmitRequestButtonState(true);
+
                 // Show loading state
                 Swal.fire({
                     title: 'جاري الإرسال...',
@@ -1052,12 +1114,22 @@
                     }
                 });
 
-                const res = await fetch('/api/reconciliation-requests', {
+                const res = await fetchWithSessionGuard('/api/reconciliation-requests', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                const data = await res.json();
+                const data = await res.json().catch(() => ({ success: false, error: 'تعذر قراءة استجابة الخادم' }));
+
+                if (!res.ok) {
+                    Swal.fire({
+                        title: 'خطأ',
+                        text: data.error || `تعذر إرسال الطلب (${res.status})`,
+                        icon: 'error',
+                        confirmButtonText: 'حاول مرة أخرى'
+                    });
+                    return;
+                }
 
                 if (data.success) {
                     await Swal.fire({
@@ -1082,12 +1154,18 @@
                     });
                 }
             } catch (e) {
+                if (e && e.code === 401) {
+                    return;
+                }
                 Swal.fire({
                     title: 'فشل الاتصال',
                     text: 'تعذر الاتصال بالخادم. يرجى التحقق من الشبكة وإعادة المحاولة.',
                     icon: 'error',
                     confirmButtonText: 'حسناً'
                 });
+            } finally {
+                isSubmittingRequest = false;
+                updateSubmitRequestButtonState(false);
             }
         }
 
