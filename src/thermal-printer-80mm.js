@@ -14,7 +14,14 @@
  * receipts using standard 80mm thermal printers
  */
 
+const path = require('path');
 const { BrowserWindow } = require('electron');
+const { createSecureWebPreferences } = require('./window-security');
+const {
+    DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+    normalizeFormulaSettings,
+    calculateReconciliationSummaryByFormula
+} = require('./app/reconciliation-formula');
 
 class ThermalPrinter80mm {
     constructor() {
@@ -41,6 +48,127 @@ class ThermalPrinter80mm {
      */
     getSettings() {
         return { ...this.settings };
+    }
+
+    /**
+     * Estimate thermal page height in microns based on the rendered content.
+     * This keeps roll-paper reports from being clipped when the default page
+     * height is too short for long customer balance tables.
+     */
+    estimateThermalPageHeightMicrons(reconciliationData, htmlContent = '') {
+        const minHeightMm = 297;
+        const maxHeightMm = 5000;
+        const fontSize = Number(this.settings.fontSize) || 9;
+        const lineHeightMm = Math.max(4.5, Math.min(7, fontSize * 0.68));
+
+        const clampHeightMm = (value) => Math.min(Math.max(value, minHeightMm), maxHeightMm);
+
+        const estimateFromPlainLines = (lineCount) => {
+            const lines = Number.isFinite(lineCount) ? Math.max(lineCount, 0) : 0;
+            return 52 + (lines * lineHeightMm);
+        };
+
+        const textReceipt = String(reconciliationData?.customText || '');
+
+        if (reconciliationData?.isCustomerStatement && textReceipt) {
+            try {
+                const parsedStatement = JSON.parse(textReceipt);
+
+                if (parsedStatement?.isStructuredStatement && parsedStatement.statementType === 'postpaid_net_balances') {
+                    const rows = Array.isArray(parsedStatement.tableData) ? parsedStatement.tableData : [];
+                    let rowHeightMm = 0;
+
+                    for (const row of rows) {
+                        const customerName = String(row?.customerName || '').trim();
+                        const wrappedLines = Math.max(1, Math.ceil(customerName.length / 14));
+                        rowHeightMm += 8.5 + ((wrappedLines - 1) * 4.5);
+                    }
+
+                    const headerMm = 62;
+                    const summaryMm = parsedStatement.summary ? 30 : 0;
+                    const footerMm = 24;
+                    const safetyBufferMm = 180;
+                    return Math.round(clampHeightMm(headerMm + rowHeightMm + summaryMm + footerMm + safetyBufferMm) * 1000);
+                }
+
+                return Math.round(clampHeightMm(estimateFromPlainLines(textReceipt.split(/\r?\n/).length)) * 1000);
+            } catch (error) {
+                return Math.round(clampHeightMm(estimateFromPlainLines(textReceipt.split(/\r?\n/).length)) * 1000);
+            }
+        }
+
+        const rowCount = (String(htmlContent).match(/<tr\b/gi) || []).length;
+        const blockCount = (String(htmlContent).match(/<(div|p|li|h[1-6])\b/gi) || []).length;
+        const estimatedMm = 44 + (rowCount * 6) + (blockCount * 1.8);
+        return Math.round(clampHeightMm(estimatedMm) * 1000);
+    }
+
+    /**
+     * Convert CSS pixels to microns.
+     * Chromium uses 96 CSS pixels per inch.
+     */
+    pixelsToMicrons(pixels) {
+        const numericPixels = Number(pixels);
+        if (!Number.isFinite(numericPixels) || numericPixels <= 0) {
+            return 0;
+        }
+
+        return Math.round(numericPixels * (25400 / 96));
+    }
+
+    /**
+     * Measure the rendered page height after the receipt HTML is loaded.
+     * This is used as a second safety net for long thermal reports.
+     */
+    async measureRenderedThermalPageHeightMicrons(printWindow, fallbackMicrons) {
+        if (!printWindow || !printWindow.webContents) {
+            return fallbackMicrons;
+        }
+
+        try {
+            await printWindow.webContents.executeJavaScript(`
+                (async () => {
+                    try {
+                        if (document.fonts && document.fonts.ready) {
+                            await document.fonts.ready;
+                        }
+                    } catch (error) {}
+
+                    await new Promise(resolve => {
+                        requestAnimationFrame(() => requestAnimationFrame(resolve));
+                    });
+                    return true;
+                })();
+            `, true);
+
+            const measuredHeightPx = await printWindow.webContents.executeJavaScript(`
+                (() => {
+                    const body = document.body;
+                    const doc = document.documentElement;
+                    const rect = body ? body.getBoundingClientRect() : null;
+                    const heightPx = Math.max(
+                        body ? body.scrollHeight : 0,
+                        doc ? doc.scrollHeight : 0,
+                        body ? body.offsetHeight : 0,
+                        doc ? doc.offsetHeight : 0,
+                        rect ? rect.height : 0
+                    );
+                    return Math.ceil(heightPx);
+                })();
+            `, true);
+
+            const measuredHeightMicrons = this.pixelsToMicrons(measuredHeightPx);
+            if (!Number.isFinite(measuredHeightMicrons) || measuredHeightMicrons <= 0) {
+                return fallbackMicrons;
+            }
+
+            // Add a small buffer so the printer does not clip the last row/footer.
+            const safetyBufferMicrons = 30000;
+            return Math.max(fallbackMicrons, measuredHeightMicrons + safetyBufferMicrons);
+        } catch (error) {
+            console.warn('⚠️ [THERMAL-PRINTER] تعذر قياس ارتفاع الصفحة بعد العرض:', error.message);
+            return fallbackMicrons;
+        }
     }
 
     /**
@@ -113,7 +241,8 @@ class ThermalPrinter80mm {
                 includePostpaidDetails: true,
                 includeCustomerDetails: true,
                 includeReturnsDetails: true,
-                includeSuppliersDetails: true
+                includeSuppliersDetails: true,
+                includeSummary: true
             },
             selectedSections = null  // اختيارات الطباعة من واجهة التصفيات المحفوظة - لا تؤثر على الحسابات!
         } = reconciliationData;
@@ -180,6 +309,23 @@ class ThermalPrinter80mm {
             return `${hours}:${minutes}`;
         };
 
+        // Detailed ATM report must not print reconciliation summary section.
+        const isDetailedAtmReport =
+            reconciliationData?.isDetailedAtmReport === true ||
+            String(reconciliation?.reconciliation_number || '').startsWith('ATM-RPT-');
+
+        const isEnabledOption = (value, defaultValue = true) => {
+            if (value === undefined || value === null) return defaultValue;
+
+            if (typeof value === 'string') {
+                const normalized = value.trim().toLowerCase();
+                if (['false', '0', 'off', 'no', 'disabled'].includes(normalized)) return false;
+                if (['true', '1', 'on', 'yes', 'enabled'].includes(normalized)) return true;
+            }
+
+            return value !== false;
+        };
+
         // ⚠️ الحسابات تُجرى على البيانات الكاملة ALWAYS، بغض النظر عما يختاره المستخدم للطباعة
         // Calculations are performed on COMPLETE data, regardless of print selections
         const bankTotal = bankReceipts.reduce((sum, r) => sum + parseFloat(r.amount || 0), 0);
@@ -187,9 +333,42 @@ class ThermalPrinter80mm {
         const postpaidTotal = postpaidSales.reduce((sum, r) => sum + parseFloat(r.amount || 0), 0);
         const customerTotal = customerReceipts.reduce((sum, r) => sum + parseFloat(r.amount || 0), 0);
         const returnTotal = returnInvoices.reduce((sum, r) => sum + parseFloat(r.amount || 0), 0);
-        const totalReceipts = bankTotal + cashTotal + postpaidTotal + returnTotal - customerTotal;
-        const systemSales = parseFloat(reconciliation.system_sales || 0);
-        const surplusDeficit = totalReceipts - systemSales;
+        const supplierTotal = suppliers.reduce((sum, r) => sum + parseFloat(r.amount || 0), 0);
+        const systemSales = Number(reconciliation.system_sales) || 0;
+
+        const incomingFormulaSettings =
+            (reconciliationData.formulaSettings && typeof reconciliationData.formulaSettings === 'object'
+                ? reconciliationData.formulaSettings
+                : null)
+            || (reconciliationData.summary && typeof reconciliationData.summary.formulaSettings === 'object'
+                ? reconciliationData.summary.formulaSettings
+                : null)
+            || DEFAULT_RECONCILIATION_FORMULA_SETTINGS;
+
+        const formulaSettings = normalizeFormulaSettings(incomingFormulaSettings);
+        const formulaResult = calculateReconciliationSummaryByFormula(
+            {
+                bankTotal,
+                cashTotal,
+                postpaidTotal,
+                customerTotal,
+                returnTotal,
+                supplierTotal
+            },
+            systemSales,
+            formulaSettings
+        );
+
+        const calculatedTotalReceipts = formulaResult.totalReceipts;
+        const persistedTotalReceipts = Number(reconciliation.total_receipts);
+        const totalReceipts = Number.isFinite(persistedTotalReceipts)
+            ? persistedTotalReceipts
+            : calculatedTotalReceipts;
+
+        const persistedSurplusDeficit = Number(reconciliation.surplus_deficit);
+        const surplusDeficit = Number.isFinite(persistedSurplusDeficit)
+            ? persistedSurplusDeficit
+            : formulaResult.surplusDeficit;
 
         console.log('💰 [THERMAL-PRINTER] الإجماليات (من البيانات الكاملة - لم تتأثر بخيارات الطباعة):');
         console.log(`   - إجمالي البنكية: ${bankTotal.toFixed(2)}`);
@@ -197,8 +376,10 @@ class ThermalPrinter80mm {
         console.log(`   - إجمالي الآجل: ${postpaidTotal.toFixed(2)}`);
         console.log(`   - إجمالي مقبوضات العملاء: ${customerTotal.toFixed(2)}`);
         console.log(`   - إجمالي المرتجع: ${returnTotal.toFixed(2)}`);
-        console.log(`   - إجمالي المقبوضات: ${totalReceipts.toFixed(2)}`);
-        console.log(`   - الفرق: ${surplusDeficit.toFixed(2)}`);
+        console.log(`   - إجمالي الموردين: ${supplierTotal.toFixed(2)}`);
+        console.log('   - معادلة التصفية المستخدمة:', formulaSettings);
+        console.log(`   - إجمالي المقبوضات: ${totalReceipts.toFixed(2)}${Number.isFinite(persistedTotalReceipts) ? ' (من البيانات المحفوظة)' : ''}`);
+        console.log(`   - الفرق: ${surplusDeficit.toFixed(2)}${Number.isFinite(persistedSurplusDeficit) ? ' (من البيانات المحفوظة)' : ''}`);
 
         // Generate receipt lines as text - optimized for 80mm paper
         let receipt = '';
@@ -271,9 +452,6 @@ class ThermalPrinter80mm {
                         </tr>
                     </tbody>
                 </table>
-                <p style="font-size: 10px; color: #666; text-align: right; margin: 5px 0 0 0;">
-                    ℹ️ الإجماليات أعلاه تعكس البيانات الكاملة وليست مؤثرة بخيارات الطباعة
-                </p>
             </div>
         `;
 
@@ -315,8 +493,24 @@ class ThermalPrinter80mm {
             detailedHTML.push(this.generateSuppliersHTML(suppliers));
         }
 
-        // Add summary HTML at the end (after all details)
-        detailedHTML.push(summaryHTML);
+        // Add summary HTML at the end (after all details) if enabled.
+        // For detailed ATM report: force hide summary always.
+        const shouldIncludeSummary = !isDetailedAtmReport && (
+            selectedSections
+                ? isEnabledOption(selectedSections.summary, true)
+                : isEnabledOption(printOptions.includeSummary, true)
+        );
+
+        console.log('🧩 [THERMAL-PRINTER] إعداد ملخص التصفية:', {
+            isDetailedAtmReport,
+            selectedSummary: selectedSections?.summary,
+            printSummary: printOptions?.includeSummary,
+            shouldIncludeSummary
+        });
+
+        if (shouldIncludeSummary) {
+            detailedHTML.push(summaryHTML);
+        }
 
         // Add signature lines at the end
         const signatureHTML = `
@@ -557,6 +751,7 @@ class ThermalPrinter80mm {
      * Generate Suppliers HTML Table
      */
     generateSuppliersHTML(suppliers) {
+        const total = suppliers.reduce((sum, item) => sum + Number(item?.amount || 0), 0);
         const rows = suppliers.map((item, index) => `
             <tr>
                 <td style="font-size: 13px;">${index + 1}</td>
@@ -578,10 +773,393 @@ class ThermalPrinter80mm {
                     </thead>
                     <tbody>
                         ${rows}
+                        <tr style="background: #e8f5e9; font-weight: bold;">
+                            <td colspan="2" style="border: 1px solid #666; padding: 2px; text-align: right;">الإجمالي:</td>
+                            <td style="border: 1px solid #666; padding: 2px; text-align: right;">${total.toFixed(2)}</td>
+                        </tr>
                     </tbody>
                 </table>
             </div>
         `;
+    }
+
+    /**
+     * Generate HTML for postpaid net balances report
+     */
+    generatePostpaidNetBalancesStatementHTML(stmtData, reconciliationData) {
+        const fontName = this.settings.fontName || 'Courier New';
+        const fontSize = this.settings.fontSize || 9;
+        const compactFontSize = Math.max(fontSize - 1.5, 7.25);
+        const customerFontSize = Math.max(fontSize - 0.2, 7.75);
+        const summaryValueWidth = '24mm';
+        const escapeHtml = (value) => String(value == null ? '' : value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
+        const fmt = (value) => {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric)) return '0.00';
+            return numeric.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+        };
+
+        const tableData = Array.isArray(stmtData.tableData) ? stmtData.tableData : [];
+        const summary = stmtData.summary && typeof stmtData.summary === 'object' ? stmtData.summary : {};
+        const companyName = stmtData.companyName || 'تصفية برو';
+        const title = stmtData.title || 'تقرير صافي أرصدة العملاء الآجلة';
+        const printDate = stmtData.printDate || new Date().toLocaleDateString('en-GB');
+        const branchLabel = stmtData.branchLabel || reconciliationData?.branch?.branch_name || 'جميع الفروع';
+        const cashierLabel = stmtData.cashierLabel || reconciliationData?.reconciliation?.cashier_name || 'جميع الكاشير';
+        const filterInfo = stmtData.filterInfo ? String(stmtData.filterInfo).trim() : '';
+
+        let totalDebit = 0;
+        let totalCredit = 0;
+
+        const rowHtml = tableData.map((row, index) => {
+            const customerName = row.customerName || 'غير محدد';
+            const netBalanceValue = Number(row.netBalance);
+            const normalizedNet = Number.isFinite(netBalanceValue) ? netBalanceValue : 0;
+            const debitValue = normalizedNet >= 0 ? normalizedNet : 0;
+            const creditValue = normalizedNet < 0 ? Math.abs(normalizedNet) : 0;
+
+            totalDebit += debitValue;
+            totalCredit += creditValue;
+
+            return `
+                <tr>
+                    <td class="cell index-cell">${index + 1}</td>
+                    <td class="cell customer-cell">${escapeHtml(customerName)}</td>
+                    <td class="cell amount-cell debit-cell">${fmt(debitValue)}</td>
+                    <td class="cell amount-cell credit-cell">${fmt(creditValue)}</td>
+                </tr>
+            `;
+        }).join('');
+
+        const summaryDebit = Number.isFinite(Number(summary.totalPostpaid)) ? Number(summary.totalPostpaid) : totalDebit;
+        const summaryCredit = Number.isFinite(Number(summary.totalReceipts)) ? Number(summary.totalReceipts) : totalCredit;
+        const summaryNet = Number.isFinite(Number(summary.totalNetBalance)) ? Number(summary.totalNetBalance) : (summaryDebit - summaryCredit);
+        const countLabel = Number(summary.totalCustomers || tableData.length || 0);
+        const filterLine = filterInfo ? `<div class="header-meta"><strong>المرشحات:</strong> ${escapeHtml(filterInfo)}</div>` : '';
+        const estimatedPageHeightMicrons = this.estimateThermalPageHeightMicrons({
+            isCustomerStatement: true,
+            customText: JSON.stringify(stmtData)
+        });
+        const estimatedPageHeightMm = Math.max(297, Math.min(5000, Math.ceil(estimatedPageHeightMicrons / 1000)));
+
+        const html = `
+        <!DOCTYPE html>
+        <html dir="rtl" lang="ar">
+        <head>
+            <meta charset="UTF-8">
+            <title>${escapeHtml(title)}</title>
+            <style>
+                * { margin: 0; padding: 0; box-sizing: border-box; }
+
+                body {
+                    font-family: ${JSON.stringify(fontName)}, Tahoma, Arial, sans-serif;
+                    font-size: ${fontSize}pt;
+                    width: 72mm;
+                    padding: 0.5mm;
+                    background: white;
+                    color: #000;
+                    direction: rtl;
+                    min-height: ${estimatedPageHeightMm}mm;
+                }
+
+                .header {
+                    text-align: center;
+                    border: 2px solid #000;
+                    border-bottom: 3px solid #000;
+                    padding: 5px 2px;
+                    margin-bottom: 4px;
+                }
+
+                .header-company {
+                    font-size: ${fontSize + 1}pt;
+                    font-weight: 900;
+                    margin-bottom: 2px;
+                }
+
+                .header-title {
+                    font-size: ${fontSize + 1}pt;
+                    font-weight: 900;
+                    margin-bottom: 2px;
+                    letter-spacing: 0.5px;
+                    line-height: 1.2;
+                }
+
+                .header-meta {
+                    font-size: ${fontSize - 0.5}pt;
+                    margin: 1px 0;
+                    font-weight: 700;
+                    line-height: 1.3;
+                }
+
+                table {
+                    width: 100%;
+                    border-collapse: collapse;
+                    margin: 4px 0;
+                    border: 1px solid #000;
+                    table-layout: fixed;
+                }
+
+                .net-balances-table {
+                    width: 100%;
+                    table-layout: fixed;
+                    border: 1px solid #000;
+                }
+
+                .net-balances-table thead {
+                    display: table-header-group;
+                }
+
+                .net-balances-table tbody {
+                    display: table-row-group;
+                }
+
+                .net-balances-table tr {
+                    break-inside: avoid;
+                    page-break-inside: avoid;
+                }
+
+                th {
+                    background: white;
+                    color: #000;
+                    padding: 2px 1px;
+                    text-align: center;
+                    font-size: ${fontSize - 0.5}pt;
+                    font-weight: 900;
+                    border-bottom: 1px solid #000;
+                    border-right: 1px solid #999;
+                    line-height: 1.1;
+                }
+
+                th:last-child {
+                    border-right: none;
+                }
+
+                td {
+                    border-right: 1px solid #999;
+                    border-bottom: 1px dotted #999;
+                    padding: 2px 1px;
+                    color: #000;
+                    vertical-align: middle;
+                    line-height: 1.1;
+                    overflow: hidden;
+                }
+
+                td:last-child {
+                    border-right: none;
+                }
+
+                tbody tr {
+                    page-break-inside: avoid;
+                }
+
+                .index-cell {
+                    text-align: center;
+                    font-size: ${fontSize - 0.3}pt;
+                    font-weight: 800;
+                    white-space: nowrap;
+                    vertical-align: middle;
+                }
+
+                .customer-cell {
+                    text-align: right;
+                    font-size: ${customerFontSize}pt;
+                    font-weight: 800;
+                    line-height: 1.2;
+                    word-break: break-word;
+                    overflow-wrap: anywhere;
+                    padding-right: 3px;
+                    padding-left: 3px;
+                }
+
+                .amount-cell {
+                    text-align: left;
+                    direction: ltr;
+                    unicode-bidi: isolate;
+                    font-size: ${compactFontSize}pt;
+                    font-family: 'Consolas', 'Courier New', monospace;
+                    font-weight: 800;
+                    white-space: nowrap;
+                    font-variant-numeric: tabular-nums;
+                    letter-spacing: 0;
+                    padding-left: 3px;
+                    padding-right: 2px;
+                    overflow: hidden;
+                    text-overflow: clip;
+                }
+
+                .amount-group-head {
+                    font-size: ${fontSize - 0.1}pt;
+                    letter-spacing: 0.2px;
+                    border-left: 1px solid #000;
+                    border-right: 1px solid #000;
+                }
+
+                .amount-head {
+                    font-size: ${fontSize - 0.4}pt;
+                    vertical-align: middle;
+                }
+
+                .index-head,
+                .customer-head {
+                    vertical-align: middle;
+                }
+
+                .debit-head,
+                .debit-cell {
+                    border-right: 2px solid #000 !important;
+                }
+
+                .credit-head,
+                .credit-cell {
+                    text-align: left;
+                }
+
+                .summary-section {
+                    margin-top: 4px;
+                    border: 1px solid #000;
+                    padding: 3px;
+                    background: white;
+                }
+
+                .summary-row {
+                    display: flex;
+                    justify-content: space-between;
+                    align-items: center;
+                    padding: 2px 0;
+                    border-bottom: 1px dotted #999;
+                    font-size: ${fontSize}pt;
+                    font-weight: 700;
+                }
+
+                .summary-row:last-child {
+                    border-bottom: none;
+                }
+
+                .summary-label {
+                    text-align: right;
+                    flex: 1;
+                    padding-right: 2px;
+                    font-weight: 900;
+                }
+
+                .summary-value {
+                    padding-left: 5px;
+                    text-align: left;
+                    min-width: ${summaryValueWidth};
+                    max-width: ${summaryValueWidth};
+                    white-space: nowrap;
+                    font-weight: 700;
+                    border-left: 1px solid #000;
+                    direction: ltr;
+                    font-family: 'Consolas', 'Courier New', monospace;
+                    unicode-bidi: isolate;
+                    font-variant-numeric: tabular-nums;
+                }
+
+                .postpaid-row {
+                    border-left: 2px solid #000;
+                }
+
+                .receipt-row {
+                    border-left: 2px solid #000;
+                }
+
+                .balance-row {
+                    border: 1px solid #000;
+                    padding: 3px;
+                    font-size: ${fontSize}pt;
+                }
+
+                .footer {
+                    text-align: center;
+                    margin-top: 3px;
+                    padding-top: 2px;
+                    border-top: 1px solid #000;
+                    font-size: ${fontSize - 1}pt;
+                    color: #000;
+                    font-weight: 600;
+                }
+
+                .footer div {
+                    margin: 1px 0;
+                }
+
+                @page { size: 72mm ${estimatedPageHeightMm}mm; margin: 0; }
+                @media print {
+                    body { margin: 0; padding: 1mm; }
+                    table { page-break-inside: auto; break-inside: auto; }
+                    .summary-section { page-break-inside: avoid; }
+                }
+            </style>
+        </head>
+        <body>
+            <div class="header">
+                <div class="header-company">${escapeHtml(companyName)}</div>
+                <div class="header-title">${escapeHtml(title)}</div>
+                <div class="header-meta"><strong>التاريخ:</strong> ${escapeHtml(printDate)}</div>
+                <div class="header-meta"><strong>الفرع:</strong> ${escapeHtml(branchLabel)} | <strong>الكاشير:</strong> ${escapeHtml(cashierLabel)}</div>
+                <div class="header-meta"><strong>عدد العملاء:</strong> ${countLabel}</div>
+                ${filterLine}
+            </div>
+
+            <table class="net-balances-table">
+                <colgroup>
+                    <col style="width: 10%;">
+                    <col style="width: 48%;">
+                    <col style="width: 21%;">
+                    <col style="width: 21%;">
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th class="index-head" rowspan="2">#</th>
+                        <th class="customer-head" rowspan="2">اسم العميل</th>
+                        <th class="amount-group-head" colspan="2">المبالغ</th>
+                    </tr>
+                    <tr>
+                        <th class="amount-head debit-head">مدين</th>
+                        <th class="amount-head credit-head">دائن</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rowHtml || `
+                        <tr>
+                            <td colspan="4" style="text-align:center; font-size:${fontSize}pt; font-weight:800; padding:4px 2px;">لا توجد بيانات</td>
+                        </tr>
+                    `}
+                </tbody>
+            </table>
+
+            <div class="summary-section">
+                <div class="summary-row postpaid-row">
+                    <span class="summary-label">إجمالي المدين:</span>
+                    <span class="summary-value">${fmt(summaryDebit)}</span>
+                </div>
+                <div class="summary-row receipt-row">
+                    <span class="summary-label">إجمالي الدائن:</span>
+                    <span class="summary-value">${fmt(summaryCredit)}</span>
+                </div>
+                <div class="summary-row balance-row">
+                    <span class="summary-label">الرصيد الصافي:</span>
+                    <span class="summary-value">${fmt(summaryNet)}</span>
+                </div>
+            </div>
+
+            <div class="footer">
+                <div>━━━━━━━━━━━━━━━━━━━━━━━━━━</div>
+                <div><strong>تصفية برو</strong> | النسخة 5.0.1</div>
+                <div>جميع الحقوق محفوظة © 2025</div>
+                <div style="margin-top: 2px; font-size: ${fontSize - 1}pt; font-weight: 600;">المطور: محمد أمين الكامل</div>
+            </div>
+        </body>
+        </html>
+        `;
+
+        return html;
     }
 
     /**
@@ -601,6 +1179,10 @@ class ThermalPrinter80mm {
             stmtData = JSON.parse(textContent);
             if (!stmtData.isStructuredStatement) {
                 throw new Error('Not structured');
+            }
+
+            if (stmtData.statementType === 'postpaid_net_balances') {
+                return this.generatePostpaidNetBalancesStatementHTML(stmtData, reconciliationData);
             }
         } catch (e) {
             // إذا فشل التحليل، استخدم النص العادي
@@ -824,7 +1406,7 @@ class ThermalPrinter80mm {
                 @page { size: 72mm auto; margin: 0; }
                 @media print {
                     body { margin: 0; padding: 1mm; }
-                    table { page-break-inside: avoid; }
+                    table { page-break-inside: auto; break-inside: auto; }
                     .summary-section { page-break-inside: avoid; }
                 }
             </style>
@@ -1160,6 +1742,7 @@ class ThermalPrinter80mm {
             
             // Generate receipt HTML
             const htmlContent = this.generateReceiptHTML(reconciliationData);
+            const estimatedPageHeightMicrons = this.estimateThermalPageHeightMicrons(reconciliationData, htmlContent);
             
             if (!htmlContent || htmlContent.trim().length === 0) {
                 throw new Error('فشل في إنشاء محتوى الإيصال');
@@ -1187,10 +1770,7 @@ class ThermalPrinter80mm {
                 show: false,
                 width: 400,
                 height: 600,
-                webPreferences: {
-                    nodeIntegration: true,
-                    contextIsolation: false
-                }
+                webPreferences: createSecureWebPreferences(__dirname)
             });
 
             console.log('🪟 [THERMAL-PRINTER] تم إنشاء نافذة الطباعة');
@@ -1218,6 +1798,13 @@ class ThermalPrinter80mm {
             // Add a small delay to ensure rendering
             await new Promise(resolve => setTimeout(resolve, 1000));
 
+            const renderedPageHeightMicrons = await this.measureRenderedThermalPageHeightMicrons(
+                printWindow,
+                estimatedPageHeightMicrons
+            );
+            const finalPageHeightMicrons = Math.max(estimatedPageHeightMicrons, renderedPageHeightMicrons);
+            console.log('📏 [THERMAL-PRINTER] ارتفاع الصفحة النهائي (ميكرون):', finalPageHeightMicrons);
+
             // Print options optimized for 80mm thermal printer
             // Electron uses microns: 1mm = 1000 microns
             const printOptions = {
@@ -1235,7 +1822,7 @@ class ThermalPrinter80mm {
                 scaleFactor: 100,
                 pageSize: {
                     width: 72000,   // 72mm في الميكرونات
-                    height: 297000  // ارتفاع A4 في الميكرونات
+                    height: finalPageHeightMicrons  // ارتفاع متكيّف مع طول التقرير
                 },
                 copies: this.settings.copies || 1,
                 duplexMode: 'simplex',
@@ -1275,7 +1862,11 @@ class ThermalPrinter80mm {
 
             // Wait for print job to complete
             console.log('⏳ [THERMAL-PRINTER] في انتظار اكتمال مهمة الطباعة...');
-            await new Promise(resolve => setTimeout(resolve, 1500));
+            const postPrintDelayMs = Math.min(
+                15000,
+                Math.max(4000, Math.ceil(finalPageHeightMicrons / 1000) * 10)
+            );
+            await new Promise(resolve => setTimeout(resolve, postPrintDelayMs));
 
             // Close print window
             console.log('🔌 [THERMAL-PRINTER] إغلاق نافذة الطباعة...');
@@ -1337,10 +1928,7 @@ class ThermalPrinter80mm {
                 height: 600,
                 show: true,
                 title: 'معاينة الإيصال الحراري - تصفية برو',
-                webPreferences: {
-                    nodeIntegration: true,
-                    contextIsolation: false
-                }
+                webPreferences: createSecureWebPreferences(__dirname)
             });
 
             // Load from file with timeout

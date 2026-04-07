@@ -6,6 +6,7 @@ const path = require('path');
 const { parse } = require('url');
 const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
 const { WebSessionStore } = require('./security/web-session-store');
+const { filterVisibleBranches } = require('./app/branch-visibility');
 
 const SESSION_COOKIE_NAME = 'tasfiya_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -336,7 +337,7 @@ class LocalWebServer {
                     return;
                 }
                 else if (pathname === '/api/lookups') {
-                    await this.handleGetLookups(res);
+                    await this.handleGetLookups(res, parsedUrl.query);
                     return;
                 }
                 else if (pathname === '/api/customer-ledger') {
@@ -1334,7 +1335,7 @@ class LocalWebServer {
         }
     }
 
-    async handleGetLookups(res) {
+    async handleGetLookups(res, query = {}) {
         try {
             // FIX: Get full cashier details including branch name and pin status
             const cashiers = await this.dbManager.db.prepare(`
@@ -1350,7 +1351,15 @@ class LocalWebServer {
                 WHERE c.active = 1
             `).all();
 
-            const branches = await this.dbManager.db.prepare('SELECT id, branch_name as name FROM branches WHERE is_active = 1').all();
+            const includeExperimentalBranches = String(
+                query?.includeTestBranches
+                ?? query?.includeExperimentalBranches
+                ?? ''
+            ).trim().toLowerCase();
+            const shouldIncludeExperimentalBranches = ['1', 'true', 'yes', 'on'].includes(includeExperimentalBranches);
+
+            const rawBranches = await this.dbManager.db.prepare('SELECT id, branch_name as name FROM branches WHERE is_active = 1').all();
+            const branches = shouldIncludeExperimentalBranches ? rawBranches : filterVisibleBranches(rawBranches);
             const accountants = await this.dbManager.db.prepare('SELECT id, name FROM accountants WHERE active = 1').all();
 
             // Get unique locations from ATMs as "accounts"
