@@ -681,6 +681,272 @@
         let custReceiptItems = [];
         let returnItems = [];
         let supplierItems = [];
+        const REQUEST_DRAFT_STORAGE_PREFIX = 'tasfiya_reconciliation_request_draft_v1';
+        const DRAFT_AUTOSAVE_DELAY_MS = 450;
+        let draftAutosaveTimer = null;
+        let draftAutosaveReady = false;
+
+        function getDraftStorageKey() {
+            const userIdentifier = user && user.id ? String(user.id) : 'anonymous';
+            return `${REQUEST_DRAFT_STORAGE_PREFIX}:${userIdentifier}`;
+        }
+
+        function readFieldValue(fieldId) {
+            const el = document.getElementById(fieldId);
+            if (!el) {
+                return '';
+            }
+
+            return el.value || '';
+        }
+
+        function writeFieldValue(fieldId, value) {
+            const el = document.getElementById(fieldId);
+            if (!el) {
+                return;
+            }
+
+            el.value = value === null || value === undefined ? '' : String(value);
+        }
+
+        function getActiveTabTarget() {
+            const activeTab = document.querySelector('#pills-tab .nav-link.active');
+            return activeTab ? (activeTab.getAttribute('data-bs-target') || '#tab-cash') : '#tab-cash';
+        }
+
+        function hasMeaningfulDraft(draft) {
+            if (!draft || typeof draft !== 'object') {
+                return false;
+            }
+
+            const lists = draft.lists || {};
+            const hasListData = (
+                Array.isArray(lists.cashItems) && lists.cashItems.length > 0
+            ) || (
+                Array.isArray(lists.bankItems) && lists.bankItems.length > 0
+            ) || (
+                Array.isArray(lists.postpaidItems) && lists.postpaidItems.length > 0
+            ) || (
+                Array.isArray(lists.custReceiptItems) && lists.custReceiptItems.length > 0
+            ) || (
+                Array.isArray(lists.returnItems) && lists.returnItems.length > 0
+            ) || (
+                Array.isArray(lists.supplierItems) && lists.supplierItems.length > 0
+            );
+
+            if (hasListData) {
+                return true;
+            }
+
+            const fields = draft.fields || {};
+            const meaningfulFieldIds = [
+                'systemSales',
+                'notes',
+                'cashCountInput',
+                'input_bank_amount_v2',
+                'postpaidName',
+                'postpaidAmount',
+                'custReceiptName',
+                'custReceiptAmount',
+                'returnInv',
+                'returnAmount',
+                'returnNote',
+                'supplierName',
+                'supplierInv',
+                'supplierAmount'
+            ];
+
+            return meaningfulFieldIds.some((fieldId) => {
+                const value = fields[fieldId];
+                return typeof value === 'string' && value.trim() !== '';
+            });
+        }
+
+        function createRequestDraftSnapshot() {
+            return {
+                version: 1,
+                savedAt: new Date().toISOString(),
+                activeTabTarget: getActiveTabTarget(),
+                lists: {
+                    cashItems,
+                    bankItems,
+                    postpaidItems,
+                    custReceiptItems,
+                    returnItems,
+                    supplierItems
+                },
+                fields: {
+                    systemSales: readFieldValue('systemSales'),
+                    notes: readFieldValue('notes'),
+                    cashDenomSelect: readFieldValue('cashDenomSelect'),
+                    cashCountInput: readFieldValue('cashCountInput'),
+                    bankOpType: readFieldValue('bankOpType'),
+                    bankAtmName: readFieldValue('bankAtmName'),
+                    input_bank_name_v2: readFieldValue('input_bank_name_v2'),
+                    input_bank_amount_v2: readFieldValue('input_bank_amount_v2'),
+                    postpaidName: readFieldValue('postpaidName'),
+                    postpaidAmount: readFieldValue('postpaidAmount'),
+                    custReceiptName: readFieldValue('custReceiptName'),
+                    custReceiptType: readFieldValue('custReceiptType'),
+                    custReceiptAmount: readFieldValue('custReceiptAmount'),
+                    returnInv: readFieldValue('returnInv'),
+                    returnAmount: readFieldValue('returnAmount'),
+                    returnNote: readFieldValue('returnNote'),
+                    supplierName: readFieldValue('supplierName'),
+                    supplierInv: readFieldValue('supplierInv'),
+                    supplierAmount: readFieldValue('supplierAmount')
+                }
+            };
+        }
+
+        function clearSavedRequestDraft() {
+            localStorage.removeItem(getDraftStorageKey());
+        }
+
+        function saveRequestDraftNow() {
+            if (!draftAutosaveReady) {
+                return;
+            }
+
+            try {
+                const draft = createRequestDraftSnapshot();
+                if (!hasMeaningfulDraft(draft)) {
+                    localStorage.removeItem(getDraftStorageKey());
+                    return;
+                }
+
+                localStorage.setItem(getDraftStorageKey(), JSON.stringify(draft));
+            } catch (error) {
+                console.warn('Failed to save reconciliation draft', error);
+            }
+        }
+
+        function scheduleRequestDraftSave() {
+            if (!draftAutosaveReady) {
+                return;
+            }
+
+            if (draftAutosaveTimer) {
+                clearTimeout(draftAutosaveTimer);
+            }
+
+            draftAutosaveTimer = setTimeout(() => {
+                draftAutosaveTimer = null;
+                saveRequestDraftNow();
+            }, DRAFT_AUTOSAVE_DELAY_MS);
+        }
+
+        function restoreRequestDraft() {
+            const raw = localStorage.getItem(getDraftStorageKey());
+            if (!raw) {
+                return false;
+            }
+
+            try {
+                const draft = JSON.parse(raw);
+                if (!hasMeaningfulDraft(draft)) {
+                    clearSavedRequestDraft();
+                    return false;
+                }
+
+                const lists = draft.lists || {};
+                cashItems = Array.isArray(lists.cashItems) ? lists.cashItems : [];
+                bankItems = Array.isArray(lists.bankItems) ? lists.bankItems : [];
+                postpaidItems = Array.isArray(lists.postpaidItems) ? lists.postpaidItems : [];
+                custReceiptItems = Array.isArray(lists.custReceiptItems) ? lists.custReceiptItems : [];
+                returnItems = Array.isArray(lists.returnItems) ? lists.returnItems : [];
+                supplierItems = Array.isArray(lists.supplierItems) ? lists.supplierItems : [];
+
+                renderTable('cashTableBody', cashItems, ['val', 'qty', 'sub']);
+                renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
+                renderTable('postpaidTableBody', postpaidItems, ['customer_name', 'amount']);
+                renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
+                renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
+                renderTable('supplierTableBody', supplierItems, ['supplier_name', 'invoice_number', 'amount']);
+
+                const fields = draft.fields || {};
+                Object.keys(fields).forEach((fieldId) => {
+                    writeFieldValue(fieldId, fields[fieldId]);
+                });
+
+                if (fields.bankOpType) {
+                    const bankOpField = document.getElementById('bankOpType');
+                    if (bankOpField) {
+                        bankOpField.value = fields.bankOpType;
+                        bankOpField.dispatchEvent(new Event('change'));
+                    }
+                }
+
+                if (fields.bankAtmName) {
+                    const bankAtmField = document.getElementById('bankAtmName');
+                    if (bankAtmField) {
+                        bankAtmField.value = fields.bankAtmName;
+                        bankAtmField.dispatchEvent(new Event('change'));
+                    }
+                }
+
+                const targetTab = draft.activeTabTarget;
+                if (targetTab) {
+                    const tabButton = document.querySelector(`#pills-tab .nav-link[data-bs-target="${targetTab}"]`);
+                    if (tabButton) {
+                        bootstrap.Tab.getOrCreateInstance(tabButton).show();
+                    }
+                }
+
+                updateUI();
+                showToast('info', 'تم استعادة بياناتك تلقائياً');
+                return true;
+            } catch (error) {
+                console.warn('Failed to restore reconciliation draft', error);
+                clearSavedRequestDraft();
+                return false;
+            }
+        }
+
+        function setupRequestDraftAutosave() {
+            if (setupRequestDraftAutosave.initialized) {
+                return;
+            }
+            setupRequestDraftAutosave.initialized = true;
+
+            const watchedFieldIds = [
+                'systemSales',
+                'notes',
+                'cashDenomSelect',
+                'cashCountInput',
+                'bankOpType',
+                'bankAtmName',
+                'input_bank_name_v2',
+                'input_bank_amount_v2',
+                'postpaidName',
+                'postpaidAmount',
+                'custReceiptName',
+                'custReceiptType',
+                'custReceiptAmount',
+                'returnInv',
+                'returnAmount',
+                'returnNote',
+                'supplierName',
+                'supplierInv',
+                'supplierAmount'
+            ];
+
+            watchedFieldIds.forEach((fieldId) => {
+                const field = document.getElementById(fieldId);
+                if (!field) {
+                    return;
+                }
+
+                field.addEventListener('input', scheduleRequestDraftSave);
+                field.addEventListener('change', scheduleRequestDraftSave);
+            });
+
+            document.querySelectorAll('#pills-tab .nav-link').forEach((tabButton) => {
+                tabButton.addEventListener('shown.bs.tab', scheduleRequestDraftSave);
+            });
+
+            window.addEventListener('beforeunload', saveRequestDraftNow);
+        }
 
         // --- Core Functions ---
 
@@ -726,11 +992,13 @@
             document.getElementById('userNameDisplay').textContent = user.name || '...';
             await loadCustomers();
             await loadAtms();
+            restoreRequestDraft();
+            setupRequestDraftAutosave();
+            draftAutosaveReady = true;
+            scheduleRequestDraftSave();
             applyCashierUiAdjustments();
             return true;
         }
-
-        bootstrapAuthenticatedRequestPage();
 
         function updateUI() {
             // Calculate Cash
@@ -788,6 +1056,8 @@
             if (diff < 0) { diffEl.className = 'fs-3 fw-bold font-monospace text-danger'; diffEl.textContent += ' ⬇️'; }
             else if (diff > 0) { diffEl.className = 'fs-3 fw-bold font-monospace text-success'; diffEl.textContent += ' ⬆️'; }
             else { diffEl.className = 'fs-3 fw-bold font-monospace text-white'; }
+
+            scheduleRequestDraftSave();
         }
 
         document.getElementById('systemSales').addEventListener('input', updateUI);
@@ -1132,6 +1402,7 @@
                 }
 
                 if (data.success) {
+                    clearSavedRequestDraft();
                     await Swal.fire({
                         title: 'تم الإرسال بنجاح!',
                         text: 'تم إرسال طلب التصفية للمراجعة وسيتم تبليغ المسؤول.',
@@ -1233,6 +1504,7 @@
 
         // Initialize Navigation
         setupNavigation();
+        bootstrapAuthenticatedRequestPage();
     </script>
 </body>
 
