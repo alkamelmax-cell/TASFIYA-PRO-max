@@ -4,17 +4,32 @@ function isTruthy(value) {
   return ['1', 'true', 'yes', 'on'].includes(String(value || '').trim().toLowerCase());
 }
 
-function shouldUseWebServer() {
-  return isTruthy(process.env.FORCE_WEB_SERVER)
-    || isTruthy(process.env.RENDER)
-    || Boolean(process.env.RENDER_SERVICE_ID)
-    || Boolean(process.env.RENDER_EXTERNAL_URL)
-    || Boolean(process.env.RENDER_EXTERNAL_HOSTNAME)
-    || Boolean(process.env.RENDER_GIT_COMMIT);
+function shouldUseWebServer(env = process.env) {
+  return isTruthy(env.FORCE_WEB_SERVER)
+    || isTruthy(env.RENDER)
+    || Boolean(env.RENDER_SERVICE_ID)
+    || Boolean(env.RENDER_EXTERNAL_URL)
+    || Boolean(env.RENDER_EXTERNAL_HOSTNAME)
+    || Boolean(env.RENDER_GIT_COMMIT)
+    || Boolean(env.PORT)
+    || Boolean(env.DATABASE_URL);
 }
 
-if (shouldUseWebServer()) {
-  require('../src/start-web.js');
-} else {
+function startApp(env = process.env) {
+  if (shouldUseWebServer(env)) {
+    require('../src/start-web.js');
+    return;
+  }
+
   require('./run-electron.js');
 }
+
+if (require.main === module) {
+  startApp();
+}
+
+module.exports = {
+  isTruthy,
+  shouldUseWebServer,
+  startApp
+};
