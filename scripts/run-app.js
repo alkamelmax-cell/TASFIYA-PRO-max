@@ -15,9 +15,10 @@ function shouldUseWebServer(env = process.env) {
     || Boolean(env.DATABASE_URL);
 }
 
-function startApp(env = process.env) {
+async function startApp(env = process.env) {
   if (shouldUseWebServer(env)) {
-    require('../src/start-web.js');
+    const { bootstrapWebServer } = require('../src/start-web.js');
+    await bootstrapWebServer({ env });
     return;
   }
 
@@ -26,7 +27,10 @@ function startApp(env = process.env) {
 }
 
 if (require.main === module) {
-  startApp();
+  Promise.resolve(startApp()).catch((error) => {
+    console.error('Failed to start app:', error);
+    process.exit(1);
+  });
 }
 
 module.exports = {

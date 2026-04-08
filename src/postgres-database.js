@@ -11,7 +11,7 @@ class PostgresManager {
             },
             max: 10, // Max number of clients in the pool
             idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
-            connectionTimeoutMillis: 5000, // Return an error after 5 seconds if connection could not be established
+            connectionTimeoutMillis: 15000, // Give hosted PostgreSQL cold starts more time before failing startup
         });
 
         // The pool will emit an error on behalf of any idle clients

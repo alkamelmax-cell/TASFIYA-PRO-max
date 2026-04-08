@@ -12,11 +12,122 @@ const SESSION_COOKIE_NAME = 'tasfiya_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 
 class LocalWebServer {
-    constructor(dbManager, port = 4000) {
+    constructor(dbManager, port = 4000, options = {}) {
+        const normalizedPort = Number(port);
+
         this.dbManager = dbManager;
-        this.port = port;
+        this.port = Number.isFinite(normalizedPort) ? normalizedPort : 4000;
+        this.host = options.host || process.env.HOST || '0.0.0.0';
+        this.hasExplicitPort = options.explicitPort !== undefined
+            ? Boolean(options.explicitPort)
+            : Boolean(process.env.PORT);
         this.server = null;
         this.sessionStore = new WebSessionStore({ ttlMs: SESSION_TTL_MS });
+        this.databaseMode = this.dbManager && this.dbManager.pool ? 'postgres' : 'sqlite';
+        this.databaseReady = options.databaseReady !== undefined
+            ? Boolean(options.databaseReady)
+            : Boolean(this.dbManager && this.dbManager.db && typeof this.dbManager.db.prepare === 'function' && !this.dbManager.pool);
+        this.databaseStatus = this.databaseReady ? 'ready' : 'initializing';
+        this.databaseReadyAt = this.databaseReady ? new Date().toISOString() : null;
+        this.lastDatabaseError = null;
+        this.startedAt = null;
+        this.indexesReady = false;
+        this.ensureIndexesInFlight = null;
+    }
+
+    setDatabaseReady(metadata = {}) {
+        this.databaseReady = true;
+        this.databaseStatus = metadata.status || 'ready';
+        this.databaseReadyAt = new Date().toISOString();
+        this.lastDatabaseError = null;
+
+        if (this.server && this.server.listening) {
+            void this.ensureIndexes();
+        }
+    }
+
+    setDatabaseUnavailable(error = null, status = 'unavailable') {
+        this.databaseReady = false;
+        this.databaseStatus = status;
+        this.databaseReadyAt = null;
+        this.indexesReady = false;
+        this.ensureIndexesInFlight = null;
+        this.lastDatabaseError = error
+            ? {
+                message: error.message || String(error),
+                name: error.name || 'Error',
+                at: new Date().toISOString()
+            }
+            : null;
+    }
+
+    getHealthPayload() {
+        return {
+            success: true,
+            status: 'ok',
+            startedAt: this.startedAt,
+            service: 'tasfiya-web',
+            database: {
+                mode: this.databaseMode,
+                ready: this.databaseReady,
+                status: this.databaseStatus,
+                readyAt: this.databaseReadyAt,
+                lastError: this.lastDatabaseError
+            }
+        };
+    }
+
+    isHealthRoute(pathname) {
+        return pathname === '/health'
+            || pathname === '/healthz'
+            || pathname === '/ready'
+            || pathname === '/readyz';
+    }
+
+    isStaticAssetPath(pathname) {
+        return pathname.endsWith('.js')
+            || pathname.endsWith('.json')
+            || pathname.startsWith('/css/')
+            || pathname.startsWith('/js/')
+            || pathname.startsWith('/assets/');
+    }
+
+    isDatabaseOptionalApi(pathname, method) {
+        return (pathname === '/api/session' && method === 'GET')
+            || (pathname === '/api/logout' && method === 'POST');
+    }
+
+    shouldBlockUntilDatabaseReady(pathname, method) {
+        if (!pathname.startsWith('/api/')) {
+            return false;
+        }
+
+        return !this.isDatabaseOptionalApi(pathname, method);
+    }
+
+    handleHealthRequest(res, pathname) {
+        const readinessRoute = pathname === '/ready' || pathname === '/readyz';
+        const payload = this.getHealthPayload();
+        const statusCode = readinessRoute && !this.databaseReady ? 503 : 200;
+        this.sendJson(res, payload, { statusCode });
+    }
+
+    sendDatabaseUnavailable(res) {
+        this.sendJson(
+            res,
+            {
+                success: false,
+                code: 'SERVICE_INITIALIZING',
+                error: 'الخدمة قيد التهيئة، يرجى المحاولة بعد قليل',
+                database: this.getHealthPayload().database
+            },
+            {
+                statusCode: 503,
+                headers: {
+                    'Retry-After': '5'
+                }
+            }
+        );
     }
 
     parseCookies(req) {
@@ -173,48 +284,66 @@ class LocalWebServer {
     }
 
     async ensureIndexes() {
-        try {
-            console.log('🚀 [PERF] Checking database indexes...');
-            const pool = this.dbManager.pool; // Check if running on Postgres (Render)
-
-            const indexes = [
-                // Reconciliations
-                "CREATE INDEX IF NOT EXISTS idx_reconciliations_date ON reconciliations(reconciliation_date)",
-                "CREATE INDEX IF NOT EXISTS idx_reconciliations_status ON reconciliations(status)",
-                "CREATE INDEX IF NOT EXISTS idx_reconciliations_cashier ON reconciliations(cashier_id)",
-
-                // Sales & Receipts (CRITICAL for Customer Ledger)
-                "CREATE INDEX IF NOT EXISTS idx_postpaid_customer ON postpaid_sales(customer_name)",
-                "CREATE INDEX IF NOT EXISTS idx_postpaid_rec_id ON postpaid_sales(reconciliation_id)",
-                "CREATE INDEX IF NOT EXISTS idx_receipts_customer ON customer_receipts(customer_name)",
-                "CREATE INDEX IF NOT EXISTS idx_receipts_rec_id ON customer_receipts(reconciliation_id)",
-
-                // Manual Transactions
-                "CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer ON manual_postpaid_sales(customer_name)",
-                "CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer ON manual_customer_receipts(customer_name)"
-            ];
-
-            if (pool) {
-                // Postgres
-                for (const sql of indexes) {
-                    await pool.query(sql);
-                }
-                console.log('✅ [PERF] Indexes verified on PostgreSQL');
-            } else {
-                // SQLite
-                for (const sql of indexes) {
-                    this.dbManager.db.prepare(sql).run();
-                }
-                console.log('✅ [PERF] Indexes verified on SQLite');
-            }
-        } catch (error) {
-            console.error('⚠️ [PERF] Failed to create indexes:', error.message);
+        if (this.indexesReady) {
+            return true;
         }
+
+        if (this.ensureIndexesInFlight) {
+            return this.ensureIndexesInFlight;
+        }
+
+        this.ensureIndexesInFlight = (async () => {
+            try {
+                console.log('🚀 [PERF] Checking database indexes...');
+                const pool = this.dbManager && this.dbManager.pool;
+                const hasPrepare = Boolean(this.dbManager && this.dbManager.db && typeof this.dbManager.db.prepare === 'function');
+
+                if (!pool && !hasPrepare) {
+                    console.log('⏳ [PERF] Skipping index verification until database is available');
+                    return false;
+                }
+
+                const indexes = [
+                    "CREATE INDEX IF NOT EXISTS idx_reconciliations_date ON reconciliations(reconciliation_date)",
+                    "CREATE INDEX IF NOT EXISTS idx_reconciliations_status ON reconciliations(status)",
+                    "CREATE INDEX IF NOT EXISTS idx_reconciliations_cashier ON reconciliations(cashier_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_postpaid_customer ON postpaid_sales(customer_name)",
+                    "CREATE INDEX IF NOT EXISTS idx_postpaid_rec_id ON postpaid_sales(reconciliation_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_receipts_customer ON customer_receipts(customer_name)",
+                    "CREATE INDEX IF NOT EXISTS idx_receipts_rec_id ON customer_receipts(reconciliation_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer ON manual_postpaid_sales(customer_name)",
+                    "CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer ON manual_customer_receipts(customer_name)"
+                ];
+
+                if (pool) {
+                    for (const sql of indexes) {
+                        await pool.query(sql);
+                    }
+                    console.log('✅ [PERF] Indexes verified on PostgreSQL');
+                } else {
+                    for (const sql of indexes) {
+                        this.dbManager.db.prepare(sql).run();
+                    }
+                    console.log('✅ [PERF] Indexes verified on SQLite');
+                }
+
+                this.indexesReady = true;
+                return true;
+            } catch (error) {
+                console.error('⚠️ [PERF] Failed to create indexes:', error.message);
+                return false;
+            } finally {
+                this.ensureIndexesInFlight = null;
+            }
+        })();
+
+        return this.ensureIndexesInFlight;
     }
 
     async start() {
-        // Optimize Database Performance on Startup
-        await this.ensureIndexes();
+        if (this.server && this.server.listening) {
+            return this;
+        }
 
         this.server = http.createServer(async (req, res) => {
             // Enable CORS
@@ -233,10 +362,18 @@ class LocalWebServer {
 
             try {
                 console.log(`📨 [REQUEST] ${req.method} ${pathname}`);
-                // Serve Static Files
-                // Serve Static Files
-                if (pathname.endsWith('.js') || pathname.endsWith('.json') || pathname.startsWith('/css/') || pathname.startsWith('/js/') || pathname.startsWith('/assets/')) {
+                if (this.isHealthRoute(pathname)) {
+                    this.handleHealthRequest(res, pathname);
+                    return;
+                }
+
+                if (this.isStaticAssetPath(pathname)) {
                     this.serveStatic(res, pathname);
+                    return;
+                }
+
+                if (this.shouldBlockUntilDatabaseReady(pathname, req.method) && !this.databaseReady) {
+                    this.sendDatabaseUnavailable(res);
                     return;
                 }
 
@@ -460,29 +597,65 @@ class LocalWebServer {
             }
         });
 
-        // Handle server errors (e.g. Port in use)
-        this.server.on('error', (e) => {
-            if (e.code === 'EADDRINUSE') {
-                console.log(`⚠️ [WEB APP] Port ${this.port} is in use, trying ${this.port + 1}...`);
-                this.port++;
-                this.server.listen(this.port);
-            } else {
-                console.error('❌ [WEB APP] Server error:', e);
-            }
+        await new Promise((resolve, reject) => {
+            const tryListen = () => {
+                const onError = (error) => {
+                    this.server.off('listening', onListening);
+
+                    if (error.code === 'EADDRINUSE' && !this.hasExplicitPort) {
+                        console.log(`⚠️ [WEB APP] Port ${this.port} is in use, trying ${this.port + 1}...`);
+                        this.port += 1;
+                        setImmediate(tryListen);
+                        return;
+                    }
+
+                    console.error('❌ [WEB APP] Server error:', error);
+                    reject(error);
+                };
+
+                const onListening = () => {
+                    this.server.off('error', onError);
+
+                    const address = this.server.address();
+                    if (address && typeof address === 'object' && typeof address.port === 'number') {
+                        this.port = address.port;
+                    }
+
+                    this.startedAt = new Date().toISOString();
+                    console.log(`🌐 [WEB APP] Server running at http://${this.host}:${this.port}`);
+
+                    if (this.databaseReady) {
+                        void this.ensureIndexes();
+                    }
+
+                    resolve(this);
+                };
+
+                this.server.once('error', onError);
+                this.server.once('listening', onListening);
+                this.server.listen(this.port, this.host);
+            };
+
+            tryListen();
         });
 
-        this.server.listen(this.port, () => {
-            console.log(`🌐 [WEB APP] Server running at http://localhost:${this.port}`);
-        });
+        return this;
     }
 
     stop() {
-        if (this.server) {
-            this.server.close(() => {
-                console.log('🌐 [WEB APP] Server stopped');
-            });
-            this.server = null;
+        if (!this.server) {
+            return Promise.resolve();
         }
+
+        const activeServer = this.server;
+        this.server = null;
+
+        return new Promise((resolve) => {
+            activeServer.close(() => {
+                console.log('🌐 [WEB APP] Server stopped');
+                resolve();
+            });
+        });
     }
 
     serveFile(res, filePath, contentType) {
