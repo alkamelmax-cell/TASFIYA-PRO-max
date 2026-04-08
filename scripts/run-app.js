@@ -21,7 +21,8 @@ function startApp(env = process.env) {
     return;
   }
 
-  require('./run-electron.js');
+  const { startElectronApp } = require('./run-electron.js');
+  startElectronApp();
 }
 
 if (require.main === module) {

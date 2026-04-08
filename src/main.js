@@ -6,7 +6,7 @@
 // يمنع الاستخدام أو التعديل دون إذن كتابي
 // ===================================================
 
-const { app, BrowserWindow, ipcMain, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, shell, Menu } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { execSync } = require('child_process');
@@ -15,7 +15,9 @@ const PDFGenerator = require('./pdf-generator');
 const PrintManager = require('./print-manager');
 const ThermalPrinter80mm = require('./thermal-printer-80mm');
 const LocalWebServer = require('./local-server');
-const { startBackgroundSync, stopBackgroundSync, getSyncStatus } = require('./background-sync');
+const { createSecureWebPreferences } = require('./window-security');
+const { hashSecret, verifySecret } = require('./security/auth-service');
+const { startBackgroundSync, stopBackgroundSync, getSyncStatus, setSyncEnabled, getSyncEnabled } = require('./background-sync');
 
 /**
  * Safe console logging that won't crash on EPIPE errors
@@ -44,6 +46,126 @@ function safeError(message) {
         console.error(message);
     } catch (error) {
         // Ignore EPIPE and other console errors
+    }
+}
+
+function sanitizeFileName(name) {
+    if (!name || typeof name !== 'string') {
+        return 'report';
+    }
+
+    return name
+        .replace(/[<>:"/\\|?*\x00-\x1F]/g, '_')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 120) || 'report';
+}
+
+async function getReportsDefaultSavePath() {
+    try {
+        const savedPath = await dbManager.get(
+            `SELECT setting_value
+             FROM system_settings
+             WHERE category = ? AND setting_key IN ('reports_path', 'default_save_path')
+             ORDER BY CASE WHEN setting_key = 'reports_path' THEN 0 ELSE 1 END
+             LIMIT 1`,
+            ['reports']
+        );
+
+        if (savedPath && savedPath.setting_value) {
+            return savedPath.setting_value;
+        }
+    } catch (error) {
+        console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ للتقارير');
+    }
+
+    return null;
+}
+
+async function getReportsBehaviorSettings() {
+    const defaults = {
+        autoOpen: false,
+        saveHistory: true,
+        compress: false
+    };
+
+    try {
+        const rows = await dbManager.query(
+            `SELECT setting_key, setting_value
+             FROM system_settings
+             WHERE category = 'reports'
+               AND setting_key IN ('auto_open_reports', 'save_report_history', 'compress_reports')`
+        );
+
+        if (!rows || rows.length === 0) {
+            return defaults;
+        }
+
+        const settingsMap = {};
+        rows.forEach((row) => {
+            settingsMap[row.setting_key] = row.setting_value;
+        });
+
+        return {
+            autoOpen: settingsMap.auto_open_reports === 'true',
+            saveHistory: settingsMap.save_report_history !== 'false',
+            compress: settingsMap.compress_reports === 'true'
+        };
+    } catch (error) {
+        console.warn('⚠️ [IPC] تعذر تحميل سلوك إعدادات التقارير:', error.message);
+        return defaults;
+    }
+}
+
+async function appendReportExportHistory(filePath, exportData = {}) {
+    try {
+        await dbManager.run(`
+            CREATE TABLE IF NOT EXISTS report_export_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                report_type TEXT,
+                report_title TEXT,
+                file_path TEXT NOT NULL,
+                file_format TEXT,
+                exported_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            )
+        `);
+
+        const extension = path.extname(filePath || '').replace('.', '').toLowerCase() || null;
+        await dbManager.run(
+            `INSERT INTO report_export_history (report_type, report_title, file_path, file_format)
+             VALUES (?, ?, ?, ?)`,
+            [
+                exportData.reportType || 'general',
+                exportData.reportTitle || 'تقرير',
+                filePath,
+                extension
+            ]
+        );
+    } catch (error) {
+        console.warn('⚠️ [IPC] تعذر حفظ سجل التقارير:', error.message);
+    }
+}
+
+async function runPostExportActions(filePath, exportData = {}) {
+    const reportBehavior = await getReportsBehaviorSettings();
+    const saveHistoryEnabled = exportData.saveHistory === undefined
+        ? reportBehavior.saveHistory
+        : exportData.saveHistory !== false;
+
+    if (saveHistoryEnabled) {
+        await appendReportExportHistory(filePath, exportData);
+    }
+
+    const autoOpenEnabled = exportData.autoOpen === undefined
+        ? reportBehavior.autoOpen
+        : exportData.autoOpen === true;
+
+    if (autoOpenEnabled) {
+        try {
+            await shell.openPath(filePath);
+        } catch (error) {
+            console.warn('⚠️ [IPC] تعذر فتح الملف تلقائياً:', error.message);
+        }
     }
 }
 
@@ -243,17 +365,20 @@ if (!process.env.NODE_ENV) {
     process.env.NODE_ENV = isDev ? 'development' : 'production';
 }
 
+const IS_DEV_MODE = process.argv.includes('--dev') || process.env.NODE_ENV === 'development';
+const IS_CLIENT_BUILD = app.isPackaged && !IS_DEV_MODE;
+
 // Handle EPIPE errors globally to prevent crashes
 process.stdout.on('error', (err) => {
-    if (err.code !== 'EPIPE') {
-        throw err;
-    }
+    // In packaged GUI apps, stdout/stderr handles may be unavailable.
+    // Never crash the app because console streams are not writable.
+    void err;
 });
 
 process.stderr.on('error', (err) => {
-    if (err.code !== 'EPIPE') {
-        throw err;
-    }
+    // In packaged GUI apps, stdout/stderr handles may be unavailable.
+    // Never crash the app because console streams are not writable.
+    void err;
 });
 
 console.log(`🚀 Application starting in ${process.env.NODE_ENV} mode`);
@@ -272,6 +397,72 @@ let pdfGenerator;
 let printManager;
 let thermalPrinter;
 let webServer;
+let runAutoBackupCheckNow = null;
+
+function isAllowedInternalNavigationUrl(url = '') {
+    const normalized = String(url || '').trim().toLowerCase();
+    return (
+        normalized.startsWith('file://')
+        || normalized.startsWith('data:text/html')
+        || normalized === 'about:blank'
+        || normalized.startsWith('devtools://')
+    );
+}
+
+function isDevToolsShortcut(input = {}) {
+    const key = String(input.key || '').toLowerCase();
+    const hasControl = Boolean(input.control) || Boolean(input.meta);
+
+    return (
+        key === 'f12'
+        || (hasControl && Boolean(input.shift) && key === 'i')
+        || (hasControl && key === 'u')
+    );
+}
+
+function hardenWebContentsForClient(contents) {
+    if (!contents || IS_DEV_MODE) {
+        return;
+    }
+
+    contents.on('before-input-event', (event, input) => {
+        if (isDevToolsShortcut(input)) {
+            event.preventDefault();
+        }
+    });
+
+    contents.on('context-menu', (event, params) => {
+        const isEditable = Boolean(params && params.isEditable);
+        if (isEditable) {
+            return;
+        }
+        event.preventDefault();
+    });
+
+    if (typeof contents.setWindowOpenHandler === 'function') {
+        contents.setWindowOpenHandler(({ url }) => {
+            if (isAllowedInternalNavigationUrl(url)) {
+                return { action: 'allow' };
+            }
+
+            shell.openExternal(url).catch((error) => {
+                safeWarn(`⚠️ [SECURITY] تعذر فتح الرابط الخارجي: ${error && error.message ? error.message : error}`);
+            });
+            return { action: 'deny' };
+        });
+    }
+
+    contents.on('will-navigate', (event, url) => {
+        if (isAllowedInternalNavigationUrl(url)) {
+            return;
+        }
+        event.preventDefault();
+    });
+}
+
+app.on('web-contents-created', (_event, contents) => {
+    hardenWebContentsForClient(contents);
+});
 
 function createWindow() {
     // Create the browser window with Arabic RTL support
@@ -280,15 +471,19 @@ function createWindow() {
         height: 900,
         minWidth: 1200,
         minHeight: 800,
-        webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false,
-            enableRemoteModule: true
-        },
+        webPreferences: createSecureWebPreferences(__dirname, {
+            devTools: IS_DEV_MODE
+        }),
         icon: path.join(__dirname, '../assets/icon.ico'),
         title: 'تصفية برو - Tasfiya Pro',
-        show: true
+        show: true,
+        autoHideMenuBar: IS_CLIENT_BUILD
     });
+
+    if (IS_CLIENT_BUILD) {
+        mainWindow.setMenuBarVisibility(false);
+        mainWindow.removeMenu();
+    }
 
     // Load the index.html of the app
     mainWindow.loadFile(path.join(__dirname, 'index.html'));
@@ -299,7 +494,7 @@ function createWindow() {
     });
 
     // Open DevTools in development
-    if (process.argv.includes('--dev')) {
+    if (IS_DEV_MODE) {
         mainWindow.webContents.openDevTools();
     }
 
@@ -326,18 +521,16 @@ function createPrintPreviewWindow(printData) {
         height: 1200,
         minWidth: 800,
         minHeight: 1000,
-        webPreferences: {
-            nodeIntegration: true,
-            contextIsolation: false,
-            enableRemoteModule: true
-        },
+        webPreferences: createSecureWebPreferences(__dirname, {
+            devTools: IS_DEV_MODE,
+            webSecurity: !IS_DEV_MODE
+        }),
         title: 'معاينة الطباعة - Print Preview',
         icon: path.join(__dirname, '../assets/icon.png'),
         parent: mainWindow,
         modal: false,
         show: false,
-        autoHideMenuBar: true,
-        webSecurity: false
+        autoHideMenuBar: true
     });
 
     // Get current print settings and merge with print data options
@@ -477,108 +670,6 @@ ipcMain.handle('add-statement-transaction', async (event, data) => {
     }
 });
 
-// Add print manager to window for renderer access
-app.whenReady().then(() => {
-    // --- SYNC INITIALIZATION ---
-    // Ensure dbManager is initialized if it hasn't been already
-    if (!dbManager) {
-        try {
-            console.log('🔄 [APP] Initializing DatabaseManager for Background Sync...');
-            const DatabaseManager = require('./database');
-            dbManager = new DatabaseManager();
-            dbManager.initialize();
-        } catch (dbError) {
-            console.error('❌ [APP] Failed to initialize DatabaseManager:', dbError);
-        }
-    }
-
-    // Start background synchronization
-    // Start background synchronization
-    try {
-        if (dbManager) {
-            // Check if sync is enabled in settings (Default: true)
-            const syncSetting = dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
-            const isSyncEnabled = !syncSetting || syncSetting.setting_value === 'true';
-
-            if (isSyncEnabled) {
-                const { startBackgroundSync } = require('./background-sync');
-                startBackgroundSync(dbManager);
-                console.log('✅ [APP] Background Sync Service Started (Auto)');
-            } else {
-                console.log('⏸️ [APP] Background Sync is disabled in settings');
-            }
-        } else {
-            console.error('❌ [APP] Cannot start sync: dbManager is null');
-        }
-    } catch (syncError) {
-        console.error('❌ [APP] Failed to start Background Sync Service:', syncError);
-    }
-
-    // Start Local Web Server (localhost:4000)
-    try {
-        if (dbManager) {
-            webServer = new LocalWebServer(dbManager, 4000);
-            webServer.start();
-            console.log('✅ [APP] Local Web Server Started on port 4000');
-        } else {
-            console.error('❌ [APP] Cannot start web server: dbManager is null');
-        }
-    } catch (webError) {
-        if (webError.code === 'EADDRINUSE') {
-            console.log('⚠️ [APP] Port 4000 is already in use. Assuming server is running externally or by another instance.');
-        } else {
-            console.error('❌ [APP] Failed to start Local Web Server:', webError);
-        }
-    }
-    // ---------------------------
-
-    // Create print manager instance
-    printManager = new PrintManager();
-    printManager.initialize();
-
-    // Initialize thermal printer for 80mm receipts
-    thermalPrinter = new ThermalPrinter80mm();
-
-    // Load saved thermal printer settings from database after a short delay
-    setTimeout(() => {
-        if (dbManager) {
-            try {
-                const query = `SELECT setting_key, setting_value FROM system_settings WHERE category = 'thermal_printer'`;
-                const results = dbManager.db.prepare(query).all();
-
-                if (results && results.length > 0) {
-                    const settings = {};
-                    for (const row of results) {
-                        const key = row.setting_key;
-                        const value = row.setting_value;
-
-                        // Convert string values back to proper types
-                        if (value === 'true') {
-                            settings[key] = true;
-                        } else if (value === 'false') {
-                            settings[key] = false;
-                        } else if (!isNaN(value) && value !== '') {
-                            settings[key] = parseInt(value);
-                        } else {
-                            settings[key] = value;
-                        }
-                    }
-
-                    if (Object.keys(settings).length > 0) {
-                        thermalPrinter.updateSettings(settings);
-                        safeLog('✅ [THERMAL-PRINTER] تم تحميل الإعدادات المحفوظة من قاعدة البيانات');
-                    }
-                }
-            } catch (loadError) {
-                safeWarn('⚠️ [THERMAL-PRINTER] فشل تحميل الإعدادات المحفوظة: ' + loadError.message);
-            }
-        }
-    }, 500);
-
-    // Make print manager available to renderer process
-    ipcMain.handle('get-print-manager', () => printManager);
-});
-
 // Helper function to get font size for print
 function getFontSizeForPrint(fontSize) {
     const fontSizes = {
@@ -641,6 +732,10 @@ function generatePrintHtml(printData) {
             box-sizing: border-box;
         }
 
+        html {
+            background: #eef2f5;
+        }
+
         body {
             font-family: '${options.fontFamily || 'Noto Sans Arabic'}', 'Arial', sans-serif;
             font-size: ${getEnhancedFontSizeForPrint(options.fontSize || 'normal')}; /* استخدام إعدادات حجم الخط */
@@ -649,10 +744,13 @@ function generatePrintHtml(printData) {
             direction: rtl;
             text-align: right;
             background: white;
-            padding: 0;
-            margin: 0;
-            max-width: 210mm; /* A4 width */
+            padding: 95px 10px 14px;
+            margin: 12px auto 18px;
+            width: calc(100% - 24px);
+            max-width: 194mm; /* A4 printable width with page margins (8mm each side) */
             font-weight: bold;
+            border: 1px solid #d8dee4;
+            box-shadow: 0 6px 20px rgba(0, 0, 0, 0.08);
         }
 
         /* Page setup for A4 printing - محسن لصفحة واحدة */
@@ -664,8 +762,12 @@ function generatePrintHtml(printData) {
         /* Print-specific styles - محسن للضغط في صفحة واحدة */
         @media print {
             body {
-                padding: 0;
-                margin: 0;
+                width: auto !important;
+                max-width: none !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                border: none !important;
+                box-shadow: none !important;
                 font-size: ${getEnhancedFontSizeForPrint(options.fontSize || 'normal')} !important; /* استخدام إعدادات حجم الخط */
                 line-height: 1.05 !important; /* مسافة أقل بين الأسطر */
             }
@@ -1686,6 +1788,10 @@ function initializeDatabase() {
 
 // App event handlers
 app.whenReady().then(() => {
+    if (IS_CLIENT_BUILD) {
+        Menu.setApplicationMenu(null);
+    }
+
     const dbInitialized = initializeDatabase();
     if (dbInitialized) {
         // Initialize PDF generator
@@ -1695,13 +1801,66 @@ app.whenReady().then(() => {
         printManager = new PrintManager();
         printManager.initialize();
 
+        // Make print manager available to renderer process
+        ipcMain.handle('get-print-manager', () => printManager);
+
+        // Initialize thermal printer for 80mm receipts
+        thermalPrinter = new ThermalPrinter80mm();
+
+        // Load saved thermal printer settings from database after a short delay
+        setTimeout(() => {
+            if (dbManager) {
+                try {
+                    const query = `SELECT setting_key, setting_value FROM system_settings WHERE category = 'thermal_printer'`;
+                    const results = dbManager.db.prepare(query).all();
+
+                    if (results && results.length > 0) {
+                        const settings = {};
+                        for (const row of results) {
+                            const key = row.setting_key;
+                            const value = row.setting_value;
+
+                            // Convert string values back to proper types
+                            if (value === 'true') {
+                                settings[key] = true;
+                            } else if (value === 'false') {
+                                settings[key] = false;
+                            } else if (!isNaN(value) && value !== '') {
+                                settings[key] = parseInt(value);
+                            } else {
+                                settings[key] = value;
+                            }
+                        }
+
+                        if (Object.keys(settings).length > 0) {
+                            thermalPrinter.updateSettings(settings);
+                            safeLog('✅ [THERMAL-PRINTER] تم تحميل الإعدادات المحفوظة من قاعدة البيانات');
+                        }
+                    }
+                } catch (loadError) {
+                    safeWarn('⚠️ [THERMAL-PRINTER] فشل تحميل الإعدادات المحفوظة: ' + loadError.message);
+                }
+            }
+        }, 500);
+
         createWindow();
 
         // Initialize automatic backup
         initializeAutoBackup();
 
-        // Start Background Sync to Cloud
-        startBackgroundSync(dbManager);
+        // Start Background Sync to Cloud (only if enabled)
+        // Check if sync is enabled in settings (Default: true)
+        const syncSetting = dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
+        const isSyncEnabled = !syncSetting || syncSetting.setting_value === 'true';
+
+        if (isSyncEnabled) {
+            startBackgroundSync(dbManager);
+            console.log('✅ [APP] Background Sync Service Started (Auto)');
+        } else {
+            console.log('⏸️ [APP] Background Sync is disabled in settings, not starting');
+            // Ensure the enabled flag is set to false in the sync instance
+            setSyncEnabled(false);
+        }
 
         // Start Local Web Server
         try {
@@ -1722,94 +1881,286 @@ app.whenReady().then(() => {
     function initializeAutoBackup() {
         console.log('🔄 [AUTO-BACKUP] تهيئة نظام النسخ الاحتياطي التلقائي...');
 
-        // Check backup settings every hour
-        setInterval(async () => {
-            try {
-                // Get auto backup settings
-                const settings = await dbManager.db.prepare(
-                    `SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?`
-                ).get('backup', 'auto_backup_frequency');
+        const CHECK_INTERVAL_MS = 60 * 60 * 1000; // every hour
+        let autoBackupIntervalId = null;
+        let autoBackupInProgress = false;
 
-                if (!settings || settings.setting_value === 'disabled') {
-                    console.log('⏸️ [AUTO-BACKUP] النسخ الاحتياطي التلقائي معطل');
-                    return;
-                }
-
-                // Get backup location
-                const backupLocation = await dbManager.db.prepare(
-                    `SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?`
-                ).get('backup', 'default_backup_path');
-
-                if (!backupLocation) {
-                    console.warn('⚠️ [AUTO-BACKUP] لم يتم تعيين مجلد النسخ الاحتياطي');
-                    return;
-                }
-
-                // Check if backup should be performed based on frequency
-                const now = new Date();
-                const lastBackup = await dbManager.db.prepare(
-                    `SELECT MAX(updated_at) as last_backup FROM system_settings WHERE category = ? AND setting_key LIKE ?`
-                ).get('backup', 'backup_%');
-
-                let shouldBackup = false;
-
-                if (!lastBackup || !lastBackup.last_backup) {
-                    shouldBackup = true;
-                } else {
-                    const lastBackupDate = new Date(lastBackup.last_backup);
-                    const hoursSinceLastBackup = (now - lastBackupDate) / (1000 * 60 * 60);
-
-                    switch (settings.setting_value) {
-                        case 'daily':
-                            shouldBackup = hoursSinceLastBackup >= 24;
-                            break;
-                        case 'weekly':
-                            shouldBackup = hoursSinceLastBackup >= (24 * 7);
-                            break;
-                        case 'monthly':
-                            shouldBackup = hoursSinceLastBackup >= (24 * 30);
-                            break;
-                    }
-                }
-
-                if (shouldBackup) {
-                    console.log(`🔄 [AUTO-BACKUP] تنفيذ نسخة احتياطية ${settings.setting_value}...`);
-
-                    // Generate backup file name
-                    const timestamp = now.toISOString().split('T')[0];
-                    const backupFileName = `casher_auto_backup_${settings.setting_value}_${timestamp}.json`;
-                    const backupFilePath = path.join(backupLocation.setting_value, backupFileName);
-
-                    // Collect all data from database
-                    const backupData = await collectDatabaseData();
-
-                    // Save backup file
-                    const result = await saveBackupFile(backupFilePath, backupData);
-
-                    if (result.success) {
-                        console.log(`✅ [AUTO-BACKUP] تم إنشاء النسخة الاحتياطية بنجاح: ${backupFileName}`);
-
-                        // Record backup in settings
-                        await dbManager.db.prepare(
-                            `INSERT INTO system_settings (category, setting_key, setting_value, updated_at) 
-             VALUES (?, ?, ?, CURRENT_TIMESTAMP)`
-                        ).run('backup', `backup_${settings.setting_value}`, 'success');
-                    } else {
-                        console.error(`❌ [AUTO-BACKUP] فشل في إنشاء النسخة الاحتياطية: ${result.error}`);
-
-                        // Record backup failure
-                        await dbManager.db.prepare(
-                            `INSERT INTO system_settings (category, setting_key, setting_value, updated_at) 
-             VALUES (?, ?, ?, CURRENT_TIMESTAMP)`
-                        ).run('backup', `backup_${settings.setting_value}`, 'failed');
-                    }
-                } else {
-                    console.log(`⏭️ [AUTO-BACKUP] لا حاجة لنسخ احتياطي ${settings.setting_value}`);
-                }
-            } catch (error) {
-                console.error('❌ [AUTO-BACKUP] خطأ في النسخ الاحتياطي التلقائي:', error);
+        function normalizeAutoBackupFrequency(rawValue) {
+            const value = String(rawValue || '').trim().toLowerCase();
+            if (value === 'daily' || value === 'weekly' || value === 'monthly') {
+                return value;
             }
-        }, 60 * 60 * 1000); // Check every hour
+            return 'disabled';
+        }
+
+        function readSystemSettingValue(category, key) {
+            const row = dbManager.db.prepare(
+                `SELECT id, setting_value
+                 FROM system_settings
+                 WHERE category = ? AND setting_key = ?
+                 ORDER BY id DESC
+                 LIMIT 1`
+            ).get(category, key);
+            if (!row || row.setting_value == null) {
+                return '';
+            }
+            return String(row.setting_value).trim();
+        }
+
+        function readSettingWithFallback(primaryCategory, primaryKey, fallbackCategory, fallbackKey) {
+            const primaryValue = readSystemSettingValue(primaryCategory, primaryKey);
+            if (primaryValue) {
+                return primaryValue;
+            }
+            if (!fallbackCategory || !fallbackKey) {
+                return '';
+            }
+            return readSystemSettingValue(fallbackCategory, fallbackKey);
+        }
+
+        function upsertSystemSettingWithLegacySafety(category, settingKey, settingValue) {
+            const normalizedValue = settingValue == null ? '' : String(settingValue);
+            const latestRow = dbManager.db.prepare(
+                `SELECT id
+                 FROM system_settings
+                 WHERE category = ? AND setting_key = ?
+                 ORDER BY id DESC
+                 LIMIT 1`
+            ).get(category, settingKey);
+
+            if (!latestRow || !latestRow.id) {
+                dbManager.db.prepare(
+                    `INSERT INTO system_settings (category, setting_key, setting_value, updated_at)
+                     VALUES (?, ?, ?, CURRENT_TIMESTAMP)`
+                ).run(category, settingKey, normalizedValue);
+            } else {
+                dbManager.db.prepare(
+                    `UPDATE system_settings
+                     SET setting_value = ?, updated_at = CURRENT_TIMESTAMP
+                     WHERE id = ?`
+                ).run(normalizedValue, latestRow.id);
+
+                dbManager.db.prepare(
+                    `DELETE FROM system_settings
+                     WHERE category = ?
+                       AND setting_key = ?
+                       AND id <> ?`
+                ).run(category, settingKey, latestRow.id);
+            }
+        }
+
+        function upsertBackupRuntimeSetting(settingKey, settingValue) {
+            upsertSystemSettingWithLegacySafety('backup', settingKey, settingValue);
+        }
+
+        function getDefaultAutoBackupPath() {
+            try {
+                const basePath = app.getPath('documents') || app.getPath('home');
+                return path.join(basePath, 'Tasfiya Pro', 'backup');
+            } catch (error) {
+                void error;
+                return path.join(process.cwd(), 'backup');
+            }
+        }
+
+        function bootstrapAutoBackupDefaults() {
+            const rawFrequencyPrimary = readSystemSettingValue('backup', 'auto_backup_frequency');
+            const rawFrequencyLegacy = readSystemSettingValue('database', 'auto_backup');
+            const normalizedFrequency = normalizeAutoBackupFrequency(rawFrequencyPrimary || rawFrequencyLegacy);
+
+            if (!rawFrequencyPrimary && !rawFrequencyLegacy) {
+                upsertSystemSettingWithLegacySafety('backup', 'auto_backup_frequency', 'daily');
+                upsertSystemSettingWithLegacySafety('database', 'auto_backup', 'daily');
+            } else if (!rawFrequencyPrimary && normalizedFrequency !== 'disabled') {
+                upsertSystemSettingWithLegacySafety('backup', 'auto_backup_frequency', normalizedFrequency);
+            } else if (!rawFrequencyLegacy && normalizedFrequency !== 'disabled') {
+                upsertSystemSettingWithLegacySafety('database', 'auto_backup', normalizedFrequency);
+            }
+
+            const configuredPath = readSettingWithFallback(
+                'backup',
+                'default_backup_path',
+                'database',
+                'backup_location'
+            );
+
+            if (!configuredPath) {
+                const defaultPath = getDefaultAutoBackupPath();
+                upsertSystemSettingWithLegacySafety('backup', 'default_backup_path', defaultPath);
+                upsertSystemSettingWithLegacySafety('database', 'backup_location', defaultPath);
+                console.log(`📁 [AUTO-BACKUP] تم تعيين مسار افتراضي للنسخ الاحتياطي: ${defaultPath}`);
+            } else {
+                const backupPathPrimary = readSystemSettingValue('backup', 'default_backup_path');
+                const backupPathLegacy = readSystemSettingValue('database', 'backup_location');
+
+                if (!backupPathPrimary) {
+                    upsertSystemSettingWithLegacySafety('backup', 'default_backup_path', configuredPath);
+                }
+                if (!backupPathLegacy) {
+                    upsertSystemSettingWithLegacySafety('database', 'backup_location', configuredPath);
+                }
+            }
+        }
+
+        function notifyAutoBackupStatus(level, message, details = {}) {
+            if (!mainWindow || mainWindow.isDestroyed() || !mainWindow.webContents) {
+                return;
+            }
+            mainWindow.webContents.send('auto-backup-status', {
+                level: String(level || 'info'),
+                message: String(message || ''),
+                timestamp: new Date().toISOString(),
+                ...details
+            });
+        }
+
+        function shouldRunAutoBackup(frequency, lastBackupAt, now) {
+            if (!lastBackupAt) {
+                return true;
+            }
+
+            const lastBackupDate = new Date(lastBackupAt);
+            if (Number.isNaN(lastBackupDate.getTime())) {
+                return true;
+            }
+
+            const hoursSinceLastBackup = (now.getTime() - lastBackupDate.getTime()) / (1000 * 60 * 60);
+            switch (frequency) {
+                case 'daily':
+                    return hoursSinceLastBackup >= 24;
+                case 'weekly':
+                    return hoursSinceLastBackup >= (24 * 7);
+                case 'monthly':
+                    return hoursSinceLastBackup >= (24 * 30);
+                default:
+                    return false;
+            }
+        }
+
+        async function runAutoBackupCycle(trigger = 'interval') {
+            if (autoBackupInProgress) {
+                return { success: true, skipped: true, reason: 'in-progress' };
+            }
+
+            autoBackupInProgress = true;
+            try {
+                const frequency = normalizeAutoBackupFrequency(
+                    readSettingWithFallback('backup', 'auto_backup_frequency', 'database', 'auto_backup')
+                );
+                if (frequency === 'disabled') {
+                    console.log('⏸️ [AUTO-BACKUP] النسخ الاحتياطي التلقائي معطل');
+                    return { success: true, skipped: true, reason: 'disabled' };
+                }
+
+                const backupPath = readSettingWithFallback(
+                    'backup',
+                    'default_backup_path',
+                    'database',
+                    'backup_location'
+                );
+                if (!backupPath) {
+                    const message = 'لم يتم تعيين مجلد النسخ الاحتياطي';
+                    console.warn(`⚠️ [AUTO-BACKUP] ${message}`);
+                    upsertBackupRuntimeSetting('last_auto_backup_status', 'failed');
+                    upsertBackupRuntimeSetting('last_auto_backup_error', message);
+                    notifyAutoBackupStatus('error', message, { trigger, frequency });
+                    return { success: false, skipped: true, reason: 'path-missing', error: message };
+                }
+
+                const backupPathReady = await verifyBackupDirectory(backupPath);
+                if (!backupPathReady) {
+                    const message = 'مجلد النسخ الاحتياطي غير قابل للكتابة';
+                    upsertBackupRuntimeSetting('last_auto_backup_status', 'failed');
+                    upsertBackupRuntimeSetting('last_auto_backup_error', message);
+                    notifyAutoBackupStatus('error', message, { trigger, frequency, backupPath });
+                    return { success: false, skipped: true, reason: 'path-not-writable', error: message };
+                }
+
+                let lastSuccessfulBackupAt = readSystemSettingValue('backup', 'last_auto_backup_at');
+                if (!lastSuccessfulBackupAt) {
+                    // Legacy fallback: older versions recorded success under backup_% keys.
+                    const legacyLastBackup = dbManager.db.prepare(
+                        `SELECT MAX(updated_at) AS last_backup
+                         FROM system_settings
+                         WHERE category = 'backup'
+                           AND setting_key LIKE 'backup_%'
+                           AND setting_value = 'success'`
+                    ).get();
+                    lastSuccessfulBackupAt = legacyLastBackup && legacyLastBackup.last_backup
+                        ? String(legacyLastBackup.last_backup)
+                        : '';
+                }
+
+                const now = new Date();
+                const backupDue = shouldRunAutoBackup(frequency, lastSuccessfulBackupAt, now);
+                if (!backupDue) {
+                    console.log(`⏭️ [AUTO-BACKUP] لا حاجة لنسخ احتياطي ${frequency}`);
+                    return { success: true, skipped: true, reason: 'not-due' };
+                }
+
+                console.log(`🔄 [AUTO-BACKUP] تنفيذ نسخة احتياطية ${frequency}...`);
+                const timestamp = now.toISOString().replace(/\..+$/, '').replace(/:/g, '-').replace('T', '_');
+                const backupFileName = `casher_auto_backup_${frequency}_${timestamp}.json`;
+                const backupFilePath = path.join(backupPath, backupFileName);
+
+                const backupData = await collectDatabaseData();
+                const result = await saveBackupFile(backupFilePath, backupData);
+
+                if (!result.success) {
+                    const failMessage = result.error || 'خطأ غير معروف';
+                    console.error(`❌ [AUTO-BACKUP] فشل في إنشاء النسخة الاحتياطية: ${failMessage}`);
+                    upsertBackupRuntimeSetting('last_auto_backup_status', 'failed');
+                    upsertBackupRuntimeSetting('last_auto_backup_error', failMessage);
+                    upsertBackupRuntimeSetting(`backup_${frequency}`, 'failed');
+                    notifyAutoBackupStatus('error', `فشل إنشاء النسخة الاحتياطية التلقائية: ${failMessage}`, {
+                        trigger,
+                        frequency,
+                        backupPath
+                    });
+                    return { success: false, created: false, error: failMessage };
+                }
+
+                console.log(`✅ [AUTO-BACKUP] تم إنشاء النسخة الاحتياطية بنجاح: ${backupFileName}`);
+                upsertBackupRuntimeSetting('last_auto_backup_at', now.toISOString());
+                upsertBackupRuntimeSetting('last_auto_backup_file', backupFilePath);
+                upsertBackupRuntimeSetting('last_auto_backup_status', 'success');
+                upsertBackupRuntimeSetting('last_auto_backup_error', '');
+                upsertBackupRuntimeSetting(`backup_${frequency}`, 'success');
+                notifyAutoBackupStatus('success', 'تم إنشاء نسخة احتياطية تلقائية بنجاح', {
+                    trigger,
+                    frequency,
+                    backupFilePath
+                });
+
+                return { success: true, created: true, backupFilePath, frequency };
+            } catch (error) {
+                const failMessage = error && error.message ? error.message : 'خطأ غير معروف';
+                console.error('❌ [AUTO-BACKUP] خطأ في النسخ الاحتياطي التلقائي:', error);
+                upsertBackupRuntimeSetting('last_auto_backup_status', 'failed');
+                upsertBackupRuntimeSetting('last_auto_backup_error', failMessage);
+                notifyAutoBackupStatus('error', `حدث خطأ أثناء النسخ الاحتياطي التلقائي: ${failMessage}`, {
+                    trigger
+                });
+                return { success: false, created: false, error: failMessage };
+            } finally {
+                autoBackupInProgress = false;
+            }
+        }
+
+        bootstrapAutoBackupDefaults();
+        runAutoBackupCheckNow = runAutoBackupCycle;
+
+        // Immediate check on startup (do not wait one hour).
+        void runAutoBackupCycle('startup');
+
+        if (autoBackupIntervalId) {
+            clearInterval(autoBackupIntervalId);
+        }
+        autoBackupIntervalId = setInterval(() => {
+            void runAutoBackupCycle('interval');
+        }, CHECK_INTERVAL_MS);
+
+        console.log('✅ [AUTO-BACKUP] تم تفعيل الفحص التلقائي كل ساعة مع فحص فوري عند التشغيل');
     }
 
     /**
@@ -1892,6 +2243,12 @@ app.whenReady().then(() => {
                 'customer_receipts',
                 'return_invoices',
                 'suppliers',
+                'manual_postpaid_sales',
+                'manual_customer_receipts',
+                'manual_supplier_transactions',
+                'branch_cashboxes',
+                'cashbox_vouchers',
+                'cashbox_voucher_audit_log',
                 'system_settings'
             ];
 
@@ -2031,6 +2388,40 @@ ipcMain.handle('db-all', async (event, sql, params = []) => {
     }
 });
 
+ipcMain.handle('auth-hash-secret', async (event, secret) => {
+    try {
+        return hashSecret(secret);
+    } catch (error) {
+        console.error('Auth hash error:', error);
+        throw error;
+    }
+});
+
+ipcMain.handle('auth-verify-secret', async (event, storedSecret, providedSecret) => {
+    try {
+        return verifySecret(storedSecret, providedSecret);
+    } catch (error) {
+        console.error('Auth verify error:', error);
+        throw error;
+    }
+});
+
+ipcMain.handle('run-auto-backup-check', async (event, trigger = 'manual') => {
+    try {
+        if (typeof runAutoBackupCheckNow !== 'function') {
+            return { success: false, error: 'Auto backup system is not initialized yet' };
+        }
+
+        return await runAutoBackupCheckNow(String(trigger || 'manual'));
+    } catch (error) {
+        console.error('❌ [AUTO-BACKUP] خطأ في تشغيل الفحص الفوري:', error);
+        return {
+            success: false,
+            error: error && error.message ? error.message : 'خطأ غير معروف'
+        };
+    }
+});
+
 // Autocomplete IPC handlers
 ipcMain.handle('autocomplete-postpaid-customers', async (event, query, limit = 10) => {
     try {
@@ -2138,12 +2529,29 @@ ipcMain.handle('get-reconciliation-for-edit', async (event, reconciliationId) =>
 });
 
 // Update reconciliation with modification date
-ipcMain.handle('update-reconciliation-modified', async (event, reconciliationId, systemSales, totalReceipts, surplusDeficit, status) => {
+ipcMain.handle('update-reconciliation-modified', async (
+    event,
+    reconciliationId,
+    systemSales,
+    totalReceipts,
+    surplusDeficit,
+    status,
+    formulaSettingsJson = null,
+    formulaProfileId = null
+) => {
     try {
         if (!dbManager || !dbManager.db) {
             throw new Error('Database not initialized');
         }
-        return dbManager.updateReconciliationModified(reconciliationId, systemSales, totalReceipts, surplusDeficit, status);
+        return dbManager.updateReconciliationModified(
+            reconciliationId,
+            systemSales,
+            totalReceipts,
+            surplusDeficit,
+            status,
+            formulaSettingsJson,
+            formulaProfileId
+        );
     } catch (error) {
         console.error('Error updating reconciliation:', error);
         throw error;
@@ -2164,12 +2572,38 @@ ipcMain.handle('get-next-reconciliation-number', async (event) => {
 });
 
 // Complete reconciliation with reconciliation number
-ipcMain.handle('complete-reconciliation', async (event, reconciliationId, systemSales, totalReceipts, surplusDeficit, reconciliationNumber) => {
+ipcMain.handle('complete-reconciliation', async (
+    event,
+    reconciliationId,
+    systemSales,
+    totalReceipts,
+    surplusDeficit,
+    reconciliationNumber,
+    formulaSettingsJson = null,
+    formulaProfileId = null,
+    cashboxPostingEnabled = null
+) => {
     try {
         if (!dbManager || !dbManager.db) {
             throw new Error('Database not initialized');
         }
-        const result = dbManager.completeReconciliation(reconciliationId, systemSales, totalReceipts, surplusDeficit, reconciliationNumber);
+        const result = dbManager.completeReconciliation(
+            reconciliationId,
+            systemSales,
+            totalReceipts,
+            surplusDeficit,
+            reconciliationNumber,
+            formulaSettingsJson,
+            formulaProfileId,
+            cashboxPostingEnabled
+        );
+
+        try {
+            const cashboxSyncResult = dbManager.syncCashboxVouchersFromReconciliation(reconciliationId);
+            console.log('🧾 [MAIN] Auto cashbox sync completed after reconciliation:', cashboxSyncResult);
+        } catch (cashboxSyncError) {
+            console.warn('⚠️ [MAIN] Auto cashbox sync failed after reconciliation completion:', cashboxSyncError.message);
+        }
 
         // Trigger instant sync after completion
         try {
@@ -2183,6 +2617,18 @@ ipcMain.handle('complete-reconciliation', async (event, reconciliationId, system
         return result;
     } catch (error) {
         console.error('Error completing reconciliation:', error);
+        throw error;
+    }
+});
+
+ipcMain.handle('sync-reconciliation-cashbox-vouchers', async (event, reconciliationId) => {
+    try {
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        return dbManager.syncCashboxVouchersFromReconciliation(reconciliationId);
+    } catch (error) {
+        console.error('Error syncing reconciliation cashbox vouchers:', error);
         throw error;
     }
 });
@@ -2204,21 +2650,19 @@ ipcMain.handle('fix-existing-reconciliations', async (event) => {
 ipcMain.handle('generate-pdf', async (event, reconciliationData) => {
     try {
         if (!pdfGenerator) {
-            throw new Error('PDF generator not initialized');
+            pdfGenerator = new PDFGenerator(dbManager);
         }
 
         const pdfBuffer = await pdfGenerator.generateReconciliationReport(reconciliationData);
 
         // Get default save path from settings
-        let defaultPath = `تقرير_تصفية_${reconciliationData.cashierName}_${reconciliationData.reconciliationDate}.pdf`;
+        const safeCashierName = sanitizeFileName(reconciliationData?.cashierName || 'cashier');
+        const safeDate = sanitizeFileName(reconciliationData?.reconciliationDate || new Date().toISOString().split('T')[0]);
+        let defaultPath = `تقرير_تصفية_${safeCashierName}_${safeDate}.pdf`;
         try {
-            const savedPath = await dbManager.get(
-                'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?',
-                ['reports', 'default_save_path']
-            );
-            if (savedPath && savedPath.setting_value) {
-                const path = require('path');
-                defaultPath = path.join(savedPath.setting_value, defaultPath);
+            const savedPath = await getReportsDefaultSavePath();
+            if (savedPath) {
+                defaultPath = path.join(savedPath, defaultPath);
             }
         } catch (error) {
             console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ');
@@ -2295,11 +2739,205 @@ ipcMain.handle('get-printers', async () => {
     }
 });
 
+function parsePrintBoolean(value, fallback = false) {
+    if (value === undefined || value === null || value === '') {
+        return fallback;
+    }
+    if (typeof value === 'boolean') {
+        return value;
+    }
+    const normalized = String(value).trim().toLowerCase();
+    return normalized === 'true' || normalized === '1' || normalized === 'yes';
+}
+
+function parsePrintNumber(value, fallback) {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseLegacyMargins(rawMargins) {
+    if (!rawMargins) {
+        return {};
+    }
+    if (typeof rawMargins === 'object' && rawMargins !== null) {
+        return rawMargins;
+    }
+    try {
+        const parsed = JSON.parse(rawMargins);
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch (error) {
+        void error;
+        return {};
+    }
+}
+
+function normalizePrintSettingsForRuntime(inputSettings = {}, baseSettings = {}) {
+    const source = (inputSettings && typeof inputSettings === 'object') ? inputSettings : {};
+    const base = (baseSettings && typeof baseSettings === 'object') ? baseSettings : {};
+    const baseMargins = (base.margins && typeof base.margins === 'object') ? base.margins : {};
+    const legacyMargins = parseLegacyMargins(source.margins);
+
+    return {
+        paperSize: source.paper_size || source.paperSize || base.paperSize || 'A4',
+        orientation: source.paper_orientation || source.orientation || base.orientation || 'portrait',
+        margins: {
+            top: parsePrintNumber(source.margin_top ?? source.marginTop ?? legacyMargins.top, parsePrintNumber(baseMargins.top, 1)),
+            right: parsePrintNumber(source.margin_right ?? source.marginRight ?? legacyMargins.right, parsePrintNumber(baseMargins.right, 1)),
+            bottom: parsePrintNumber(source.margin_bottom ?? source.marginBottom ?? legacyMargins.bottom, parsePrintNumber(baseMargins.bottom, 1)),
+            left: parsePrintNumber(source.margin_left ?? source.marginLeft ?? legacyMargins.left, parsePrintNumber(baseMargins.left, 1))
+        },
+        copies: Math.max(1, Number.parseInt(source.copies ?? base.copies ?? 1, 10) || 1),
+        color: parsePrintBoolean(source.color_print ?? source.color, parsePrintBoolean(base.color, false)),
+        duplex: source.duplex || base.duplex || 'simplex',
+        fontSize: source.font_size || source.fontSize || base.fontSize || 'normal',
+        fontFamily: source.font_family || source.fontFamily || base.fontFamily || 'Cairo',
+        printerName: source.printer_name || source.printerName || base.printerName || ''
+    };
+}
+
+async function loadPrintSettingsFromSystemSettings() {
+    if (!dbManager) {
+        return null;
+    }
+
+    await dbManager.run(
+        `DELETE FROM system_settings
+         WHERE category = 'print'
+           AND id NOT IN (
+             SELECT MAX(id)
+             FROM system_settings
+             WHERE category = 'print'
+             GROUP BY setting_key
+           )`
+    );
+
+    const rows = await dbManager.query(
+        `SELECT s.setting_key, s.setting_value
+         FROM system_settings s
+         INNER JOIN (
+           SELECT setting_key, MAX(id) AS latest_id
+           FROM system_settings
+           WHERE category = 'print'
+           GROUP BY setting_key
+         ) latest
+           ON latest.latest_id = s.id
+         WHERE s.category = 'print'`
+    );
+
+    if (!Array.isArray(rows) || rows.length === 0) {
+        return null;
+    }
+
+    const settingsMap = {};
+    rows.forEach((row) => {
+        settingsMap[row.setting_key] = row.setting_value;
+    });
+
+    const fallbackSettings = printManager ? printManager.getPrintSettings() : {};
+    return normalizePrintSettingsForRuntime(settingsMap, fallbackSettings);
+}
+
+async function persistPrintSettingsToDatabase(runtimeSettings = {}) {
+    if (!dbManager) {
+        return;
+    }
+
+    const normalized = normalizePrintSettingsForRuntime(runtimeSettings, {});
+    const settingsToSave = [
+        ['paper_size', normalized.paperSize || 'A4'],
+        ['paper_orientation', normalized.orientation || 'portrait'],
+        ['font_family', normalized.fontFamily || 'Cairo'],
+        ['font_size', normalized.fontSize || 'normal'],
+        ['margin_top', String(normalized.margins.top)],
+        ['margin_right', String(normalized.margins.right)],
+        ['margin_bottom', String(normalized.margins.bottom)],
+        ['margin_left', String(normalized.margins.left)],
+        ['copies', String(normalized.copies)],
+        ['color_print', String(Boolean(normalized.color))],
+        ['duplex', normalized.duplex || 'simplex'],
+        ['printer_name', normalized.printerName || '']
+    ];
+
+    async function upsertSettingWithLegacyFallback(category, settingKey, settingValue) {
+        const normalizedValue = settingValue == null ? '' : String(settingValue);
+
+        try {
+            await dbManager.run(
+                `INSERT INTO system_settings (category, setting_key, setting_value, updated_at)
+                 VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                 ON CONFLICT(category, setting_key) DO UPDATE SET
+                   setting_value = excluded.setting_value,
+                   updated_at = CURRENT_TIMESTAMP`,
+                [category, settingKey, normalizedValue]
+            );
+            return;
+        } catch (error) {
+            const message = String(error && error.message ? error.message : '');
+            const hasLegacySchema = message.includes('ON CONFLICT clause does not match');
+            if (!hasLegacySchema) {
+                throw error;
+            }
+        }
+
+        // Legacy schema fallback (without UNIQUE constraint on category+setting_key).
+        await dbManager.run(
+            `INSERT INTO system_settings (category, setting_key, setting_value, updated_at)
+             VALUES (?, ?, ?, CURRENT_TIMESTAMP)`,
+            [category, settingKey, normalizedValue]
+        );
+    }
+
+    for (const [settingKey, settingValue] of settingsToSave) {
+        await upsertSettingWithLegacyFallback('print', settingKey, settingValue);
+
+        // Keep only the latest value for this key in case of legacy duplicate rows.
+        await dbManager.run(
+            `DELETE FROM system_settings
+             WHERE category = ?
+               AND setting_key = ?
+               AND id NOT IN (
+                 SELECT id
+                 FROM system_settings
+                 WHERE category = ?
+                   AND setting_key = ?
+                 ORDER BY id DESC
+                 LIMIT 1
+               )`,
+            ['print', settingKey, 'print', settingKey]
+        );
+    }
+
+    await dbManager.run(
+        `DELETE FROM system_settings
+         WHERE category = 'print'
+           AND setting_key IN (
+             'paperSize',
+             'paperOrientation',
+             'orientation',
+             'fontFamily',
+             'fontSize',
+             'color',
+             'margins',
+             'marginTop',
+             'marginRight',
+             'marginBottom',
+             'marginLeft',
+             'printerName'
+           )`
+    );
+}
+
 ipcMain.handle('get-print-settings', async () => {
     try {
         if (!printManager) {
             throw new Error('Print manager not initialized');
         }
+
+        const persistedSettings = await loadPrintSettingsFromSystemSettings();
+        if (persistedSettings) {
+            printManager.updatePrintSettings(persistedSettings);
+        }
+
         return printManager.getPrintSettings();
     } catch (error) {
         console.error('Error getting print settings:', error);
@@ -2312,30 +2950,10 @@ ipcMain.handle('update-print-settings', async (event, settings) => {
         if (!printManager) {
             throw new Error('Print manager not initialized');
         }
-        // Ensure color setting is properly parsed
-        if (typeof settings.color === 'string') {
-            settings.color = settings.color === 'true';
-        }
-        printManager.updatePrintSettings(settings);
-
-        // Save settings to database instead of using saveSettings
-        const db = dbManager.db;
-        const settingsArray = Object.entries(settings).map(([key, value]) => ({
-            setting_key: key,
-            setting_value: value.toString(),
-            category: 'print'
-        }));
-
-        // Delete existing print settings
-        await dbManager.run('DELETE FROM system_settings WHERE category = ?', ['print']);
-
-        // Insert new settings
-        for (const setting of settingsArray) {
-            await dbManager.run(
-                'INSERT INTO system_settings (category, setting_key, setting_value) VALUES (?, ?, ?)',
-                ['print', setting.setting_key, setting.setting_value]
-            );
-        }
+        const currentSettings = printManager.getPrintSettings();
+        const normalizedSettings = normalizePrintSettingsForRuntime(settings, currentSettings);
+        printManager.updatePrintSettings(normalizedSettings);
+        await persistPrintSettingsToDatabase(printManager.getPrintSettings());
 
         return { success: true };
     } catch (error) {
@@ -2386,7 +3004,7 @@ ipcMain.handle('export-pdf', async (event, exportData) => {
         }
 
         if (!pdfGenerator) {
-            throw new Error('PDF generator not initialized');
+            pdfGenerator = new PDFGenerator(dbManager);
         }
 
         // Generate PDF from HTML
@@ -2395,13 +3013,9 @@ ipcMain.handle('export-pdf', async (event, exportData) => {
         // Get default save path from settings
         let defaultPath = exportData.filename || `report-${new Date().toISOString().split('T')[0]}.pdf`;
         try {
-            const savedPath = await dbManager.get(
-                'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?',
-                ['reports', 'default_save_path']
-            );
-            if (savedPath && savedPath.setting_value) {
-                const path = require('path');
-                defaultPath = path.join(savedPath.setting_value, defaultPath);
+            const savedPath = await getReportsDefaultSavePath();
+            if (savedPath) {
+                defaultPath = path.join(savedPath, defaultPath);
             }
         } catch (error) {
             console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ');
@@ -2418,6 +3032,7 @@ ipcMain.handle('export-pdf', async (event, exportData) => {
 
         if (!result.canceled && result.filePath) {
             fs.writeFileSync(result.filePath, pdfBuffer);
+            await runPostExportActions(result.filePath, exportData);
             console.log('✅ [IPC] تم تصدير PDF بنجاح:', result.filePath);
             return { success: true, filePath: result.filePath };
         } else {
@@ -2477,13 +3092,9 @@ ipcMain.handle('export-excel', async (event, exportData) => {
         // Get default save path from settings
         let defaultPath = exportData.filename || `report-${new Date().toISOString().split('T')[0]}.xlsx`;
         try {
-            const savedPath = await dbManager.get(
-                'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?',
-                ['reports', 'default_save_path']
-            );
-            if (savedPath && savedPath.setting_value) {
-                const path = require('path');
-                defaultPath = path.join(savedPath.setting_value, defaultPath);
+            const savedPath = await getReportsDefaultSavePath();
+            if (savedPath) {
+                defaultPath = path.join(savedPath, defaultPath);
             }
         } catch (error) {
             console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ');
@@ -2499,7 +3110,24 @@ ipcMain.handle('export-excel', async (event, exportData) => {
         });
 
         if (!result.canceled && result.filePath) {
-            await workbook.xlsx.writeFile(result.filePath);
+            const reportBehavior = await getReportsBehaviorSettings();
+            const shouldCompress = exportData.compress === undefined
+                ? reportBehavior.compress
+                : exportData.compress === true;
+
+            if (shouldCompress) {
+                try {
+                    await workbook.xlsx.writeFile(result.filePath, {
+                        zip: { compression: 'DEFLATE', compressionOptions: { level: 9 } }
+                    });
+                } catch (compressionError) {
+                    console.warn('⚠️ [IPC] خيار ضغط Excel غير مدعوم، سيتم الحفظ بدون ضغط:', compressionError.message);
+                    await workbook.xlsx.writeFile(result.filePath);
+                }
+            } else {
+                await workbook.xlsx.writeFile(result.filePath);
+            }
+            await runPostExportActions(result.filePath, exportData);
             console.log('✅ [IPC] تم تصدير Excel بنجاح:', result.filePath);
             return { success: true, filePath: result.filePath };
         } else {
@@ -2573,18 +3201,16 @@ function createReportPrintPreviewWindow(printData) {
             height: 1200,
             minWidth: 800,
             minHeight: 1000,
-            webPreferences: {
-                nodeIntegration: true,
-                contextIsolation: false,
-                enableRemoteModule: true
-            },
+            webPreferences: createSecureWebPreferences(__dirname, {
+                devTools: IS_DEV_MODE,
+                webSecurity: !IS_DEV_MODE
+            }),
             title: printData.title || 'معاينة الطباعة',
             icon: path.join(__dirname, '../assets/icon.png'),
             parent: mainWindow,
             modal: false,
             show: false,
-            autoHideMenuBar: true,
-            webSecurity: false
+            autoHideMenuBar: true
         });
 
         // Create HTML content with print styles
@@ -2694,6 +3320,7 @@ function createReportPrintPreviewWindow(printData) {
 ipcMain.handle('get-sync-status', async () => {
     try {
         const isRunning = getSyncStatus();
+        const isSyncGloballyEnabled = getSyncEnabled();
 
         // Also check persisted setting
         let isEnabled = true;
@@ -2702,7 +3329,10 @@ ipcMain.handle('get-sync-status', async () => {
             if (row && row.setting_value === 'false') isEnabled = false;
         }
 
-        return { success: true, isRunning, isEnabled };
+        // Combine both checks
+        const finalEnabled = isEnabled && isSyncGloballyEnabled;
+
+        return { success: true, isRunning, isEnabled: finalEnabled };
     } catch (e) {
         console.error('Error checking sync status:', e);
         return { success: false, error: e.message };
@@ -2714,7 +3344,7 @@ ipcMain.handle('toggle-sync', async (event, enable) => {
         console.log(`🔄 [APP] Toggling sync to: ${enable}`);
         if (!dbManager) throw new Error('Database not initialized');
 
-        // 1. Save setting settings
+        // 1. Save setting to database
         const stmt = dbManager.db.prepare(`
             INSERT INTO system_settings (category, setting_key, setting_value, updated_at)
             VALUES ('general', 'sync_enabled', ?, CURRENT_TIMESTAMP)
@@ -2724,7 +3354,10 @@ ipcMain.handle('toggle-sync', async (event, enable) => {
         `);
         stmt.run(enable ? 'true' : 'false');
 
-        // 2. Perform Action
+        // 2. Set global sync enabled flag
+        setSyncEnabled(enable);
+
+        // 3. Start or stop background sync interval
         if (enable) {
             const { startBackgroundSync } = require('./background-sync');
             startBackgroundSync(dbManager);
@@ -2805,7 +3438,21 @@ ipcMain.handle('get-database-stats', async (event) => {
 
         // Get total record count
         try {
-            const tables = ['reconciliations', 'bank_receipts', 'cash_receipts', 'customer_receipts', 'postpaid_sales', 'return_invoices', 'suppliers'];
+            const tables = [
+                'reconciliations',
+                'bank_receipts',
+                'cash_receipts',
+                'customer_receipts',
+                'postpaid_sales',
+                'return_invoices',
+                'suppliers',
+                'manual_postpaid_sales',
+                'manual_customer_receipts',
+                'manual_supplier_transactions',
+                'branch_cashboxes',
+                'cashbox_vouchers',
+                'cashbox_voucher_audit_log'
+            ];
             for (const table of tables) {
                 try {
                     // Check if table exists before querying
@@ -3025,6 +3672,21 @@ ipcMain.handle('thermal-printer-preview', async (event, reconciliationData) => {
             throw new Error('بيانات التصفية مطلوبة');
         }
 
+        // Enforce summary hiding for detailed ATM thermal reports.
+        const isDetailedAtmReport =
+            reconciliationData?.isDetailedAtmReport === true ||
+            String(reconciliationData?.reconciliation?.reconciliation_number || '').startsWith('ATM-RPT-');
+        if (isDetailedAtmReport) {
+            reconciliationData.printOptions = {
+                ...(reconciliationData.printOptions || {}),
+                includeSummary: false
+            };
+            reconciliationData.selectedSections = {
+                ...(reconciliationData.selectedSections || {}),
+                summary: false
+            };
+        }
+
         // Get company settings from database
         try {
             const companySettings = {};
@@ -3091,6 +3753,21 @@ ipcMain.handle('thermal-printer-print', async (event, reconciliationData, option
 
         if (!reconciliationData || !reconciliationData.reconciliation) {
             throw new Error('بيانات التصفية مطلوبة');
+        }
+
+        // Enforce summary hiding for detailed ATM thermal reports.
+        const isDetailedAtmReport =
+            reconciliationData?.isDetailedAtmReport === true ||
+            String(reconciliationData?.reconciliation?.reconciliation_number || '').startsWith('ATM-RPT-');
+        if (isDetailedAtmReport) {
+            reconciliationData.printOptions = {
+                ...(reconciliationData.printOptions || {}),
+                includeSummary: false
+            };
+            reconciliationData.selectedSections = {
+                ...(reconciliationData.selectedSections || {}),
+                summary: false
+            };
         }
 
         // Get company settings from database
@@ -3445,4 +4122,3 @@ ipcMain.handle('print-thermal-statement', async (event, statementData) => {
         };
     }
 });
-
