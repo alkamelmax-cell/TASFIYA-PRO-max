@@ -2,9 +2,10 @@ const { app } = require('electron');
 
 const { ipcMain } = require('electron');
 const fetch = require('node-fetch');
+const { buildRemoteServiceUrl } = require('./remote-service-url');
 
 // Configuration
-const REMOTE_URL = 'https://tasfiya-pro-max.onrender.com/api/sync/users'; // Ensure this matches your Render URL
+const REMOTE_URL = buildRemoteServiceUrl('/api/sync/users');
 const SYNC_INTERVAL_MS = 30000; // 30 seconds
 
 class BackgroundSync {
@@ -235,8 +236,6 @@ class BackgroundSync {
     async fetchRemoteRequests(db) {
         try {
             // Adjust URL to point to GET /api/reconciliation-requests
-            // BASE URL is https://tasfiya-pro-max.onrender.com/api/sync/users
-            // We need https://tasfiya-pro-max.onrender.com/api/reconciliation-requests
             const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests');
             console.log(`📥 [SYNC] Pulling requests from: ${reqUrl}`);
 

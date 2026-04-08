@@ -4,6 +4,7 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { parse } = require('url');
+const { buildRemoteServiceUrl } = require('./remote-service-url');
 const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
 const { WebSessionStore } = require('./security/web-session-store');
 const { filterVisibleBranches } = require('./app/branch-visibility');
@@ -1838,7 +1839,7 @@ class LocalWebServer {
             // CRITICAL: Also delete from remote server to prevent re-sync (only if sync is enabled)
             if (syncEnabled) {
                 try {
-                    const remoteUrl = 'https://tasfiya-pro-max.onrender.com/api/reconciliation-requests/' + id;
+                    const remoteUrl = buildRemoteServiceUrl(`/api/reconciliation-requests/${id}`);
                     const fetch = require('node-fetch');
                     await fetch(remoteUrl, { method: 'DELETE' });
                     console.log(`✅ [DELETE] Also deleted from cloud: ID ${id}`);
