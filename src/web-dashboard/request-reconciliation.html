@@ -803,6 +803,84 @@
             localStorage.removeItem(getDraftStorageKey());
         }
 
+        function resetRequestFormForNewRequest() {
+            if (draftAutosaveTimer) {
+                clearTimeout(draftAutosaveTimer);
+                draftAutosaveTimer = null;
+            }
+
+            cashItems = [];
+            bankItems = [];
+            postpaidItems = [];
+            custReceiptItems = [];
+            returnItems = [];
+            supplierItems = [];
+
+            const fieldSelectors = [
+                'systemSales',
+                'notes',
+                'cashCountInput',
+                'input_bank_name_v2',
+                'input_bank_amount_v2',
+                'postpaidName',
+                'postpaidAmount',
+                'custReceiptName',
+                'custReceiptAmount',
+                'returnInv',
+                'returnAmount',
+                'returnNote',
+                'supplierName',
+                'supplierInv',
+                'supplierAmount'
+            ];
+
+            fieldSelectors.forEach((fieldId) => {
+                const field = document.getElementById(fieldId);
+                if (field) {
+                    field.value = '';
+                }
+            });
+
+            const cashDenomSelect = document.getElementById('cashDenomSelect');
+            if (cashDenomSelect) {
+                cashDenomSelect.selectedIndex = 0;
+            }
+
+            const bankOpType = document.getElementById('bankOpType');
+            if (bankOpType) {
+                bankOpType.value = 'mada';
+                bankOpType.dispatchEvent(new Event('change'));
+            }
+
+            const bankAtmName = document.getElementById('bankAtmName');
+            if (bankAtmName) {
+                bankAtmName.selectedIndex = 0;
+            }
+
+            const customerReceiptType = document.getElementById('custReceiptType');
+            if (customerReceiptType) {
+                customerReceiptType.value = 'cash';
+            }
+
+            renderTable('cashTableBody', cashItems, ['val', 'qty', 'sub']);
+            renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
+            renderTable('postpaidTableBody', postpaidItems, ['customer_name', 'amount']);
+            renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
+            renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
+            renderTable('supplierTableBody', supplierItems, ['supplier_name', 'invoice_number', 'amount']);
+
+            updateUI();
+            clearSavedRequestDraft();
+
+            const firstTabButton = document.querySelector('#pills-tab .nav-link[data-bs-target="#tab-cash"]');
+            if (firstTabButton) {
+                bootstrap.Tab.getOrCreateInstance(firstTabButton).show();
+            }
+
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+            showToast('info', 'تم تفريغ النموذج لبدء تصفية جديدة');
+        }
+
         function saveRequestDraftNow() {
             if (!draftAutosaveReady) {
                 return;
@@ -1402,20 +1480,14 @@
                 }
 
                 if (data.success) {
-                    clearSavedRequestDraft();
                     await Swal.fire({
                         title: 'تم الإرسال بنجاح!',
-                        text: 'تم إرسال طلب التصفية للمراجعة وسيتم تبليغ المسؤول.',
+                        text: 'تم إرسال طلب التصفية للمراجعة وسيتم الآن تجهيز نموذج جديد فارغ.',
                         icon: 'success',
                         confirmButtonText: 'حسناً',
                         confirmButtonColor: '#198754'
                     });
-
-                    if (user.role === 'cashier') {
-                        window.location.reload();
-                    } else {
-                        window.location.href = 'index.html';
-                    }
+                    resetRequestFormForNewRequest();
                 } else {
                     Swal.fire({
                         title: 'خطأ',
