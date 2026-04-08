@@ -3,14 +3,15 @@
  * تصفية برو - Tasfiya Pro
  * Build Script - سكريبت بناء نظيف وبسيط
  * ============================================================
- * إصدار: 4.0.1
+ * إصدار: يتم سحبه من package.json
  * التاريخ: 2026-02-02
  * ============================================================
  */
 
-const { execSync } = require('child_process');
+const { spawnSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const { version: APP_VERSION } = require('./package.json');
 
 const colors = {
   reset: '\x1b[0m',
@@ -25,10 +26,29 @@ function log(message, color = 'reset') {
   console.log(`${colors[color]}${message}${colors.reset}`);
 }
 
-function runCommand(cmd, description) {
+function resolveBin(bin) {
+  return bin;
+}
+
+function runCommand(command, args, description) {
   try {
     log(`\n▶️  ${description}...`, 'cyan');
-    execSync(cmd, { stdio: 'inherit' });
+    const result = spawnSync(command, args, {
+      stdio: 'inherit',
+      // On Windows, use shell execution so npm/npx and other command aliases
+      // are resolved reliably without triggering "open with app" behavior.
+      shell: process.platform === 'win32',
+      windowsHide: true
+    });
+
+    if (result.error) {
+      throw result.error;
+    }
+
+    if (typeof result.status === 'number' && result.status !== 0) {
+      throw new Error(`Command exited with code ${result.status}`);
+    }
+
     log(`✅ ${description} - نجح`, 'green');
     return true;
   } catch (error) {
@@ -89,7 +109,7 @@ function cleanOldBuilds() {
 // الخطوة 3: تثبيت المتطلبات
 // ============================================================
 function installDependencies() {
-  runCommand('npm install', 'تثبيت المتطلبات (npm install)');
+  runCommand(resolveBin('npm'), ['install'], 'تثبيت المتطلبات (npm install)');
 }
 
 // ============================================================
@@ -97,8 +117,9 @@ function installDependencies() {
 // ============================================================
 function rebuildNativeModules() {
   runCommand(
-    'npx @electron/rebuild -f',
-    'إعادة بناء الوحدات المتوافقة مع Electron'
+    resolveBin('npm'),
+    ['run', 'rebuild'],
+    'إعادة بناء الوحدات الأصلية (Electron)'
   );
 }
 
@@ -108,7 +129,8 @@ function rebuildNativeModules() {
 function buildApplication() {
   // استخدام الإعدادات من package.json مباشرة
   runCommand(
-    'npx electron-builder --win --x64',
+    resolveBin('npx'),
+    ['electron-builder', '--win', '--x64'],
     'بناء التطبيق (Electron Builder)'
   );
 }
@@ -143,7 +165,7 @@ async function main() {
   try {
     log('\n╔════════════════════════════════════════════════════════╗', 'blue');
     log('║     تصفية برو - Tasfiya Pro - عملية البناء            ║', 'blue');
-    log('║          Clean Build Script v4.0.0                     ║', 'blue');
+    log(`║          Clean Build Script v${APP_VERSION.padEnd(23, ' ')}║`, 'blue');
     log('╚════════════════════════════════════════════════════════╝\n', 'blue');
 
     // الخطوة 1: فحص الملفات
