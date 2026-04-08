@@ -99,13 +99,27 @@ function getNpmCommand() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
-function runElectronModuleProbe() {
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
+function buildElectronNodeEnv(baseEnv = process.env) {
+  return {
+    ...baseEnv,
+    ELECTRON_RUN_AS_NODE: "1"
+  };
+}
 
-  const result = spawnSync(electronPath, ["--eval", moduleProbeScript], {
+function buildElectronAppEnv(baseEnv = process.env) {
+  const env = { ...baseEnv };
+  delete env.ELECTRON_RUN_AS_NODE;
+  return env;
+}
+
+function getElectronModuleProbeArgs() {
+  return ["-e", moduleProbeScript];
+}
+
+function runElectronModuleProbe() {
+  const result = spawnSync(electronPath, getElectronModuleProbeArgs(), {
     cwd: projectRoot,
-    env,
+    env: buildElectronNodeEnv(),
     encoding: "utf8"
   });
 
@@ -117,12 +131,9 @@ function runElectronModuleProbe() {
 }
 
 function runNativeDependenciesRebuild() {
-  const env = { ...process.env };
-  delete env.ELECTRON_RUN_AS_NODE;
-
   return spawnSync(getNpmCommand(), ["run", "rebuild"], {
     cwd: projectRoot,
-    env,
+    env: buildElectronAppEnv(),
     stdio: "inherit"
   });
 }
@@ -178,14 +189,10 @@ function startElectronApp() {
   ensureElectronNativeDeps();
 
   const args = process.argv.slice(2);
-  const env = { ...process.env };
-
-  // Force Electron app mode even if parent process injects this variable.
-  delete env.ELECTRON_RUN_AS_NODE;
 
   const child = spawn(electronPath, [".", ...args], {
     cwd: process.cwd(),
-    env,
+    env: buildElectronAppEnv(),
     stdio: "inherit"
   });
 
@@ -214,7 +221,10 @@ if (require.main === module) {
 
 module.exports = {
   buildDependencySignature,
+  buildElectronAppEnv,
+  buildElectronNodeEnv,
   ensureElectronNativeDeps,
+  getElectronModuleProbeArgs,
   isTruthy,
   runElectronModuleProbe,
   startElectronApp
