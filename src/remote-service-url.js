@@ -1,4 +1,4 @@
-const DEFAULT_REMOTE_SERVICE_BASE_URL = 'https://tasfiya-pro-max-frankfurt.onrender.com';
+const DEFAULT_REMOTE_SERVICE_BASE_URL = 'https://tasfiya-pro-max.onrender.com';
 
 function normalizeRemoteServiceBaseUrl(url) {
     return String(url || DEFAULT_REMOTE_SERVICE_BASE_URL)

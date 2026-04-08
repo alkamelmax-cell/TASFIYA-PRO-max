@@ -7,7 +7,7 @@ const {
     getRemoteServiceBaseUrl
 } = require('../src/remote-service-url');
 
-test('remote service url defaults to the Frankfurt deployment', () => {
+test('remote service url defaults to the legacy production deployment', () => {
     assert.equal(getRemoteServiceBaseUrl({}), DEFAULT_REMOTE_SERVICE_BASE_URL);
     assert.equal(
         buildRemoteServiceUrl('/api/sync/users', {}),
