@@ -9,6 +9,7 @@ const electronPath = require("electron");
 const projectRoot = path.resolve(__dirname, "..");
 const cacheDir = path.join(projectRoot, "node_modules", ".cache", "tasfiya-pro");
 const markerPath = path.join(cacheDir, "electron-native-deps.json");
+const moduleProbePath = path.join(cacheDir, "electron-native-deps-probe.cjs");
 const packageLockPath = path.join(projectRoot, "package-lock.json");
 const electronPackageJsonPath = path.join(projectRoot, "node_modules", "electron", "package.json");
 const betterSqliteBinaryPath = path.join(
@@ -19,13 +20,17 @@ const betterSqliteBinaryPath = path.join(
   "Release",
   "better_sqlite3.node"
 );
-const moduleProbeScript = `
+const moduleProbeScript = `"use strict";
+
+const { app } = require("electron");
+
 try {
   require("better-sqlite3");
-  process.exit(0);
+  process.stdout.write("probe-ok\\n");
+  app.exit(0);
 } catch (error) {
   console.error(error && error.stack ? error.stack : String(error));
-  process.exit(1);
+  app.exit(1);
 }
 `;
 
@@ -99,27 +104,33 @@ function getNpmCommand() {
   return process.platform === "win32" ? "npm.cmd" : "npm";
 }
 
-function buildElectronNodeEnv(baseEnv = process.env) {
-  return {
-    ...baseEnv,
-    ELECTRON_RUN_AS_NODE: "1"
-  };
-}
-
 function buildElectronAppEnv(baseEnv = process.env) {
   const env = { ...baseEnv };
   delete env.ELECTRON_RUN_AS_NODE;
   return env;
 }
 
+function ensureModuleProbeScript() {
+  fs.mkdirSync(cacheDir, { recursive: true });
+  const existingScript = fs.existsSync(moduleProbePath)
+    ? fs.readFileSync(moduleProbePath, "utf8")
+    : null;
+
+  if (existingScript !== moduleProbeScript) {
+    fs.writeFileSync(moduleProbePath, moduleProbeScript, "utf8");
+  }
+
+  return moduleProbePath;
+}
+
 function getElectronModuleProbeArgs() {
-  return ["-e", moduleProbeScript];
+  return [ensureModuleProbeScript()];
 }
 
 function runElectronModuleProbe() {
   const result = spawnSync(electronPath, getElectronModuleProbeArgs(), {
     cwd: projectRoot,
-    env: buildElectronNodeEnv(),
+    env: buildElectronAppEnv(),
     encoding: "utf8"
   });
 
@@ -134,7 +145,9 @@ function runNativeDependenciesRebuild() {
   return spawnSync(getNpmCommand(), ["run", "rebuild"], {
     cwd: projectRoot,
     env: buildElectronAppEnv(),
-    stdio: "inherit"
+    stdio: "inherit",
+    shell: process.platform === "win32",
+    windowsHide: true
   });
 }
 
@@ -222,7 +235,7 @@ if (require.main === module) {
 module.exports = {
   buildDependencySignature,
   buildElectronAppEnv,
-  buildElectronNodeEnv,
+  ensureModuleProbeScript,
   ensureElectronNativeDeps,
   getElectronModuleProbeArgs,
   isTruthy,
