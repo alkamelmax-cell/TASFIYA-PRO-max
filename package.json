@@ -3,16 +3,23 @@
   "_copyright": "🧾 تطبيق: تصفية برو | 🛠️ المطور: محمد أمين الكامل | 🗓️ سنة: 2025 | 📌 جميع الحقوق محفوظة | يمنع الاستخدام أو التعديل دون إذن كتابي",
   "_comment2": "===================================================",
   "name": "casher",
-  "version": "4.0.1",
-  "description": "تصفية برو - Professional Reconciliation System with Time Range Filter & Notes Support v4.0.0",
+  "version": "5.0.1",
+  "description": "تصفية برو - Professional Reconciliation System with Time Range Filter & Notes Support v5.0.1",
   "main": "src/main.js",
   "scripts": {
-    "start": "electron .",
+    "build:renderer": "node scripts/build-renderer-bundles.js",
+    "prestart": "node scripts/build-renderer-bundles.js",
+    "start": "node scripts/run-app.js",
+    "start:desktop": "node scripts/run-electron.js",
     "start:web": "node src/start-web.js",
-    "dev": "cross-env NODE_ENV=development electron . --dev",
+    "predev": "node scripts/build-renderer-bundles.js",
+    "dev": "cross-env NODE_ENV=development node scripts/run-electron.js --dev",
+    "prebuild-clean": "node scripts/build-renderer-bundles.js",
     "build-clean": "node build.js",
+    "lint": "eslint \"src/app/**/*.js\" \"src/security/**/*.js\" \"test/**/*.js\" --max-warnings=0",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
     "postinstall": "electron-builder install-app-deps",
-    "rebuild": "electron-rebuild -f -w better-sqlite3"
+    "rebuild": "electron-builder install-app-deps"
   },
   "keywords": [
     "cashier",
@@ -23,24 +30,24 @@
   "author": "محمد أمين الكامل",
   "license": "ISC",
   "dependencies": {
-    "better-sqlite3": "^12.6.2",
-    "bootstrap": "^5.3.7",
-    "dexie": "^4.0.11",
-    "exceljs": "^4.4.0",
-    "idb": "^8.0.3",
-    "localforage": "^1.10.0",
-    "node-fetch": "^2.7.0",
-    "nodemailer": "^7.0.5",
-    "pg": "^8.17.1",
-    "puppeteer": "^24.14.0",
-    "sweetalert2": "^11.22.2"
+    "better-sqlite3": "12.6.2",
+    "bootstrap": "5.3.7",
+    "dexie": "4.0.11",
+    "exceljs": "4.4.0",
+    "idb": "8.0.3",
+    "localforage": "1.10.0",
+    "node-fetch": "2.7.0",
+    "pg": "8.17.1",
+    "puppeteer": "24.37.5",
+    "sweetalert2": "11.26.21"
   },
   "devDependencies": {
-    "cross-env": "^7.0.3",
-    "electron": "^37.2.3",
-    "electron-builder": "^26.0.12",
-    "electron-rebuild": "^3.2.9",
-    "rcedit": "^4.0.1"
+    "cross-env": "7.0.3",
+    "electron": "39.8.5",
+    "electron-builder": "26.8.1",
+    "eslint": "8.57.1",
+    "png-to-ico": "3.0.1",
+    "rcedit": "4.0.1"
   },
   "build": {
     "appId": "com.tasfiyapro.reconciliation",
@@ -95,10 +102,9 @@
           ]
         }
       ],
-      "icon": "assets/icon.ico",
+      "icon": "icon.ico",
       "requestedExecutionLevel": "asInvoker",
       "artifactName": "${productName}-${version}-${arch}.${ext}",
-      "publisherName": "محمد أمين الكامل",
       "verifyUpdateCodeSignature": false
     },
     "nsis": {
@@ -116,8 +122,22 @@
     "portable": {
       "artifactName": "${productName}-${version}-portable.${ext}"
     },
+    "electronFuses": {
+      "runAsNode": false
+    },
     "compression": "maximum",
     "npmRebuild": false,
     "nodeGypRebuild": false
+  },
+  "overrides": {
+    "ajv": "6.14.0",
+    "@xmldom/xmldom": "0.8.12",
+    "brace-expansion@^1.1.7": "1.1.13",
+    "brace-expansion@^2.0.1": "2.0.3",
+    "brace-expansion@^2.0.2": "2.0.3",
+    "brace-expansion@^5.0.2": "5.0.5",
+    "flatted": "3.4.2",
+    "lodash": "4.18.1",
+    "picomatch": "4.0.4"
   }
 }

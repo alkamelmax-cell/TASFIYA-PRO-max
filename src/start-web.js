@@ -1,7 +1,4 @@
-const DatabaseManager = require('./database');
-const PostgresManager = require('./postgres-database');
 const LocalWebServer = require('./local-server');
-const path = require('path');
 
 (async () => {
     try {
@@ -10,9 +7,11 @@ const path = require('path');
         // Check for Neon/Postgres Connection String
         if (process.env.DATABASE_URL) {
             console.log('🌍 Deployment detected: Using Neon PostgreSQL');
+            const PostgresManager = require('./postgres-database');
             dbManager = new PostgresManager(process.env.DATABASE_URL);
         } else {
             console.log('📂 Local mode: Using SQLite');
+            const DatabaseManager = require('./database');
             dbManager = new DatabaseManager();
         }
 
