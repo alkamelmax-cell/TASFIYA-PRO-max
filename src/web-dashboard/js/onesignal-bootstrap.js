@@ -2,15 +2,19 @@
     'use strict';
 
     const ONE_SIGNAL_APP_ID = '1b7778f5-0f25-4df8-a281-611b682a964c';
-    const SERVICE_WORKER_PATH = '/service-worker.js';
-    const SERVICE_WORKER_SCOPE = '/';
+    const PWA_SERVICE_WORKER_PATH = '/service-worker.js';
+    const PWA_SERVICE_WORKER_SCOPE = '/';
+    const ONE_SIGNAL_SERVICE_WORKER_PATH = 'push/onesignal/OneSignalSDKWorker.js';
+    const ONE_SIGNAL_SERVICE_WORKER_SCOPE = '/push/onesignal/';
     const LEGACY_CACHE_NAMES = new Set([
         'tasfiya-pro-v2',
         'tasfiya-pro-v2.6'
     ]);
     const NATIVE_BOOTSTRAP_COOLDOWN_MS = 15000;
+    const CONTROLLER_WAIT_TIMEOUT_MS = 4000;
 
     let serviceWorkerRegistrationPromise = null;
+    let browserInitializationPromise = null;
 
     function isNativeAppEnvironment() {
         const userAgent = String(windowObj.navigator.userAgent || '').toLowerCase();
@@ -124,11 +128,90 @@
         return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '[::1]';
     }
 
+    function isUnsupportedOriginError(error) {
+        const message = String(
+            (error && (error.message || error.reason || error.stack))
+            || error
+            || ''
+        ).toLowerCase();
+
+        return (
+            message.includes('can only use domain')
+            || message.includes('origin')
+            || message.includes('hostname')
+        );
+    }
+
     function canUseServiceWorkers() {
         return (
             'serviceWorker' in windowObj.navigator
             && ('isSecureContext' in windowObj ? (windowObj.isSecureContext || isLocalhostLike()) : true)
         );
+    }
+
+    function delay(ms) {
+        return new Promise((resolve) => {
+            windowObj.setTimeout(resolve, ms);
+        });
+    }
+
+    function waitForWindowLoad() {
+        if (windowObj.document.readyState === 'complete') {
+            return Promise.resolve();
+        }
+
+        return new Promise((resolve) => {
+            windowObj.addEventListener('load', resolve, { once: true });
+        });
+    }
+
+    function waitForServiceWorkerActivation(registration) {
+        const worker = registration && (registration.active || registration.waiting || registration.installing);
+        if (!worker || worker.state === 'activated') {
+            return Promise.resolve();
+        }
+
+        return new Promise((resolve) => {
+            const handleStateChange = () => {
+                if (worker.state === 'activated') {
+                    worker.removeEventListener('statechange', handleStateChange);
+                    resolve();
+                }
+            };
+
+            worker.addEventListener('statechange', handleStateChange);
+        });
+    }
+
+    function waitForController(timeoutMs = CONTROLLER_WAIT_TIMEOUT_MS) {
+        if (!canUseServiceWorkers() || windowObj.navigator.serviceWorker.controller) {
+            return Promise.resolve(Boolean(windowObj.navigator.serviceWorker && windowObj.navigator.serviceWorker.controller));
+        }
+
+        return new Promise((resolve) => {
+            let settled = false;
+
+            const finish = (value) => {
+                if (settled) {
+                    return;
+                }
+
+                settled = true;
+                windowObj.navigator.serviceWorker.removeEventListener('controllerchange', handleControllerChange);
+                clearTimeout(timeoutId);
+                resolve(value);
+            };
+
+            const handleControllerChange = () => {
+                finish(Boolean(windowObj.navigator.serviceWorker.controller));
+            };
+
+            const timeoutId = windowObj.setTimeout(() => {
+                finish(Boolean(windowObj.navigator.serviceWorker.controller));
+            }, timeoutMs);
+
+            windowObj.navigator.serviceWorker.addEventListener('controllerchange', handleControllerChange);
+        });
     }
 
     async function cleanLegacyCaches() {
@@ -162,8 +245,8 @@
                     await registration.update();
                 }
 
-                const registration = await windowObj.navigator.serviceWorker.register(SERVICE_WORKER_PATH, {
-                    scope: SERVICE_WORKER_SCOPE,
+                const registration = await windowObj.navigator.serviceWorker.register(PWA_SERVICE_WORKER_PATH, {
+                    scope: PWA_SERVICE_WORKER_SCOPE,
                     updateViaCache: 'none'
                 });
 
@@ -181,45 +264,86 @@
     }
 
     function queueOneSignalInit(user, options) {
+        if (isLocalhostLike()) {
+            console.info('[Tasfiya OneSignal] Skipping browser initialization on localhost.');
+            return Promise.resolve(false);
+        }
+
+        if (windowObj.__tasfiyaOneSignalInitialized) {
+            return Promise.resolve(true);
+        }
+
+        if (browserInitializationPromise) {
+            return browserInitializationPromise;
+        }
+
         const config = options || {};
         const role = config.role || 'admin';
         const requestPermission = config.requestPermission !== false;
         const userId = user && user.id ? String(user.id) : 'unknown';
 
-        windowObj.OneSignalDeferred = windowObj.OneSignalDeferred || [];
-        windowObj.OneSignalDeferred.push(async function initializeOneSignal(OneSignal) {
-            if (windowObj.__tasfiyaOneSignalInitialized) {
-                return;
-            }
-
-            try {
-                const registration = await registerServiceWorker();
-                if (!registration) {
-                    console.warn('[Tasfiya OneSignal] Skipping initialization because Service Worker is unavailable.');
-                    return;
+        browserInitializationPromise = new Promise((resolve) => {
+            windowObj.OneSignalDeferred = windowObj.OneSignalDeferred || [];
+            windowObj.OneSignalDeferred.push(async function initializeOneSignal(OneSignal) {
+                if (windowObj.__tasfiyaOneSignalInitialized) {
+                    resolve(true);
+                    return true;
                 }
 
-                await OneSignal.init({
-                    appId: ONE_SIGNAL_APP_ID,
-                    allowLocalhostAsSecureOrigin: true,
-                    serviceWorkerPath: SERVICE_WORKER_PATH,
-                    serviceWorkerParam: {
-                        scope: SERVICE_WORKER_SCOPE
+                try {
+                    await waitForWindowLoad();
+
+                    const registration = await registerServiceWorker();
+                    if (!registration) {
+                        console.warn('[Tasfiya OneSignal] Skipping initialization because Service Worker is unavailable.');
+                        browserInitializationPromise = null;
+                        resolve(false);
+                        return false;
                     }
-                });
 
-                windowObj.__tasfiyaOneSignalInitialized = true;
+                    await waitForServiceWorkerActivation(registration);
+                    await waitForController();
+                    await delay(250);
 
-                await OneSignal.User.addTag('role', role);
-                await OneSignal.User.addTag('userId', userId);
+                    await OneSignal.init({
+                        appId: ONE_SIGNAL_APP_ID,
+                        allowLocalhostAsSecureOrigin: true,
+                        serviceWorkerPath: ONE_SIGNAL_SERVICE_WORKER_PATH,
+                        serviceWorkerParam: {
+                            scope: ONE_SIGNAL_SERVICE_WORKER_SCOPE
+                        }
+                    });
 
-                if (requestPermission && OneSignal.Notifications.permission === 'default') {
-                    await OneSignal.Notifications.requestPermission();
+                    windowObj.__tasfiyaOneSignalInitialized = true;
+
+                    await OneSignal.User.addTag('role', role);
+                    await OneSignal.User.addTag('userId', userId);
+
+                    if (requestPermission && OneSignal.Notifications.permission === 'default') {
+                        await OneSignal.Notifications.requestPermission();
+                    }
+
+                    resolve(true);
+                    return true;
+                } catch (error) {
+                    if (isUnsupportedOriginError(error)) {
+                        console.warn(
+                            '[Tasfiya OneSignal] Browser notifications are disabled for this origin until it is allowed in OneSignal:',
+                            windowObj.location.origin
+                        );
+                        resolve(false);
+                        return false;
+                    }
+
+                    browserInitializationPromise = null;
+                    console.error('[Tasfiya OneSignal] Initialization failed:', error);
+                    resolve(false);
+                    return false;
                 }
-            } catch (error) {
-                console.error('[Tasfiya OneSignal] Initialization failed:', error);
-            }
+            });
         });
+
+        return browserInitializationPromise;
     }
 
     windowObj.TasfiyaPwa = {
@@ -234,7 +358,7 @@
             return queueNativeBootstrap(user, options);
         },
         initBrowserUser(user, options) {
-            queueOneSignalInit(user, options);
+            return queueOneSignalInit(user, options);
         }
     };
 })(window);
