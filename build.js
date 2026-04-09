@@ -109,14 +109,14 @@ function cleanOldBuilds() {
 // الخطوة 3: تثبيت المتطلبات
 // ============================================================
 function installDependencies() {
-  runCommand(resolveBin('npm'), ['install'], 'تثبيت المتطلبات (npm install)');
+  return runCommand(resolveBin('npm'), ['install'], 'تثبيت المتطلبات (npm install)');
 }
 
 // ============================================================
 // الخطوة 4: إعادة بناء الوحدات الأصلية (Native Modules)
 // ============================================================
 function rebuildNativeModules() {
-  runCommand(
+  return runCommand(
     resolveBin('npm'),
     ['run', 'rebuild'],
     'إعادة بناء الوحدات الأصلية (Electron)'
@@ -128,7 +128,7 @@ function rebuildNativeModules() {
 // ============================================================
 function buildApplication() {
   // استخدام الإعدادات من package.json مباشرة
-  runCommand(
+  return runCommand(
     resolveBin('npx'),
     ['electron-builder', '--win', '--x64'],
     'بناء التطبيق (Electron Builder)'
@@ -175,13 +175,19 @@ async function main() {
     cleanOldBuilds();
 
     // الخطوة 3: تثبيت المتطلبات
-    installDependencies();
+    if (!installDependencies()) {
+      throw new Error('فشل تثبيت المتطلبات');
+    }
 
     // الخطوة 4: إعادة بناء الوحدات
-    rebuildNativeModules();
+    if (!rebuildNativeModules()) {
+      throw new Error('فشل إعادة بناء الوحدات الأصلية');
+    }
 
     // الخطوة 5: بناء التطبيق
-    buildApplication();
+    if (!buildApplication()) {
+      throw new Error('فشل بناء التطبيق');
+    }
 
     // الخطوة 6: التحقق من النتائج
     verifyBuild();

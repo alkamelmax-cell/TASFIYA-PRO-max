@@ -3,13 +3,15 @@
 
 ; تعيين اللغة العربية
 !define MUI_LANGDLL_ALLLANGUAGES
+!define TASFIYA_LANG_ARABIC 1025
+!define TASFIYA_LANG_ENGLISH 1033
 
 ; رسائل مخصصة
-LangString welcome ${LANG_ARABIC} "مرحباً بك في معالج تثبيت تصفية برو"
-LangString welcome ${LANG_ENGLISH} "Welcome to Tasfiya Pro Setup Wizard"
+LangString welcome ${TASFIYA_LANG_ARABIC} "مرحباً بك في معالج تثبيت تصفية برو"
+LangString welcome ${TASFIYA_LANG_ENGLISH} "Welcome to Tasfiya Pro Setup Wizard"
 
-LangString finish ${LANG_ARABIC} "تم تثبيت تصفية برو بنجاح"
-LangString finish ${LANG_ENGLISH} "Tasfiya Pro has been installed successfully"
+LangString finish ${TASFIYA_LANG_ARABIC} "تم تثبيت تصفية برو بنجاح"
+LangString finish ${TASFIYA_LANG_ENGLISH} "Tasfiya Pro has been installed successfully"
 
 ; إعدادات إضافية
 !define MUI_WELCOMEPAGE_TITLE "تصفية برو - نظام التصفية الاحترافي"
@@ -18,21 +20,12 @@ LangString finish ${LANG_ENGLISH} "Tasfiya Pro has been installed successfully"
 !define MUI_FINISHPAGE_TITLE "اكتمل التثبيت"
 !define MUI_FINISHPAGE_TEXT "تم تثبيت تصفية برو بنجاح على جهازك.$\r$\n$\r$\nيمكنك الآن تشغيل التطبيق من سطح المكتب أو قائمة ابدأ.$\r$\n$\r$\nشكراً لاستخدام تصفية برو!"
 
-; إضافة معلومات إضافية
-!define MUI_FINISHPAGE_RUN
-!define MUI_FINISHPAGE_RUN_TEXT "تشغيل تصفية برو الآن"
-
 ; تخصيص أيقونات
-!define MUI_ICON "assets\icon.ico"
-!define MUI_UNICON "assets\icon.ico"
+!ifndef MUI_ICON
+  !define MUI_ICON "assets\icon.ico"
+!endif
 
-; معلومات الشركة
-VIProductVersion "4.0.0.0"
-VIAddVersionKey "ProductName" "تصفية برو - Tasfiya Pro"
-VIAddVersionKey "CompanyName" "محمد أمين الكامل"
-VIAddVersionKey "LegalCopyright" "© 2025 محمد أمين الكامل - جميع الحقوق محفوظة"
-VIAddVersionKey "FileDescription" "نظام التصفية الاحترافي مع مرشح النطاق الزمني وملاحظات التصفية"
-VIAddVersionKey "FileVersion" "4.0.0"
-VIAddVersionKey "ProductVersion" "4.0.0"
-VIAddVersionKey "InternalName" "TasfiyaPro"
-VIAddVersionKey "OriginalFilename" "TasfiyaPro.exe"
+!ifndef MUI_UNICON
+  !define MUI_UNICON "assets\icon.ico"
+!endif
+
