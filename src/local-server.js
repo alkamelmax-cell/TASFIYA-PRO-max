@@ -305,13 +305,22 @@ class LocalWebServer {
                 }
 
                 const indexes = [
+                    // Reconciliations
                     "CREATE INDEX IF NOT EXISTS idx_reconciliations_date ON reconciliations(reconciliation_date)",
                     "CREATE INDEX IF NOT EXISTS idx_reconciliations_status ON reconciliations(status)",
                     "CREATE INDEX IF NOT EXISTS idx_reconciliations_cashier ON reconciliations(cashier_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_reconciliations_origin_request_id ON reconciliations(origin_request_id)",
+
+                    // Sales & Receipts (CRITICAL for Customer Ledger)
                     "CREATE INDEX IF NOT EXISTS idx_postpaid_customer ON postpaid_sales(customer_name)",
                     "CREATE INDEX IF NOT EXISTS idx_postpaid_rec_id ON postpaid_sales(reconciliation_id)",
                     "CREATE INDEX IF NOT EXISTS idx_receipts_customer ON customer_receipts(customer_name)",
                     "CREATE INDEX IF NOT EXISTS idx_receipts_rec_id ON customer_receipts(reconciliation_id)",
+
+                    // Requests
+                    "CREATE INDEX IF NOT EXISTS idx_reconciliation_requests_status_created ON reconciliation_requests(status, created_at DESC)",
+
+                    // Manual Transactions
                     "CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer ON manual_postpaid_sales(customer_name)",
                     "CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer ON manual_customer_receipts(customer_name)"
                 ];
@@ -1720,15 +1729,33 @@ class LocalWebServer {
 
                     console.log(`🛡️ [APPROVAL] Creating Reconciliation #${newRecNum} for Cashier ${cashierId}`);
 
-                    const insertRec = tx.prepare(`
-                        INSERT INTO reconciliations
-                        (reconciliation_number, cashier_id, accountant_id, reconciliation_date, system_sales, total_receipts, surplus_deficit, status, notes, created_at)
-                        VALUES(?, ?, ?, ?, ?, ?, ?, 'completed', ?, CURRENT_TIMESTAMP)
-                    `);
+                    let recInfo;
+                    try {
+                        const insertRec = tx.prepare(`
+                            INSERT INTO reconciliations
+                            (reconciliation_number, cashier_id, accountant_id, reconciliation_date, system_sales, total_receipts, surplus_deficit, status, notes, origin_request_id, created_at)
+                            VALUES(?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, CURRENT_TIMESTAMP)
+                        `);
 
-                    const recInfo = await insertRec.run(
-                        newRecNum, cashierId, accountantId, date, systemSales, totalReceiptsLog, surplus, (request.notes || '')
-                    );
+                        recInfo = await insertRec.run(
+                            newRecNum, cashierId, accountantId, date, systemSales, totalReceiptsLog, surplus, (request.notes || ''), request.id
+                        );
+                    } catch (insertError) {
+                        if (String(insertError.message || '').includes('origin_request_id')) {
+                            console.warn('⚠️ [APPROVAL] origin_request_id غير متاح، سيتم اعتماد الطلب بدونه مؤقتاً');
+                            const fallbackInsertRec = tx.prepare(`
+                                INSERT INTO reconciliations
+                                (reconciliation_number, cashier_id, accountant_id, reconciliation_date, system_sales, total_receipts, surplus_deficit, status, notes, created_at)
+                                VALUES(?, ?, ?, ?, ?, ?, ?, 'completed', ?, CURRENT_TIMESTAMP)
+                            `);
+
+                            recInfo = await fallbackInsertRec.run(
+                                newRecNum, cashierId, accountantId, date, systemSales, totalReceiptsLog, surplus, (request.notes || '')
+                            );
+                        } else {
+                            throw insertError;
+                        }
+                    }
                     const recId = recInfo.lastInsertRowid;
 
                     console.log(`🛡️ [APPROVAL] Created Parent Record ID: ${recId}`);
@@ -2087,6 +2114,7 @@ class LocalWebServer {
                     data.branch_cashboxes
                     || data.cashbox_vouchers
                     || data.cashbox_voucher_audit_log
+                    || data.active_branch_cashboxes_branch_ids
                     || data.active_branch_cashboxes_ids
                     || data.active_cashbox_vouchers_ids
                     || data.active_cashbox_voucher_audit_log_ids
@@ -2103,6 +2131,118 @@ class LocalWebServer {
                         .filter(value => Number.isInteger(value) && value > 0)
                     : []);
 
+                const normalizeDecimal = (value, fallback = 0) => {
+                    if (value === null || value === undefined || value === '') {
+                        return fallback;
+                    }
+
+                    const numericValue = Number(String(value).replace(/,/g, ''));
+                    return Number.isFinite(numericValue) ? numericValue : fallback;
+                };
+
+                const canonicalCashboxIdByBranchId = new Map();
+
+                const refreshCanonicalCashboxMap = async (branchIds = []) => {
+                    const normalizedBranchIds = normalizeIdList(branchIds);
+                    const hasBranchFilter = normalizedBranchIds.length > 0;
+                    const result = hasBranchFilter
+                        ? await pool.query(
+                            'SELECT id, branch_id FROM branch_cashboxes WHERE branch_id = ANY($1::int[])',
+                            [normalizedBranchIds]
+                        )
+                        : await pool.query('SELECT id, branch_id FROM branch_cashboxes');
+
+                    if (hasBranchFilter) {
+                        normalizedBranchIds.forEach((branchId) => canonicalCashboxIdByBranchId.delete(branchId));
+                    } else {
+                        canonicalCashboxIdByBranchId.clear();
+                    }
+
+                    for (const row of result.rows || []) {
+                        const branchId = Number(row.branch_id);
+                        const cashboxId = Number(row.id);
+                        if (Number.isInteger(branchId) && branchId > 0 && Number.isInteger(cashboxId) && cashboxId > 0) {
+                            canonicalCashboxIdByBranchId.set(branchId, cashboxId);
+                        }
+                    }
+
+                    return canonicalCashboxIdByBranchId;
+                };
+
+                const ensureCanonicalCashboxesForBranches = async (branchIds, sourceRows = []) => {
+                    const normalizedBranchIds = normalizeIdList(branchIds);
+                    if (normalizedBranchIds.length === 0) {
+                        return;
+                    }
+
+                    await refreshCanonicalCashboxMap(normalizedBranchIds);
+
+                    const missingBranchIds = normalizedBranchIds.filter((branchId) => !canonicalCashboxIdByBranchId.has(branchId));
+                    if (missingBranchIds.length === 0) {
+                        return;
+                    }
+
+                    const sourceRowsByBranchId = new Map(
+                        (Array.isArray(sourceRows) ? sourceRows : [])
+                            .map((row) => {
+                                const branchId = Number(row && row.branch_id);
+                                return Number.isInteger(branchId) && branchId > 0
+                                    ? [branchId, row]
+                                    : null;
+                            })
+                            .filter(Boolean)
+                    );
+
+                    const branchesResult = await pool.query(
+                        'SELECT id, branch_name, is_active FROM branches WHERE id = ANY($1::int[])',
+                        [missingBranchIds]
+                    );
+
+                    const branchesById = new Map(
+                        (branchesResult.rows || []).map((row) => [Number(row.id), row])
+                    );
+
+                    let createdCount = 0;
+
+                    for (const branchId of missingBranchIds) {
+                        const branchRow = branchesById.get(branchId);
+                        if (!branchRow) {
+                            console.warn(`⚠️ [SYNC] Skipping canonical cashbox creation for missing branch ${branchId}.`);
+                            continue;
+                        }
+
+                        const sourceRow = sourceRowsByBranchId.get(branchId) || {};
+                        const branchName = String(branchRow.branch_name || '').trim() || 'الفرع';
+                        const cashboxName = String(sourceRow.cashbox_name || '').trim() || `صندوق ${branchName}`;
+                        const openingBalance = normalizeDecimal(sourceRow.opening_balance, 0);
+                        const isActive = Number.isInteger(Number(sourceRow.is_active))
+                            ? Number(sourceRow.is_active)
+                            : Number.isInteger(Number(branchRow.is_active))
+                                ? Number(branchRow.is_active)
+                                : 1;
+                        const createdAt = sourceRow.created_at || new Date().toISOString();
+                        const updatedAt = sourceRow.updated_at || createdAt;
+
+                        await pool.query(
+                            `INSERT INTO branch_cashboxes (
+                                branch_id, cashbox_name, opening_balance, is_active, created_at, updated_at
+                            ) VALUES ($1, $2, $3, $4, $5, $6)
+                            ON CONFLICT (branch_id) DO UPDATE SET
+                                cashbox_name = COALESCE(NULLIF(EXCLUDED.cashbox_name, ''), branch_cashboxes.cashbox_name),
+                                opening_balance = COALESCE(EXCLUDED.opening_balance, branch_cashboxes.opening_balance),
+                                is_active = COALESCE(EXCLUDED.is_active, branch_cashboxes.is_active),
+                                updated_at = COALESCE(EXCLUDED.updated_at, CURRENT_TIMESTAMP)`,
+                            [branchId, cashboxName, openingBalance, isActive, createdAt, updatedAt]
+                        );
+                        createdCount += 1;
+                    }
+
+                    if (createdCount > 0) {
+                        console.log(`🧰 [SYNC] Ensured ${createdCount} canonical branch cashboxes for incoming vouchers.`);
+                    }
+
+                    await refreshCanonicalCashboxMap(normalizedBranchIds);
+                };
                 const handleCleanup = async (table, activeIds, options = {}) => {
                     if (!activeIds || !Array.isArray(activeIds)) return;
 
@@ -2220,6 +2360,32 @@ class LocalWebServer {
                     console.log(`✅ [SYNC] ${table}: Processed ${successCount} items.${errorCount > 0 ? ` Failed ${errorCount} items.` : ''}`);
                 };
 
+                const syncBranchCashboxes = async (items) => {
+                    if (!Array.isArray(items) || items.length === 0) {
+                        return;
+                    }
+
+                    const validBranchCashboxes = items
+                        .map((item) => ({
+                            ...item,
+                            branch_id: Number(item.branch_id)
+                        }))
+                        .filter((item) => Number.isInteger(item.branch_id) && item.branch_id > 0);
+
+                    if (validBranchCashboxes.length === 0) {
+                        console.warn('⚠️ [SYNC] Received branch_cashboxes payload without valid branch_id values.');
+                        return;
+                    }
+
+                    await syncTable('branch_cashboxes', validBranchCashboxes, [
+                        { name: 'branch_id' }, { name: 'cashbox_name' },
+                        { name: 'opening_balance' }, { name: 'is_active' },
+                        { name: 'created_at' }, { name: 'updated_at' }
+                    ], 'branch_id');
+
+                    await refreshCanonicalCashboxMap(validBranchCashboxes.map((item) => item.branch_id));
+                };
+
                 // Sync all tables in dependency order
                 if (data.branches) {
                     await syncTable('branches', data.branches, [
@@ -2246,14 +2412,17 @@ class LocalWebServer {
                 if (data.active_cashbox_vouchers_ids) await handleCleanup('cashbox_vouchers', data.active_cashbox_vouchers_ids);
 
                 const cashboxBranchIds = Array.isArray(data.branch_cashboxes)
-                    ? data.branch_cashboxes
-                        .map(row => Number(row.branch_id))
-                        .filter(value => Number.isInteger(value) && value > 0)
+                    ? normalizeIdList(data.branch_cashboxes.map((row) => row.branch_id))
                     : [];
-                if (cashboxBranchIds.length > 0) {
-                    await handleCleanup('branch_cashboxes', cashboxBranchIds, { column: 'branch_id' });
-                } else if (data.active_branch_cashboxes_ids) {
-                    await handleCleanup('branch_cashboxes', data.active_branch_cashboxes_ids);
+                const activeCashboxBranchIds = normalizeIdList(data.active_branch_cashboxes_branch_ids);
+                const cleanupCashboxBranchIds = cashboxBranchIds.length > 0
+                    ? cashboxBranchIds
+                    : activeCashboxBranchIds;
+
+                if (cleanupCashboxBranchIds.length > 0) {
+                    await handleCleanup('branch_cashboxes', cleanupCashboxBranchIds, { column: 'branch_id' });
+                } else if (Array.isArray(data.active_branch_cashboxes_ids) && data.active_branch_cashboxes_ids.length > 0) {
+                    console.log('ℹ️ [SYNC] Ignoring legacy active_branch_cashboxes_ids for branch_cashboxes cleanup on PostgreSQL; waiting for branch_id-based payload.');
                 }
 
 
@@ -2281,11 +2450,7 @@ class LocalWebServer {
                 }
 
                 if (data.branch_cashboxes) {
-                    await syncTable('branch_cashboxes', data.branch_cashboxes, [
-                        { name: 'branch_id' }, { name: 'cashbox_name' },
-                        { name: 'opening_balance' }, { name: 'is_active' },
-                        { name: 'created_at' }, { name: 'updated_at' }
-                    ], 'branch_id');
+                    await syncBranchCashboxes(data.branch_cashboxes);
                 }
 
 
@@ -2481,17 +2646,19 @@ class LocalWebServer {
                 if (data.cashbox_vouchers) {
                     let mappedCashboxVouchers = data.cashbox_vouchers;
                     try {
-                        const cashboxRows = await pool.query('SELECT id, branch_id FROM branch_cashboxes');
-                        const cashboxIdByBranchId = new Map(
-                            (cashboxRows.rows || []).map(row => [
-                                Number(row.branch_id),
-                                Number(row.id)
-                            ])
-                        );
-                        if (cashboxIdByBranchId.size > 0 && Array.isArray(data.cashbox_vouchers)) {
+                        const voucherBranchIds = Array.isArray(data.cashbox_vouchers)
+                            ? normalizeIdList(data.cashbox_vouchers.map((voucher) => voucher.branch_id))
+                            : [];
+
+                        if (voucherBranchIds.length > 0) {
+                            await ensureCanonicalCashboxesForBranches(voucherBranchIds, data.branch_cashboxes);
+                            await refreshCanonicalCashboxMap(voucherBranchIds);
+                        }
+
+                        if (canonicalCashboxIdByBranchId.size > 0 && Array.isArray(data.cashbox_vouchers)) {
                             mappedCashboxVouchers = data.cashbox_vouchers.map((voucher) => {
                                 const branchId = Number(voucher.branch_id);
-                                const mappedId = cashboxIdByBranchId.get(branchId);
+                                const mappedId = canonicalCashboxIdByBranchId.get(branchId);
                                 if (!mappedId) {
                                     return voucher;
                                 }
@@ -2604,20 +2771,93 @@ class LocalWebServer {
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const { id, status } = JSON.parse(body);
+                const payload = JSON.parse(body || '{}');
+                const id = payload.id;
+                const status = payload.status;
+                const restoredFromReconciliationId = payload.restored_from_reconciliation_id ?? payload.restoredFromReconciliationId ?? null;
+                const restoredReasonRaw = payload.restored_reason ?? payload.restoredReason ?? null;
+                const restoredReason = restoredReasonRaw === null || restoredReasonRaw === undefined
+                    ? null
+                    : String(restoredReasonRaw).trim();
+
+                if (!id || !status) {
+                    throw new Error('Invalid request status payload');
+                }
+
                 console.log(`🔄 [Real-time Sync] Updating request ${id} to status: ${status}`);
 
                 const pool = this.dbManager.pool; // Check for Postgres (Render)
+                const shouldWriteRestoreMetadata = status === 'pending'
+                    && (restoredFromReconciliationId !== null || restoredReason !== null);
 
                 if (pool) {
-                    // Update Server DB (Postgres)
-                    const result = await pool.query("UPDATE reconciliation_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [status, id]);
-                    console.log(`✅ [Real-time Sync HOOK] Request ${id} updated to '${status}' on PostgreSQL (Server Mode). RowCount: ${result.rowCount}`);
+                    if (shouldWriteRestoreMetadata) {
+                        try {
+                            const result = await pool.query(
+                                `UPDATE reconciliation_requests
+                                 SET status = $1,
+                                     restored_at = CURRENT_TIMESTAMP,
+                                     restored_from_reconciliation_id = $2,
+                                     restored_reason = $3,
+                                     updated_at = CURRENT_TIMESTAMP
+                                 WHERE id = $4`,
+                                [status, restoredFromReconciliationId, restoredReason, id]
+                            );
+                            console.log(`✅ [Real-time Sync HOOK] Request ${id} restored on PostgreSQL (Server Mode). RowCount: ${result.rowCount}`);
+                        } catch (restoreError) {
+                            if (
+                                String(restoreError.message || '').includes('restored_at')
+                                || String(restoreError.message || '').includes('restored_from_reconciliation_id')
+                                || String(restoreError.message || '').includes('restored_reason')
+                            ) {
+                                const result = await pool.query(
+                                    "UPDATE reconciliation_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                                    [status, id]
+                                );
+                                console.log(`⚠️ [Real-time Sync HOOK] Request ${id} updated without restore metadata on PostgreSQL. RowCount: ${result.rowCount}`);
+                            } else {
+                                throw restoreError;
+                            }
+                        }
+                    } else {
+                        const result = await pool.query(
+                            "UPDATE reconciliation_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
+                            [status, id]
+                        );
+                        console.log(`✅ [Real-time Sync HOOK] Request ${id} updated to '${status}' on PostgreSQL (Server Mode). RowCount: ${result.rowCount}`);
+                    }
                 } else {
-                    // Update Local DB (SQLite) - fallback
-                    const stmt = this.dbManager.db.prepare("UPDATE reconciliation_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-                    const info = stmt.run(status, id);
-                    console.log(`✅ [Real-time Sync HOOK] Request ${id} updated to '${status}' on SQLite (Local Mode). Changes: ${info.changes}`);
+                    if (shouldWriteRestoreMetadata) {
+                        try {
+                            const stmt = this.dbManager.db.prepare(`
+                                UPDATE reconciliation_requests
+                                SET status = ?,
+                                    restored_at = CURRENT_TIMESTAMP,
+                                    restored_from_reconciliation_id = ?,
+                                    restored_reason = ?,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = ?
+                            `);
+                            const info = stmt.run(status, restoredFromReconciliationId, restoredReason, id);
+                            console.log(`✅ [Real-time Sync HOOK] Request ${id} restored on SQLite (Local Mode). Changes: ${info.changes}`);
+                        } catch (restoreError) {
+                            if (
+                                String(restoreError.message || '').includes('restored_at')
+                                || String(restoreError.message || '').includes('restored_from_reconciliation_id')
+                                || String(restoreError.message || '').includes('restored_reason')
+                            ) {
+                                const stmt = this.dbManager.db.prepare("UPDATE reconciliation_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+                                const info = stmt.run(status, id);
+                                console.log(`⚠️ [Real-time Sync HOOK] Request ${id} updated without restore metadata on SQLite (Local Mode). Changes: ${info.changes}`);
+                            } else {
+                                throw restoreError;
+                            }
+                        }
+                    } else {
+                        const stmt = this.dbManager.db.prepare("UPDATE reconciliation_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+                        const info = stmt.run(status, id);
+                        console.log(`✅ [Real-time Sync HOOK] Request ${id} updated to '${status}' on SQLite (Local Mode). Changes: ${info.changes}`);
+                    }
                 }
 
                 this.sendJson(res, { success: true });

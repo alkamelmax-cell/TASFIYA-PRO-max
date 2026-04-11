@@ -11,7 +11,7 @@ class PostgresManager {
             },
             max: 10, // Max number of clients in the pool
             idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
-            connectionTimeoutMillis: 15000, // Give hosted PostgreSQL cold starts more time before failing startup
+            connectionTimeoutMillis: 15000, // Give cold-started hosted databases more time to accept the first connection
         });
 
         // The pool will emit an error on behalf of any idle clients
@@ -32,6 +32,11 @@ class PostgresManager {
             await this.createTables();
             await this.migrateSchema();
             await this.insertDefaultData();
+            try {
+                await this.repairCashboxSyncData();
+            } catch (repairError) {
+                console.error('⚠️ [DB] Cashbox sync repair failed during startup:', repairError);
+            }
             await this.migrateSensitiveCredentials();
             return true;
         } catch (error) {
@@ -46,6 +51,24 @@ class PostgresManager {
             // Fix denomination column type from INTEGER to DECIMAL to support fraction coins (0.5, 0.25)
             // This is safe to run multiple times (it will just set the type)
             await client.query('ALTER TABLE cash_receipts ALTER COLUMN denomination TYPE DECIMAL(10,2)');
+
+            // New request-linking and restoration metadata columns
+            await client.query(`
+              ALTER TABLE reconciliations
+              ADD COLUMN IF NOT EXISTS origin_request_id INTEGER
+            `);
+            await client.query(`
+              ALTER TABLE reconciliation_requests
+              ADD COLUMN IF NOT EXISTS restored_at TIMESTAMP
+            `);
+            await client.query(`
+              ALTER TABLE reconciliation_requests
+              ADD COLUMN IF NOT EXISTS restored_from_reconciliation_id INTEGER
+            `);
+            await client.query(`
+              ALTER TABLE reconciliation_requests
+              ADD COLUMN IF NOT EXISTS restored_reason TEXT
+            `);
 
             // Ensure username is UNIQUE for admins (Critical for Sync ON CONFLICT logic)
             try {
@@ -251,6 +274,7 @@ class PostgresManager {
                 surplus_deficit DECIMAL(10,2) DEFAULT 0,
                 status TEXT DEFAULT 'draft',
                 notes TEXT,
+                origin_request_id INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_modified_date TIMESTAMP
@@ -265,6 +289,9 @@ class PostgresManager {
                 status TEXT DEFAULT 'pending',
                 details_json TEXT,
                 notes TEXT,
+                restored_at TIMESTAMP,
+                restored_from_reconciliation_id INTEGER,
+                restored_reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
@@ -457,6 +484,79 @@ class PostgresManager {
 
         } catch (error) {
             console.error('❌ Error inserting default data:', error);
+        }
+    }
+
+    async repairCashboxSyncData() {
+        const client = await this.pool.connect();
+
+        try {
+            await client.query('BEGIN');
+
+            const insertedResult = await client.query(`
+                WITH inserted AS (
+                    INSERT INTO branch_cashboxes (
+                        branch_id,
+                        cashbox_name,
+                        opening_balance,
+                        is_active,
+                        created_at,
+                        updated_at
+                    )
+                    SELECT
+                        b.id,
+                        'صندوق ' || COALESCE(NULLIF(TRIM(b.branch_name), ''), 'الفرع'),
+                        0,
+                        COALESCE(b.is_active, 1),
+                        CURRENT_TIMESTAMP,
+                        CURRENT_TIMESTAMP
+                    FROM branches b
+                    LEFT JOIN branch_cashboxes cb ON cb.branch_id = b.id
+                    WHERE cb.id IS NULL
+                    RETURNING id, branch_id
+                )
+                SELECT COUNT(*)::int AS inserted_count
+                FROM inserted
+            `);
+
+            const repairedResult = await client.query(`
+                WITH repaired AS (
+                    UPDATE cashbox_vouchers v
+                    SET
+                        cashbox_id = canonical_cb.id,
+                        updated_at = CURRENT_TIMESTAMP
+                    FROM branch_cashboxes canonical_cb
+                    WHERE canonical_cb.branch_id = v.branch_id
+                      AND (
+                          NOT EXISTS (
+                              SELECT 1
+                              FROM branch_cashboxes current_cb
+                              WHERE current_cb.id = v.cashbox_id
+                          )
+                          OR EXISTS (
+                              SELECT 1
+                              FROM branch_cashboxes current_cb
+                              WHERE current_cb.id = v.cashbox_id
+                                AND current_cb.branch_id IS DISTINCT FROM v.branch_id
+                          )
+                      )
+                    RETURNING v.id
+                )
+                SELECT COUNT(*)::int AS repaired_count
+                FROM repaired
+            `);
+
+            await client.query('COMMIT');
+
+            const insertedCount = Number(insertedResult.rows?.[0]?.inserted_count || 0);
+            const repairedCount = Number(repairedResult.rows?.[0]?.repaired_count || 0);
+
+            console.log(`🧰 [DB] Cashbox sync repair complete: branch_cashboxes_created=${insertedCount}, vouchers_relinked=${repairedCount}`);
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
         }
     }
 
