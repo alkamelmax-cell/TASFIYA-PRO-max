@@ -2,11 +2,9 @@ const { app } = require('electron');
 
 const { ipcMain } = require('electron');
 const fetch = require('node-fetch');
-const { buildRemoteServiceUrl } = require('./remote-service-url');
-const { buildCashboxVoucherSyncKey } = require('./app/cashbox-voucher-utils');
 
 // Configuration
-const REMOTE_URL = buildRemoteServiceUrl('/api/sync/users');
+const REMOTE_URL = 'https://tasfiya-pro-max.onrender.com/api/sync/users'; // Ensure this matches your Render URL
 const SYNC_INTERVAL_MS = 30000; // 30 seconds
 
 class BackgroundSync {
@@ -128,11 +126,6 @@ class BackgroundSync {
                 .map((row) => Number(row.branch_id))
                 .filter((branchId) => Number.isInteger(branchId) && branchId > 0)
         )];
-        const activeCashboxVoucherSyncKeys = [...new Set(
-            db.prepare('SELECT * FROM cashbox_vouchers').all()
-                .map((row) => buildCashboxVoucherSyncKey(row))
-                .filter((syncKey) => typeof syncKey === 'string' && syncKey.trim() !== '')
-        )];
 
         for (const table of idTables) {
             try {
@@ -146,11 +139,6 @@ class BackgroundSync {
 
         if (activeBranchCashboxBranchIds.length > 0) {
             allIdsPayload.active_branch_cashboxes_branch_ids = activeBranchCashboxBranchIds;
-            hasIds = true;
-        }
-
-        if (activeCashboxVoucherSyncKeys.length > 0) {
-            allIdsPayload.active_cashbox_voucher_sync_keys = activeCashboxVoucherSyncKeys;
             hasIds = true;
         }
 
@@ -266,6 +254,8 @@ class BackgroundSync {
     async fetchRemoteRequests(db) {
         try {
             // Adjust URL to point to GET /api/reconciliation-requests
+            // BASE URL is https://tasfiya-pro-max.onrender.com/api/sync/users
+            // We need https://tasfiya-pro-max.onrender.com/api/reconciliation-requests
             const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests');
             console.log(`📥 [SYNC] Pulling requests from: ${reqUrl}`);
 

@@ -1,5 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
+const { EventEmitter } = require('node:events');
 
 const LocalWebServer = require('../src/local-server');
 
@@ -11,7 +12,6 @@ function createSyncPool(initialState = {}) {
     cleanupCalls: []
   };
   let nextCashboxId = initialState.nextCashboxId || 200;
-  let nextVoucherId = initialState.nextVoucherId || 600;
 
   return {
     state,
@@ -22,7 +22,6 @@ function createSyncPool(initialState = {}) {
         normalized.startsWith('CREATE TABLE IF NOT EXISTS')
         || normalized.startsWith('CREATE INDEX IF NOT EXISTS')
         || normalized.startsWith('CREATE UNIQUE INDEX IF NOT EXISTS')
-        || normalized.startsWith('ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key')
       ) {
         return { rowCount: 0, rows: [] };
       }
@@ -66,15 +65,6 @@ function createSyncPool(initialState = {}) {
         return { rowCount, rows: [] };
       }
 
-      if (normalized === 'DELETE FROM cashbox_vouchers WHERE sync_key != ALL($1::text[])') {
-        const activeSyncKeys = new Set((params[0] || []).map((value) => String(value)));
-        const before = state.cashboxVouchers.length;
-        state.cashboxVouchers = state.cashboxVouchers.filter((voucher) => activeSyncKeys.has(String(voucher.sync_key || '')));
-        const rowCount = before - state.cashboxVouchers.length;
-        state.cleanupCalls.push({ table: 'cashbox_vouchers', ids: [...activeSyncKeys] });
-        return { rowCount, rows: [] };
-      }
-
       if (normalized.startsWith('INSERT INTO branch_cashboxes (')) {
         const columnsPerRow = 6;
         for (let index = 0; index < params.length; index += columnsPerRow) {
@@ -102,41 +92,9 @@ function createSyncPool(initialState = {}) {
         return { rowCount: params.length / columnsPerRow, rows: [] };
       }
 
-      if (normalized === 'SELECT COALESCE(MAX(voucher_number), 0) AS max_number FROM cashbox_vouchers') {
-        const maxNumber = state.cashboxVouchers.reduce((maxValue, voucher) => Math.max(maxValue, Number(voucher.voucher_number || 0)), 0);
-        return {
-          rowCount: 1,
-          rows: [{ max_number: maxNumber }]
-        };
-      }
-
-      if (normalized === 'SELECT COALESCE(MAX(voucher_sequence_number), 0) AS max_number FROM cashbox_vouchers WHERE voucher_type = $1') {
-        const voucherType = String(params[0] || '');
-        const maxNumber = state.cashboxVouchers
-          .filter((voucher) => String(voucher.voucher_type || '') === voucherType)
-          .reduce((maxValue, voucher) => Math.max(maxValue, Number(voucher.voucher_sequence_number || 0)), 0);
-        return {
-          rowCount: 1,
-          rows: [{ max_number: maxNumber }]
-        };
-      }
-
-      if (normalized === 'SELECT id, sync_key, voucher_number, voucher_sequence_number FROM cashbox_vouchers WHERE sync_key = ANY($1::text[])') {
-        const syncKeys = new Set((params[0] || []).map((value) => String(value)));
-        const rows = state.cashboxVouchers
-          .filter((voucher) => syncKeys.has(String(voucher.sync_key || '')))
-          .map((voucher) => ({
-            id: voucher.id,
-            sync_key: voucher.sync_key,
-            voucher_number: voucher.voucher_number,
-            voucher_sequence_number: voucher.voucher_sequence_number
-          }));
-        return { rowCount: rows.length, rows };
-      }
-
       if (normalized.startsWith('INSERT INTO cashbox_vouchers (')) {
         const columns = [
-          'sync_key',
+          'id',
           'voucher_number',
           'voucher_sequence_number',
           'voucher_type',
@@ -168,14 +126,11 @@ function createSyncPool(initialState = {}) {
             throw new Error(`cashbox_id ${voucher.cashbox_id} does not exist`);
           }
 
-          const existing = state.cashboxVouchers.find((row) => String(row.sync_key || '') === String(voucher.sync_key || ''));
+          const existing = state.cashboxVouchers.find((row) => Number(row.id) === Number(voucher.id));
           if (existing) {
             Object.assign(existing, voucher);
           } else {
-            state.cashboxVouchers.push({
-              id: nextVoucherId++,
-              ...voucher
-            });
+            state.cashboxVouchers.push(voucher);
           }
         }
 
@@ -214,27 +169,16 @@ function createResponse() {
 }
 
 async function sendSync(server, payload) {
-  const listeners = new Map();
-  const req = {
-    headers: {},
-    on(eventName, handler) {
-      listeners.set(eventName, handler);
-    }
-  };
+  const req = new EventEmitter();
+  req.headers = {};
   const { res, responsePromise } = createResponse();
 
   server.handleSyncUsers(req, res);
 
-  const dataHandler = listeners.get('data');
-  const endHandler = listeners.get('end');
-
-  if (typeof dataHandler === 'function') {
-    dataHandler(Buffer.from(JSON.stringify(payload)));
-  }
-
-  if (typeof endHandler === 'function') {
-    endHandler();
-  }
+  process.nextTick(() => {
+    req.emit('data', Buffer.from(JSON.stringify(payload)));
+    req.emit('end');
+  });
 
   return responsePromise;
 }
@@ -314,123 +258,4 @@ test('cashbox vouchers are remapped to the canonical server cashbox id by branch
   assert.equal(pool.state.cashboxVouchers.length, 1);
   assert.equal(pool.state.cashboxVouchers[0].cashbox_id, pool.state.branchCashboxes[0].id);
   assert.notEqual(pool.state.cashboxVouchers[0].cashbox_id, 1);
-  assert.equal(pool.state.cashboxVouchers[0].sync_key, 'manual:2026-04-10%2010:00:00:44');
-});
-
-test('legacy active_cashbox_vouchers_ids payload does not delete canonical Render vouchers', async () => {
-  const pool = createSyncPool({
-    branches: [{ id: 7, branch_name: 'فرع الرياض', is_active: 1 }],
-    nextCashboxId: 700
-  });
-  const server = new LocalWebServer({ pool }, 0);
-
-  const initialResponse = await sendSync(server, {
-    cashbox_vouchers: [
-      {
-        id: 77,
-        voucher_number: 1,
-        voucher_sequence_number: 1,
-        voucher_type: 'receipt',
-        cashbox_id: 1,
-        branch_id: 7,
-        counterparty_type: 'customer',
-        counterparty_name: 'عميل',
-        cashier_id: null,
-        amount: 42,
-        reference_no: null,
-        description: 'legacy cleanup guard',
-        voucher_date: '2026-04-11',
-        created_by: 'tester',
-        created_at: '2026-04-11T08:00:00.000Z',
-        updated_at: '2026-04-11T08:00:00.000Z',
-        source_reconciliation_id: null,
-        source_entry_key: null,
-        is_auto_generated: 0
-      }
-    ]
-  });
-
-  assert.equal(initialResponse.success, true);
-  assert.equal(pool.state.cashboxVouchers.length, 1);
-  const cleanupCountBeforeLegacyPayload = pool.state.cleanupCalls.length;
-
-  const legacyResponse = await sendSync(server, {
-    active_cashbox_vouchers_ids: [77]
-  });
-
-  assert.equal(legacyResponse.success, true);
-  assert.equal(pool.state.cashboxVouchers.length, 1);
-  assert.equal(pool.state.cleanupCalls.length, cleanupCountBeforeLegacyPayload);
-});
-
-test('cashbox vouchers with colliding local numbers still sync as distinct canonical rows on Render', async () => {
-  const pool = createSyncPool({
-    branches: [
-      { id: 7, branch_name: 'فرع الرياض', is_active: 1 },
-      { id: 8, branch_name: 'فرع جدة', is_active: 1 }
-    ],
-    nextCashboxId: 900
-  });
-  const server = new LocalWebServer({ pool }, 0);
-
-  const response = await sendSync(server, {
-    cashbox_vouchers: [
-      {
-        id: 1,
-        voucher_number: 1,
-        voucher_sequence_number: 1,
-        voucher_type: 'receipt',
-        cashbox_id: 1,
-        branch_id: 7,
-        counterparty_type: 'customer',
-        counterparty_name: 'عميل الرياض',
-        cashier_id: null,
-        amount: 50,
-        reference_no: null,
-        description: 'first branch voucher',
-        voucher_date: '2026-04-11',
-        created_by: 'tester',
-        created_at: '2026-04-11T09:00:00.000Z',
-        updated_at: '2026-04-11T09:00:00.000Z',
-        source_reconciliation_id: null,
-        source_entry_key: null,
-        is_auto_generated: 0
-      },
-      {
-        id: 1,
-        voucher_number: 1,
-        voucher_sequence_number: 1,
-        voucher_type: 'receipt',
-        cashbox_id: 1,
-        branch_id: 8,
-        counterparty_type: 'customer',
-        counterparty_name: 'عميل جدة',
-        cashier_id: null,
-        amount: 75,
-        reference_no: null,
-        description: 'second branch voucher',
-        voucher_date: '2026-04-11',
-        created_by: 'tester',
-        created_at: '2026-04-11T09:00:01.000Z',
-        updated_at: '2026-04-11T09:00:01.000Z',
-        source_reconciliation_id: null,
-        source_entry_key: null,
-        is_auto_generated: 0
-      }
-    ]
-  });
-
-  assert.equal(response.success, true);
-  assert.equal(pool.state.cashboxVouchers.length, 2);
-  assert.deepEqual(
-    pool.state.cashboxVouchers.map((voucher) => voucher.voucher_number).sort((left, right) => left - right),
-    [1, 2]
-  );
-  assert.deepEqual(
-    pool.state.cashboxVouchers.map((voucher) => voucher.sync_key).sort(),
-    [
-      'manual:2026-04-11%2009:00:00:1',
-      'manual:2026-04-11%2009:00:01:1'
-    ]
-  );
 });

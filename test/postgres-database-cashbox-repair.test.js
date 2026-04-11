@@ -29,20 +29,6 @@ function createRepairPool() {
         };
       }
 
-      if (normalized.includes('WITH updated AS ( UPDATE cashbox_vouchers v SET sync_key = CASE')) {
-        return {
-          rowCount: 1,
-          rows: [{ updated_count: 4 }]
-        };
-      }
-
-      if (normalized.includes('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique')) {
-        return {
-          rowCount: 0,
-          rows: []
-        };
-      }
-
       throw new Error(`Unexpected SQL in repair pool: ${normalized}`);
     },
     release() {
@@ -70,8 +56,6 @@ test('repairCashboxSyncData creates missing cashboxes and relinks mismatched vou
   assert.equal(repairPool.log[0], 'BEGIN');
   assert.ok(repairPool.log.some((sql) => sql.includes('INSERT INTO branch_cashboxes')));
   assert.ok(repairPool.log.some((sql) => sql.includes('UPDATE cashbox_vouchers v')));
-  assert.ok(repairPool.log.some((sql) => sql.includes('SET sync_key = CASE')));
-  assert.ok(repairPool.log.some((sql) => sql.includes('idx_cashbox_vouchers_sync_key_unique')));
   assert.ok(repairPool.log.includes('COMMIT'));
   assert.ok(!repairPool.log.some((sql) => sql.includes('DELETE FROM cashbox_vouchers')));
   assert.ok(!repairPool.log.some((sql) => sql.includes('DELETE FROM cashbox_voucher_audit_log')));

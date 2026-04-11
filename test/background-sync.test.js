@@ -237,16 +237,6 @@ test('pushLocalData sends branch-based active cashbox ids alongside legacy ids',
       { id: 91, branch_id: 5, cashbox_name: 'صندوق الرياض' },
       { id: 92, branch_id: 8, cashbox_name: 'صندوق جدة' }
     ],
-    cashbox_vouchers: [
-      {
-        id: 10,
-        voucher_number: 1,
-        voucher_sequence_number: 1,
-        voucher_type: 'receipt',
-        branch_id: 5,
-        created_at: '2026-04-10T10:00:00.000Z'
-      }
-    ],
     reconciliations: [],
     postpaid_sales: [],
     customer_receipts: [],
@@ -254,6 +244,7 @@ test('pushLocalData sends branch-based active cashbox ids alongside legacy ids',
     manual_customer_receipts: [],
     cash_receipts: [],
     bank_receipts: [],
+    cashbox_vouchers: [],
     cashbox_voucher_audit_log: [],
     reconciliation_requests: []
   });
@@ -272,5 +263,4 @@ test('pushLocalData sends branch-based active cashbox ids alongside legacy ids',
   assert.ok(cleanupPayload, 'expected cleanup payload to be sent');
   assert.deepEqual(cleanupPayload.active_branch_cashboxes_ids, [91, 92]);
   assert.deepEqual(cleanupPayload.active_branch_cashboxes_branch_ids, [5, 8]);
-  assert.deepEqual(cleanupPayload.active_cashbox_voucher_sync_keys, ['manual:2026-04-10%2010:00:00:10']);
 });
