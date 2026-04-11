@@ -2097,17 +2097,27 @@ class LocalWebServer {
                 }
 
                 // Helper to perform safe cleanup based on Full ID Lists
-                const handleCleanup = async (table, activeIds) => {
+                const normalizeIdList = (list) => (Array.isArray(list)
+                    ? list
+                        .map(value => Number(value))
+                        .filter(value => Number.isInteger(value) && value > 0)
+                    : []);
+
+                const handleCleanup = async (table, activeIds, options = {}) => {
                     if (!activeIds || !Array.isArray(activeIds)) return;
 
+                    const column = options.column || 'id';
+                    const castType = options.castType || 'int';
+                    const normalizedIds = normalizeIdList(activeIds);
+
                     try {
-                        if (activeIds.length > 0) {
+                        if (normalizedIds.length > 0) {
                             // Delete records NOT in the activeIds list (Mirror Sync)
                             // "DELETE FROM table WHERE id NOT IN (...)"
                             // Optimized for Postgres using ANY/ALL
                             const result = await pool.query(
-                                `DELETE FROM ${table} WHERE id != ALL($1::int[])`,
-                                [activeIds]
+                                `DELETE FROM ${table} WHERE ${column} != ALL($1::${castType}[])`,
+                                [normalizedIds]
                             );
                             if (result.rowCount > 0) {
                                 console.log(`🧹 [SYNC] Cleaned ${result.rowCount} orphaned records from ${table}.`);
@@ -2234,7 +2244,17 @@ class LocalWebServer {
                 if (data.active_bank_receipts_ids) await handleCleanup('bank_receipts', data.active_bank_receipts_ids);
                 if (data.active_cashbox_voucher_audit_log_ids) await handleCleanup('cashbox_voucher_audit_log', data.active_cashbox_voucher_audit_log_ids);
                 if (data.active_cashbox_vouchers_ids) await handleCleanup('cashbox_vouchers', data.active_cashbox_vouchers_ids);
-                if (data.active_branch_cashboxes_ids) await handleCleanup('branch_cashboxes', data.active_branch_cashboxes_ids);
+
+                const cashboxBranchIds = Array.isArray(data.branch_cashboxes)
+                    ? data.branch_cashboxes
+                        .map(row => Number(row.branch_id))
+                        .filter(value => Number.isInteger(value) && value > 0)
+                    : [];
+                if (cashboxBranchIds.length > 0) {
+                    await handleCleanup('branch_cashboxes', cashboxBranchIds, { column: 'branch_id' });
+                } else if (data.active_branch_cashboxes_ids) {
+                    await handleCleanup('branch_cashboxes', data.active_branch_cashboxes_ids);
+                }
 
 
                 if (data.admins) {
@@ -2262,10 +2282,10 @@ class LocalWebServer {
 
                 if (data.branch_cashboxes) {
                     await syncTable('branch_cashboxes', data.branch_cashboxes, [
-                        { name: 'id' }, { name: 'branch_id' }, { name: 'cashbox_name' },
+                        { name: 'branch_id' }, { name: 'cashbox_name' },
                         { name: 'opening_balance' }, { name: 'is_active' },
                         { name: 'created_at' }, { name: 'updated_at' }
-                    ]);
+                    ], 'branch_id');
                 }
 
 
@@ -2459,7 +2479,36 @@ class LocalWebServer {
                 }
 
                 if (data.cashbox_vouchers) {
-                    await syncTable('cashbox_vouchers', data.cashbox_vouchers, [
+                    let mappedCashboxVouchers = data.cashbox_vouchers;
+                    try {
+                        const cashboxRows = await pool.query('SELECT id, branch_id FROM branch_cashboxes');
+                        const cashboxIdByBranchId = new Map(
+                            (cashboxRows.rows || []).map(row => [
+                                Number(row.branch_id),
+                                Number(row.id)
+                            ])
+                        );
+                        if (cashboxIdByBranchId.size > 0 && Array.isArray(data.cashbox_vouchers)) {
+                            mappedCashboxVouchers = data.cashbox_vouchers.map((voucher) => {
+                                const branchId = Number(voucher.branch_id);
+                                const mappedId = cashboxIdByBranchId.get(branchId);
+                                if (!mappedId) {
+                                    return voucher;
+                                }
+                                if (Number(voucher.cashbox_id) === mappedId) {
+                                    return voucher;
+                                }
+                                return {
+                                    ...voucher,
+                                    cashbox_id: mappedId
+                                };
+                            });
+                        }
+                    } catch (mapError) {
+                        console.error('⚠️ [SYNC] Failed to map cashbox IDs by branch:', mapError.message);
+                    }
+
+                    await syncTable('cashbox_vouchers', mappedCashboxVouchers, [
                         { name: 'id' }, { name: 'voucher_number' }, { name: 'voucher_sequence_number' },
                         { name: 'voucher_type' }, { name: 'cashbox_id' }, { name: 'branch_id' },
                         { name: 'counterparty_type' }, { name: 'counterparty_name' }, { name: 'cashier_id' },
