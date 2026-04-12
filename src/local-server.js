@@ -2841,8 +2841,37 @@ class LocalWebServer {
                     await syncTable('reconciliations', validReconciliations, [
                         { name: 'id' }, { name: 'reconciliation_number' }, { name: 'cashier_id' },
                         { name: 'accountant_id' }, { name: 'reconciliation_date' }, { name: 'system_sales' },
-                        { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' }
+                        { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' },
+                        { name: 'origin_request_id' }
                     ]);
+
+                    // 3.1 Auto-archive linked reconciliation requests on Render/Server
+                    try {
+                        const originRequestIds = normalizeIdList(
+                            validReconciliations.map(r => r.origin_request_id ?? r.originRequestId)
+                        );
+                        if (originRequestIds.length > 0) {
+                            const placeholders = originRequestIds.map((_, i) => `$${i + 1}`).join(', ');
+                            if (this.dbManager.pool) {
+                                await this.dbManager.pool.query(
+                                    `UPDATE reconciliation_requests
+                                     SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                                     WHERE id IN (${placeholders})`,
+                                    originRequestIds
+                                );
+                            } else {
+                                const stmt = this.dbManager.db.prepare(
+                                    `UPDATE reconciliation_requests
+                                     SET status = 'completed', updated_at = CURRENT_TIMESTAMP
+                                     WHERE id IN (${originRequestIds.map(() => '?').join(', ')})`
+                                );
+                                stmt.run(originRequestIds);
+                            }
+                            console.log(`🧾 [SYNC] Auto-archived ${originRequestIds.length} reconciliation request(s) from origin_request_id`);
+                        }
+                    } catch (archiveErr) {
+                        console.warn('⚠️ [SYNC] Failed to auto-archive linked reconciliation requests:', archiveErr.message);
+                    }
 
                     // 4. Send Notification ONLY if we found NEW items
                     if (newReconciliationsCount > 0 && firstNewRec) {
