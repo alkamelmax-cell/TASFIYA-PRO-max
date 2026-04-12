@@ -2106,9 +2106,9 @@ class LocalWebServer {
                         'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT',
                         'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence_unique ON cashbox_vouchers(voucher_type, voucher_sequence_number)',
                         'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_unique ON cashbox_vouchers(source_reconciliation_id, source_entry_key)',
+                        'DROP INDEX IF EXISTS idx_cashbox_vouchers_sync_key_unique',
                         `CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique
-                         ON cashbox_vouchers(sync_key)
-                         WHERE sync_key IS NOT NULL AND BTRIM(sync_key) != ''`
+                         ON cashbox_vouchers(sync_key)`
                     ];
 
                     for (const statement of statements) {

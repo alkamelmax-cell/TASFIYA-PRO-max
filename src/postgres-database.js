@@ -74,10 +74,10 @@ class PostgresManager {
               ALTER TABLE cashbox_vouchers
               ADD COLUMN IF NOT EXISTS sync_key TEXT
             `);
+            await client.query('DROP INDEX IF EXISTS idx_cashbox_vouchers_sync_key_unique');
             await client.query(`
               CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique
               ON cashbox_vouchers(sync_key)
-              WHERE sync_key IS NOT NULL AND BTRIM(sync_key) != ''
             `);
 
             // Ensure username is UNIQUE for admins (Critical for Sync ON CONFLICT logic)
@@ -583,10 +583,10 @@ class PostgresManager {
                 FROM updated
             `);
 
+            await client.query('DROP INDEX IF EXISTS idx_cashbox_vouchers_sync_key_unique');
             await client.query(`
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique
                 ON cashbox_vouchers(sync_key)
-                WHERE sync_key IS NOT NULL AND BTRIM(sync_key) != ''
             `);
 
             await client.query('COMMIT');
