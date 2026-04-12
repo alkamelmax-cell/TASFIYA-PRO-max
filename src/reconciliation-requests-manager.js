@@ -5,24 +5,30 @@
 (function () {
     'use strict';
 
+    const requestsIpc = typeof window !== 'undefined' && window.RendererIPC
+        ? window.RendererIPC
+        : require('./renderer-ipc');
+    const { getReconciliationRequestsUrl } = require('./app/sync-endpoints');
+
     let requestsData = [];
     let currentRequestId = null;
     let currentFilter = 'pending'; // 'pending' or 'completed'
     let currentPage = 1;
     let paginationInfo = { total: 0, totalPages: 0, page: 1, limit: 20 };
+    let requestOpenFlowToken = 0;
+    let requestLoadToken = 0;
+    const REQUESTS_PAGE_SIZE = 20;
 
     // Initialize on DOM ready
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
     } else {
-        // Wait a bit for app.js to fully load and expose appAPI
-        setTimeout(init, 1000);
+        init();
     }
 
     function init() {
         createRequestsSection();
-        attachMenuListener();
-        console.log('✅ Reconciliation Requests Manager initialized');
+        updateSectionTitle();
     }
 
     function createRequestsSection() {
@@ -34,298 +40,386 @@
         const section = document.createElement('div');
         section.id = 'reconciliation-requests-section';
         section.className = 'content-section';
-        section.style.display = 'none';
 
         // Enhanced CSS matching app theme
         const style = document.createElement('style');
         style.textContent = `
             #reconciliation-requests-section {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                padding: 0;
+                min-height: calc(100vh - 84px);
+                padding: 18px 16px;
+                background: transparent;
             }
-            
+
             .req-header-wrapper {
-                background: rgba(255, 255, 255, 0.95);
-                backdrop-filter: blur(10px);
-                padding: 20px 30px;
-                border-bottom: 3px solid rgba(102, 126, 234, 0.3);
-                box-shadow: 0 2px 15px rgba(0,0,0,0.08);
+                background: rgba(255, 255, 255, 0.9);
+                border: 1px solid rgba(12, 44, 62, 0.16);
+                border-radius: 16px;
+                padding: 18px 22px;
+                margin-bottom: 14px;
+                box-shadow: 0 10px 24px rgba(10, 35, 50, 0.12);
             }
-            
+
+            body.theme-dark .req-header-wrapper {
+                background: rgba(22, 31, 40, 0.88);
+                border-color: rgba(111, 169, 197, 0.26);
+            }
+
             .req-main-title {
-                font-size: 28px;
-                font-weight: 700;
-                color: #2d3748;
                 margin: 0;
                 display: flex;
                 align-items: center;
-                gap: 12px;
+                gap: 10px;
+                font-size: 31px;
+                font-weight: 700;
+                color: #163447;
             }
-            
+
+            body.theme-dark .req-main-title {
+                color: #e4f0f7;
+            }
+
             .req-subtitle {
-                color: #718096;
-                font-size: 14px;
-                margin: 5px 0 0 0;
+                margin: 3px 0 0;
+                color: #6b7f8e;
+                font-size: 13px;
+                font-weight: 600;
             }
-            
+
             .req-tab-container {
-                background: white;
-                border-radius: 12px;
-                padding: 6px;
                 display: inline-flex;
                 gap: 6px;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                padding: 6px;
+                border-radius: 12px;
+                background: rgba(15, 110, 143, 0.08);
+                border: 1px solid rgba(12, 44, 62, 0.14);
             }
-            
+
             .req-tab-btn {
-                border: none;
-                background: transparent;
-                padding: 10px 24px;
-                font-weight: 600;
-                font-size: 14px;
-                color: #64748b;
-                border-radius: 8px;
-                transition: all 0.3s ease;
-                cursor: pointer;
-                position: relative;
-            }
-            
-            .req-tab-btn:hover {
-                background: rgba(102, 126, 234, 0.1);
-                color: #667eea;
-                transform: translateY(-1px);
-            }
-            
-            .req-tab-btn.active {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-            }
-            
-            .req-refresh-btn {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                border: none;
-                color: white;
-                padding: 10px 24px;
+                border: 0;
                 border-radius: 10px;
-                font-weight: 600;
-                font-size: 14px;
+                padding: 9px 17px;
+                font-size: 13px;
+                font-weight: 700;
+                color: #355264;
+                background: transparent;
+                transition: all 0.2s ease;
                 cursor: pointer;
-                transition: all 0.3s ease;
-                box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
             }
-            
+
+            .req-tab-btn:hover {
+                color: #0f6e8f;
+                background: rgba(15, 110, 143, 0.12);
+            }
+
+            .req-tab-btn.active {
+                color: #fff;
+                background: linear-gradient(135deg, #0f6e8f 0%, #0d4f67 100%);
+                box-shadow: 0 6px 14px rgba(15, 110, 143, 0.28);
+            }
+
+            .req-refresh-btn {
+                border: 0;
+                border-radius: 11px;
+                padding: 10px 18px;
+                font-size: 13px;
+                font-weight: 700;
+                color: #fff;
+                background: linear-gradient(135deg, #0f6e8f 0%, #0d4f67 100%);
+                box-shadow: 0 8px 18px rgba(15, 110, 143, 0.25);
+                transition: transform 0.2s ease, box-shadow 0.2s ease;
+                cursor: pointer;
+            }
+
             .req-refresh-btn:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 6px 20px rgba(102, 126, 234, 0.4);
+                transform: translateY(-1px);
+                box-shadow: 0 10px 22px rgba(15, 110, 143, 0.32);
             }
-            
+
             .req-card {
-                background: white;
+                background: rgba(255, 255, 255, 0.92);
+                border: 1px solid rgba(12, 44, 62, 0.14);
                 border-radius: 16px;
                 overflow: hidden;
-                box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-                margin: 20px 30px;
+                box-shadow: 0 14px 34px rgba(10, 35, 50, 0.14);
             }
-            
+
+            body.theme-dark .req-card {
+                background: rgba(22, 31, 40, 0.86);
+                border-color: rgba(111, 169, 197, 0.24);
+            }
+
             .req-table-header {
-                background: linear-gradient(135deg, #2d3748 0%, #1a202c 100%);
-                color: white;
-                font-weight: 600;
-                text-transform: uppercase;
-                font-size: 12px;
-                letter-spacing: 1px;
+                background: linear-gradient(135deg, #1b465e 0%, #163a4f 100%);
+                color: #fff;
             }
-            
+
             .req-table-header th {
-                padding: 18px 16px !important;
                 border: none !important;
+                padding: 14px 13px !important;
+                font-size: 12px;
+                font-weight: 700;
+                letter-spacing: 0.2px;
             }
-            
+
             .req-row {
-                transition: all 0.2s ease;
-                border-bottom: 1px solid #f1f5f9;
+                border-bottom: 1px solid rgba(12, 44, 62, 0.08);
+                transition: background-color 0.16s ease;
             }
-            
+
             .req-row:hover {
-                background: linear-gradient(90deg, rgba(102, 126, 234, 0.05) 0%, rgba(118, 75, 162, 0.05) 100%);
-                transform: translateX(4px);
+                background-color: rgba(15, 110, 143, 0.07);
             }
-            
+
+            body.theme-dark .req-row {
+                border-bottom-color: rgba(111, 169, 197, 0.2);
+            }
+
+            body.theme-dark .req-row:hover {
+                background-color: rgba(56, 144, 183, 0.16);
+            }
+
             .req-row td {
-                padding: 20px 16px !important;
+                padding: 14px 13px !important;
                 vertical-align: middle !important;
             }
-            
+
             .req-id-badge {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                padding: 6px 14px;
-                border-radius: 20px;
-                font-weight: 700;
-                font-size: 13px;
-                display: inline-block;
-                box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
-            }
-            
-            .req-cashier-avatar {
-                width: 40px;
-                height: 40px;
-                border-radius: 50%;
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                display: flex;
+                display: inline-flex;
                 align-items: center;
                 justify-content: center;
+                min-width: 58px;
+                padding: 6px 10px;
+                border-radius: 999px;
+                color: #fff;
+                font-size: 12px;
                 font-weight: 700;
-                font-size: 16px;
-                margin-right: 12px;
-                box-shadow: 0 3px 10px rgba(102, 126, 234, 0.3);
+                background: linear-gradient(135deg, #0f6e8f 0%, #0d4f67 100%);
+                box-shadow: 0 4px 10px rgba(15, 110, 143, 0.22);
             }
-            
+
+            .req-cashier-avatar {
+                width: 36px;
+                height: 36px;
+                border-radius: 50%;
+                margin-right: 10px;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 14px;
+                font-weight: 700;
+                color: #fff;
+                background: linear-gradient(135deg, #3b7ea1 0%, #234d65 100%);
+                box-shadow: 0 4px 10px rgba(24, 74, 99, 0.22);
+            }
+
+            .req-date-main,
+            .req-cashier-name {
+                font-size: 13px;
+                font-weight: 700;
+                color: #1f3f52;
+            }
+
+            .req-date-sub,
+            .req-cashier-branch,
+            .req-reviewed-label {
+                font-size: 11px;
+                font-weight: 600;
+                color: #6b7f8e;
+            }
+
+            .req-date-sub {
+                font-family: monospace;
+            }
+
+            body.theme-dark .req-date-main,
+            body.theme-dark .req-cashier-name {
+                color: #dceaf3;
+            }
+
+            body.theme-dark .req-date-sub,
+            body.theme-dark .req-cashier-branch,
+            body.theme-dark .req-reviewed-label {
+                color: #a9c0cd;
+            }
+
             .req-amount-badge {
-                background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-                color: white;
-                padding: 8px 16px;
-                border-radius: 10px;
-                font-weight: 700;
-                font-family: 'Courier New', monospace;
-                font-size: 15px;
                 display: inline-block;
-                box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+                padding: 7px 13px;
+                border-radius: 9px;
+                color: #fff;
+                font-size: 13px;
+                font-weight: 700;
+                background: linear-gradient(135deg, #12b981 0%, #0b9a6d 100%);
+                box-shadow: 0 3px 8px rgba(18, 185, 129, 0.24);
             }
-            
+
+            .req-diff-positive,
+            .req-diff-negative,
+            .req-diff-zero {
+                display: inline-block;
+                padding: 7px 12px;
+                border-radius: 9px;
+                color: #fff;
+                font-size: 13px;
+                font-weight: 700;
+            }
+
             .req-diff-positive {
                 background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-                color: white;
-                padding: 8px 16px;
-                border-radius: 10px;
-                font-weight: 700;
-                box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
             }
-            
+
             .req-diff-negative {
-                background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-                color: white;
-                padding: 8px 16px;
-                border-radius: 10px;
-                font-weight: 700;
-                box-shadow: 0 2px 8px rgba(16, 185, 129, 0.3);
+                background: linear-gradient(135deg, #12b981 0%, #0b9a6d 100%);
             }
-            
+
             .req-diff-zero {
                 background: linear-gradient(135deg, #64748b 0%, #475569 100%);
-                color: white;
-                padding: 8px 16px;
-                border-radius: 10px;
-                font-weight: 700;
             }
-            
+
             .req-action-btn {
-                padding: 10px 20px;
-                border-radius: 10px;
-                font-weight: 600;
-                font-size: 13px;
-                border: none;
+                border: 0;
+                border-radius: 9px;
+                min-height: 36px;
+                padding: 8px 13px;
+                font-size: 12px;
+                font-weight: 700;
                 cursor: pointer;
-                transition: all 0.3s ease;
-                box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+                transition: transform 0.16s ease, box-shadow 0.16s ease;
             }
-            
+
             .req-action-btn:hover {
-                transform: translateY(-2px);
-                box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+                transform: translateY(-1px);
             }
-            
+
             .req-btn-primary {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
+                color: #fff;
+                background: linear-gradient(135deg, #0f6e8f 0%, #0d4f67 100%);
+                box-shadow: 0 6px 14px rgba(15, 110, 143, 0.24);
             }
-            
+
             .req-btn-success {
-                background: linear-gradient(135deg, #10b981 0%, #059669 100%);
-                color: white;
+                color: #fff;
+                background: linear-gradient(135deg, #12b981 0%, #0b9a6d 100%);
+                box-shadow: 0 6px 14px rgba(18, 185, 129, 0.24);
             }
-            
+
             .req-btn-danger {
+                color: #fff;
                 background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
-                color: white;
+                box-shadow: 0 6px 14px rgba(239, 68, 68, 0.22);
             }
-            
+
             .req-status-badge {
-                padding: 8px 16px;
-                border-radius: 10px;
-                font-weight: 600;
-                font-size: 13px;
                 display: inline-flex;
                 align-items: center;
                 gap: 6px;
+                padding: 7px 12px;
+                border-radius: 9px;
+                font-size: 12px;
+                font-weight: 700;
             }
-            
+
             .req-completed-badge {
-                background: linear-gradient(135deg, rgba(16, 185, 129, 0.1) 0%, rgba(5, 150, 105, 0.1) 100%);
-                color: #059669;
-                border: 2px solid #10b981;
+                color: #0c8b62;
+                background: rgba(18, 185, 129, 0.12);
+                border: 1px solid rgba(18, 185, 129, 0.4);
             }
-            
+
+            .req-restored-badge {
+                color: #b45309;
+                background: rgba(245, 158, 11, 0.14);
+                border: 1px solid rgba(245, 158, 11, 0.42);
+            }
+
+            body.theme-dark .req-restored-badge {
+                color: #fbbf24;
+                background: rgba(245, 158, 11, 0.18);
+                border-color: rgba(245, 158, 11, 0.5);
+            }
+
             .req-empty-state {
                 text-align: center;
-                padding: 80px 20px;
-                color: #94a3b8;
+                color: #6b7f8e;
+                padding: 60px 16px;
             }
-            
+
+            body.theme-dark .req-empty-state {
+                color: #9ab3c2;
+            }
+
             .req-empty-icon {
-                font-size: 64px;
-                margin-bottom: 16px;
-                opacity: 0.5;
+                font-size: 44px;
+                opacity: 0.65;
+                margin-bottom: 10px;
             }
-            
+
             .req-pagination {
-                padding: 24px 30px;
                 display: flex;
-                justify-content: space-between;
                 align-items: center;
-                border-top: 2px solid #f1f5f9;
-                background: #f8f9fa;
+                justify-content: space-between;
+                padding: 14px 16px;
+                border-top: 1px solid rgba(12, 44, 62, 0.12);
+                background: rgba(15, 110, 143, 0.04);
             }
-            
+
+            body.theme-dark .req-pagination {
+                border-top-color: rgba(111, 169, 197, 0.24);
+                background: rgba(56, 144, 183, 0.08);
+            }
+
             .req-page-btn {
-                padding: 8px 16px;
-                border: none;
-                background: white;
-                color: #64748b;
-                font-weight: 600;
-                font-size: 14px;
+                border: 1px solid rgba(12, 44, 62, 0.16);
+                background: #fff;
+                color: #355264;
                 border-radius: 8px;
+                padding: 7px 12px;
+                margin: 0 2px;
+                font-size: 12px;
+                font-weight: 700;
                 cursor: pointer;
-                transition: all 0.3s ease;
-                margin: 0 4px;
-                box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+                transition: all 0.16s ease;
             }
-            
+
             .req-page-btn:hover:not(:disabled) {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                transform: translateY(-2px);
-                box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3);
+                color: #fff;
+                border-color: transparent;
+                background: linear-gradient(135deg, #0f6e8f 0%, #0d4f67 100%);
             }
-            
+
             .req-page-btn.active {
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                color: white;
-                box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+                color: #fff;
+                border-color: transparent;
+                background: linear-gradient(135deg, #0f6e8f 0%, #0d4f67 100%);
+                box-shadow: 0 6px 14px rgba(15, 110, 143, 0.24);
             }
-            
+
             .req-page-btn:disabled {
-                opacity: 0.4;
+                opacity: 0.48;
                 cursor: not-allowed;
             }
-            
+
             .req-pagination-info {
-                color: #64748b;
-                font-size: 14px;
-                font-weight: 500;
+                color: #4d6472;
+                font-size: 12px;
+                font-weight: 700;
+            }
+
+            body.theme-dark .req-pagination-info {
+                color: #aac0cd;
+            }
+
+            @media (max-width: 900px) {
+                #reconciliation-requests-section {
+                    padding: 12px 10px;
+                }
+
+                .req-header-wrapper {
+                    padding: 13px 12px;
+                }
+
+                .req-main-title {
+                    font-size: 24px;
+                }
             }
         `;
         document.head.appendChild(style);
@@ -403,54 +497,142 @@
         }
     }
 
-    function attachMenuListener() {
-        const menuItem = document.querySelector('[data-section="reconciliation-requests"]');
-        if (menuItem) {
-            menuItem.addEventListener('click', (e) => {
-                e.preventDefault();
-                showRequestsSection();
-            });
-        }
+    function hasDesktopDbBridge() {
+        return Boolean(requestsIpc && typeof requestsIpc.invoke === 'function');
     }
 
     function showRequestsSection() {
-        // 1. Remove active class from all menu items
-        document.querySelectorAll('.menu-item').forEach(item => item.classList.remove('active'));
+        const menuItem = document.querySelector('[data-section="reconciliation-requests"]');
+        if (menuItem && typeof menuItem.click === 'function') {
+            menuItem.click();
+            return;
+        }
 
-        // 2. Hide all content sections by removing active class AND clearing inline display styles
-        document.querySelectorAll('.content-section').forEach(section => {
-            section.classList.remove('active');
-            section.style.display = ''; // Clear any inline styles causing the lock
-        });
-
-        // 3. Show this section
         const section = document.getElementById('reconciliation-requests-section');
         if (section) {
+            section.style.display = '';
             section.classList.add('active');
-
-            // Add active class to menu item
-            const menuItem = document.querySelector('[data-section="reconciliation-requests"]');
-            if (menuItem) menuItem.classList.add('active');
-
-            // Load requests using current filter
             loadRequests(currentFilter);
         }
     }
 
-    async function loadRequests(status = 'pending', page = 1) {
+    function buildRequestsWhereClause(status) {
+        if (!status || status === 'all') {
+            return { sql: '', params: [] };
+        }
+
+        return {
+            sql: 'WHERE r.status = ?',
+            params: [status]
+        };
+    }
+
+    function normalizeRequestRow(request) {
+        let details = {};
+        if (request && request.details && typeof request.details === 'object') {
+            details = request.details;
+        } else if (request && typeof request.details_json === 'string' && request.details_json.trim()) {
+            try {
+                details = JSON.parse(request.details_json);
+            } catch (_error) {
+                details = {};
+            }
+        }
+
+        return {
+            ...request,
+            cashier_name: request && request.cashier_name ? request.cashier_name : 'غير معروف',
+            branch_id: request && request.branch_id ? request.branch_id : null,
+            details
+        };
+    }
+
+    async function loadRequestsFromLocalDb(status, page, limit) {
+        const { sql: whereSql, params: whereParams } = buildRequestsWhereClause(status);
+        const safePage = Math.max(1, parseInt(page, 10) || 1);
+        const safeLimit = Math.max(1, parseInt(limit, 10) || REQUESTS_PAGE_SIZE);
+        const offset = (safePage - 1) * safeLimit;
+
+        const countRows = await requestsIpc.invoke(
+            'db-query',
+            `SELECT COUNT(*) AS total
+             FROM reconciliation_requests r
+             ${whereSql}`,
+            whereParams
+        );
+        const total = Number(countRows?.[0]?.total || 0);
+        const totalPages = Math.max(1, Math.ceil(total / safeLimit));
+
+        const rows = await requestsIpc.invoke(
+            'db-query',
+            `SELECT r.*, c.name AS cashier_name, c.branch_id
+             FROM reconciliation_requests r
+             LEFT JOIN cashiers c ON r.cashier_id = c.id
+             ${whereSql}
+             ORDER BY r.created_at DESC
+             LIMIT ? OFFSET ?`,
+            [...whereParams, safeLimit, offset]
+        );
+
+        return {
+            success: true,
+            data: Array.isArray(rows) ? rows.map(normalizeRequestRow) : [],
+            pagination: {
+                total,
+                totalPages,
+                page: safePage,
+                limit: safeLimit
+            }
+        };
+    }
+
+    async function loadRequestsFromServer(status, page, limit) {
+        const url = getReconciliationRequestsUrl(
+            { preferLocal: false },
+            `?status=${status}&page=${page}&limit=${limit}`
+        );
+        const response = await fetch(url);
+
+        let result = {};
+        try {
+            result = await response.json();
+        } catch (_error) {
+            result = {};
+        }
+
+        if (!response.ok) {
+            const error = new Error(result.error || `HTTP ${response.status}`);
+            error.statusCode = response.status;
+            throw error;
+        }
+
+        return result;
+    }
+
+    async function loadRequests(status = currentFilter, page = 1) {
         const tbody = document.getElementById('requestsTableBody');
         if (!tbody) return;
 
+        currentFilter = status || 'pending';
+        currentPage = Math.max(1, parseInt(page, 10) || 1);
+        updateActiveTab(currentFilter);
+        updateSectionTitle();
+
+        const loadToken = ++requestLoadToken;
         tbody.innerHTML = '<tr><td colspan="7" class="text-center"><i class="icon">⏳</i> جاري التحميل...</td></tr>';
 
         try {
-            const response = await fetch(`http://localhost:4000/api/reconciliation-requests?status=${status}&page=${page}&limit=20`);
-            const result = await response.json();
+            const result = hasDesktopDbBridge()
+                ? await loadRequestsFromLocalDb(currentFilter, currentPage, REQUESTS_PAGE_SIZE)
+                : await loadRequestsFromServer(currentFilter, currentPage, REQUESTS_PAGE_SIZE);
+
+            if (loadToken !== requestLoadToken) {
+                return;
+            }
 
             if (result.success && result.data && result.data.length > 0) {
                 requestsData = result.data;
-                paginationInfo = result.pagination || { total: 0, totalPages: 0, page: 1, limit: 20 };
-                currentPage = page;
+                paginationInfo = result.pagination || { total: 0, totalPages: 0, page: currentPage, limit: REQUESTS_PAGE_SIZE };
 
                 renderRequests(result.data);
                 renderPagination();
@@ -459,8 +641,16 @@
                 document.getElementById('reqPagination').style.display = 'none';
             }
         } catch (error) {
-            console.error('Error loading requests:', error);
-            tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">خطأ في الاتصال: ${error.message}</td></tr>`;
+            if (loadToken !== requestLoadToken) {
+                return;
+            }
+
+            if (Number(error && error.statusCode) === 401) {
+                tbody.innerHTML = '<tr><td colspan="7" class="req-empty-state"><div class="req-empty-icon">🔒</div><div style="font-size: 16px; font-weight: 600;">يجب تسجيل الدخول في واجهة الويب لعرض هذه الطلبات من الخادم</div></td></tr>';
+            } else {
+                console.error('Error loading requests:', error);
+                tbody.innerHTML = `<tr><td colspan="7" class="text-center text-danger">خطأ في الاتصال: ${error.message}</td></tr>`;
+            }
             document.getElementById('reqPagination').style.display = 'none';
         }
     }
@@ -482,11 +672,10 @@
 
         // Normalize to strings for comparison
         const reviewedIdsStr = reviewedIds.map(id => String(id));
-        console.log('📂 [RENDER] Loaded reviewed IDs:', reviewedIdsStr);
-
         requests.forEach(req => {
             const reqIdStr = String(req.id);
-            const isReviewed = reviewedIdsStr.includes(reqIdStr);
+            const isRestored = req.status === 'pending' && !!req.restored_at;
+            const isReviewed = !isRestored && reviewedIdsStr.includes(reqIdStr);
 
             const totalFound = Number(req.total_cash) + Number(req.total_bank);
             const diff = totalFound - Number(req.system_sales);
@@ -520,10 +709,24 @@
                         </button>
                     </div>
                  `;
+            } else if (isRestored) {
+                actionsContent = `
+                    <div class="d-flex gap-2 justify-content-center align-items-center flex-wrap">
+                        <span class="req-status-badge req-restored-badge" title="تمت إعادة الطلب إلى المعلقات للمراجعة مرة أخرى">
+                            ↩️ مسترجعة
+                        </span>
+                        <button class="req-action-btn req-btn-primary" onclick="reconciliationRequests.openRequestAsReconciliation(${req.id})" title="فتح ومراجعة الطلب المسترجع">
+                            فتح ومراجعة
+                        </button>
+                        <button class="req-action-btn req-btn-danger" onclick="reconciliationRequests.deleteRequest(${req.id})" title="حذف">
+                            🗑️
+                        </button>
+                    </div>
+                `;
             } else if (isReviewed) {
                 actionsContent = `
                     <div class="d-flex gap-2 justify-content-center align-items-center">
-                        <span style="color: #94a3b8; font-size: 12px;">👁️ تمت المشاهدة</span>
+                        <span class="req-reviewed-label">👁️ تمت المشاهدة</span>
                         <button class="req-action-btn req-btn-success" onclick="reconciliationRequests.openRequestAsReconciliation(${req.id})" title="اعتماد الآن">
                             اعتماد
                         </button>
@@ -560,8 +763,8 @@
                     <span class="req-id-badge">#${req.id}</span>
                 </td>
                 <td>
-                    <div style="font-weight: 600; color: #2d3748; font-size: 14px;">${formattedDate}</div>
-                    <div style="color: #94a3b8; font-size: 12px; font-family: monospace;">${formattedTime}</div>
+                    <div class="req-date-main">${formattedDate}</div>
+                    <div class="req-date-sub">${formattedTime}</div>
                 </td>
                 <td>
                     <div class="d-flex align-items-center">
@@ -569,8 +772,8 @@
                             ${req.cashier_name ? req.cashier_name.charAt(0) : '؟'}
                         </div>
                         <div>
-                            <div style="font-weight: 600; color: #2d3748;">${req.cashier_name || 'غير معروف'}</div>
-                            <div style="font-size: 12px; color: #94a3b8;">${req.branch_name || 'غير محدد'}</div>
+                            <div class="req-cashier-name">${req.cashier_name || 'غير معروف'}</div>
+                            <div class="req-cashier-branch">${req.branch_name || 'غير محدد'}</div>
                         </div>
                     </div>
                 </td>
@@ -596,34 +799,59 @@
             tbody.appendChild(tr);
         });
 
-        // Add CSS ... (omitted, existing styles remain)
-        if (!document.getElementById('request-styles')) {
-            const style = document.createElement('style');
-            style.id = 'request-styles';
-            style.textContent = `
-                .avatar-circle {
-                    width: 32px;
-                    height: 32px;
-                    border-radius: 50%;
-                    display: flex;
-                    align-items: center;
-                    justify-content: center;
-                    font-weight: bold;
-                    font-size: 14px;
-                }
-                .request-row {
-                    transition: all 0.2s ease;
-                }
-                .request-row:hover {
-                    background-color: rgba(13, 110, 253, 0.05) !important;
-                    transform: translateX(-2px);
-                }
-            `;
-            document.head.appendChild(style);
-        }
     }
 
 
+
+    function parseRequestDetailsSafely(request) {
+        if (request && request.details && typeof request.details === 'object') {
+            return request.details;
+        }
+
+        if (!request || typeof request.details_json !== 'string' || !request.details_json.trim()) {
+            return {};
+        }
+
+        try {
+            const parsed = JSON.parse(request.details_json);
+            return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (error) {
+            console.error('Failed to parse details_json:', error);
+            return {};
+        }
+    }
+
+    function delay(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async function waitForElementById(id, timeoutMs = 5000, intervalMs = 50) {
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+            const element = document.getElementById(id);
+            if (element) {
+                return element;
+            }
+            await delay(intervalMs);
+        }
+        return null;
+    }
+
+    async function waitForSelectOptions(selectElement, timeoutMs = 3000, intervalMs = 50) {
+        if (!selectElement) {
+            return false;
+        }
+
+        const startedAt = Date.now();
+        while (Date.now() - startedAt < timeoutMs) {
+            if (selectElement.options && selectElement.options.length > 0) {
+                return true;
+            }
+            await delay(intervalMs);
+        }
+
+        return false;
+    }
 
     async function openRequestAsReconciliation(requestId) {
         const request = requestsData.find(r => r.id === requestId);
@@ -638,18 +866,13 @@
         }
 
         currentRequestId = requestId;
+        const openFlowToken = ++requestOpenFlowToken;
 
-        // Parse details
-        let details = {};
-        try {
-            details = JSON.parse(request.details_json);
-        } catch (e) {
-            console.error('Failed to parse details:', e);
-        }
+        const details = parseRequestDetailsSafely(request);
 
         // 1. Prepare Data for "Start Reconciliation" Phase
         // Store details in a global variable to be picked up by handleNewReconciliation
-        window.pendingReconciliationData = {
+        const pendingData = {
             requestId: request.id, // Track the origin request ID
             systemSales: request.system_sales || 0,
             details: details,
@@ -658,95 +881,98 @@
             cashierId: request.cashier_id, // Ensure ID is passed
             branchId: request.branch_id // Use branch_id instead of branch_name
         };
+        window.pendingReconciliationData = pendingData;
 
         // 2. Pre-fill Header Form (The visible "Start New Reconciliation" card)
         window.appAPI.navigateToNewReconciliation();
+        const isFlowActive = () =>
+            openFlowToken === requestOpenFlowToken && window.pendingReconciliationData === pendingData;
 
-        setTimeout(() => {
-            // 1. Set Date
-            const dateInput = document.getElementById('reconciliationDate');
-            if (dateInput) dateInput.value = new Date().toISOString().split('T')[0];
+        try {
+            const dateInput = await waitForElementById('reconciliationDate');
+            const notesInput = await waitForElementById('filterNotes');
+            const branchSelect = await waitForElementById('branchSelect');
+            const cashierSelect = await waitForElementById('cashierSelect');
 
-            // 2. Set Notes
-            const notesInput = document.getElementById('filterNotes');
-            if (notesInput) notesInput.value = window.pendingReconciliationData.notes;
-
-            // 3. Set Branch FIRST (To filter cashiers properly)
-            const branchSelect = document.getElementById('branchSelect');
-
-            // NEW APPROACH: Use branch_id directly instead of matching by name
-            if (branchSelect && window.pendingReconciliationData.branchId) {
-                const branchId = window.pendingReconciliationData.branchId;
-                console.log('🏢 [REVIEW] Setting branch by ID:', branchId);
-
-                // DEBUG: Log all available branch options
-                console.log('🏢 [DEBUG] Available branches in dropdown:');
-                for (let i = 0; i < branchSelect.options.length; i++) {
-                    console.log(`  [${i}] value="${branchSelect.options[i].value}" text="${branchSelect.options[i].text}"`);
-                }
-
-                // Direct assignment by value (ID)
-                const optionExists = Array.from(branchSelect.options).some(opt => opt.value == branchId);
-                if (optionExists) {
-                    branchSelect.value = branchId;
-                    console.log('✅ [REVIEW] Branch selected by ID:', branchId);
-                    branchSelect.dispatchEvent(new Event('change'));
-                } else {
-                    console.warn('⚠️ [REVIEW] Branch ID', branchId, 'not found in dropdown. Available values:',
-                        Array.from(branchSelect.options).map(o => o.value));
-                    // Still trigger change to load cashiers
-                    branchSelect.dispatchEvent(new Event('change'));
-                }
-            } else {
-                console.log('🏢 [REVIEW] No branch ID provided or branchSelect not found');
-                // If no branch specified, ensure we trigger change to load all cashiers
-                if (branchSelect) branchSelect.dispatchEvent(new Event('change'));
+            if (!isFlowActive()) {
+                return;
             }
 
-            // 4. Set Cashier (Wait for branch change to propagate and populate list)
-            setTimeout(() => {
-                const cashierSelect = document.getElementById('cashierSelect');
-                if (cashierSelect) {
-                    let found = false;
+            if (dateInput) {
+                dateInput.value = new Date().toISOString().split('T')[0];
+            }
 
-                    // Try finding by ID first (Most accurate)
-                    if (window.pendingReconciliationData.cashierId) {
-                        const option = Array.from(cashierSelect.options).find(o => o.value == window.pendingReconciliationData.cashierId);
-                        if (option) {
-                            cashierSelect.value = window.pendingReconciliationData.cashierId;
-                            found = true;
-                            console.log('✅ [REVIEW] Cashier matched by ID:', window.pendingReconciliationData.cashierId);
-                        }
-                    }
+            if (notesInput) {
+                notesInput.value = pendingData.notes;
+            }
 
-                    // Fallback to Name
-                    if (!found && window.pendingReconciliationData.cashierName) {
-                        const nameToFind = window.pendingReconciliationData.cashierName;
-                        console.log('⚠️ [REVIEW] Cashier ID match failed, verifying by name:', nameToFind);
+            // Set branch if available and trigger native listeners.
+            if (branchSelect) {
+                if (pendingData.branchId) {
+                    const branchId = String(pendingData.branchId);
+                    const optionExists = Array.from(branchSelect.options).some(opt => opt.value === branchId);
 
-                        for (let i = 0; i < cashierSelect.options.length; i++) {
-                            const option = cashierSelect.options[i];
-                            if (option.text.includes(nameToFind)) {
-                                cashierSelect.value = option.value;
-                                found = true;
-                                console.log('✅ [REVIEW] Cashier matched by Name:', option.text);
-                                break;
-                            }
-                        }
-                    }
-
-                    if (found) {
-                        cashierSelect.dispatchEvent(new Event('change'));
+                    if (optionExists) {
+                        branchSelect.value = branchId;
+                        console.log('✅ [REVIEW] Branch selected by ID:', branchId);
                     } else {
-                        console.warn('❌ [REVIEW] Cashier could not be auto-selected. List size:', cashierSelect.options.length);
+                        console.warn(
+                            '⚠️ [REVIEW] Branch ID not found in dropdown:',
+                            branchId,
+                            'Available:',
+                            Array.from(branchSelect.options).map(o => o.value)
+                        );
                     }
                 }
-            }, 800); // Increased delay to ensure branch change fully propagates and cashiers are loaded
 
-            // Scroll to top
+                branchSelect.dispatchEvent(new Event('change'));
+                await delay(120);
+            }
+
+            if (!isFlowActive()) {
+                return;
+            }
+
+            if (cashierSelect) {
+                await waitForSelectOptions(cashierSelect, 2500, 60);
+
+                let cashierFound = false;
+                if (pendingData.cashierId) {
+                    const cashierId = String(pendingData.cashierId);
+                    const option = Array.from(cashierSelect.options).find(o => o.value === cashierId);
+                    if (option) {
+                        cashierSelect.value = cashierId;
+                        cashierFound = true;
+                        console.log('✅ [REVIEW] Cashier matched by ID:', cashierId);
+                    }
+                }
+
+                if (!cashierFound && pendingData.cashierName) {
+                    const nameToFind = String(pendingData.cashierName).trim();
+                    const option = Array.from(cashierSelect.options).find(o =>
+                        String(o.text || '').includes(nameToFind)
+                    );
+
+                    if (option) {
+                        cashierSelect.value = option.value;
+                        cashierFound = true;
+                        console.log('✅ [REVIEW] Cashier matched by Name:', option.text);
+                    }
+                }
+
+                if (cashierFound) {
+                    cashierSelect.dispatchEvent(new Event('change'));
+                } else {
+                    console.warn('⚠️ [REVIEW] Cashier could not be auto-selected. Options:', cashierSelect.options.length);
+                }
+            }
+
+            if (!isFlowActive()) {
+                return;
+            }
+
             window.scrollTo({ top: 0, behavior: 'smooth' });
 
-            // Notify User
             Swal.fire({
                 title: 'جاهز للمراجعة',
                 text: 'تم تعبئة بيانات الطلب وتحديد الكاشير. راجع البيانات ثم اضغط "ابدأ التصفية" لتحميل التفاصيل المالية.',
@@ -754,7 +980,15 @@
                 confirmButtonText: 'حسناً',
                 confirmButtonColor: '#0d6efd'
             });
-        }, 500);
+        } catch (error) {
+            console.error('❌ [REVIEW] Failed to prepare request for reconciliation:', error);
+            Swal.fire({
+                title: 'تعذر تجهيز الطلب',
+                text: 'حدث خطأ أثناء تجهيز بيانات الطلب للمراجعة. حاول فتح الطلب مرة أخرى.',
+                icon: 'error',
+                confirmButtonText: 'حسناً'
+            });
+        }
     }
 
 
@@ -767,6 +1001,11 @@
         } else {
             console.warn('⚠️ [EVENT] No originRequestId found in event detail');
         }
+    });
+
+    window.addEventListener('reconciliation-request-restored', (event) => {
+        console.log('🔔 [EVENT] Reconciliation Request Restored:', event.detail);
+        loadRequests(currentFilter, currentPage);
     });
 
     function markRequestAsDone(requestId) {
@@ -826,16 +1065,72 @@
         }
 
         // 3. Update Status on Server (Crucial for Persistence so it moves to Archive)
-        fetch(`http://localhost:4000/api/reconciliation-requests/${requestId}/complete`, { method: 'POST' })
-            .then(res => res.json())
-            .then(data => {
-                if (data.success) {
-                    console.log('✅ [SERVER] Request marked as completed on server');
-                } else {
-                    console.error('❌ [SERVER] Failed to mark request as complete:', data.error);
-                }
-            })
-            .catch(err => console.error('❌ [SERVER] Network Error:', err));
+        // Check if sync is enabled before contacting server
+        requestsIpc.invoke('get-sync-status').then(syncStatus => {
+            if (!syncStatus.success || !syncStatus.isEnabled) {
+                console.log('⛔ [SERVER] Sync disabled - skipping server update for request completion');
+                return;
+            }
+
+            // Sync is enabled, proceed with server update
+            fetch(getReconciliationRequestsUrl({ preferLocal: false }, `/${requestId}/complete`), { method: 'POST' })
+                .then(async (res) => {
+                    const payload = await res.json().catch(() => ({}));
+                    return { ok: res.ok, status: res.status, payload };
+                })
+                .then(data => {
+                    if (data.ok && data.payload.success) {
+                        console.log('✅ [SERVER] Request marked as completed on server');
+                    } else if (data.status === 401) {
+                        console.info('ℹ️ [SERVER] Skipping server completion update بسبب عدم وجود جلسة ويب');
+                    } else {
+                        console.error('❌ [SERVER] Failed to mark request as complete:', data.payload.error);
+                    }
+                })
+                .catch(err => console.error('❌ [SERVER] Network Error:', err));
+        }).catch(err => {
+            console.error('❌ [SERVER] Failed to check sync status:', err);
+            // If we can't check sync status, proceed anyway (fail open)
+            fetch(getReconciliationRequestsUrl({ preferLocal: false }, `/${requestId}/complete`), { method: 'POST' })
+                .then(async (res) => {
+                    const payload = await res.json().catch(() => ({}));
+                    return { ok: res.ok, status: res.status, payload };
+                })
+                .then(data => {
+                    if (data.ok && data.payload.success) {
+                        console.log('✅ [SERVER] Request marked as completed on server');
+                    } else if (data.status === 401) {
+                        console.info('ℹ️ [SERVER] Skipping server completion update بسبب عدم وجود جلسة ويب');
+                    }
+                })
+                .catch(err => console.error('❌ [SERVER] Network Error:', err));
+        });
+    }
+
+    async function deleteRequestLocally(requestId) {
+        if (!hasDesktopDbBridge()) {
+            return false;
+        }
+
+        const result = await requestsIpc.invoke(
+            'db-run',
+            'DELETE FROM reconciliation_requests WHERE id = ?',
+            [requestId]
+        );
+        return Number(result?.changes || 0) > 0;
+    }
+
+    async function deleteAllRequestsLocally() {
+        if (!hasDesktopDbBridge()) {
+            return false;
+        }
+
+        const result = await requestsIpc.invoke(
+            'db-run',
+            'DELETE FROM reconciliation_requests',
+            []
+        );
+        return Number(result?.changes || 0) >= 0;
     }
 
     async function deleteRequest(requestId) {
@@ -853,7 +1148,27 @@
         if (!swalResult.isConfirmed) return;
 
         try {
-            const response = await fetch(`http://localhost:4000/api/reconciliation-requests/${requestId}`, {
+            const deletedLocally = await deleteRequestLocally(requestId);
+
+            // Check if sync is enabled before contacting server
+            const syncStatus = await requestsIpc.invoke('get-sync-status');
+            if (!syncStatus.success || !syncStatus.isEnabled) {
+                console.log('⛔ [SERVER] Sync disabled - skipping server delete');
+                Swal.fire({
+                    title: 'تم الحذف محلياً',
+                    text: 'تم حذف الطلب من النظام المحلي فقط (المزامنة متوقفة)',
+                    icon: 'info',
+                    timer: 2000,
+                    showConfirmButton: false
+                });
+                if (!deletedLocally) {
+                    console.warn('⚠️ [LOCAL] Failed to delete request locally:', requestId);
+                }
+                loadRequests(currentFilter, currentPage);
+                return;
+            }
+
+            const response = await fetch(getReconciliationRequestsUrl({ preferLocal: false }, `/${requestId}`), {
                 method: 'DELETE'
             });
             const result = await response.json();
@@ -866,7 +1181,16 @@
                     timer: 1500,
                     showConfirmButton: false
                 });
-                loadRequests();
+                loadRequests(currentFilter, currentPage);
+            } else if (response.status === 401) {
+                Swal.fire({
+                    title: 'تم الحذف محلياً',
+                    text: 'تم حذف الطلب محلياً، لكن لم يتم حذف النسخة البعيدة لعدم وجود جلسة ويب',
+                    icon: 'info',
+                    timer: 2000,
+                    showConfirmButton: false
+                });
+                loadRequests(currentFilter, currentPage);
             } else {
                 Swal.fire('خطأ', result.error, 'error');
             }
@@ -882,7 +1206,22 @@
         }
 
         try {
-            const response = await fetch('http://localhost:4000/api/reconciliation-requests', {
+            await deleteAllRequestsLocally();
+
+            // Check if sync is enabled before contacting server
+            const syncStatus = await requestsIpc.invoke('get-sync-status');
+            if (!syncStatus.success || !syncStatus.isEnabled) {
+                console.log('⛔ [SERVER] Sync disabled - skipping bulk delete on server');
+                if (typeof Swal !== 'undefined') {
+                    Swal.fire('تم الحذف محلياً', 'تم تنظيف الطلبات محلياً فقط (المزامنة متوقفة)', 'info');
+                } else {
+                    alert('تم حذف جميع الطلبات محلياً فقط (المزامنة متوقفة)');
+                }
+                loadRequests(currentFilter, 1);
+                return;
+            }
+
+            const response = await fetch(getReconciliationRequestsUrl({ preferLocal: false }), {
                 method: 'DELETE'
             });
             const result = await response.json();
@@ -894,7 +1233,14 @@
                 } else {
                     alert('تم حذف جميع الطلبات بنجاح');
                 }
-                loadRequests(currentFilter);
+                loadRequests(currentFilter, 1);
+            } else if (response.status === 401) {
+                if (typeof Swal !== 'undefined') {
+                    Swal.fire('تم الحذف محلياً', 'تم تنظيف الطلبات محلياً، لكن لم يتم تنظيف النسخة البعيدة لعدم وجود جلسة ويب', 'info');
+                } else {
+                    alert('تم حذف جميع الطلبات محلياً فقط لأن جلسة الويب غير متاحة');
+                }
+                loadRequests(currentFilter, 1);
             } else {
                 alert('فشل الحذف: ' + (result.error || 'خطأ غير معروف'));
             }
@@ -995,6 +1341,10 @@
 
     // Export public API
     window.reconciliationRequests = {
+        ensureSection: () => {
+            createRequestsSection();
+            updateSectionTitle();
+        },
         loadRequests: (status) => loadRequests(status || currentFilter, currentPage),
         setFilter: (filter) => {
             currentFilter = filter;

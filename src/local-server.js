@@ -3502,10 +3502,22 @@ class LocalWebServer {
         try {
             console.log(`📝 [API] Completing reconciliation request: ${id}`);
 
-            const stmt = this.dbManager.db.prepare("UPDATE reconciliation_requests SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-            const result = await stmt.run(id);
+            let result = null;
+            if (this.dbManager.pool) {
+                result = await this.dbManager.pool.query(
+                    "UPDATE reconciliation_requests SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+                    [id]
+                );
+            } else {
+                const stmt = this.dbManager.db.prepare("UPDATE reconciliation_requests SET status = 'completed', updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+                result = await stmt.run(id);
+            }
 
-            if (result.changes > 0) {
+            const changed = this.dbManager.pool
+                ? Number(result?.rowCount || 0)
+                : Number(result?.changes || 0);
+
+            if (changed > 0) {
                 console.log(`✅ [API] Request ${id} updated to completed`);
                 this.sendJson(res, { success: true, message: 'Request marked as completed' });
             } else {
