@@ -48,9 +48,10 @@ class PostgresManager {
     async migrateSchema() {
         try {
             const client = await this.pool.connect();
-            // Fix denomination column type from INTEGER to DECIMAL to support fraction coins (0.5, 0.25)
-            // This is safe to run multiple times (it will just set the type)
+            // Fix cash_receipts numeric column types to support fractional values
+            // Safe to run multiple times
             await client.query('ALTER TABLE cash_receipts ALTER COLUMN denomination TYPE DECIMAL(10,2)');
+            await client.query('ALTER TABLE cash_receipts ALTER COLUMN quantity TYPE DECIMAL(10,2) USING quantity::DECIMAL(10,2)');
 
             // New request-linking and restoration metadata columns
             await client.query(`
@@ -325,7 +326,7 @@ class PostgresManager {
                 id SERIAL PRIMARY KEY,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 denomination DECIMAL(10,2) NOT NULL,
-                quantity INTEGER NOT NULL,
+                quantity DECIMAL(10,2) NOT NULL,
                 total_amount DECIMAL(10,2) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
