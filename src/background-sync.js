@@ -2,6 +2,7 @@ const { app } = require('electron');
 
 const { ipcMain } = require('electron');
 const fetch = require('node-fetch');
+const { buildCashboxVoucherSyncKey } = require('./app/cashbox-voucher-utils');
 
 // Configuration
 const REMOTE_URL = 'https://tasfiya-pro-max.onrender.com/api/sync/users'; // Ensure this matches your Render URL
@@ -126,6 +127,11 @@ class BackgroundSync {
                 .map((row) => Number(row.branch_id))
                 .filter((branchId) => Number.isInteger(branchId) && branchId > 0)
         )];
+        const activeCashboxVoucherSyncKeys = [...new Set(
+            db.prepare('SELECT * FROM cashbox_vouchers').all()
+                .map((row) => buildCashboxVoucherSyncKey(row))
+                .filter((syncKey) => typeof syncKey === 'string' && syncKey.trim() !== '')
+        )];
 
         for (const table of idTables) {
             try {
@@ -139,6 +145,11 @@ class BackgroundSync {
 
         if (activeBranchCashboxBranchIds.length > 0) {
             allIdsPayload.active_branch_cashboxes_branch_ids = activeBranchCashboxBranchIds;
+            hasIds = true;
+        }
+
+        if (activeCashboxVoucherSyncKeys.length > 0) {
+            allIdsPayload.active_cashbox_voucher_sync_keys = activeCashboxVoucherSyncKeys;
             hasIds = true;
         }
 

@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
-const { buildRemoteServiceUrl } = require('./remote-service-url');
 const { buildCashboxVoucherSyncKey } = require('./app/cashbox-voucher-utils');
 
 // 1. Find Database
@@ -81,7 +80,7 @@ try {
     - ${cashbox_voucher_audit_log.length} Cashbox Audit Logs`);
 
     // 5. Send to Cloud
-    const REMOTE_URL = buildRemoteServiceUrl('/api/sync/users');
+    const REMOTE_URL = 'https://tasfiya-pro-max.onrender.com/api/sync/users';
 
     console.log('🚀 Sending data to Cloud (' + REMOTE_URL + ')...');
 

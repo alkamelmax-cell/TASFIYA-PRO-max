@@ -69,6 +69,15 @@ class PostgresManager {
               ALTER TABLE reconciliation_requests
               ADD COLUMN IF NOT EXISTS restored_reason TEXT
             `);
+            await client.query(`
+              ALTER TABLE cashbox_vouchers
+              ADD COLUMN IF NOT EXISTS sync_key TEXT
+            `);
+            await client.query(`
+              CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique
+              ON cashbox_vouchers(sync_key)
+              WHERE sync_key IS NOT NULL AND BTRIM(sync_key) != ''
+            `);
 
             // Ensure username is UNIQUE for admins (Critical for Sync ON CONFLICT logic)
             try {
@@ -339,6 +348,7 @@ class PostgresManager {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 source_reconciliation_id INTEGER,
                 source_entry_key TEXT,
+                sync_key TEXT,
                 is_auto_generated INTEGER DEFAULT 0
             )`,
             `CREATE TABLE IF NOT EXISTS cashbox_voucher_audit_log (
@@ -546,12 +556,45 @@ class PostgresManager {
                 FROM repaired
             `);
 
+            const syncKeyResult = await client.query(`
+                WITH updated AS (
+                    UPDATE cashbox_vouchers v
+                    SET sync_key = CASE
+                        WHEN COALESCE(BTRIM(v.sync_key), '') != '' THEN v.sync_key
+                        WHEN v.source_reconciliation_id IS NOT NULL
+                             AND COALESCE(BTRIM(v.source_entry_key), '') != ''
+                            THEN 'recon:' || CAST(v.source_reconciliation_id AS TEXT) || ':' || REPLACE(BTRIM(v.source_entry_key), ' ', '%20')
+                        ELSE 'manual:' || REPLACE(
+                                COALESCE(
+                                    TO_CHAR(v.created_at, 'YYYY-MM-DD HH24:MI:SS'),
+                                    TO_CHAR(v.voucher_date, 'YYYY-MM-DD'),
+                                    'no-timestamp'
+                                ),
+                                ' ',
+                                '%20'
+                            )
+                             || ':' || CAST(v.id AS TEXT)
+                    END
+                    WHERE COALESCE(BTRIM(v.sync_key), '') = ''
+                    RETURNING v.id
+                )
+                SELECT COUNT(*)::int AS updated_count
+                FROM updated
+            `);
+
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique
+                ON cashbox_vouchers(sync_key)
+                WHERE sync_key IS NOT NULL AND BTRIM(sync_key) != ''
+            `);
+
             await client.query('COMMIT');
 
             const insertedCount = Number(insertedResult.rows?.[0]?.inserted_count || 0);
             const repairedCount = Number(repairedResult.rows?.[0]?.repaired_count || 0);
+            const syncKeyCount = Number(syncKeyResult.rows?.[0]?.updated_count || 0);
 
-            console.log(`🧰 [DB] Cashbox sync repair complete: branch_cashboxes_created=${insertedCount}, vouchers_relinked=${repairedCount}`);
+            console.log(`🧰 [DB] Cashbox sync repair complete: branch_cashboxes_created=${insertedCount}, vouchers_relinked=${repairedCount}, voucher_sync_keys_backfilled=${syncKeyCount}`);
         } catch (error) {
             await client.query('ROLLBACK');
             throw error;
