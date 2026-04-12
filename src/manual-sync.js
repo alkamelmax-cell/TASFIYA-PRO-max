@@ -2,6 +2,7 @@ const fs = require('fs');
 const path = require('path');
 const Database = require('better-sqlite3');
 const { buildRemoteServiceUrl } = require('./remote-service-url');
+const { buildCashboxVoucherSyncKey } = require('./app/cashbox-voucher-utils');
 
 // 1. Find Database
 const possiblePaths = [
@@ -62,7 +63,9 @@ try {
         branch_cashboxes,
         cashbox_vouchers,
         cashbox_voucher_audit_log,
+        active_branch_cashboxes_branch_ids: branch_cashboxes.map(row => row.branch_id),
         active_branch_cashboxes_ids: branch_cashboxes.map(row => row.id),
+        active_cashbox_voucher_sync_keys: cashbox_vouchers.map(row => buildCashboxVoucherSyncKey(row)).filter(Boolean),
         active_cashbox_vouchers_ids: cashbox_vouchers.map(row => row.id),
         active_cashbox_voucher_audit_log_ids: cashbox_voucher_audit_log.map(row => row.id)
     };
