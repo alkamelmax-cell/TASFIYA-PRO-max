@@ -242,9 +242,10 @@
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-        <script src="/js/session-bootstrap.js"></script>
+    <script src="/js/session-bootstrap.js"></script>
     <script src="/js/page-access.js?v=2"></script>
-    <script src="/js/onesignal-bootstrap.js?v=3"></script>    <script>
+    <script src="/js/onesignal-bootstrap.js?v=2"></script>
+    <script>
         const sessionHelper = window.TasfiyaSession || null;
         const pageAccess = window.TasfiyaAccess || null;
         let user = sessionHelper ? (sessionHelper.readStoredUser() || {}) : JSON.parse(localStorage.getItem('user') || '{}');
@@ -260,54 +261,43 @@
             });
         }
 
-        async function initializeUserNotifications() {
-            if (
-                !window.TasfiyaOneSignal
-                || user.role !== 'admin'
-                || window.__tasfiyaUserNotificationsInitialized
-                || window.__tasfiyaUserNotificationsInitializing
-            ) {
+        function initializeUserNotifications() {
+            if (!window.TasfiyaOneSignal || user.role !== 'admin' || window.__tasfiyaUserNotificationsInitialized) {
                 return;
             }
 
-            window.__tasfiyaUserNotificationsInitializing = true;
+            window.__tasfiyaUserNotificationsInitialized = true;
 
-            try {
-                const isMedianApp = window.TasfiyaOneSignal.isNativeEnvironment();
+            const isMedianApp = window.TasfiyaOneSignal.isNativeEnvironment();
 
-                if (isMedianApp) {
-                    console.log("📱 Running in App Mode");
-                    const initialized = bootstrapNativeNotifications();
-                    window.__tasfiyaUserNotificationsInitialized = initialized === true;
+            if (isMedianApp) {
+                console.log("📱 Running in App Mode");
+                bootstrapNativeNotifications();
 
-                    if (window.__tasfiyaUserNotificationsInitialized) {
-                        window.addEventListener('focus', bootstrapNativeNotifications);
-                        document.addEventListener('visibilitychange', () => {
-                            if (document.visibilityState === 'visible') {
-                                bootstrapNativeNotifications();
-                            }
-                        });
+                window.addEventListener('focus', bootstrapNativeNotifications);
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible') {
+                        bootstrapNativeNotifications();
                     }
-                }
-                else {
-                    console.log("💻 Running in Browser Mode");
-                    const initialized = await window.TasfiyaOneSignal.initBrowserUser(user, {
+                });
+            }
+            else {
+                console.log("💻 Running in Browser Mode");
+                try {
+                    window.TasfiyaOneSignal.initBrowserUser(user, {
                         role: "أدمن",
                         requestPermission: true
                     });
-                    window.__tasfiyaUserNotificationsInitialized = initialized === true;
+                } catch (error) {
+                    console.error("OneSignal Error:", error);
                 }
-            } catch (error) {
-                console.error("OneSignal Error:", error);
-            } finally {
-                window.__tasfiyaUserNotificationsInitializing = false;
             }
         }
 
         // 1. Define the Official Callback for Median App
         window.median_onesignal_info = function (data) {
             console.log("📱 Median App Detected via Official Callback", data);
-            void initializeUserNotifications();
+            initializeUserNotifications();
         };
 
 
@@ -448,7 +438,7 @@
 
             user = activeUser;
             applyUserAccess(user);
-            void initializeUserNotifications();
+            initializeUserNotifications();
 
             if (user.role === 'cashier') {
                 window.location.replace('request-reconciliation.html');
@@ -837,4 +827,3 @@
 </body>
 
 </html>
-
