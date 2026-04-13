@@ -1847,10 +1847,15 @@ class LocalWebServer {
             const pool = this.dbManager.pool;
             if (pool) {
                 // Postgres Mode
-                await pool.query('DELETE FROM reconciliation_requests WHERE id = $1', [id]);
+                await pool.query(
+                    "UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+                    [id]
+                );
             } else {
                 // SQLite Mode
-                await this.dbManager.db.prepare("DELETE FROM reconciliation_requests WHERE id = ?").run(id);
+                await this.dbManager.db.prepare(
+                    "UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?"
+                ).run(id);
             }
 
             // Check if sync is enabled before deleting from cloud
@@ -3031,8 +3036,10 @@ class LocalWebServer {
                             'total_bank = EXCLUDED.total_bank',
                             'details_json = EXCLUDED.details_json',
                             'notes = EXCLUDED.notes',
-                            // Never downgrade a completed request back to pending
+                            // Never downgrade a completed/deleted request
                             `status = CASE
+                                WHEN reconciliation_requests.status = 'deleted'
+                                THEN reconciliation_requests.status
                                 WHEN reconciliation_requests.status = 'completed'
                                      AND EXCLUDED.status <> 'completed'
                                 THEN reconciliation_requests.status
@@ -3529,8 +3536,11 @@ class LocalWebServer {
                     `;
                     const params = [];
                     if (statusFilter !== 'all') {
-                        sql += ' WHERE r.status = $1';
-                        params.push(statusFilter);
+                        sql += ' WHERE r.status = $1 AND r.status != $2';
+                        params.push(statusFilter, 'deleted');
+                    } else {
+                        sql += ' WHERE r.status != $1';
+                        params.push('deleted');
                     }
                     sql += ' ORDER BY r.created_at DESC';
 
@@ -3545,8 +3555,11 @@ class LocalWebServer {
                     `;
                     const params = [];
                     if (statusFilter !== 'all') {
-                        sql += ' WHERE r.status = ?';
-                        params.push(statusFilter);
+                        sql += ' WHERE r.status = ? AND r.status != ?';
+                        params.push(statusFilter, 'deleted');
+                    } else {
+                        sql += ' WHERE r.status != ?';
+                        params.push('deleted');
                     }
                     sql += ' ORDER BY r.created_at DESC';
 
@@ -3560,8 +3573,11 @@ class LocalWebServer {
                     let sql = `SELECT * FROM reconciliation_requests`;
                     const params = [];
                     if (statusFilter !== 'all') {
-                        sql += ' WHERE status = $1';
-                        params.push(statusFilter);
+                        sql += ' WHERE status = $1 AND status != $2';
+                        params.push(statusFilter, 'deleted');
+                    } else {
+                        sql += ' WHERE status != $1';
+                        params.push('deleted');
                     }
                     sql += ' ORDER BY created_at DESC';
 
@@ -3571,8 +3587,11 @@ class LocalWebServer {
                     let sql = `SELECT * FROM reconciliation_requests`;
                     const params = [];
                     if (statusFilter !== 'all') {
-                        sql += ' WHERE status = ?';
-                        params.push(statusFilter);
+                        sql += ' WHERE status = ? AND status != ?';
+                        params.push(statusFilter, 'deleted');
+                    } else {
+                        sql += ' WHERE status != ?';
+                        params.push('deleted');
                     }
                     sql += ' ORDER BY created_at DESC';
 
