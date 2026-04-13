@@ -60,7 +60,7 @@
         <!-- Brand Section -->
         <div class="navbar-brand-section">
             <div class="brand-logo">
-                <img src="assets/logo.png" alt="TP"
+                <img src="assets/logo-tasfia-pro.png" alt="TP"
                     style="height: 45px; width: auto; margin-left: 10px; border-radius: 8px;">تصفية برو
             </div>
         </div>
@@ -271,8 +271,10 @@
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/page-access.js?v=2"></script>
     <script>
         const API_URL = '/api';
+        const pageAccess = window.TasfiyaAccess || null;
 
         let USERS_CACHE = [];
 
@@ -283,7 +285,9 @@
         document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
 
         // Navbar Protection Logic
-        const protectedPages = [
+        const protectedPages = (pageAccess && Array.isArray(pageAccess.PROTECTED_PAGES))
+            ? pageAccess.PROTECTED_PAGES
+            : [
             'atm-reports.html',
             'cashbox-reports.html',
             'customer-ledger.html',
@@ -291,9 +295,11 @@
             'cashiers-management.html',
             'reconciliation-requests.html',
             'request-reconciliation.html'
-        ];
+            ];
 
-        if (user.permissions && Array.isArray(user.permissions)) {
+        if (pageAccess && typeof pageAccess.applyProtectedPageVisibility === 'function') {
+            pageAccess.applyProtectedPageVisibility(document, user, protectedPages);
+        } else if (user.permissions && Array.isArray(user.permissions)) {
             protectedPages.forEach(page => {
                 if (!user.permissions.includes(page)) {
                     const el = document.querySelector(`a[href="${page}"]`);
@@ -309,7 +315,9 @@
 
         // Strict Protection: Only users with 'users-management.html' in permissions can verify here.
         // Fallback to role 'admin' for legacy users.
-        const isAdmin = (user.role === 'admin') || (user.permissions && user.permissions.includes('users-management.html'));
+        const isAdmin = (pageAccess && typeof pageAccess.canAccessPage === 'function')
+            ? pageAccess.canAccessPage(user, 'users-management.html')
+            : ((user.role === 'admin') || (user.permissions && user.permissions.includes('users-management.html')));
         if (!isAdmin) {
             alert('ليس لديك صلاحية للوصول لهذه الصفحة');
             window.location.href = 'index.html';
@@ -325,10 +333,58 @@
             if (btn) btn.addEventListener('click', () => loadUsers());
         });
 
+        const API_MAX_RETRIES = 3;
+        const API_RETRY_DELAY_MS = 1200;
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function parseJsonSafe(response) {
+            try {
+                const text = await response.text();
+                if (!text) return { __empty: true };
+                return JSON.parse(text);
+            } catch (_error) {
+                return { __parseError: true };
+            }
+        }
+
+        function isTransientStatus(status) {
+            return status === 502 || status === 503 || status === 504;
+        }
+
+        async function fetchJsonWithRetry(url, options = {}) {
+            let lastError = null;
+            for (let attempt = 0; attempt < API_MAX_RETRIES; attempt += 1) {
+                try {
+                    const res = await fetch(url, options);
+                    if (!res.ok) {
+                        if (isTransientStatus(res.status)) {
+                            await sleep(API_RETRY_DELAY_MS);
+                            continue;
+                        }
+                        const errData = await parseJsonSafe(res);
+                        throw new Error(errData.error || `HTTP ${res.status}`);
+                    }
+
+                    const data = await parseJsonSafe(res);
+                    if (data && (data.__empty || data.__parseError)) {
+                        await sleep(API_RETRY_DELAY_MS);
+                        continue;
+                    }
+                    return { res, data };
+                } catch (err) {
+                    lastError = err;
+                    await sleep(API_RETRY_DELAY_MS);
+                }
+            }
+            throw lastError || new Error('Temporary API failure');
+        }
+
         async function loadUsers() {
             try {
-                const res = await fetch(`${API_URL}/users`, { cache: 'no-store' });
-                const result = await res.json();
+                const { data: result } = await fetchJsonWithRetry(`${API_URL}/users`, { cache: 'no-store' });
 
                 console.log('👥 [USERS] Full API Response:', JSON.stringify(result, null, 2)); // Detailed debugging
                 console.log('👥 [USERS] result.success:', result.success);
@@ -402,28 +458,40 @@
                 'users-management.html': 'إدارة المستخدمين'
             };
             const TOTAL_PERMISSIONS_COUNT = Object.keys(labelsMap).length;
+            const getPermissionLabel = (permission) => {
+                if (pageAccess && typeof pageAccess.getPermissionDisplayLabel === 'function') {
+                    return pageAccess.getPermissionDisplayLabel(permission);
+                }
+
+                return labelsMap[permission] || permission;
+            };
 
             users.forEach((u, index) => {
                 const tr = document.createElement('tr');
+                const normalizedPermissions = (pageAccess && typeof pageAccess.normalizePermissionList === 'function')
+                    ? pageAccess.normalizePermissionList(u.permissions || [])
+                    : (Array.isArray(u.permissions) ? u.permissions : []);
 
                 // Format permissions
                 let permsDisplay = '<span class="text-secondary small">لا صلاحيات</span>';
 
                 // Check if Full Admin (Legacy OR New with ALL permissions)
                 // Note: We check if permissions length matches total available
-                const isFullPermissions = (u.permissions && Array.isArray(u.permissions) && u.permissions.length === TOTAL_PERMISSIONS_COUNT);
+                const isFullPermissions = normalizedPermissions.length === TOTAL_PERMISSIONS_COUNT;
                 const isLegacyAdmin = (!u.permissions && u.role === 'admin');
 
                 if (isFullPermissions || isLegacyAdmin) {
                     permsDisplay = '<span class="badge bg-danger">مشرف (كامل الصلاحيات)</span>';
-                } else if (u.permissions && Array.isArray(u.permissions) && u.permissions.length > 0) {
-                    if (u.permissions.length > 1) {
-                        const fullList = u.permissions.map(p => labelsMap[p] || p).join('، ');
-                        permsDisplay = `<span class="badge bg-secondary bg-opacity-50" title="${fullList}">صلاحيات متعددة (${u.permissions.length})</span>`;
+                } else if (normalizedPermissions.length > 0) {
+                    if (normalizedPermissions.length > 1) {
+                        const fullList = normalizedPermissions.map((permission) => getPermissionLabel(permission)).join('، ');
+                        permsDisplay = `<span class="badge bg-secondary bg-opacity-50" title="${fullList}">صلاحيات متعددة (${normalizedPermissions.length})</span>`;
                     } else {
-                        const p = u.permissions[0];
-                        let label = labelsMap[p] || p;
-                        if (p === 'users-management.html') label = '<span class="text-warning">إدارة المستخدمين</span>';
+                        const p = normalizedPermissions[0];
+                        let label = getPermissionLabel(p);
+                        if (p === 'users-management.html' || p === 'section:admins') {
+                            label = '<span class="text-warning">إدارة المستخدمين</span>';
+                        }
                         permsDisplay = `<span class="badge bg-secondary bg-opacity-50 me-1">${label}</span>`;
                     }
                 }
@@ -466,9 +534,10 @@
 
             // Logic Fix: Trust permissions array if it exists (even if empty)
             if (u.permissions && Array.isArray(u.permissions)) {
-                u.permissions.forEach(p => {
-                    const cb = document.querySelector(`.permission-check[value="${p}"]`);
-                    if (cb) cb.checked = true;
+                document.querySelectorAll('.permission-check').forEach((checkbox) => {
+                    checkbox.checked = pageAccess && typeof pageAccess.permissionListAllowsPage === 'function'
+                        ? pageAccess.permissionListAllowsPage(u.permissions, checkbox.value)
+                        : u.permissions.includes(checkbox.value);
                 });
             } else if (u.role === 'admin' && (!u.permissions)) {
                 // Legacy admin (null permissions) - check all
@@ -484,7 +553,7 @@
             const id = document.getElementById('userId').value;
             const name = document.getElementById('userName').value;
             const username = document.getElementById('userLogin').value;
-            const password = document.getElementById('userPassword').value;
+            const password = document.getElementById('userPassword').value.trim();
 
             // Collect Permissions
             const permissions = [];
@@ -492,23 +561,34 @@
                 permissions.push(cb.value);
             });
 
+            const normalizedPermissions = (pageAccess && typeof pageAccess.normalizePermissionList === 'function')
+                ? pageAccess.normalizePermissionList(permissions)
+                : permissions;
+
             // Determine Role (for backward compatibility)
             // If they have 'users-management.html', let's call them 'admin', otherwise 'user'
-            const role = permissions.includes('users-management.html') ? 'admin' : 'user';
+            const role = (pageAccess && typeof pageAccess.permissionListAllowsPage === 'function')
+                ? (pageAccess.permissionListAllowsPage(normalizedPermissions, 'users-management.html') ? 'admin' : 'user')
+                : (permissions.includes('users-management.html') ? 'admin' : 'user');
 
             if (!name || !username) {
                 alert('الرجاء تعبئة البيانات الأساسية');
                 return;
             }
 
-            const payload = { id, name, username, password, role, permissions };
+            if (!id && !password) {
+                alert('كلمة المرور مطلوبة للمستخدم الجديد');
+                return;
+            }
+
+            const payload = { id, name, username, password, role, permissions: normalizedPermissions };
 
             try {
-                const res = await fetch(`${API_URL}/users`, {
+                const { data: result } = await fetchJsonWithRetry(`${API_URL}/users`, {
                     method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                const result = await res.json();
 
                 if (result.success) {
                     userModal.hide();
@@ -526,8 +606,7 @@
             if (!confirm('هل أنت متأكد من حذف هذا المستخدم؟')) return;
 
             try {
-                const res = await fetch(`${API_URL}/users/${id}`, { method: 'DELETE' });
-                const result = await res.json();
+                const { data: result } = await fetchJsonWithRetry(`${API_URL}/users/${id}`, { method: 'DELETE' });
                 if (result.success) {
                     loadUsers();
                 } else {
@@ -538,7 +617,13 @@
             }
         }
 
-        function logout() {
+        async function logout() {
+            try {
+                await fetch('/api/logout', { method: 'POST' });
+            } catch (error) {
+                console.warn('Logout request failed:', error);
+            }
+
             localStorage.removeItem('user');
             window.location.href = '/login.html';
         }

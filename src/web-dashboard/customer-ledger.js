@@ -1,6 +1,56 @@
 const API_URL = '/api';
+const API_MAX_RETRIES = 3;
+const API_RETRY_DELAY_MS = 1200;
+
+function sleep(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+async function parseJsonSafe(response) {
+    try {
+        const text = await response.text();
+        if (!text) return { __empty: true };
+        return JSON.parse(text);
+    } catch (_error) {
+        return { __parseError: true };
+    }
+}
+
+function isTransientStatus(status) {
+    return status === 502 || status === 503 || status === 504;
+}
+
+async function fetchJsonWithRetry(url, options = {}) {
+    let lastError = null;
+    for (let attempt = 0; attempt < API_MAX_RETRIES; attempt += 1) {
+        try {
+            const res = await fetch(url, options);
+            if (!res.ok) {
+                if (isTransientStatus(res.status)) {
+                    await sleep(API_RETRY_DELAY_MS);
+                    continue;
+                }
+                const errData = await parseJsonSafe(res);
+                throw new Error(errData.error || `HTTP ${res.status}`);
+            }
+
+            const data = await parseJsonSafe(res);
+            if (data && (data.__empty || data.__parseError)) {
+                await sleep(API_RETRY_DELAY_MS);
+                continue;
+            }
+            return { res, data };
+        } catch (err) {
+            lastError = err;
+            await sleep(API_RETRY_DELAY_MS);
+        }
+    }
+    throw lastError || new Error('Temporary API failure');
+}
 
 document.addEventListener('DOMContentLoaded', async () => {
+    const pageAccess = window.TasfiyaAccess || null;
+
     // Auth Check
     const userStr = localStorage.getItem('user');
     if (!userStr) {
@@ -11,16 +61,21 @@ document.addEventListener('DOMContentLoaded', async () => {
         document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
 
     // Navbar Protection Logic
-    const protectedPages = [
+    const protectedPages = (pageAccess && Array.isArray(pageAccess.PROTECTED_PAGES))
+        ? pageAccess.PROTECTED_PAGES
+        : [
         'atm-reports.html',
+        'cashbox-reports.html',
         'customer-ledger.html',
         'users-management.html',
         'cashiers-management.html',
         'reconciliation-requests.html',
         'request-reconciliation.html'
-    ];
+        ];
 
-    if (user.permissions && Array.isArray(user.permissions)) {
+    if (pageAccess && typeof pageAccess.applyProtectedPageVisibility === 'function') {
+        pageAccess.applyProtectedPageVisibility(document, user, protectedPages);
+    } else if (user.permissions && Array.isArray(user.permissions)) {
         protectedPages.forEach(page => {
             if (!user.permissions.includes(page)) {
                 const el = document.querySelector(`a[href="${page}"]`);
@@ -34,7 +89,9 @@ document.addEventListener('DOMContentLoaded', async () => {
         });
     }
 
-    const isAllowed = (user.role === 'admin') || (user.permissions && user.permissions.includes('customer-ledger.html'));
+    const isAllowed = (pageAccess && typeof pageAccess.canAccessPage === 'function')
+        ? pageAccess.canAccessPage(user, 'customer-ledger.html')
+        : ((user.role === 'admin') || (user.permissions && user.permissions.includes('customer-ledger.html')));
     if (!isAllowed) {
         console.warn('⛔ وصول غير مصرح به. إعادة التوجيه للصفحة الرئيسية.');
         window.location.href = 'index.html';
@@ -62,7 +119,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 });
 
-function logout() {
+async function logout() {
+    try {
+        await fetch('/api/logout', { method: 'POST' });
+    } catch (error) {
+        console.warn('Logout request failed:', error);
+    }
+
     localStorage.removeItem('user');
     window.location.href = '/login.html';
 }
@@ -100,8 +163,7 @@ function toSafeNumber(value) {
 
 async function loadBranches() {
     try {
-        const res = await fetch(`${API_URL}/lookups`);
-        const data = await res.json();
+        const { data } = await fetchJsonWithRetry(`${API_URL}/lookups`);
         if (data.success && data.branches) {
             const select = document.getElementById('filterBranchList');
             // Clear existing (except first) if reloaded, but here it runs once
@@ -125,8 +187,7 @@ async function loadCustomersSummary() {
 
         const query = params.toString();
         const url = query ? `${API_URL}/customers-summary?${query}` : `${API_URL}/customers-summary`;
-        const res = await fetch(url, { cache: 'no-store' });
-        const result = await res.json();
+        const { data: result } = await fetchJsonWithRetry(url, { cache: 'no-store' });
 
         if (result.success) {
             allCustomersData = Array.isArray(result.data) ? result.data : [];
@@ -294,8 +355,7 @@ async function loadCustomerLedger(customerName) {
         if (dateFrom) params.append('dateFrom', dateFrom);
         if (dateTo) params.append('dateTo', dateTo);
 
-        const res = await fetch(`${API_URL}/customer-ledger?${params.toString()}`);
-        const result = await res.json();
+        const { data: result } = await fetchJsonWithRetry(`${API_URL}/customer-ledger?${params.toString()}`);
 
         if (result.success) {
             currentLedgerData = result.data; // Store globally
@@ -486,7 +546,7 @@ async function saveTransactionUpdate() {
     const mode = (type === 'مبيعات يدوية') ? 'debit' : 'credit';
 
     try {
-        const res = await fetch(`${API_URL}/update-manual-transaction`, {
+        const { data: result } = await fetchJsonWithRetry(`${API_URL}/update-manual-transaction`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -497,8 +557,6 @@ async function saveTransactionUpdate() {
                 description: desc
             })
         });
-
-        const result = await res.json();
         if (result.success) {
             editModalInstance.hide();
             Swal.fire({
@@ -536,12 +594,11 @@ async function deleteTransaction() {
 
     if (confirm.isConfirmed) {
         try {
-            const res = await fetch(`${API_URL}/delete-manual-transaction`, {
+            const { data: result } = await fetchJsonWithRetry(`${API_URL}/delete-manual-transaction`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ id, mode })
             });
-            const result = await res.json();
 
             if (result.success) {
                 editModalInstance.hide();

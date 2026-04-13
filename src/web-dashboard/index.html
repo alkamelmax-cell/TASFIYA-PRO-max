@@ -242,10 +242,11 @@
 
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
-    <script src="/js/session-bootstrap.js"></script>
-    <script src="/js/onesignal-bootstrap.js?v=3"></script>
-    <script>
+        <script src="/js/session-bootstrap.js"></script>
+    <script src="/js/page-access.js?v=2"></script>
+    <script src="/js/onesignal-bootstrap.js?v=3"></script>    <script>
         const sessionHelper = window.TasfiyaSession || null;
+        const pageAccess = window.TasfiyaAccess || null;
         let user = sessionHelper ? (sessionHelper.readStoredUser() || {}) : JSON.parse(localStorage.getItem('user') || '{}');
         document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
 
@@ -310,7 +311,9 @@
         };
 
 
-        const protectedPages = [
+        const protectedPages = (pageAccess && Array.isArray(pageAccess.PROTECTED_PAGES))
+            ? pageAccess.PROTECTED_PAGES
+            : [
             'atm-reports.html',
             'cashbox-reports.html',
             'customer-ledger.html',
@@ -318,11 +321,16 @@
             'cashiers-management.html',
             'reconciliation-requests.html',
             'request-reconciliation.html'
-        ];
+            ];
 
         function applyUserAccess(activeUser) {
             const currentUser = activeUser && typeof activeUser === 'object' ? activeUser : {};
             document.getElementById('userNameDisplay').textContent = currentUser.name || 'Admin';
+
+            if (pageAccess && typeof pageAccess.applyProtectedPageVisibility === 'function') {
+                pageAccess.applyProtectedPageVisibility(document, currentUser, protectedPages);
+                return;
+            }
 
             protectedPages.forEach(page => {
                 const el = document.querySelector(`a[href="${page}"]`);
@@ -383,6 +391,54 @@
         }
 
         const API_URL = '/api';
+        const API_MAX_RETRIES = 3;
+        const API_RETRY_DELAY_MS = 1200;
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function parseJsonSafe(response) {
+            try {
+                const text = await response.text();
+                if (!text) return { __empty: true };
+                return JSON.parse(text);
+            } catch (_error) {
+                return { __parseError: true };
+            }
+        }
+
+        function isTransientStatus(status) {
+            return status === 502 || status === 503 || status === 504;
+        }
+
+        async function fetchJsonWithRetry(url, options = {}) {
+            let lastError = null;
+            for (let attempt = 0; attempt < API_MAX_RETRIES; attempt += 1) {
+                try {
+                    const res = await fetch(url, options);
+                    if (!res.ok) {
+                        if (isTransientStatus(res.status)) {
+                            await sleep(API_RETRY_DELAY_MS);
+                            continue;
+                        }
+                        const errData = await parseJsonSafe(res);
+                        throw new Error(errData.error || `HTTP ${res.status}`);
+                    }
+
+                    const data = await parseJsonSafe(res);
+                    if (data && (data.__empty || data.__parseError)) {
+                        await sleep(API_RETRY_DELAY_MS);
+                        continue;
+                    }
+                    return { res, data };
+                } catch (err) {
+                    lastError = err;
+                    await sleep(API_RETRY_DELAY_MS);
+                }
+            }
+            throw lastError || new Error('Temporary API failure');
+        }
 
         document.addEventListener('DOMContentLoaded', async () => {
             const activeUser = await requireActiveSession();
@@ -416,8 +472,7 @@
 
         async function loadLookups() {
             try {
-                const res = await fetch(`${API_URL}/lookups`, { cache: 'no-store' });
-                const data = await res.json();
+                const { data } = await fetchJsonWithRetry(`${API_URL}/lookups`, { cache: 'no-store' });
                 if (data.success) {
                     const branchSelect = document.getElementById('filterBranch');
                     // Check if branches exist in response
@@ -483,13 +538,10 @@
             showLoading(true);
             try {
                 // Fetch Data and Stats in parallel (with cache disabled)
-                const [listRes, statsRes] = await Promise.all([
-                    fetch(`${API_URL}/reconciliations?${params.toString()}`, { cache: 'no-store' }),
-                    fetch(`${API_URL}/reconciliations/stats?${statsParams.toString()}`, { cache: 'no-store' })
+                const [listResult, statsResult] = await Promise.all([
+                    fetchJsonWithRetry(`${API_URL}/reconciliations?${params.toString()}`, { cache: 'no-store' }).then(r => r.data),
+                    fetchJsonWithRetry(`${API_URL}/reconciliations/stats?${statsParams.toString()}`, { cache: 'no-store' }).then(r => r.data)
                 ]);
-
-                const listResult = await listRes.json();
-                const statsResult = await statsRes.json();
 
                 if (listResult.success) {
                     renderTable(listResult.data);
@@ -574,8 +626,7 @@
         async function openDetails(id) {
             showLoading(true);
             try {
-                const res = await fetch(`${API_URL}/reconciliation/${id}`, { cache: 'no-store' });
-                const result = await res.json();
+                const { data: result } = await fetchJsonWithRetry(`${API_URL}/reconciliation/${id}`, { cache: 'no-store' });
                 if (result.success) renderModalContent(result.data);
                 const modal = new bootstrap.Modal(document.getElementById('detailsModal'));
                 modal.show();
@@ -786,3 +837,4 @@
 </body>
 
 </html>
+

@@ -542,6 +542,27 @@
             return error;
         }
 
+        const API_MAX_RETRIES = 3;
+        const API_RETRY_DELAY_MS = 1200;
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function parseJsonSafe(response) {
+            try {
+                const text = await response.text();
+                if (!text) return { __empty: true };
+                return JSON.parse(text);
+            } catch (_error) {
+                return { __parseError: true };
+            }
+        }
+
+        function isTransientStatus(status) {
+            return status === 502 || status === 503 || status === 504;
+        }
+
         async function fetchWithSessionGuard(url, options = {}, runtimeOptions = {}) {
             const shouldRedirectOnUnauthorized = runtimeOptions.redirectOnUnauthorized !== false;
             const requestOptions = {
@@ -550,15 +571,29 @@
                 ...options
             };
 
-            const response = await fetch(url, requestOptions);
-            if (response.status === 401) {
-                if (shouldRedirectOnUnauthorized) {
-                    redirectToLogin();
-                }
-                throw createUnauthorizedError();
-            }
+            let lastError = null;
+            for (let attempt = 0; attempt < API_MAX_RETRIES; attempt += 1) {
+                try {
+                    const response = await fetch(url, requestOptions);
+                    if (response.status === 401) {
+                        if (shouldRedirectOnUnauthorized) {
+                            redirectToLogin();
+                        }
+                        throw createUnauthorizedError();
+                    }
 
-            return response;
+                    if (!response.ok && isTransientStatus(response.status)) {
+                        await sleep(API_RETRY_DELAY_MS);
+                        continue;
+                    }
+
+                    return response;
+                } catch (err) {
+                    lastError = err;
+                    await sleep(API_RETRY_DELAY_MS);
+                }
+            }
+            throw lastError || new Error('Temporary API failure');
         }
 
         function updateSubmitRequestButtonState(isSubmitting) {
@@ -1467,7 +1502,10 @@
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
-                const data = await res.json().catch(() => ({ success: false, error: 'تعذر قراءة استجابة الخادم' }));
+                const data = await parseJsonSafe(res);
+                if (data && (data.__empty || data.__parseError)) {
+                    throw new Error('تعذر قراءة استجابة الخادم');
+                }
 
                 if (!res.ok) {
                     Swal.fire({

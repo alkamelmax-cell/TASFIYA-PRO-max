@@ -18,9 +18,9 @@
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
     <link href="css/custom.css?v=21" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+        <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="/js/page-access.js?v=2"></script>
     <script src="/js/onesignal-bootstrap.js?v=3"></script>
-
     <!-- OneSignal SDK -->
     <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
 
@@ -85,10 +85,17 @@
         // Check Auth
         const userStr = localStorage.getItem('user');
         if (!userStr) window.location.href = '/login.html';
+        const pageAccess = window.TasfiyaAccess || null;
         const user = JSON.parse(userStr);
 
+        if (pageAccess && typeof pageAccess.applyProtectedPageVisibility === 'function') {
+            pageAccess.applyProtectedPageVisibility(document, user);
+        }
+
         // Permission Check
-        const isAllowed = (user.role === 'admin') || (user.permissions && user.permissions.includes('reconciliation-requests.html'));
+        const isAllowed = (pageAccess && typeof pageAccess.canAccessPage === 'function')
+            ? pageAccess.canAccessPage(user, 'reconciliation-requests.html')
+            : ((user.role === 'admin') || (user.permissions && user.permissions.includes('reconciliation-requests.html')));
         if (!isAllowed) {
             window.location.href = 'index.html';
         }
@@ -233,6 +240,7 @@
             if (!req) return;
 
             const d = getRequestDetails(req);
+            const isRestored = req.status === 'pending' && !!req.restored_at;
 
             const totalCash = calculateCashTotal(req);
             const totalBank = toSafeNumber(req?.total_bank) > 0
@@ -294,6 +302,9 @@
             `);
 
             const notes = req.notes && String(req.notes).trim() !== '' ? escapeHtml(req.notes) : 'لا توجد ملاحظات';
+            const restorationBanner = isRestored
+                ? `<div class="alert alert-warning border-0 py-2 mb-3"><i class="fas fa-rotate-left me-2"></i><strong>مسترجعة:</strong> ${escapeHtml(req.restored_reason || 'تمت إعادة الطلب إلى المعلقات للمراجعة مرة أخرى')}</div>`
+                : '';
 
             Swal.fire({
                 title: `تفاصيل التصفية #${req.id}`,
@@ -303,6 +314,7 @@
                 confirmButtonText: 'إغلاق',
                 html: `
                     <div class="text-start">
+                        ${restorationBanner}
                         <div class="mb-3 small text-white-50">
                             <div><strong>الكاشير:</strong> ${escapeHtml(req.cashier_name || 'غير معروف')}</div>
                             <div><strong>التاريخ:</strong> ${escapeHtml(String(req.created_at || '-'))}</div>
@@ -331,6 +343,36 @@
             });
         }
 
+        const REQUESTS_MAX_RETRIES = 3;
+        const REQUESTS_RETRY_DELAY_MS = 1200;
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function parseJsonSafe(response) {
+            try {
+                const text = await response.text();
+                if (!text) return { __empty: true };
+                return JSON.parse(text);
+            } catch (_error) {
+                return { __parseError: true };
+            }
+        }
+
+        function isTransientStatus(status) {
+            return status === 502 || status === 503 || status === 504;
+        }
+
+        function renderTransientMessage(tbody, cardsContainer, attempt) {
+            const message = attempt > 0
+                ? `⚠️ تعذر الاتصال بالخادم مؤقتًا (المحاولة ${attempt + 1}/${REQUESTS_MAX_RETRIES})...`
+                : '⚠️ تعذر الاتصال بالخادم مؤقتًا...';
+            const html = `<tr><td colspan="5" class="text-center text-warning">${message}</td></tr>`;
+            if (tbody) tbody.innerHTML = html;
+            if (cardsContainer) cardsContainer.innerHTML = `<div class="alert alert-warning">${message}</div>`;
+        }
+
         async function loadRequests(silent = false) {
             const tbody = document.getElementById('requestsTableBody');
             const cardsContainer = document.getElementById('mobileCardsContainer');
@@ -342,8 +384,40 @@
             }
 
             try {
-                const res = await fetch('/api/reconciliation-requests', { cache: 'no-store' });
-                const data = await res.json();
+                let res = null;
+                let data = null;
+                let lastError = null;
+
+                for (let attempt = 0; attempt < REQUESTS_MAX_RETRIES; attempt += 1) {
+                    try {
+                        res = await fetch('/api/reconciliation-requests', { cache: 'no-store' });
+                        if (!res.ok) {
+                            if (isTransientStatus(res.status)) {
+                                renderTransientMessage(tbody, cardsContainer, attempt);
+                                await sleep(REQUESTS_RETRY_DELAY_MS);
+                                continue;
+                            }
+                            const errData = await parseJsonSafe(res);
+                            throw new Error(errData.error || `HTTP ${res.status}`);
+                        }
+
+                        data = await parseJsonSafe(res);
+                        if (data && (data.__empty || data.__parseError)) {
+                            renderTransientMessage(tbody, cardsContainer, attempt);
+                            await sleep(REQUESTS_RETRY_DELAY_MS);
+                            continue;
+                        }
+                        break;
+                    } catch (err) {
+                        lastError = err;
+                        renderTransientMessage(tbody, cardsContainer, attempt);
+                        await sleep(REQUESTS_RETRY_DELAY_MS);
+                    }
+                }
+
+                if (!data || data.__empty || data.__parseError) {
+                    throw lastError || new Error('تعذر قراءة استجابة الخادم');
+                }
 
                 console.log('📋 [Frontend] API Response:', data);
 
@@ -370,6 +444,7 @@
                 // Render Desktop Table
                 tbody.innerHTML = requests.map(req => {
                     const cashTotal = calculateCashTotal(req);
+                    const isRestored = req.status === 'pending' && !!req.restored_at;
 
                     // Date Formatting
                     let dateStr = req.created_at;
@@ -384,6 +459,7 @@
                                 <td class="text-white">
                                     <div class="d-flex flex-column align-items-start">
                                         <span class="font-monospace fw-bold">${formattedDate}</span>
+                                        ${isRestored ? '<span class="badge bg-warning text-dark mt-1">مسترجعة</span>' : ''}
                                         <span class="font-monospace text-info small">${formattedTime}</span>
                                     </div>
                                 </td>
@@ -404,6 +480,7 @@
                 // Render Mobile Cards
                 cardsContainer.innerHTML = requests.map(req => {
                     const cashTotal = calculateCashTotal(req);
+                    const isRestored = req.status === 'pending' && !!req.restored_at;
 
                     let dateStr = req.created_at;
                     if (dateStr && !dateStr.endsWith('Z')) dateStr = dateStr.replace(' ', 'T') + 'Z';
@@ -421,6 +498,7 @@
                                     <div>
                                         <h5 class="fw-bold text-white mb-1">
                                             <i class="fas fa-user-circle text-secondary me-1"></i> ${req.cashier_name || 'غير معروف'}
+                                            ${isRestored ? '<span class="badge bg-warning text-dark ms-2">مسترجعة</span>' : ''}
                                         </h5>
                                         <div class="text-white-50 small font-monospace">
                                             <i class="far fa-clock me-1"></i> ${formattedDate} | ${formattedTime}
@@ -516,3 +594,4 @@
 </body>
 
 </html>
+

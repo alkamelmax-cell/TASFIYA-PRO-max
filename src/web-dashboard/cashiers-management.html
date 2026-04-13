@@ -48,7 +48,7 @@
     <nav class="custom-navbar navbar-layout mb-4">
         <div class="navbar-brand-section">
             <div class="brand-logo">
-                <img src="assets/logo.png" alt="TP"
+                <img src="assets/logo-tasfia-pro.png" alt="TP"
                     style="height: 45px; width: auto; margin-left: 10px; border-radius: 8px;">تصفية برو
             </div>
         </div>
@@ -61,6 +61,10 @@
             <a href="users-management.html"
                 class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
                 <i class="fas fa-users-cog me-1"></i> إدارة المستخدمين
+            </a>
+            <a href="cashbox-reports.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-vault me-1"></i> تقارير الصناديق
             </a>
             <a href="cashiers-management.html"
                 class="btn btn-sm btn-primary fw-bold text-white px-3 py-2 rounded-pill shadow-sm">
@@ -147,8 +151,10 @@
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="/js/page-access.js?v=2"></script>
     <script>
         const API_URL = '/api';
+        const pageAccess = window.TasfiyaAccess || null;
 
         // Auth Check
         const userStr = localStorage.getItem('user');
@@ -157,16 +163,21 @@
         document.getElementById('userNameDisplay').textContent = user.name || 'Admin';
 
         // Navbar Protection Logic
-        const protectedPages = [
+        const protectedPages = (pageAccess && Array.isArray(pageAccess.PROTECTED_PAGES))
+            ? pageAccess.PROTECTED_PAGES
+            : [
             'atm-reports.html',
+            'cashbox-reports.html',
             'customer-ledger.html',
             'users-management.html',
             'cashiers-management.html',
             'reconciliation-requests.html',
             'request-reconciliation.html'
-        ];
+            ];
 
-        if (user.permissions && Array.isArray(user.permissions)) {
+        if (pageAccess && typeof pageAccess.applyProtectedPageVisibility === 'function') {
+            pageAccess.applyProtectedPageVisibility(document, user, protectedPages);
+        } else if (user.permissions && Array.isArray(user.permissions)) {
             protectedPages.forEach(page => {
                 if (!user.permissions.includes(page)) {
                     const el = document.querySelector(`a[href="${page}"]`);
@@ -181,7 +192,9 @@
         }
 
         // Permissions Check
-        const isAdmin = (user.role === 'admin') || (user.permissions && user.permissions.includes('cashiers-management.html'));
+        const isAdmin = (pageAccess && typeof pageAccess.canAccessPage === 'function')
+            ? pageAccess.canAccessPage(user, 'cashiers-management.html')
+            : ((user.role === 'admin') || (user.permissions && user.permissions.includes('cashiers-management.html')));
         if (!isAdmin) {
             alert('ليس لديك صلاحية للوصول لهذه الصفحة');
             window.location.href = 'index.html';
@@ -193,10 +206,58 @@
             loadCashiers();
         });
 
+        const API_MAX_RETRIES = 3;
+        const API_RETRY_DELAY_MS = 1200;
+
+        function sleep(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        async function parseJsonSafe(response) {
+            try {
+                const text = await response.text();
+                if (!text) return { __empty: true };
+                return JSON.parse(text);
+            } catch (_error) {
+                return { __parseError: true };
+            }
+        }
+
+        function isTransientStatus(status) {
+            return status === 502 || status === 503 || status === 504;
+        }
+
+        async function fetchJsonWithRetry(url, options = {}) {
+            let lastError = null;
+            for (let attempt = 0; attempt < API_MAX_RETRIES; attempt += 1) {
+                try {
+                    const res = await fetch(url, options);
+                    if (!res.ok) {
+                        if (isTransientStatus(res.status)) {
+                            await sleep(API_RETRY_DELAY_MS);
+                            continue;
+                        }
+                        const errData = await parseJsonSafe(res);
+                        throw new Error(errData.error || `HTTP ${res.status}`);
+                    }
+
+                    const data = await parseJsonSafe(res);
+                    if (data && (data.__empty || data.__parseError)) {
+                        await sleep(API_RETRY_DELAY_MS);
+                        continue;
+                    }
+                    return { res, data };
+                } catch (err) {
+                    lastError = err;
+                    await sleep(API_RETRY_DELAY_MS);
+                }
+            }
+            throw lastError || new Error('Temporary API failure');
+        }
+
         async function loadCashiers() {
             try {
-                const res = await fetch(`${API_URL}/lookups`, { cache: 'no-store' });
-                const result = await res.json();
+                const { data: result } = await fetchJsonWithRetry(`${API_URL}/lookups`, { cache: 'no-store' });
 
                 if (result.success && result.cashiers) {
                     renderTable(result.cashiers);
@@ -257,11 +318,10 @@
             if (!pin || pin.length < 1) return;
 
             try {
-                const res = await fetch(`${API_URL}/cashiers/set-pin`, {
+                const { data: result } = await fetchJsonWithRetry(`${API_URL}/cashiers/set-pin`, {
                     method: 'POST',
                     body: JSON.stringify({ cashierId: id, pin: pin })
                 });
-                const result = await res.json();
 
                 if (result.success) {
                     // alert('تم حفظ الرمز بنجاح');
@@ -276,7 +336,13 @@
             }
         }
 
-        function logout() {
+        async function logout() {
+            try {
+                await fetch('/api/logout', { method: 'POST' });
+            } catch (error) {
+                console.warn('Logout request failed:', error);
+            }
+
             localStorage.removeItem('user');
             window.location.href = '/login.html';
         }
