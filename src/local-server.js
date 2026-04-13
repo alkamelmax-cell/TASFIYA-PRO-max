@@ -3008,12 +3008,83 @@ class LocalWebServer {
                         total_bank: safeFloat(r.total_bank)
                     }));
 
-                    await syncTable('reconciliation_requests', cleanRequests, [
-                        { name: 'id' }, { name: 'cashier_id' }, { name: 'system_sales' },
-                        { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json' },
-                        { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
-                        { name: 'created_at' }, { name: 'updated_at' }
-                    ]);
+                    if (this.dbManager.pool) {
+                        const pool = this.dbManager.pool;
+                        const columns = [
+                            'id',
+                            'cashier_id',
+                            'system_sales',
+                            'total_cash',
+                            'total_bank',
+                            'details_json',
+                            'notes',
+                            'status',
+                            'request_date',
+                            'created_at',
+                            'updated_at'
+                        ];
+
+                        const updateSets = [
+                            'cashier_id = EXCLUDED.cashier_id',
+                            'system_sales = EXCLUDED.system_sales',
+                            'total_cash = EXCLUDED.total_cash',
+                            'total_bank = EXCLUDED.total_bank',
+                            'details_json = EXCLUDED.details_json',
+                            'notes = EXCLUDED.notes',
+                            // Never downgrade a completed request back to pending
+                            `status = CASE
+                                WHEN reconciliation_requests.status = 'completed'
+                                     AND EXCLUDED.status <> 'completed'
+                                THEN reconciliation_requests.status
+                                ELSE EXCLUDED.status
+                             END`,
+                            'request_date = EXCLUDED.request_date',
+                            'created_at = COALESCE(reconciliation_requests.created_at, EXCLUDED.created_at)',
+                            `updated_at = GREATEST(
+                                COALESCE(reconciliation_requests.updated_at, EXCLUDED.updated_at),
+                                COALESCE(EXCLUDED.updated_at, reconciliation_requests.updated_at)
+                             )`
+                        ].join(', ');
+
+                        const rows = Array.isArray(cleanRequests) ? cleanRequests : [];
+                        if (rows.length > 0) {
+                            const BATCH_SIZE = 200;
+                            for (let i = 0; i < rows.length; i += BATCH_SIZE) {
+                                const batch = rows.slice(i, i + BATCH_SIZE);
+                                const placeholders = [];
+                                const values = [];
+                                let param = 1;
+
+                                batch.forEach((row) => {
+                                    const rowParams = [];
+                                    columns.forEach((col) => {
+                                        let value = row[col];
+                                        if (typeof value === 'object' && value !== null) {
+                                            value = JSON.stringify(value);
+                                        }
+                                        if (value === undefined) value = null;
+                                        values.push(value);
+                                        rowParams.push(`$${param++}`);
+                                    });
+                                    placeholders.push(`(${rowParams.join(', ')})`);
+                                });
+
+                                const sql = `
+                                    INSERT INTO reconciliation_requests (${columns.join(', ')})
+                                    VALUES ${placeholders.join(', ')}
+                                    ON CONFLICT (id) DO UPDATE SET ${updateSets}
+                                `;
+                                await pool.query(sql, values);
+                            }
+                        }
+                    } else {
+                        await syncTable('reconciliation_requests', cleanRequests, [
+                            { name: 'id' }, { name: 'cashier_id' }, { name: 'system_sales' },
+                            { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json' },
+                            { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
+                            { name: 'created_at' }, { name: 'updated_at' }
+                        ]);
+                    }
                 }
 
                 if (syncFailures.length > 0) {
