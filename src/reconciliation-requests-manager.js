@@ -8,7 +8,6 @@
     const requestsIpc = typeof window !== 'undefined' && window.RendererIPC
         ? window.RendererIPC
         : require('./renderer-ipc');
-    const { getReconciliationRequestsUrl } = require('./app/sync-endpoints');
 
     let requestsData = [];
     let currentRequestId = null;
@@ -325,18 +324,6 @@
                 border: 1px solid rgba(18, 185, 129, 0.4);
             }
 
-            .req-restored-badge {
-                color: #b45309;
-                background: rgba(245, 158, 11, 0.14);
-                border: 1px solid rgba(245, 158, 11, 0.42);
-            }
-
-            body.theme-dark .req-restored-badge {
-                color: #fbbf24;
-                background: rgba(245, 158, 11, 0.18);
-                border-color: rgba(245, 158, 11, 0.5);
-            }
-
             .req-empty-state {
                 text-align: center;
                 color: #6b7f8e;
@@ -587,11 +574,9 @@
     }
 
     async function loadRequestsFromServer(status, page, limit) {
-        const url = getReconciliationRequestsUrl(
-            { preferLocal: false },
-            `?status=${status}&page=${page}&limit=${limit}`
+        const response = await fetch(
+            `http://localhost:4000/api/reconciliation-requests?status=${status}&page=${page}&limit=${limit}`
         );
-        const response = await fetch(url);
 
         let result = {};
         try {
@@ -674,8 +659,7 @@
         const reviewedIdsStr = reviewedIds.map(id => String(id));
         requests.forEach(req => {
             const reqIdStr = String(req.id);
-            const isRestored = req.status === 'pending' && !!req.restored_at;
-            const isReviewed = !isRestored && reviewedIdsStr.includes(reqIdStr);
+            const isReviewed = reviewedIdsStr.includes(reqIdStr);
 
             const totalFound = Number(req.total_cash) + Number(req.total_bank);
             const diff = totalFound - Number(req.system_sales);
@@ -709,20 +693,6 @@
                         </button>
                     </div>
                  `;
-            } else if (isRestored) {
-                actionsContent = `
-                    <div class="d-flex gap-2 justify-content-center align-items-center flex-wrap">
-                        <span class="req-status-badge req-restored-badge" title="تمت إعادة الطلب إلى المعلقات للمراجعة مرة أخرى">
-                            ↩️ مسترجعة
-                        </span>
-                        <button class="req-action-btn req-btn-primary" onclick="reconciliationRequests.openRequestAsReconciliation(${req.id})" title="فتح ومراجعة الطلب المسترجع">
-                            فتح ومراجعة
-                        </button>
-                        <button class="req-action-btn req-btn-danger" onclick="reconciliationRequests.deleteRequest(${req.id})" title="حذف">
-                            🗑️
-                        </button>
-                    </div>
-                `;
             } else if (isReviewed) {
                 actionsContent = `
                     <div class="d-flex gap-2 justify-content-center align-items-center">
@@ -1003,11 +973,6 @@
         }
     });
 
-    window.addEventListener('reconciliation-request-restored', (event) => {
-        console.log('🔔 [EVENT] Reconciliation Request Restored:', event.detail);
-        loadRequests(currentFilter, currentPage);
-    });
-
     function markRequestAsDone(requestId) {
         console.log('🔍 [UI] Marking request as done:', requestId);
         const reqIdStr = String(requestId);
@@ -1073,7 +1038,7 @@
             }
 
             // Sync is enabled, proceed with server update
-            fetch(getReconciliationRequestsUrl({ preferLocal: false }, `/${requestId}/complete`), { method: 'POST' })
+            fetch(`http://localhost:4000/api/reconciliation-requests/${requestId}/complete`, { method: 'POST' })
                 .then(async (res) => {
                     const payload = await res.json().catch(() => ({}));
                     return { ok: res.ok, status: res.status, payload };
@@ -1091,7 +1056,7 @@
         }).catch(err => {
             console.error('❌ [SERVER] Failed to check sync status:', err);
             // If we can't check sync status, proceed anyway (fail open)
-            fetch(getReconciliationRequestsUrl({ preferLocal: false }, `/${requestId}/complete`), { method: 'POST' })
+            fetch(`http://localhost:4000/api/reconciliation-requests/${requestId}/complete`, { method: 'POST' })
                 .then(async (res) => {
                     const payload = await res.json().catch(() => ({}));
                     return { ok: res.ok, status: res.status, payload };
@@ -1114,7 +1079,7 @@
 
         const result = await requestsIpc.invoke(
             'db-run',
-            'DELETE FROM reconciliation_requests WHERE id = ?',
+            "UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?",
             [requestId]
         );
         return Number(result?.changes || 0) > 0;
@@ -1127,7 +1092,7 @@
 
         const result = await requestsIpc.invoke(
             'db-run',
-            'DELETE FROM reconciliation_requests',
+            "UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP",
             []
         );
         return Number(result?.changes || 0) >= 0;
@@ -1168,7 +1133,7 @@
                 return;
             }
 
-            const response = await fetch(getReconciliationRequestsUrl({ preferLocal: false }, `/${requestId}`), {
+            const response = await fetch(`http://localhost:4000/api/reconciliation-requests/${requestId}`, {
                 method: 'DELETE'
             });
             const result = await response.json();
@@ -1221,7 +1186,7 @@
                 return;
             }
 
-            const response = await fetch(getReconciliationRequestsUrl({ preferLocal: false }), {
+            const response = await fetch('http://localhost:4000/api/reconciliation-requests', {
                 method: 'DELETE'
             });
             const result = await response.json();

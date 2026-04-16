@@ -321,7 +321,7 @@ test('cashbox vouchers are remapped to the canonical server cashbox id by branch
   assert.equal(pool.state.cashboxVouchers.length, 1);
   assert.equal(pool.state.cashboxVouchers[0].cashbox_id, pool.state.branchCashboxes[0].id);
   assert.notEqual(pool.state.cashboxVouchers[0].cashbox_id, 1);
-  assert.equal(pool.state.cashboxVouchers[0].sync_key, 'manual:2026-04-10%2010:00:00:44');
+  assert.equal(pool.state.cashboxVouchers[0].sync_key, 'seq:7:receipt:88');
 });
 
 test('legacy active_cashbox_vouchers_ids payload does not delete canonical Render vouchers', async () => {
@@ -481,8 +481,8 @@ test('cashbox vouchers with colliding local numbers still sync as distinct canon
   assert.deepEqual(
     pool.state.cashboxVouchers.map((voucher) => voucher.sync_key).sort(),
     [
-      'manual:2026-04-11%2009:00:00:1',
-      'manual:2026-04-11%2009:00:01:1'
+      'seq:7:receipt:1',
+      'seq:8:receipt:1'
     ]
   );
 });

@@ -7,12 +7,52 @@
 
 console.log('✅ [CUSTOMER-LEDGER] تم تحميل ملف customer-ledger.js بنجاح');
 
-const ledgerIpc = require('electron').ipcRenderer;
+const ledgerIpc = typeof window !== 'undefined' && window.RendererIPC
+  ? window.RendererIPC
+  : require('./renderer-ipc');
 const modalHandler = require('./modal-handler');
 const { translateReason } = require('./reason-translator');
 
 // Print manager instance (requested from main)
 let printManager = null;
+let ledgerLoadPromise = null;
+let ledgerLoadSequence = 0;
+let lastLedgerFiltersSignature = '';
+let ledgerBranchesLoaded = false;
+let customerLedgerRowsCache = [];
+let selectedCustomerMergeKeys = new Set();
+let manualCustomersDefaultBranchIdCache = null;
+let customerLedgerMergeHistoryReady = false;
+let latestUndoableCustomerMerge = null;
+let currentCustomerStatementContext = {
+  customerName: '',
+  forcedBranchId: ''
+};
+
+function mapCustomerLedgerDbError(error, fallback = 'خطأ غير معروف') {
+  const message = String(error && error.message ? error.message : error || '').trim();
+  if (!message) {
+    return fallback;
+  }
+
+  if (message.includes('manual_postpaid_sales_invalid_data')) {
+    return 'بيانات الحركة اليدوية (آجل) غير صالحة. تأكد من الاسم والمبلغ.';
+  }
+  if (message.includes('manual_customer_receipts_invalid_data')) {
+    return 'بيانات الحركة اليدوية (مقبوض) غير صالحة. تأكد من الاسم والمبلغ.';
+  }
+  if (message.includes('postpaid_sales_invalid_data') || message.includes('customer_receipts_invalid_data')) {
+    return 'بيانات العميل غير صالحة. تأكد من الاسم والمبلغ ونوع الدفع.';
+  }
+  if (message.includes('FOREIGN KEY constraint failed')) {
+    return 'تعذر تنفيذ العملية بسبب مرجع غير صالح (فرع/تصفية).';
+  }
+  if (message.includes('SQLITE_CONSTRAINT')) {
+    return 'فشلت العملية بسبب قيد سلامة البيانات.';
+  }
+
+  return message;
+}
 
 // Initialize print manager when app starts (best-effort)
 document.addEventListener('DOMContentLoaded', async function () {
@@ -29,22 +69,16 @@ document.addEventListener('DOMContentLoaded', async function () {
 (function initCustomerLedger() {
   attachLedgerEventListeners();
 
-  // Load when side menu clicked
-  const ledgerMenu = document.querySelector('a[data-section="customer-ledger"]');
-  if (ledgerMenu) {
-    ledgerMenu.addEventListener('click', () => {
-      try {
-        loadCustomerLedgerFilters();
-        loadCustomerLedger();
-      } catch (e) {
-        console.error('Ledger init on nav error:', e);
-      }
-    });
-  }
-
   // Expose for inline onclick usage
   window.showCustomerStatement = showCustomerStatement;
+  window.openCustomerReconciliationFromStatement = openCustomerReconciliationFromStatement;
   window.editCustomerData = editCustomerData;
+  window.renameCustomerNameInLedger = renameCustomerNameInLedger;
+  window.mergeSelectedCustomersInLedger = mergeSelectedCustomersInLedger;
+  window.undoLastCustomerMergeInLedger = undoLastCustomerMergeInLedger;
+  // Expose for cross-module hooks (e.g. modal-handler refresh on close)
+  window.loadCustomerLedger = loadCustomerLedger;
+  window.loadCustomerLedgerFilters = loadCustomerLedgerFilters;
 })();
 
 async function editCustomerData(customerName) {
@@ -166,7 +200,7 @@ async function updateCustomerData(oldCustomerName) {
     }
   } catch (error) {
     console.error('Error updating customer data:', error);
-    showEditCustomerAlert('حدث خطأ أثناء تحديث بيانات العميل: ' + error.message, 'danger');
+    showEditCustomerAlert('حدث خطأ أثناء تحديث بيانات العميل: ' + mapCustomerLedgerDbError(error), 'danger');
   }
 }
 
@@ -188,9 +222,53 @@ function attachLedgerEventListeners() {
 
   const onlyBalance = document.getElementById('ledgerOnlyWithBalance');
   if (onlyBalance) onlyBalance.addEventListener('change', handleLedgerSearch);
+
+  const branchFilter = document.getElementById('ledgerBranchFilter');
+  if (branchFilter) branchFilter.addEventListener('change', handleLedgerSearch);
+
+  const mergeSelectedBtn = document.getElementById('customerLedgerMergeSelectedBtn');
+  if (mergeSelectedBtn) {
+    mergeSelectedBtn.addEventListener('click', () => mergeSelectedCustomersInLedger());
+  }
+
+  const undoMergeBtn = document.getElementById('customerLedgerUndoMergeBtn');
+  if (undoMergeBtn) {
+    undoMergeBtn.addEventListener('click', () => undoLastCustomerMergeInLedger());
+  }
+
+  const clearSelectionBtn = document.getElementById('customerLedgerClearSelectionBtn');
+  if (clearSelectionBtn) {
+    clearSelectionBtn.addEventListener('click', () => clearCustomerLedgerSelection());
+  }
+
+  const selectAll = document.getElementById('customerLedgerSelectAll');
+  if (selectAll) {
+    selectAll.addEventListener('change', (event) => {
+      toggleCustomerLedgerSelectAll(!!event?.target?.checked);
+    });
+  }
+
+  const tableBody = document.getElementById('customerLedgerTable');
+  if (tableBody) {
+    tableBody.addEventListener('change', (event) => {
+      const target = event?.target;
+      if (!target || !target.classList?.contains('customer-ledger-select-checkbox')) return;
+
+      const selectionKey = String(target.dataset.selectionKey || '');
+      if (!selectionKey) return;
+
+      if (target.checked) selectedCustomerMergeKeys.add(selectionKey);
+      else selectedCustomerMergeKeys.delete(selectionKey);
+
+      updateCustomerLedgerSelectionUi();
+    });
+  }
+
+  updateCustomerLedgerSelectionUi();
 }
 
-async function loadCustomerLedgerFilters() {
+async function loadCustomerLedgerFilters(options = {}) {
+  const forceReload = !!options.forceReload;
   const nameInput = document.getElementById('ledgerSearchName');
   const dateFrom = document.getElementById('ledgerDateFrom');
   const dateTo = document.getElementById('ledgerDateTo');
@@ -205,6 +283,14 @@ async function loadCustomerLedgerFilters() {
   // Load branches for filter
   if (branchFilter) {
     try {
+      const selectedValue = branchFilter.value || '';
+      if (!forceReload && ledgerBranchesLoaded && branchFilter.options.length > 1) {
+        if (selectedValue) {
+          branchFilter.value = selectedValue;
+        }
+        return;
+      }
+
       const branches = await ledgerIpc.invoke('db-query',
         'SELECT * FROM branches WHERE is_active = 1 ORDER BY branch_name'
       );
@@ -223,6 +309,12 @@ async function loadCustomerLedgerFilters() {
         option.textContent = branch.branch_name;
         branchFilter.appendChild(option);
       });
+
+      if (selectedValue && Array.from(branchFilter.options).some(opt => opt.value === selectedValue)) {
+        branchFilter.value = selectedValue;
+      }
+
+      ledgerBranchesLoaded = true;
     } catch (error) {
       console.error('Error loading branches for ledger filter:', error);
     }
@@ -250,16 +342,78 @@ function handleLedgerClear() {
   if (dateFrom) dateFrom.value = '';
   if (dateTo) dateTo.value = '';
   if (onlyBalance) onlyBalance.checked = false;
+  selectedCustomerMergeKeys.clear();
+  updateCustomerLedgerSelectionUi();
 
   loadCustomerLedger();
 }
 
+function buildLedgerPeriodLabel(filters) {
+  const from = filters?.dateFrom || '';
+  const to = filters?.dateTo || '';
+  if (from && to) return `الفترة: من ${from} إلى ${to}`;
+  if (from) return `الفترة: من ${from}`;
+  if (to) return `الفترة: حتى ${to}`;
+  return 'الفترة: كل الفترات';
+}
+
+function updateLedgerSummaryCards(rows, filters) {
+  const totalPostpaidEl = document.getElementById('ledgerTotalPostpaidPeriod');
+  const totalReceiptsEl = document.getElementById('ledgerTotalReceiptsPeriod');
+  const netBalanceEl = document.getElementById('ledgerNetBalancePeriod');
+  const periodEl = document.getElementById('ledgerSummaryPeriod');
+
+  if (!totalPostpaidEl || !totalReceiptsEl || !netBalanceEl) {
+    return;
+  }
+
+  const fmt = getCurrencyFormatter();
+  const safeRows = Array.isArray(rows) ? rows : [];
+
+  const totals = safeRows.reduce((acc, row) => {
+    acc.postpaid += Number(row?.total_postpaid || 0);
+    acc.receipts += Number(row?.total_receipts || 0);
+    acc.net += Number(row?.balance || 0);
+    return acc;
+  }, { postpaid: 0, receipts: 0, net: 0 });
+
+  totalPostpaidEl.textContent = fmt(totals.postpaid);
+  totalReceiptsEl.textContent = fmt(totals.receipts);
+  netBalanceEl.textContent = fmt(totals.net);
+
+  netBalanceEl.classList.remove('text-success', 'text-deficit');
+  if (totals.net > 0) {
+    netBalanceEl.classList.add('text-deficit');
+  } else if (totals.net < 0) {
+    netBalanceEl.classList.add('text-success');
+  }
+
+  if (periodEl) {
+    periodEl.textContent = buildLedgerPeriodLabel(filters || getLedgerFilters());
+  }
+}
+
 function buildLedgerQuery(filters) {
   // Build a UNION of reconciled and manual transactions, then aggregate per customer.
-  let dateFilter = '';
-  const dateParams = [];
-  if (filters.dateFrom) { dateFilter += ' AND (r.reconciliation_date >= ? OR created_at >= ?)'; dateParams.push(filters.dateFrom, filters.dateFrom); }
-  if (filters.dateTo) { dateFilter += ' AND (r.reconciliation_date <= ? OR created_at <= ?)'; dateParams.push(filters.dateTo, filters.dateTo); }
+  let dateFilterPostpaid = '';
+  let dateFilterReceipts = '';
+  let dateFilterManual = '';
+  const dateParamsReconciled = [];
+  const dateParamsManual = [];
+  if (filters.dateFrom) {
+    dateFilterPostpaid += ' AND (r.reconciliation_date >= ? OR ps.created_at >= ?)';
+    dateFilterReceipts += ' AND (r.reconciliation_date >= ? OR cr.created_at >= ?)';
+    dateFilterManual += ' AND created_at >= ?';
+    dateParamsReconciled.push(filters.dateFrom, filters.dateFrom);
+    dateParamsManual.push(filters.dateFrom);
+  }
+  if (filters.dateTo) {
+    dateFilterPostpaid += ' AND (r.reconciliation_date <= ? OR ps.created_at <= ?)';
+    dateFilterReceipts += ' AND (r.reconciliation_date <= ? OR cr.created_at <= ?)';
+    dateFilterManual += ' AND created_at <= ?';
+    dateParamsReconciled.push(filters.dateTo, filters.dateTo);
+    dateParamsManual.push(filters.dateTo);
+  }
 
   let nameFilter = '';
   const nameParams = [];
@@ -281,7 +435,7 @@ function buildLedgerQuery(filters) {
     LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id
     JOIN cashiers c ON r.cashier_id = c.id
     JOIN branches b ON c.branch_id = b.id
-    WHERE 1=1 ${dateFilter} ${branchFilter}
+    WHERE 1=1 ${dateFilterPostpaid} ${branchFilter}
   `;
 
   const sub1Manual = `
@@ -293,7 +447,7 @@ function buildLedgerQuery(filters) {
            (SELECT branch_id FROM cashiers WHERE id = 1) AS t_branch_id,
            (SELECT branch_name FROM branches WHERE id = (SELECT branch_id FROM cashiers WHERE id = 1)) AS t_branch_name
     FROM manual_postpaid_sales
-    WHERE 1=1 ${dateFilter.replace(/r\.reconciliation_date/g, 'created_at')}
+    WHERE 1=1 ${dateFilterManual}
   `;
 
   const sub2 = `
@@ -308,7 +462,7 @@ function buildLedgerQuery(filters) {
     LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id
     JOIN cashiers c ON r.cashier_id = c.id
     JOIN branches b ON c.branch_id = b.id
-    WHERE 1=1 ${dateFilter} ${branchFilter}
+    WHERE 1=1 ${dateFilterReceipts} ${branchFilter}
   `;
 
   const sub2Manual = `
@@ -320,7 +474,7 @@ function buildLedgerQuery(filters) {
            (SELECT branch_id FROM cashiers WHERE id = 1) AS t_branch_id,
            (SELECT branch_name FROM branches WHERE id = (SELECT branch_id FROM cashiers WHERE id = 1)) AS t_branch_name
     FROM manual_customer_receipts
-    WHERE 1=1 ${dateFilter.replace(/r\.reconciliation_date/g, 'created_at')}
+    WHERE 1=1 ${dateFilterManual}
   `;
 
   const unioned = `
@@ -355,12 +509,12 @@ function buildLedgerQuery(filters) {
   `;
 
   const params = [
-    ...dateParams, // for sub1
+    ...dateParamsReconciled, // for sub1
     ...branchParams, // for sub1
-    ...dateParams, // for sub1Manual
-    ...dateParams, // for sub2
+    ...dateParamsManual, // for sub1Manual
+    ...dateParamsReconciled, // for sub2
     ...branchParams, // for sub2
-    ...dateParams, // for sub2Manual
+    ...dateParamsManual, // for sub2Manual
     ...nameParams
   ];
 
@@ -368,21 +522,61 @@ function buildLedgerQuery(filters) {
 }
 
 async function loadCustomerLedger() {
-  try {
-    const tbody = document.getElementById('customerLedgerTable');
-    if (!tbody) return;
-    tbody.innerHTML = `<tr><td colspan="7" class="text-center">جاري التحميل...</td></tr>`;
+  const tbody = document.getElementById('customerLedgerTable');
+  if (!tbody) return [];
 
-    const filters = getLedgerFilters();
-    const { sql, params } = buildLedgerQuery(filters);
+  const filters = getLedgerFilters();
+  const currentSignature = JSON.stringify(filters);
 
-    const rows = await ledgerIpc.invoke('db-query', sql, params);
-    renderLedgerTable(rows || []);
-  } catch (error) {
-    console.error('Error loading customer ledger:', error);
-    const tbody = document.getElementById('customerLedgerTable');
-    if (tbody) tbody.innerHTML = `<tr><td colspan="7" class="text-danger text-center">حدث خطأ أثناء تحميل البيانات</td></tr>`;
+  // Avoid duplicate heavy queries when the same load is triggered multiple times quickly.
+  if (ledgerLoadPromise && currentSignature === lastLedgerFiltersSignature) {
+    return ledgerLoadPromise;
   }
+
+  lastLedgerFiltersSignature = currentSignature;
+  const requestId = ++ledgerLoadSequence;
+  customerLedgerRowsCache = [];
+  tbody.innerHTML = `<tr><td colspan="9" class="text-center">جاري التحميل...</td></tr>`;
+  updateCustomerLedgerSelectionUi();
+
+  ledgerLoadPromise = (async () => {
+    try {
+      const { sql, params } = buildLedgerQuery(filters);
+      const rows = await ledgerIpc.invoke('db-query', sql, params);
+
+      if (requestId !== ledgerLoadSequence) {
+        return rows || [];
+      }
+
+      const safeRows = rows || [];
+      customerLedgerRowsCache = safeRows;
+      syncCustomerLedgerSelectionWithRows();
+      renderLedgerTable(safeRows);
+      updateLedgerSummaryCards(safeRows, filters);
+      updateCustomerLedgerSelectionUi();
+      await refreshCustomerUndoMergeState();
+      return safeRows;
+    } catch (error) {
+      if (requestId !== ledgerLoadSequence) {
+        return [];
+      }
+
+      console.error('Error loading customer ledger:', error);
+      customerLedgerRowsCache = [];
+      syncCustomerLedgerSelectionWithRows();
+      tbody.innerHTML = `<tr><td colspan="9" class="text-danger text-center">حدث خطأ أثناء تحميل البيانات</td></tr>`;
+      updateLedgerSummaryCards([], filters);
+      updateCustomerLedgerSelectionUi();
+      await refreshCustomerUndoMergeState();
+      return [];
+    } finally {
+      if (requestId === ledgerLoadSequence) {
+        ledgerLoadPromise = null;
+      }
+    }
+  })();
+
+  return ledgerLoadPromise;
 }
 
 function renderLedgerTable(rows) {
@@ -390,16 +584,28 @@ function renderLedgerTable(rows) {
   if (!tbody) return;
 
   if (!rows || rows.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="8" class="text-center">لا توجد بيانات مطابقة</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="9" class="text-center">لا توجد بيانات مطابقة</td></tr>`;
     return;
   }
 
   const fmt = getCurrencyFormatter();
   tbody.innerHTML = rows.map(r => {
     const lastDate = r.last_tx_date ? escapeHtml(r.last_tx_date) : '-';
+    const customerName = r.customer_name || '';
+    const branchId = r.branch_id != null ? String(r.branch_id) : '';
+    const selectionKey = buildCustomerSelectionKey(customerName, branchId);
+    const checked = selectedCustomerMergeKeys.has(selectionKey) ? 'checked' : '';
     return `
       <tr>
-        <td>${escapeHtml(r.customer_name || '')}</td>
+        <td>
+          <input
+            type="checkbox"
+            class="form-check-input customer-ledger-select-checkbox"
+            data-selection-key="${escapeAttr(selectionKey)}"
+            ${checked}
+            aria-label="تحديد العميل ${escapeAttr(customerName)}">
+        </td>
+        <td>${escapeHtml(customerName)}</td>
         <td>${escapeHtml(r.branch_name || '')}</td>
         <td class="text-currency">${fmt(r.total_postpaid || 0)}</td>
         <td class="text-currency">${fmt(r.total_receipts || 0)}</td>
@@ -409,26 +615,1107 @@ function renderLedgerTable(rows) {
         <td>${lastDate}</td>
         <td>${r.movements_count || 0}</td>
         <td>
-          <button class="btn btn-sm btn-primary mx-1" onclick="showCustomerStatement('${escapeAttr(r.customer_name || '')}')">كشف حساب</button>
-          <button class="btn btn-sm btn-secondary mx-1" onclick="editCustomerData('${escapeAttr(r.customer_name || '')}')">تعديل</button>
+          <button class="btn btn-sm btn-primary" onclick="showCustomerStatement('${escapeAttr(customerName)}', '${escapeAttr(branchId)}')">كشف حساب</button>
+          <button class="btn btn-sm btn-outline-warning ms-1" onclick="renameCustomerNameInLedger('${escapeAttr(customerName)}', '${escapeAttr(branchId)}')">
+            <i class="bi bi-pencil-square"></i> تعديل الاسم
+          </button>
         </td>
       </tr>
     `;
   }).join('');
 }
 
-// --------- Statement (single customer) ---------
-async function showCustomerStatement(customerName) {
+function normalizeBranchId(value) {
+  const raw = String(value == null ? '' : value).trim();
+  if (!raw || raw === '0') return '';
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : '';
+}
+
+function buildCustomerSelectionKey(customerName, branchId) {
+  const safeName = String(customerName == null ? '' : customerName);
+  const safeBranchId = normalizeBranchId(branchId) || '0';
+  return JSON.stringify({ name: safeName, branchId: safeBranchId });
+}
+
+function syncCustomerLedgerSelectionWithRows() {
+  const availableKeys = new Set(
+    (customerLedgerRowsCache || []).map((row) => buildCustomerSelectionKey(row?.customer_name, row?.branch_id))
+  );
+
+  selectedCustomerMergeKeys.forEach((key) => {
+    if (!availableKeys.has(key)) selectedCustomerMergeKeys.delete(key);
+  });
+}
+
+function getSelectedCustomerRows() {
+  if (!Array.isArray(customerLedgerRowsCache) || customerLedgerRowsCache.length === 0) {
+    return [];
+  }
+
+  return customerLedgerRowsCache.filter((row) => {
+    const key = buildCustomerSelectionKey(row?.customer_name, row?.branch_id);
+    return selectedCustomerMergeKeys.has(key);
+  });
+}
+
+function clearCustomerLedgerSelection() {
+  selectedCustomerMergeKeys.clear();
+  const rowChecks = document.querySelectorAll('.customer-ledger-select-checkbox');
+  rowChecks.forEach((checkbox) => {
+    checkbox.checked = false;
+  });
+  updateCustomerLedgerSelectionUi();
+}
+
+function toggleCustomerLedgerSelectAll(isChecked) {
+  const visibleRows = Array.isArray(customerLedgerRowsCache) ? customerLedgerRowsCache : [];
+  visibleRows.forEach((row) => {
+    const key = buildCustomerSelectionKey(row?.customer_name, row?.branch_id);
+    if (isChecked) selectedCustomerMergeKeys.add(key);
+    else selectedCustomerMergeKeys.delete(key);
+  });
+
+  const rowChecks = document.querySelectorAll('.customer-ledger-select-checkbox');
+  rowChecks.forEach((checkbox) => {
+    checkbox.checked = isChecked;
+  });
+
+  updateCustomerLedgerSelectionUi();
+}
+
+function updateCustomerLedgerSelectionUi() {
+  const summaryEl = document.getElementById('customerLedgerSelectionSummary');
+  const mergeBtn = document.getElementById('customerLedgerMergeSelectedBtn');
+  const undoBtn = document.getElementById('customerLedgerUndoMergeBtn');
+  const clearBtn = document.getElementById('customerLedgerClearSelectionBtn');
+  const selectAll = document.getElementById('customerLedgerSelectAll');
+
+  const selectedRows = getSelectedCustomerRows();
+  const totalRows = Array.isArray(customerLedgerRowsCache) ? customerLedgerRowsCache.length : 0;
+  const selectedCount = selectedRows.length;
+  const selectedBranchSet = new Set(
+    selectedRows.map((row) => normalizeBranchId(row?.branch_id) || '0')
+  );
+  const hasMixedBranches = selectedBranchSet.size > 1;
+  const canMerge = selectedCount >= 2 && !hasMixedBranches;
+
+  if (summaryEl) {
+    if (selectedCount === 0) {
+      summaryEl.textContent = 'لم يتم تحديد أي عميل';
+    } else if (hasMixedBranches) {
+      summaryEl.textContent = `تم تحديد ${selectedCount} عميل (من أكثر من فرع - الدمج غير مسموح)`;
+    } else {
+      const branchLabel = selectedRows[0]?.branch_name || 'غير محدد';
+      summaryEl.textContent = `تم تحديد ${selectedCount} عميل للدمج - الفرع: ${branchLabel}`;
+    }
+  }
+
+  if (mergeBtn) mergeBtn.disabled = !canMerge;
+  if (undoBtn) {
+    undoBtn.disabled = !latestUndoableCustomerMerge;
+    const createdAtText = latestUndoableCustomerMerge?.created_at
+      ? formatMergeDateTime(latestUndoableCustomerMerge.created_at)
+      : '';
+    undoBtn.title = latestUndoableCustomerMerge
+      ? `فك آخر دمج (${createdAtText || 'بدون تاريخ'})`
+      : 'لا يوجد دمج متاح للفك';
+  }
+  if (clearBtn) clearBtn.disabled = selectedCount === 0;
+
+  if (selectAll) {
+    if (totalRows === 0) {
+      selectAll.checked = false;
+      selectAll.indeterminate = false;
+      selectAll.disabled = true;
+    } else {
+      const allSelected = selectedCount > 0 && selectedCount === totalRows;
+      const someSelected = selectedCount > 0 && selectedCount < totalRows;
+      selectAll.disabled = false;
+      selectAll.checked = allSelected;
+      selectAll.indeterminate = someSelected;
+    }
+  }
+}
+
+async function mergeSelectedCustomersInLedger() {
+  const selectedRows = getSelectedCustomerRows();
+  if (selectedRows.length < 2) {
+    showTransactionAlert('حدد عميلين على الأقل لتنفيذ الدمج', 'danger');
+    return;
+  }
+
+  const branchIds = Array.from(new Set(
+    selectedRows.map((row) => normalizeBranchId(row?.branch_id) || '0')
+  ));
+  if (branchIds.length !== 1) {
+    showTransactionAlert('لا يمكن دمج عملاء من أكثر من فرع. اختر عملاء من نفس الفرع فقط', 'danger');
+    return;
+  }
+
+  const uniqueNames = Array.from(new Set(
+    selectedRows
+      .map((row) => String(row?.customer_name == null ? '' : row.customer_name))
+      .filter((name) => name.trim().length > 0)
+  ));
+  if (uniqueNames.length < 2) {
+    showTransactionAlert('حدد عميلين مختلفين على الأقل لتنفيذ الدمج', 'danger');
+    return;
+  }
+
+  const targetName = await promptMergeTargetCustomerName(uniqueNames);
+  if (!targetName) return;
+
+  const sourceNames = uniqueNames.filter((name) => name !== targetName);
+  if (sourceNames.length === 0) {
+    showTransactionAlert('اختر عميلاً هدفاً مختلفاً عن العملاء المراد دمجهم', 'danger');
+    return;
+  }
+
+  const normalizedBranchId = normalizeBranchId(branchIds[0]);
+  const branchLabel = selectedRows[0]?.branch_name || 'غير محدد';
+  const preview = await buildCustomerMergePreview(sourceNames, targetName, normalizedBranchId);
+  const confirmed = await confirmCustomerMergeExecution({
+    sourceNames,
+    targetName,
+    branchLabel,
+    preview
+  });
+  if (!confirmed) return;
+
   try {
-    const name = (customerName || '').trim();
-    if (!name) return;
+    const mergeResult = await executeCustomerMergeTransaction(sourceNames, targetName, normalizedBranchId);
+    selectedCustomerMergeKeys.clear();
+    await loadCustomerLedger();
+
+    const currentName = String(currentCustomerStatementContext?.customerName || '');
+    const currentBranch = normalizeBranchId(currentCustomerStatementContext?.forcedBranchId || '');
+    const shouldRefreshStatement = currentBranch === normalizedBranchId
+      && (sourceNames.includes(currentName) || currentName === targetName);
+    if (shouldRefreshStatement) {
+      await showCustomerStatement(targetName, normalizedBranchId);
+    }
+
+    const changed = Number(mergeResult?.totalChanges || 0);
+    showTransactionAlert(`تم دمج العملاء المحددين بنجاح (${changed} حركة محدثة)`, 'success');
+  } catch (error) {
+    console.error('Error merging selected customers:', error);
+    showTransactionAlert(`تعذر دمج العملاء: ${mapCustomerLedgerDbError(error)}`, 'danger');
+  }
+}
+
+async function promptMergeTargetCustomerName(candidateNames) {
+  const names = Array.isArray(candidateNames)
+    ? candidateNames.filter((name) => String(name == null ? '' : name).trim().length > 0)
+    : [];
+  if (names.length < 2) return null;
+
+  if (window.Swal) {
+    const inputOptions = {};
+    names.forEach((name, index) => {
+      inputOptions[String(index)] = `${index + 1}) ${formatCustomerNameForSelection(name)}`;
+    });
+
+    const result = await window.Swal.fire({
+      title: 'اختيار العميل الهدف',
+      text: 'العميل الهدف هو الاسم الذي سيبقى بعد الدمج',
+      input: 'select',
+      inputOptions,
+      inputPlaceholder: 'اختر العميل الهدف',
+      showCancelButton: true,
+      confirmButtonText: 'متابعة',
+      cancelButtonText: 'إلغاء',
+      inputValidator: (value) => {
+        if (value == null || value === '') return 'اختر العميل الهدف';
+        return null;
+      }
+    });
+
+    if (!result.isConfirmed) return null;
+
+    const selectedIndex = Number.parseInt(String(result.value), 10);
+    if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= names.length) return null;
+    return names[selectedIndex];
+  }
+
+  const optionsText = names
+    .map((name, index) => `${index + 1}) ${formatCustomerNameForSelection(name)}`)
+    .join('\n');
+  const raw = window.prompt(`اختر رقم الاسم النهائي (العميل الهدف):\n${optionsText}`, '1');
+  if (raw == null) return null;
+  const selectedIndex = Number.parseInt(String(raw || '').trim(), 10) - 1;
+  if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= names.length) {
+    showTransactionAlert('الاختيار غير صالح', 'danger');
+    return null;
+  }
+  return names[selectedIndex];
+}
+
+function formatCustomerNameForSelection(name) {
+  const raw = String(name == null ? '' : name);
+  const visible = raw.trim() || raw || '(فارغ)';
+  const hasLeading = /^\s+/.test(raw);
+  const hasTrailing = /\s+$/.test(raw);
+  const hasInternalMultiSpaces = /\s{2,}/.test(raw.trim());
+  const notes = [];
+
+  if (hasLeading) notes.push('مسافة بالبداية');
+  if (hasTrailing) notes.push('مسافة بالنهاية');
+  if (hasInternalMultiSpaces) notes.push('مسافات داخلية متعددة');
+
+  if (notes.length === 0) return visible;
+  return `${visible} (${notes.join('، ')})`;
+}
+
+async function getManualCustomersDefaultBranchId() {
+  if (manualCustomersDefaultBranchIdCache !== null) {
+    return manualCustomersDefaultBranchIdCache;
+  }
+
+  try {
+    const rows = await ledgerIpc.invoke(
+      'db-query',
+      'SELECT COALESCE((SELECT branch_id FROM cashiers WHERE id = 1), 0) AS branch_id'
+    );
+    const branchId = Number(rows?.[0]?.branch_id || 0);
+    manualCustomersDefaultBranchIdCache = Number.isFinite(branchId) ? branchId : 0;
+  } catch (_error) {
+    manualCustomersDefaultBranchIdCache = 0;
+  }
+
+  return manualCustomersDefaultBranchIdCache;
+}
+
+async function shouldApplyManualCustomersForBranch(branchId) {
+  const normalizedBranchId = normalizeBranchId(branchId);
+  const numericBranchId = normalizedBranchId ? Number(normalizedBranchId) : 0;
+  const manualBranchId = await getManualCustomersDefaultBranchId();
+  return numericBranchId === Number(manualBranchId || 0);
+}
+
+async function buildCustomerMergePreview(sourceNames, targetName, branchId) {
+  const [sourceTotals, targetTotals] = await Promise.all([
+    fetchCustomerAggregateForNames(sourceNames, branchId),
+    fetchCustomerAggregateForNames([targetName], branchId)
+  ]);
+
+  return {
+    source: sourceTotals,
+    target: targetTotals,
+    after: {
+      movementsCount: Number(sourceTotals.movementsCount || 0) + Number(targetTotals.movementsCount || 0),
+      totalPostpaid: Number(sourceTotals.totalPostpaid || 0) + Number(targetTotals.totalPostpaid || 0),
+      totalReceipts: Number(sourceTotals.totalReceipts || 0) + Number(targetTotals.totalReceipts || 0)
+    }
+  };
+}
+
+async function fetchCustomerAggregateForNames(names, branchId) {
+  const safeNames = Array.from(new Set(
+    (Array.isArray(names) ? names : [])
+      .map((name) => String(name == null ? '' : name))
+      .filter((name) => name.trim().length > 0)
+  ));
+
+  if (safeNames.length === 0) {
+    return {
+      movementsCount: 0,
+      totalPostpaid: 0,
+      totalReceipts: 0,
+      balance: 0
+    };
+  }
+
+  const normalizedBranchId = normalizeBranchId(branchId);
+  const numericBranchId = normalizedBranchId ? Number(normalizedBranchId) : 0;
+  const placeholders = safeNames.map(() => '?').join(', ');
+  const includeManual = await shouldApplyManualCustomersForBranch(normalizedBranchId);
+
+  const unionParts = [
+    `SELECT ps.amount AS amount, 'postpaid' AS tx_type
+     FROM postpaid_sales ps
+     LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id
+     LEFT JOIN cashiers c ON c.id = r.cashier_id
+     WHERE ps.customer_name IN (${placeholders})
+       AND COALESCE(c.branch_id, 0) = ?`,
+    `SELECT cr.amount AS amount, 'receipt' AS tx_type
+     FROM customer_receipts cr
+     LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id
+     LEFT JOIN cashiers c ON c.id = r.cashier_id
+     WHERE cr.customer_name IN (${placeholders})
+       AND COALESCE(c.branch_id, 0) = ?`
+  ];
+
+  const params = [
+    ...safeNames,
+    numericBranchId,
+    ...safeNames,
+    numericBranchId
+  ];
+
+  if (includeManual) {
+    unionParts.push(
+      `SELECT mp.amount AS amount, 'postpaid' AS tx_type
+       FROM manual_postpaid_sales mp
+       WHERE mp.customer_name IN (${placeholders})`
+    );
+    unionParts.push(
+      `SELECT mr.amount AS amount, 'receipt' AS tx_type
+       FROM manual_customer_receipts mr
+       WHERE mr.customer_name IN (${placeholders})`
+    );
+    params.push(...safeNames, ...safeNames);
+  }
+
+  const sql = `
+    SELECT
+      COUNT(*) AS movements_count,
+      COALESCE(SUM(CASE WHEN tx_type = 'postpaid' THEN amount ELSE 0 END), 0) AS total_postpaid,
+      COALESCE(SUM(CASE WHEN tx_type = 'receipt' THEN amount ELSE 0 END), 0) AS total_receipts
+    FROM (
+      ${unionParts.join('\nUNION ALL\n')}
+    ) tx
+  `;
+
+  const rows = await ledgerIpc.invoke('db-query', sql, params);
+  const row = Array.isArray(rows) ? rows[0] : null;
+  const totalPostpaid = Number(row?.total_postpaid || 0);
+  const totalReceipts = Number(row?.total_receipts || 0);
+  return {
+    movementsCount: Number(row?.movements_count || 0),
+    totalPostpaid,
+    totalReceipts,
+    balance: totalPostpaid - totalReceipts
+  };
+}
+
+async function confirmCustomerMergeExecution({ sourceNames, targetName, branchLabel, preview }) {
+  const fmt = getCurrencyFormatter();
+  const mergedNamesLabel = Array.isArray(sourceNames) ? sourceNames.join(' + ') : '';
+  const movedCount = Number(preview?.source?.movementsCount || 0);
+  const finalCount = Number(preview?.after?.movementsCount || 0);
+  const finalPostpaid = Number(preview?.after?.totalPostpaid || 0);
+  const finalReceipts = Number(preview?.after?.totalReceipts || 0);
+  const finalBalance = finalPostpaid - finalReceipts;
+
+  if (window.Swal) {
+    const result = await window.Swal.fire({
+      icon: 'warning',
+      title: 'تأكيد دمج العملاء',
+      html: `
+        <div style="text-align:right;line-height:1.8">
+          <div><strong>الفرع:</strong> ${escapeHtml(branchLabel || 'غير محدد')}</div>
+          <div><strong>سيتم دمج:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
+          <div><strong>في العميل:</strong> ${escapeHtml(targetName || '-')}</div>
+          <hr style="margin:8px 0;">
+          <div><strong>الحركات المنقولة:</strong> ${escapeHtml(String(movedCount))}</div>
+          <div><strong>عدد الحركات بعد الدمج:</strong> ${escapeHtml(String(finalCount))}</div>
+          <div><strong>إجمالي الأجل بعد الدمج:</strong> ${escapeHtml(fmt(finalPostpaid))}</div>
+          <div><strong>إجمالي المقبوضات بعد الدمج:</strong> ${escapeHtml(fmt(finalReceipts))}</div>
+          <div><strong>الرصيد بعد الدمج:</strong> ${escapeHtml(fmt(finalBalance))}</div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'تنفيذ الدمج',
+      cancelButtonText: 'إلغاء',
+      confirmButtonColor: '#d33'
+    });
+    return !!result.isConfirmed;
+  }
+
+  return window.confirm(
+    `سيتم دمج العملاء (${mergedNamesLabel}) في (${targetName}) ضمن فرع (${branchLabel}). هل تريد المتابعة؟`
+  );
+}
+
+async function ensureLedgerMergeHistoryTable() {
+  if (customerLedgerMergeHistoryReady) {
+    return;
+  }
+
+  await ledgerIpc.invoke(
+    'db-run',
+    `CREATE TABLE IF NOT EXISTS ledger_merge_history (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      entity_type TEXT NOT NULL,
+      branch_id INTEGER DEFAULT 0,
+      target_name TEXT NOT NULL,
+      source_names_json TEXT NOT NULL,
+      affected_rows_json TEXT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      undone_at DATETIME,
+      undo_details_json TEXT
+    )`
+  );
+  await ledgerIpc.invoke(
+    'db-run',
+    'CREATE INDEX IF NOT EXISTS idx_ledger_merge_history_entity_open ON ledger_merge_history(entity_type, undone_at, id DESC)'
+  );
+
+  customerLedgerMergeHistoryReady = true;
+}
+
+function safeParseJson(value, fallback) {
+  if (value == null || value === '') {
+    return fallback;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (_error) {
+    return fallback;
+  }
+}
+
+function normalizeMergeRowEntries(entries) {
+  if (!Array.isArray(entries)) {
+    return [];
+  }
+
+  return entries
+    .map((row) => {
+      const id = Number(row?.id);
+      const oldNameSource = row?.old_name == null ? row?.oldName : row.old_name;
+      const oldName = String(oldNameSource == null ? '' : oldNameSource);
+      if (!Number.isFinite(id) || id <= 0) {
+        return null;
+      }
+      return {
+        id,
+        old_name: oldName
+      };
+    })
+    .filter((row) => !!row);
+}
+
+function normalizeCustomerMergeAffectedRows(rawValue) {
+  const raw = rawValue && typeof rawValue === 'object' ? rawValue : {};
+  return {
+    postpaid_sales: normalizeMergeRowEntries(raw.postpaid_sales),
+    customer_receipts: normalizeMergeRowEntries(raw.customer_receipts),
+    manual_postpaid_sales: normalizeMergeRowEntries(raw.manual_postpaid_sales),
+    manual_customer_receipts: normalizeMergeRowEntries(raw.manual_customer_receipts)
+  };
+}
+
+function countCustomerMergeAffectedRows(affectedRows) {
+  const normalized = normalizeCustomerMergeAffectedRows(affectedRows);
+  return (
+    normalized.postpaid_sales.length +
+    normalized.customer_receipts.length +
+    normalized.manual_postpaid_sales.length +
+    normalized.manual_customer_receipts.length
+  );
+}
+
+async function fetchLatestUndoableCustomerMerge() {
+  await ensureLedgerMergeHistoryTable();
+  const rows = await ledgerIpc.invoke(
+    'db-query',
+    `SELECT h.id, h.branch_id, h.target_name, h.source_names_json, h.affected_rows_json, h.created_at,
+            COALESCE(b.branch_name, 'غير محدد') AS branch_name
+     FROM ledger_merge_history h
+     LEFT JOIN branches b ON b.id = h.branch_id
+     WHERE h.entity_type = 'customer' AND h.undone_at IS NULL
+     ORDER BY h.id DESC
+     LIMIT 1`
+  );
+
+  const row = Array.isArray(rows) ? rows[0] : null;
+  if (!row) {
+    return null;
+  }
+
+  const sourceNames = Array.from(new Set(
+    (safeParseJson(row.source_names_json, []) || [])
+      .map((name) => String(name == null ? '' : name))
+      .filter((name) => name.trim().length > 0)
+  ));
+
+  const affectedRows = normalizeCustomerMergeAffectedRows(
+    safeParseJson(row.affected_rows_json, {})
+  );
+
+  return {
+    id: Number(row.id || 0),
+    branch_id: normalizeBranchId(row.branch_id) || '0',
+    branch_name: String(row.branch_name == null ? '' : row.branch_name),
+    target_name: String(row.target_name == null ? '' : row.target_name),
+    source_names: sourceNames,
+    affected_rows: affectedRows,
+    created_at: row.created_at || ''
+  };
+}
+
+async function refreshCustomerUndoMergeState() {
+  try {
+    latestUndoableCustomerMerge = await fetchLatestUndoableCustomerMerge();
+  } catch (error) {
+    console.error('Error loading latest customer merge history:', error);
+    latestUndoableCustomerMerge = null;
+  }
+  updateCustomerLedgerSelectionUi();
+}
+
+async function fetchCustomerMergeAffectedRows({ safeSourceNames, numericBranchId, includeManual, placeholders }) {
+  const postpaidRows = await ledgerIpc.invoke(
+    'db-query',
+    `SELECT ps.id AS id, ps.customer_name AS old_name
+     FROM postpaid_sales ps
+     WHERE ps.customer_name IN (${placeholders})
+       AND ps.reconciliation_id IN (
+         SELECT r.id
+         FROM reconciliations r
+         LEFT JOIN cashiers c ON c.id = r.cashier_id
+         WHERE COALESCE(c.branch_id, 0) = ?
+       )`,
+    [...safeSourceNames, numericBranchId]
+  );
+
+  const receiptRows = await ledgerIpc.invoke(
+    'db-query',
+    `SELECT cr.id AS id, cr.customer_name AS old_name
+     FROM customer_receipts cr
+     WHERE cr.customer_name IN (${placeholders})
+       AND cr.reconciliation_id IN (
+         SELECT r.id
+         FROM reconciliations r
+         LEFT JOIN cashiers c ON c.id = r.cashier_id
+         WHERE COALESCE(c.branch_id, 0) = ?
+       )`,
+    [...safeSourceNames, numericBranchId]
+  );
+
+  let manualPostpaidRows = [];
+  let manualReceiptRows = [];
+  if (includeManual) {
+    manualPostpaidRows = await ledgerIpc.invoke(
+      'db-query',
+      `SELECT id, customer_name AS old_name
+       FROM manual_postpaid_sales
+       WHERE customer_name IN (${placeholders})`,
+      [...safeSourceNames]
+    );
+    manualReceiptRows = await ledgerIpc.invoke(
+      'db-query',
+      `SELECT id, customer_name AS old_name
+       FROM manual_customer_receipts
+       WHERE customer_name IN (${placeholders})`,
+      [...safeSourceNames]
+    );
+  }
+
+  return normalizeCustomerMergeAffectedRows({
+    postpaid_sales: postpaidRows || [],
+    customer_receipts: receiptRows || [],
+    manual_postpaid_sales: manualPostpaidRows || [],
+    manual_customer_receipts: manualReceiptRows || []
+  });
+}
+
+async function recordCustomerMergeHistory({ numericBranchId, safeTargetName, safeSourceNames, affectedRows }) {
+  await ensureLedgerMergeHistoryTable();
+  const result = await ledgerIpc.invoke(
+    'db-run',
+    `INSERT INTO ledger_merge_history
+      (entity_type, branch_id, target_name, source_names_json, affected_rows_json)
+     VALUES ('customer', ?, ?, ?, ?)`,
+    [
+      numericBranchId,
+      safeTargetName,
+      JSON.stringify(safeSourceNames),
+      JSON.stringify(affectedRows)
+    ]
+  );
+  return Number(result?.lastInsertRowid || 0);
+}
+
+async function executeCustomerMergeTransaction(sourceNames, targetName, branchId) {
+  const safeTargetName = String(targetName == null ? '' : targetName);
+  const safeSourceNames = Array.from(new Set(
+    (Array.isArray(sourceNames) ? sourceNames : [])
+      .map((name) => String(name == null ? '' : name))
+      .filter((name) => name.trim().length > 0 && name !== safeTargetName)
+  ));
+  if (safeSourceNames.length === 0) {
+    return { postpaidChanges: 0, receiptChanges: 0, manualChanges: 0, totalChanges: 0 };
+  }
+
+  const normalizedBranchId = normalizeBranchId(branchId);
+  const numericBranchId = normalizedBranchId ? Number(normalizedBranchId) : 0;
+  const placeholders = safeSourceNames.map(() => '?').join(', ');
+  const includeManual = await shouldApplyManualCustomersForBranch(normalizedBranchId);
+  await ensureLedgerMergeHistoryTable();
+
+  await ledgerIpc.invoke('db-run', 'BEGIN TRANSACTION');
+  let committed = false;
+  try {
+    const affectedRows = await fetchCustomerMergeAffectedRows({
+      safeSourceNames,
+      numericBranchId,
+      includeManual,
+      placeholders
+    });
+    const affectedRowsCount = countCustomerMergeAffectedRows(affectedRows);
+    if (affectedRowsCount <= 0) {
+      throw new Error('لم يتم العثور على قيود مطابقة للدمج. تحقق من الفرع/الاسم المختار.');
+    }
+
+    const postpaidResult = await ledgerIpc.invoke(
+      'db-run',
+      `UPDATE postpaid_sales
+       SET customer_name = ?
+       WHERE customer_name IN (${placeholders})
+         AND reconciliation_id IN (
+           SELECT r.id
+           FROM reconciliations r
+           LEFT JOIN cashiers c ON c.id = r.cashier_id
+           WHERE COALESCE(c.branch_id, 0) = ?
+         )`,
+      [safeTargetName, ...safeSourceNames, numericBranchId]
+    );
+
+    const receiptResult = await ledgerIpc.invoke(
+      'db-run',
+      `UPDATE customer_receipts
+       SET customer_name = ?
+       WHERE customer_name IN (${placeholders})
+         AND reconciliation_id IN (
+           SELECT r.id
+           FROM reconciliations r
+           LEFT JOIN cashiers c ON c.id = r.cashier_id
+           WHERE COALESCE(c.branch_id, 0) = ?
+         )`,
+      [safeTargetName, ...safeSourceNames, numericBranchId]
+    );
+
+    let manualChanges = 0;
+    if (includeManual) {
+      const manualPostpaidResult = await ledgerIpc.invoke(
+        'db-run',
+        `UPDATE manual_postpaid_sales
+         SET customer_name = ?
+         WHERE customer_name IN (${placeholders})`,
+        [safeTargetName, ...safeSourceNames]
+      );
+
+      const manualReceiptResult = await ledgerIpc.invoke(
+        'db-run',
+        `UPDATE manual_customer_receipts
+         SET customer_name = ?
+         WHERE customer_name IN (${placeholders})`,
+        [safeTargetName, ...safeSourceNames]
+      );
+
+      manualChanges =
+        Number(manualPostpaidResult?.changes || 0) +
+        Number(manualReceiptResult?.changes || 0);
+    }
+
+    const postpaidChanges = Number(postpaidResult?.changes || 0);
+    const receiptChanges = Number(receiptResult?.changes || 0);
+    const totalChanges = postpaidChanges + receiptChanges + manualChanges;
+    if (totalChanges <= 0) {
+      throw new Error('لم يتم العثور على قيود مطابقة للدمج. تحقق من الفرع/الاسم المختار.');
+    }
+
+    const mergeHistoryId = await recordCustomerMergeHistory({
+      numericBranchId,
+      safeTargetName,
+      safeSourceNames,
+      affectedRows
+    });
+
+    await ledgerIpc.invoke('db-run', 'COMMIT');
+    committed = true;
+    await refreshCustomerUndoMergeState();
+    return {
+      postpaidChanges,
+      receiptChanges,
+      manualChanges,
+      totalChanges,
+      mergeHistoryId
+    };
+  } catch (error) {
+    if (!committed) {
+      try {
+        await ledgerIpc.invoke('db-run', 'ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Customer merge rollback failed:', rollbackError);
+      }
+    }
+    throw error;
+  }
+}
+
+async function revertCustomerNamesByRowId(tableName, columnName, entries, targetName) {
+  const safeEntries = normalizeMergeRowEntries(entries);
+  if (safeEntries.length === 0) {
+    return 0;
+  }
+
+  let changed = 0;
+  for (const entry of safeEntries) {
+    const result = await ledgerIpc.invoke(
+      'db-run',
+      `UPDATE ${tableName}
+       SET ${columnName} = ?
+       WHERE id = ?
+         AND ${columnName} = ?`,
+      [entry.old_name, entry.id, targetName]
+    );
+    changed += Number(result?.changes || 0);
+  }
+  return changed;
+}
+
+async function rollbackCustomerMergeRecord(mergeRecord) {
+  const recordId = Number(mergeRecord?.id || 0);
+  if (!Number.isFinite(recordId) || recordId <= 0) {
+    throw new Error('سجل الدمج غير صالح');
+  }
+
+  const safeTargetName = String(mergeRecord?.target_name == null ? '' : mergeRecord.target_name);
+  const affectedRows = normalizeCustomerMergeAffectedRows(mergeRecord?.affected_rows);
+  const expectedRows = countCustomerMergeAffectedRows(affectedRows);
+  if (expectedRows <= 0) {
+    throw new Error('لا توجد قيود محفوظة لفك هذا الدمج');
+  }
+  await ensureLedgerMergeHistoryTable();
+
+  await ledgerIpc.invoke('db-run', 'BEGIN TRANSACTION');
+  let committed = false;
+  try {
+    const postpaidRestored = await revertCustomerNamesByRowId(
+      'postpaid_sales',
+      'customer_name',
+      affectedRows.postpaid_sales,
+      safeTargetName
+    );
+    const receiptsRestored = await revertCustomerNamesByRowId(
+      'customer_receipts',
+      'customer_name',
+      affectedRows.customer_receipts,
+      safeTargetName
+    );
+    const manualPostpaidRestored = await revertCustomerNamesByRowId(
+      'manual_postpaid_sales',
+      'customer_name',
+      affectedRows.manual_postpaid_sales,
+      safeTargetName
+    );
+    const manualReceiptsRestored = await revertCustomerNamesByRowId(
+      'manual_customer_receipts',
+      'customer_name',
+      affectedRows.manual_customer_receipts,
+      safeTargetName
+    );
+
+    const restoredTotal = postpaidRestored + receiptsRestored + manualPostpaidRestored + manualReceiptsRestored;
+    if (restoredTotal <= 0) {
+      throw new Error('لا يمكن فك الدمج: لم يتم العثور على قيود مطابقة للحالة الحالية.');
+    }
+
+    const skippedRows = Math.max(0, expectedRows - restoredTotal);
+    const undoDetails = {
+      restored: {
+        postpaid_sales: postpaidRestored,
+        customer_receipts: receiptsRestored,
+        manual_postpaid_sales: manualPostpaidRestored,
+        manual_customer_receipts: manualReceiptsRestored
+      },
+      expected_rows: expectedRows,
+      skipped_rows: skippedRows
+    };
+
+    const markResult = await ledgerIpc.invoke(
+      'db-run',
+      `UPDATE ledger_merge_history
+       SET undone_at = CURRENT_TIMESTAMP,
+           undo_details_json = ?
+       WHERE id = ?
+         AND undone_at IS NULL`,
+      [JSON.stringify(undoDetails), recordId]
+    );
+    if (Number(markResult?.changes || 0) <= 0) {
+      throw new Error('تعذر تحديث حالة سجل الدمج');
+    }
+
+    await ledgerIpc.invoke('db-run', 'COMMIT');
+    committed = true;
+    await refreshCustomerUndoMergeState();
+    return {
+      restoredTotal,
+      expectedRows,
+      skippedRows
+    };
+  } catch (error) {
+    if (!committed) {
+      try {
+        await ledgerIpc.invoke('db-run', 'ROLLBACK');
+      } catch (rollbackError) {
+        console.error('Customer merge undo rollback failed:', rollbackError);
+      }
+    }
+    throw error;
+  }
+}
+
+async function confirmCustomerMergeUndoExecution(mergeRecord) {
+  const sourceNames = Array.isArray(mergeRecord?.source_names) ? mergeRecord.source_names : [];
+  const sourceLabel = sourceNames.length > 0 ? sourceNames.join(' + ') : '-';
+  const affectedCount = countCustomerMergeAffectedRows(mergeRecord?.affected_rows);
+  const branchLabel = mergeRecord?.branch_name || mergeRecord?.branch_id || 'غير محدد';
+  const createdAt = formatMergeDateTime(mergeRecord?.created_at);
+
+  if (window.Swal) {
+    const result = await window.Swal.fire({
+      icon: 'warning',
+      title: 'تأكيد فك آخر دمج (العملاء)',
+      html: `
+        <div style="text-align:right;line-height:1.8">
+          <div><strong>تاريخ الدمج:</strong> ${escapeHtml(createdAt || '-')}</div>
+          <div><strong>الفرع:</strong> ${escapeHtml(String(branchLabel))}</div>
+          <div><strong>الاسم الهدف:</strong> ${escapeHtml(mergeRecord?.target_name || '-')}</div>
+          <div><strong>الأسماء المدمجة:</strong> ${escapeHtml(sourceLabel)}</div>
+          <div><strong>عدد القيود المتوقع استرجاعها:</strong> ${escapeHtml(String(affectedCount))}</div>
+        </div>
+      `,
+      showCancelButton: true,
+      confirmButtonText: 'فك الدمج',
+      cancelButtonText: 'إلغاء',
+      confirmButtonColor: '#d33'
+    });
+    return !!result.isConfirmed;
+  }
+
+  return window.confirm(
+    `سيتم فك آخر دمج للعملاء (${sourceLabel}) من (${mergeRecord?.target_name || '-'}) بعدد قيود متوقع ${affectedCount}. هل تريد المتابعة؟`
+  );
+}
+
+async function undoLastCustomerMergeInLedger() {
+  try {
+    const mergeRecord = latestUndoableCustomerMerge || await fetchLatestUndoableCustomerMerge();
+    if (!mergeRecord) {
+      showTransactionAlert('لا يوجد دمج محفوظ يمكن فكه حاليًا', 'info');
+      await refreshCustomerUndoMergeState();
+      return;
+    }
+
+    const confirmed = await confirmCustomerMergeUndoExecution(mergeRecord);
+    if (!confirmed) {
+      return;
+    }
+
+    const undoResult = await rollbackCustomerMergeRecord(mergeRecord);
+    selectedCustomerMergeKeys.clear();
+    await loadCustomerLedger();
+
+    const currentName = String(currentCustomerStatementContext?.customerName || '');
+    const currentBranch = normalizeBranchId(currentCustomerStatementContext?.forcedBranchId || '');
+    const mergeBranch = normalizeBranchId(mergeRecord.branch_id);
+    const impactedNames = new Set([mergeRecord.target_name, ...(mergeRecord.source_names || [])]);
+    if (currentBranch === mergeBranch && impactedNames.has(currentName)) {
+      await showCustomerStatement(currentName, mergeBranch);
+    }
+
+    const skippedText = undoResult.skippedRows > 0
+      ? `، مع ${undoResult.skippedRows} قيد لم يتغير لأنه عُدّل بعد الدمج`
+      : '';
+    showTransactionAlert(
+      `تم فك آخر دمج للعملاء بنجاح (${undoResult.restoredTotal} قيد مسترجع${skippedText})`,
+      'success'
+    );
+  } catch (error) {
+    console.error('Error undoing customer merge:', error);
+    showTransactionAlert(`تعذر فك الدمج: ${mapCustomerLedgerDbError(error)}`, 'danger');
+  }
+}
+
+async function renameCustomerNameInLedger(customerName, branchId = '') {
+  const oldName = String(customerName == null ? '' : customerName);
+  if (!oldName.trim()) return;
+
+  try {
+    const normalizedBranchId = normalizeBranchId(branchId);
+    const nextName = await promptForCustomerRename(oldName);
+    if (nextName === null) return;
+    if (nextName === oldName) {
+      showTransactionAlert('لم يتم تغيير الاسم', 'info');
+      return;
+    }
+
+    const existsInBranch = await doesCustomerNameExistInBranch(nextName, normalizedBranchId);
+    if (existsInBranch) {
+      const confirmed = await confirmCustomerRenameMerge(nextName);
+      if (!confirmed) return;
+    }
+
+    const renameResult = await executeCustomerMergeTransaction([oldName], nextName, normalizedBranchId);
+    await loadCustomerLedger();
+
+    const currentName = String(currentCustomerStatementContext?.customerName || '');
+    const currentBranch = normalizeBranchId(currentCustomerStatementContext?.forcedBranchId || '');
+    const shouldRefreshStatement = currentBranch === normalizedBranchId && currentName === oldName;
+    if (shouldRefreshStatement) {
+      await showCustomerStatement(nextName, normalizedBranchId);
+    }
+
+    const changed = Number(renameResult?.totalChanges || 0);
+    showTransactionAlert(`تم تعديل اسم العميل بنجاح (${changed} حركة محدثة)`, 'success');
+  } catch (error) {
+    console.error('Error renaming customer name in ledger:', error);
+    showTransactionAlert(`تعذر تعديل اسم العميل: ${mapCustomerLedgerDbError(error)}`, 'danger');
+  }
+}
+
+async function doesCustomerNameExistInBranch(name, branchId) {
+  const targetName = String(name == null ? '' : name);
+  if (!targetName.trim()) return false;
+
+  const normalizedBranchId = normalizeBranchId(branchId);
+  const numericBranchId = normalizedBranchId ? Number(normalizedBranchId) : 0;
+  const includeManual = await shouldApplyManualCustomersForBranch(normalizedBranchId);
+
+  const reconciledRows = await ledgerIpc.invoke(
+    'db-query',
+    `SELECT
+       (CASE WHEN EXISTS (
+         SELECT 1
+         FROM postpaid_sales ps
+         LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id
+         LEFT JOIN cashiers c ON c.id = r.cashier_id
+         WHERE ps.customer_name = ?
+           AND COALESCE(c.branch_id, 0) = ?
+       ) THEN 1 ELSE 0 END)
+       +
+       (CASE WHEN EXISTS (
+         SELECT 1
+         FROM customer_receipts cr
+         LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id
+         LEFT JOIN cashiers c ON c.id = r.cashier_id
+         WHERE cr.customer_name = ?
+           AND COALESCE(c.branch_id, 0) = ?
+       ) THEN 1 ELSE 0 END) AS total`,
+    [targetName, numericBranchId, targetName, numericBranchId]
+  );
+  const reconciledTotal = Number(reconciledRows?.[0]?.total || 0);
+  if (reconciledTotal > 0) return true;
+
+  if (!includeManual) return false;
+
+  const manualRows = await ledgerIpc.invoke(
+    'db-query',
+    `SELECT
+       (CASE WHEN EXISTS (
+         SELECT 1 FROM manual_postpaid_sales WHERE customer_name = ?
+       ) THEN 1 ELSE 0 END)
+       +
+       (CASE WHEN EXISTS (
+         SELECT 1 FROM manual_customer_receipts WHERE customer_name = ?
+       ) THEN 1 ELSE 0 END) AS total`,
+    [targetName, targetName]
+  );
+  return Number(manualRows?.[0]?.total || 0) > 0;
+}
+
+async function promptForCustomerRename(currentName) {
+  if (window.Swal) {
+    const result = await window.Swal.fire({
+      title: 'تعديل اسم العميل',
+      input: 'text',
+      inputLabel: 'الاسم الجديد',
+      inputValue: currentName,
+      inputPlaceholder: 'اكتب اسم العميل الجديد',
+      showCancelButton: true,
+      confirmButtonText: 'حفظ',
+      cancelButtonText: 'إلغاء',
+      inputValidator: (value) => {
+        const next = String(value || '').trim();
+        if (!next) return 'اسم العميل مطلوب';
+        if (next.length > 120) return 'اسم العميل طويل جداً';
+        return null;
+      }
+    });
+    if (!result.isConfirmed) return null;
+    return String(result.value || '').trim();
+  }
+
+  const value = window.prompt('أدخل الاسم الجديد للعميل:', currentName);
+  if (value == null) return null;
+  const next = String(value).trim();
+  if (!next) {
+    showTransactionAlert('اسم العميل مطلوب', 'danger');
+    return null;
+  }
+  if (next.length > 120) {
+    showTransactionAlert('اسم العميل طويل جداً', 'danger');
+    return null;
+  }
+  return next;
+}
+
+async function confirmCustomerRenameMerge(nextName) {
+  if (window.Swal) {
+    const result = await window.Swal.fire({
+      icon: 'warning',
+      title: 'الاسم موجود مسبقاً',
+      text: `الاسم "${nextName}" موجود بالفعل في نفس الفرع. المتابعة ستدمج الحركات تحت نفس الاسم.`,
+      showCancelButton: true,
+      confirmButtonText: 'متابعة الدمج',
+      cancelButtonText: 'إلغاء'
+    });
+    return !!result.isConfirmed;
+  }
+  return window.confirm('الاسم موجود مسبقاً في نفس الفرع. المتابعة ستدمج الحركات. هل تريد الاستمرار؟');
+}
+
+// --------- Statement (single customer) ---------
+async function showCustomerStatement(customerName, forcedBranchId = '') {
+  try {
+    const name = String(customerName == null ? '' : customerName);
+    if (!name.trim()) return;
+    const normalizedForcedBranchId = normalizeBranchId(forcedBranchId);
+    currentCustomerStatementContext = {
+      customerName: name,
+      forcedBranchId: normalizedForcedBranchId
+    };
 
     const filters = getLedgerFilters();
     const dateFilter = buildDateFilter(filters);
 
+    const fmt = getCurrencyFormatter();
+    const mTitle = document.getElementById('customerStatementTitle');
+    if (mTitle) mTitle.textContent = `كشف حساب - ${name}`;
+
+    const sPost = document.getElementById('statementTotalPostpaid');
+    const sRec = document.getElementById('statementTotalReceipts');
+    const sBal = document.getElementById('statementBalance');
+    if (sPost) sPost.textContent = fmt(0);
+    if (sRec) sRec.textContent = fmt(0);
+    if (sBal) sBal.textContent = fmt(0);
+
+    const tbody = document.getElementById('customerStatementTable');
+    if (tbody) {
+      tbody.innerHTML = `<tr><td colspan="7" class="text-center">جاري تحميل الحركات...</td></tr>`;
+    }
+
+    setupStatementEvents(name);
+    // Open modal immediately to avoid perceived UI freeze while data loads.
+    if (modalHandler && typeof modalHandler.setupStatementModal === 'function') {
+      modalHandler.setupStatementModal(name);
+    } else {
+      const modalEl = document.getElementById('customerStatementModal');
+      if (modalEl && window.bootstrap?.Modal) {
+        const modal = new bootstrap.Modal(modalEl);
+        modal.show();
+      }
+    }
+
     // Reconciled transactions
     const sqlPost = `
-      SELECT ps.amount AS amount, 'postpaid' AS type, r.reconciliation_date AS tx_date,
+      SELECT ps.id AS row_id, ps.reconciliation_id AS reconciliation_id, 'reconciled' AS source,
+             ps.amount AS amount, 'postpaid' AS type, r.reconciliation_date AS tx_date,
              ps.created_at AS created_at, r.reconciliation_number AS rec_no, ps.notes AS reason,
              c.name as cashier_name
       FROM postpaid_sales ps
@@ -439,7 +1726,8 @@ async function showCustomerStatement(customerName) {
     `;
 
     const sqlRec = `
-      SELECT cr.amount AS amount, 'receipt' AS type, r.reconciliation_date AS tx_date,
+      SELECT cr.id AS row_id, cr.reconciliation_id AS reconciliation_id, 'reconciled' AS source,
+             cr.amount AS amount, 'receipt' AS type, r.reconciliation_date AS tx_date,
              cr.created_at AS created_at, r.reconciliation_number AS rec_no, cr.notes AS reason,
              c.name as cashier_name
       FROM customer_receipts cr
@@ -452,107 +1740,43 @@ async function showCustomerStatement(customerName) {
     // Manual transactions
     // Manual transactions
     const sqlManualPost = `
-      SELECT id, amount, 'postpaid' as type, created_at as tx_date,
+      SELECT id AS row_id, NULL AS reconciliation_id, 'manual' as source,
+             amount, 'postpaid' as type, created_at as tx_date,
              created_at, null as rec_no, reason,
-             'إدخال يدوي' as cashier_name, 'manual' as source
+             'إدخال يدوي' as cashier_name
       FROM manual_postpaid_sales
       WHERE customer_name = ?
       ${dateFilter.sql.replace(/r\.reconciliation_date/g, 'created_at')}
     `;
 
     const sqlManualRec = `
-      SELECT id, amount, 'receipt' as type, created_at as tx_date,
+      SELECT id AS row_id, NULL AS reconciliation_id, 'manual' as source,
+             amount, 'receipt' as type, created_at as tx_date,
              created_at, null as rec_no, reason,
-             'إدخال يدوي' as cashier_name, 'manual' as source
+             'إدخال يدوي' as cashier_name
       FROM manual_customer_receipts
       WHERE customer_name = ?
       ${dateFilter.sql.replace(/r\.reconciliation_date/g, 'created_at')}
     `;
 
-    const params = [...dateFilter.params, name];
-    const paramsRec = [...dateFilter.params, name];
+    // SQL starts with customer_name = ?, then date placeholders.
+    const params = [name, ...dateFilter.params];
+    const paramsRec = [name, ...dateFilter.params];
 
-    const postTx = await ledgerIpc.invoke('db-query', sqlPost, params) || [];
-    const recTx = await ledgerIpc.invoke('db-query', sqlRec, paramsRec) || [];
-    const manualPostTx = await ledgerIpc.invoke('db-query', sqlManualPost, paramsRec) || [];
-    const manualRecTx = await ledgerIpc.invoke('db-query', sqlManualRec, paramsRec) || [];
+    const [postTx, recTx, manualPostTx, manualRecTx] = await Promise.all([
+      ledgerIpc.invoke('db-query', sqlPost, params),
+      ledgerIpc.invoke('db-query', sqlRec, paramsRec),
+      ledgerIpc.invoke('db-query', sqlManualPost, paramsRec),
+      ledgerIpc.invoke('db-query', sqlManualRec, paramsRec)
+    ]);
 
-    const allTx = [...postTx, ...recTx, ...manualPostTx, ...manualRecTx].sort((a, b) => {
-      // Normalize to comparable strings/dates
-      const ad = new Date(a.tx_date || a.created_at || '');
-      const bd = new Date(b.tx_date || b.created_at || '');
-      if (!isNaN(ad) && !isNaN(bd)) return ad - bd;
-      const as = (a.tx_date || a.created_at || '').toString();
-      const bs = (b.tx_date || b.created_at || '').toString();
-      const c = as.localeCompare(bs);
-      if (c !== 0) return c;
-      return (a.created_at || '').localeCompare(b.created_at || '');
-    });
-
-    // Compute running balance and totals
-    let running = 0;
-    let totalPost = 0;
-    let totalRec = 0;
-    const fmt = getCurrencyFormatter();
-
-    const rowsHtml = allTx.map(t => {
-      if (t.type === 'postpaid') { running += Number(t.amount || 0); totalPost += Number(t.amount || 0); }
-      else { running -= Number(t.amount || 0); totalRec += Number(t.amount || 0); }
-
-      const kind = t.type === 'postpaid' ? 'مبيعات آجلة' : 'مقبوض عميل';
-      const reasonText = translateReason(t.reason || '-');
-      const amt = fmt(t.amount || 0);
-      const bal = fmt(running);
-      const recNo = t.rec_no != null ? `#${t.rec_no}` : '-';
-      const d = t.tx_date || t.created_at || '';
-
-      const isManual = t.source === 'manual';
-      let actions = '';
-      if (isManual) {
-        actions = `<button class="btn btn-sm btn-outline-primary" onclick="editManualTransaction(${t.id}, '${t.type}', '${escapeAttr(name)}')"><i class="bi bi-pencil"></i></button>`;
-      } else {
-        actions = '<span class="text-muted">-</span>';
-      }
-
-      return `
-        <tr>
-          <td>${escapeHtml(d)}</td>
-          <td>${escapeHtml(kind)}</td>
-          <td>${escapeHtml(reasonText)}</td>
-          <td>${escapeHtml(recNo)} ${t.cashier_name ? `- ${escapeHtml(t.cashier_name)}` : ''}</td>
-          <td class="text-currency ${t.type === 'postpaid' ? 'text-deficit' : 'text-success'}">${amt}</td>
-          <td class="text-currency fw-bold">${bal}</td>
-          <td>${actions}</td>
-        </tr>
-      `;
-    }).join('');
-
-    const balance = totalPost - totalRec;
-
-    const mTitle = document.getElementById('customerStatementTitle');
-    if (mTitle) mTitle.textContent = `كشف حساب - ${name}`;
-
-    const sPost = document.getElementById('statementTotalPostpaid');
-    const sRec = document.getElementById('statementTotalReceipts');
-    const sBal = document.getElementById('statementBalance');
-    if (sPost) sPost.textContent = fmt(totalPost);
-    if (sRec) sRec.textContent = fmt(totalRec);
-    if (sBal) sBal.textContent = fmt(balance);
-
-    const tbody = document.getElementById('customerStatementTable');
-    if (tbody) tbody.innerHTML = rowsHtml || `<tr><td colspan="7" class="text-center">لا توجد حركات</td></tr>`;
-
-    setupStatementEvents(name);
-    // show modal via modalHandler if present, else try bootstrap modal
-    if (modalHandler && typeof modalHandler.setupStatementModal === 'function') {
-      modalHandler.setupStatementModal(customerName);
-    } else {
-      const modalEl = document.getElementById('customerStatementModal');
-      if (modalEl && window.bootstrap?.Modal) {
-        const modal = new bootstrap.Modal(modalEl);
-        modal.show();
-      }
-    }
+    const allTx = sortTransactionsForStatement([
+      ...(postTx || []),
+      ...(recTx || []),
+      ...(manualPostTx || []),
+      ...(manualRecTx || [])
+    ]);
+    renderCustomerStatementRows(name, allTx, 'لا توجد حركات');
   } catch (error) {
     console.error('Error showing customer statement:', error);
     showTransactionAlert('حدث خطأ أثناء عرض كشف الحساب: ' + (error && error.message ? error.message : error));
@@ -692,12 +1916,13 @@ function clearStatementDateFilter(customerName) {
 
 async function refreshStatementWithFilter(customerName, dateFrom, dateTo) {
   try {
-    const name = (customerName || '').trim();
-    if (!name) return;
+    const name = String(customerName == null ? '' : customerName);
+    if (!name.trim()) return;
 
     // Reconciled transactions with date filter
     const sqlPost = `
-      SELECT ps.amount AS amount, 'postpaid' AS type, r.reconciliation_date AS tx_date,
+      SELECT ps.id AS row_id, ps.reconciliation_id AS reconciliation_id, 'reconciled' AS source,
+             ps.amount AS amount, 'postpaid' AS type, r.reconciliation_date AS tx_date,
              ps.created_at AS created_at, r.reconciliation_number AS rec_no, ps.notes AS reason,
              c.name as cashier_name
       FROM postpaid_sales ps
@@ -709,7 +1934,8 @@ async function refreshStatementWithFilter(customerName, dateFrom, dateTo) {
     `;
 
     const sqlRec = `
-      SELECT cr.amount AS amount, 'receipt' AS type, r.reconciliation_date AS tx_date,
+      SELECT cr.id AS row_id, cr.reconciliation_id AS reconciliation_id, 'reconciled' AS source,
+             cr.amount AS amount, 'receipt' AS type, r.reconciliation_date AS tx_date,
              cr.created_at AS created_at, r.reconciliation_number AS rec_no, cr.notes AS reason,
              c.name as cashier_name
       FROM customer_receipts cr
@@ -722,9 +1948,10 @@ async function refreshStatementWithFilter(customerName, dateFrom, dateTo) {
 
     // Manual transactions with date filter
     const sqlManualPost = `
-      SELECT id, amount, 'postpaid' as type, created_at as tx_date,
+      SELECT id AS row_id, NULL AS reconciliation_id, 'manual' as source,
+             amount, 'postpaid' as type, created_at as tx_date,
              created_at, null as rec_no, reason,
-             'إدخال يدوي' as cashier_name, 'manual' as source
+             'إدخال يدوي' as cashier_name
       FROM manual_postpaid_sales
       WHERE customer_name = ?
       ${dateFrom ? ' AND created_at >= ?' : ''}
@@ -732,9 +1959,10 @@ async function refreshStatementWithFilter(customerName, dateFrom, dateTo) {
     `;
 
     const sqlManualRec = `
-      SELECT id, amount, 'receipt' as type, created_at as tx_date,
+      SELECT id AS row_id, NULL AS reconciliation_id, 'manual' as source,
+             amount, 'receipt' as type, created_at as tx_date,
              created_at, null as rec_no, reason,
-             'إدخال يدوي' as cashier_name, 'manual' as source
+             'إدخال يدوي' as cashier_name
       FROM manual_customer_receipts
       WHERE customer_name = ?
       ${dateFrom ? ' AND created_at >= ?' : ''}
@@ -749,73 +1977,20 @@ async function refreshStatementWithFilter(customerName, dateFrom, dateTo) {
     const params = [name, ...dateParams];
     const paramsManual = [name, ...dateParams];
 
-    const postTx = await ledgerIpc.invoke('db-query', sqlPost, params) || [];
-    const recTx = await ledgerIpc.invoke('db-query', sqlRec, params) || [];
-    const manualPostTx = await ledgerIpc.invoke('db-query', sqlManualPost, paramsManual) || [];
-    const manualRecTx = await ledgerIpc.invoke('db-query', sqlManualRec, paramsManual) || [];
+    const [postTx, recTx, manualPostTx, manualRecTx] = await Promise.all([
+      ledgerIpc.invoke('db-query', sqlPost, params),
+      ledgerIpc.invoke('db-query', sqlRec, params),
+      ledgerIpc.invoke('db-query', sqlManualPost, paramsManual),
+      ledgerIpc.invoke('db-query', sqlManualRec, paramsManual)
+    ]);
 
-    const allTx = [...postTx, ...recTx, ...manualPostTx, ...manualRecTx].sort((a, b) => {
-      const ad = new Date(a.tx_date || a.created_at || '');
-      const bd = new Date(b.tx_date || b.created_at || '');
-      if (!isNaN(ad) && !isNaN(bd)) return ad - bd;
-      const as = (a.tx_date || a.created_at || '').toString();
-      const bs = (b.tx_date || b.created_at || '').toString();
-      const c = as.localeCompare(bs);
-      if (c !== 0) return c;
-      return (a.created_at || '').localeCompare(b.created_at || '');
-    });
-
-    // حساب الأرصدة والإجماليات
-    let running = 0;
-    let totalPost = 0;
-    let totalRec = 0;
-    const fmt = getCurrencyFormatter();
-
-    const rowsHtml = allTx.map(t => {
-      if (t.type === 'postpaid') { running += Number(t.amount || 0); totalPost += Number(t.amount || 0); }
-      else { running -= Number(t.amount || 0); totalRec += Number(t.amount || 0); }
-
-      const kind = t.type === 'postpaid' ? 'مبيعات آجلة' : 'مقبوض عميل';
-      const reasonText = translateReason(t.reason || '-');
-      const amt = fmt(t.amount || 0);
-      const bal = fmt(running);
-      const recNo = t.rec_no != null ? `#${t.rec_no}` : '-';
-      const d = t.tx_date || t.created_at || '';
-
-      const isManual = t.source === 'manual';
-      let actions = '';
-      if (isManual) {
-        actions = `<button class="btn btn-sm btn-outline-primary" onclick="editManualTransaction(${t.id}, '${t.type}', '${escapeAttr(name)}')"><i class="bi bi-pencil"></i></button>`;
-      } else {
-        actions = '<span class="text-muted">-</span>';
-      }
-
-      return `
-        <tr>
-          <td>${escapeHtml(d)}</td>
-          <td>${escapeHtml(kind)}</td>
-          <td>${escapeHtml(reasonText)}</td>
-          <td>${escapeHtml(recNo)} ${t.cashier_name ? `- ${escapeHtml(t.cashier_name)}` : ''}</td>
-          <td class="text-currency ${t.type === 'postpaid' ? 'text-deficit' : 'text-success'}">${amt}</td>
-          <td class="text-currency fw-bold">${bal}</td>
-          <td>${actions}</td>
-        </tr>
-      `;
-    }).join('');
-
-    const balance = totalPost - totalRec;
-
-    // تحديث الملخص
-    const sPost = document.getElementById('statementTotalPostpaid');
-    const sRec = document.getElementById('statementTotalReceipts');
-    const sBal = document.getElementById('statementBalance');
-    if (sPost) sPost.textContent = fmt(totalPost);
-    if (sRec) sRec.textContent = fmt(totalRec);
-    if (sBal) sBal.textContent = fmt(balance);
-
-    // تحديث الجدول
-    const tbody = document.getElementById('customerStatementTable');
-    if (tbody) tbody.innerHTML = rowsHtml || `<tr><td colspan="7" class="text-center">لا توجد حركات في الفترة المحددة</td></tr>`;
+    const allTx = sortTransactionsForStatement([
+      ...(postTx || []),
+      ...(recTx || []),
+      ...(manualPostTx || []),
+      ...(manualRecTx || [])
+    ]);
+    renderCustomerStatementRows(name, allTx, 'لا توجد حركات في الفترة المحددة');
 
     showTransactionAlert(`✅ تم تطبيق الفلتر - عدد الحركات: ${allTx.length}`, 'success');
 
@@ -862,26 +2037,30 @@ async function addNewTransaction(customerName) {
       showTransactionAlert('تمت إضافة الحركة بنجاح', 'success');
       // NOTE: Modal stays open so user can add more transactions without disruption
     } else {
-      showTransactionAlert('فشلت عملية إضافة الحركة: ' + (result?.error || 'خطأ غير معروف'), 'danger');
+      showTransactionAlert(
+        'فشلت عملية إضافة الحركة: ' + mapCustomerLedgerDbError(result?.error || 'خطأ غير معروف'),
+        'danger'
+      );
     }
   } catch (error) {
     console.error('Error adding transaction:', error);
-    showTransactionAlert('حدث خطأ أثناء إضافة الحركة: ' + (error && error.message ? error.message : error));
+    showTransactionAlert('حدث خطأ أثناء إضافة الحركة: ' + mapCustomerLedgerDbError(error), 'danger');
   }
 }
 
 // تحديث بيانات الكشف فقط دون إعادة إظهار المودال
 async function refreshStatementData(customerName) {
   try {
-    const name = (customerName || '').trim();
-    if (!name) return;
+    const name = String(customerName == null ? '' : customerName);
+    if (!name.trim()) return;
 
     const filters = getLedgerFilters();
     const dateFilter = buildDateFilter(filters);
 
     // Reconciled transactions
     const sqlPost = `
-      SELECT ps.amount AS amount, 'postpaid' AS type, r.reconciliation_date AS tx_date,
+      SELECT ps.id AS row_id, ps.reconciliation_id AS reconciliation_id, 'reconciled' AS source,
+             ps.amount AS amount, 'postpaid' AS type, r.reconciliation_date AS tx_date,
              ps.created_at AS created_at, r.reconciliation_number AS rec_no, ps.notes AS reason,
              c.name as cashier_name
       FROM postpaid_sales ps
@@ -892,7 +2071,8 @@ async function refreshStatementData(customerName) {
     `;
 
     const sqlRec = `
-      SELECT cr.amount AS amount, 'receipt' AS type, r.reconciliation_date AS tx_date,
+      SELECT cr.id AS row_id, cr.reconciliation_id AS reconciliation_id, 'reconciled' AS source,
+             cr.amount AS amount, 'receipt' AS type, r.reconciliation_date AS tx_date,
              cr.created_at AS created_at, r.reconciliation_number AS rec_no, cr.notes AS reason,
              c.name as cashier_name
       FROM customer_receipts cr
@@ -904,7 +2084,8 @@ async function refreshStatementData(customerName) {
 
     // Manual transactions
     const sqlManualPost = `
-      SELECT amount, 'postpaid' as type, created_at as tx_date,
+      SELECT id AS row_id, NULL AS reconciliation_id, 'manual' AS source,
+             amount, 'postpaid' as type, created_at as tx_date,
              created_at, null as rec_no, reason,
              'إدخال يدوي' as cashier_name
       FROM manual_postpaid_sales
@@ -913,7 +2094,8 @@ async function refreshStatementData(customerName) {
     `;
 
     const sqlManualRec = `
-      SELECT amount, 'receipt' as type, created_at as tx_date,
+      SELECT id AS row_id, NULL AS reconciliation_id, 'manual' AS source,
+             amount, 'receipt' as type, created_at as tx_date,
              created_at, null as rec_no, reason,
              'إدخال يدوي' as cashier_name
       FROM manual_customer_receipts
@@ -921,68 +2103,183 @@ async function refreshStatementData(customerName) {
       ${dateFilter.sql.replace(/r\.reconciliation_date/g, 'created_at')}
     `;
 
-    const params = [...dateFilter.params, name];
-    const paramsRec = [...dateFilter.params, name];
+    // SQL starts with customer_name = ?, then date placeholders.
+    const params = [name, ...dateFilter.params];
+    const paramsRec = [name, ...dateFilter.params];
 
-    const postTx = await ledgerIpc.invoke('db-query', sqlPost, params) || [];
-    const recTx = await ledgerIpc.invoke('db-query', sqlRec, paramsRec) || [];
-    const manualPostTx = await ledgerIpc.invoke('db-query', sqlManualPost, paramsRec) || [];
-    const manualRecTx = await ledgerIpc.invoke('db-query', sqlManualRec, paramsRec) || [];
+    const [postTx, recTx, manualPostTx, manualRecTx] = await Promise.all([
+      ledgerIpc.invoke('db-query', sqlPost, params),
+      ledgerIpc.invoke('db-query', sqlRec, paramsRec),
+      ledgerIpc.invoke('db-query', sqlManualPost, paramsRec),
+      ledgerIpc.invoke('db-query', sqlManualRec, paramsRec)
+    ]);
 
-    const allTx = [...postTx, ...recTx, ...manualPostTx, ...manualRecTx].sort((a, b) => {
-      const ad = new Date(a.tx_date || a.created_at || '');
-      const bd = new Date(b.tx_date || b.created_at || '');
-      if (!isNaN(ad) && !isNaN(bd)) return ad - bd;
-      const as = (a.tx_date || a.created_at || '').toString();
-      const bs = (b.tx_date || b.created_at || '').toString();
-      const c = as.localeCompare(bs);
-      if (c !== 0) return c;
-      return (a.created_at || '').localeCompare(b.created_at || '');
-    });
-
-    // Compute running balance and totals
-    let running = 0;
-    let totalPost = 0;
-    let totalRec = 0;
-    const fmt = getCurrencyFormatter();
-
-    const rowsHtml = allTx.map(t => {
-      if (t.type === 'postpaid') { running += Number(t.amount || 0); totalPost += Number(t.amount || 0); }
-      else { running -= Number(t.amount || 0); totalRec += Number(t.amount || 0); }
-
-      const kind = t.type === 'postpaid' ? 'مبيعات آجلة' : 'مقبوض عميل';
-      const reasonText = translateReason(t.reason || '-');
-      const amt = fmt(t.amount || 0);
-      const bal = fmt(running);
-      const recNo = t.rec_no != null ? `#${t.rec_no}` : '-';
-      const d = t.tx_date || t.created_at || '';
-      return `
-        <tr>
-          <td>${escapeHtml(d)}</td>
-          <td>${escapeHtml(kind)}</td>
-          <td>${escapeHtml(reasonText)}</td>
-          <td>${escapeHtml(recNo)} ${t.cashier_name ? `- ${escapeHtml(t.cashier_name)}` : ''}</td>
-          <td class="text-currency ${t.type === 'postpaid' ? 'text-deficit' : 'text-success'}">${amt}</td>
-          <td class="text-currency fw-bold">${bal}</td>
-        </tr>
-      `;
-    }).join('');
-
-    const balance = totalPost - totalRec;
-
-    // Update totals
-    const sPost = document.getElementById('statementTotalPostpaid');
-    const sRec = document.getElementById('statementTotalReceipts');
-    const sBal = document.getElementById('statementBalance');
-    if (sPost) sPost.textContent = fmt(totalPost);
-    if (sRec) sRec.textContent = fmt(totalRec);
-    if (sBal) sBal.textContent = fmt(balance);
-
-    // Update table content only (no modal re-show)
-    const tbody = document.getElementById('customerStatementTable');
-    if (tbody) tbody.innerHTML = rowsHtml || `<tr><td colspan="6" class="text-center">لا توجد حركات</td></tr>`;
+    const allTx = sortTransactionsForStatement([
+      ...(postTx || []),
+      ...(recTx || []),
+      ...(manualPostTx || []),
+      ...(manualRecTx || [])
+    ]);
+    renderCustomerStatementRows(name, allTx, 'لا توجد حركات');
   } catch (error) {
     console.error('Error refreshing statement data:', error);
+  }
+}
+
+function closeCustomerStatementModal() {
+  const modalEl = document.getElementById('customerStatementModal');
+  if (!modalEl) return;
+
+  if (window.bootstrap?.Modal) {
+    const modal = window.bootstrap.Modal.getInstance(modalEl);
+    if (modal) {
+      modal.hide();
+      return;
+    }
+  }
+
+  modalEl.classList.remove('show');
+  modalEl.style.display = 'none';
+  modalEl.setAttribute('aria-hidden', 'true');
+}
+
+function activateReconciliationSectionFromLedger() {
+  const reconciliationMenu = document.querySelector('a[data-section="reconciliation"]');
+  if (reconciliationMenu && typeof reconciliationMenu.click === 'function') {
+    reconciliationMenu.click();
+    return;
+  }
+
+  const targetSection = document.getElementById('reconciliation-section');
+  if (targetSection) {
+    document.querySelectorAll('.content-section').forEach((section) => {
+      section.classList.remove('active');
+    });
+    targetSection.classList.add('active');
+  }
+}
+
+async function openCustomerReconciliationFromStatement(reconciliationId) {
+  const numericId = Number.parseInt(reconciliationId, 10);
+  if (!Number.isFinite(numericId) || numericId <= 0) {
+    showTransactionAlert('هذه الحركة غير مرتبطة بتصفية صالحة', 'warning');
+    return;
+  }
+
+  try {
+    if (typeof window.recallReconciliationFromId === 'function') {
+      const recalled = await window.recallReconciliationFromId(numericId);
+      if (!recalled) {
+        return;
+      }
+      closeCustomerStatementModal();
+      activateReconciliationSectionFromLedger();
+      return;
+    }
+
+    if (typeof window.editReconciliationNew === 'function') {
+      closeCustomerStatementModal();
+      await window.editReconciliationNew(numericId);
+      return;
+    }
+
+    showTransactionAlert('تعذر فتح التصفية المرتبطة من هذه الشاشة', 'danger');
+  } catch (error) {
+    console.error('Error opening reconciliation from customer statement:', error);
+    showTransactionAlert('حدث خطأ أثناء فتح التصفية المرتبطة', 'danger');
+  }
+}
+
+function buildCustomerStatementReconciliationCell(tx) {
+  const reconciliationId = Number(tx?.reconciliation_id || 0);
+  const recLabel = tx?.rec_no != null ? `#${tx.rec_no}` : (reconciliationId > 0 ? `#${reconciliationId}` : '-');
+  const cashierLabel = tx?.cashier_name ? ` - ${escapeHtml(tx.cashier_name)}` : '';
+
+  if (reconciliationId > 0 && tx?.source !== 'manual') {
+    return `
+      <button
+        type="button"
+        class="btn btn-link btn-sm p-0 align-baseline"
+        onclick="window.openCustomerReconciliationFromStatement(${reconciliationId})"
+        title="فتح التصفية المرتبطة">
+        ${escapeHtml(recLabel)}
+      </button>${cashierLabel}
+    `;
+  }
+
+  return `${escapeHtml(recLabel)}${cashierLabel}`;
+}
+
+function buildCustomerStatementActions(tx, customerName) {
+  if (tx?.source === 'manual') {
+    const rowId = Number(tx?.row_id || tx?.id || 0);
+    return `<button class="btn btn-sm btn-outline-primary" onclick="editManualTransaction(${rowId}, '${tx.type}', '${escapeAttr(customerName)}')"><i class="bi bi-pencil"></i></button>`;
+  }
+
+  const reconciliationId = Number(tx?.reconciliation_id || 0);
+  if (reconciliationId > 0) {
+    return `
+      <button
+        type="button"
+        class="btn btn-sm btn-outline-info"
+        onclick="window.openCustomerReconciliationFromStatement(${reconciliationId})"
+        title="فتح التصفية المرتبطة">
+        <i class="bi bi-box-arrow-up-right"></i> فتح التصفية
+      </button>
+    `;
+  }
+
+  return '<span class="text-muted">-</span>';
+}
+
+function renderCustomerStatementRows(customerName, transactions, emptyMessage = 'لا توجد حركات') {
+  const tbody = document.getElementById('customerStatementTable');
+  const sPost = document.getElementById('statementTotalPostpaid');
+  const sRec = document.getElementById('statementTotalReceipts');
+  const sBal = document.getElementById('statementBalance');
+  const allTx = Array.isArray(transactions) ? transactions : [];
+  const fmt = getCurrencyFormatter();
+
+  let totalPost = 0;
+  let totalRec = 0;
+  allTx.forEach((tx) => {
+    const amount = Number(tx.amount || 0);
+    if (tx.type === 'postpaid') totalPost += amount;
+    else totalRec += amount;
+  });
+
+  let running = totalPost - totalRec;
+  const rowsHtml = allTx.map((tx) => {
+    const amount = Number(tx.amount || 0);
+    const kind = tx.type === 'postpaid' ? 'مبيعات آجلة' : 'مقبوض عميل';
+    const reasonText = translateReason(tx.reason || '-');
+    const amountText = fmt(amount);
+    const balanceText = fmt(running);
+    const txDate = tx.tx_date || tx.created_at || '';
+
+    if (tx.type === 'postpaid') running -= amount;
+    else running += amount;
+
+    return `
+      <tr>
+        <td>${escapeHtml(txDate)}</td>
+        <td>${escapeHtml(kind)}</td>
+        <td>${escapeHtml(reasonText)}</td>
+        <td>${buildCustomerStatementReconciliationCell(tx)}</td>
+        <td class="text-currency ${tx.type === 'postpaid' ? 'text-deficit' : 'text-success'}">${amountText}</td>
+        <td class="text-currency fw-bold">${balanceText}</td>
+        <td>${buildCustomerStatementActions(tx, customerName)}</td>
+      </tr>
+    `;
+  }).join('');
+
+  const balance = totalPost - totalRec;
+  if (sPost) sPost.textContent = fmt(totalPost);
+  if (sRec) sRec.textContent = fmt(totalRec);
+  if (sBal) sBal.textContent = fmt(balance);
+
+  if (tbody) {
+    tbody.innerHTML = rowsHtml || `<tr><td colspan="7" class="text-center">${escapeHtml(emptyMessage)}</td></tr>`;
   }
 }
 
@@ -1000,8 +2297,8 @@ function showTransactionAlert(message, type = 'info') {
 
 async function printCustomerStatement(customerName) {
   try {
-    const name = (customerName || '').trim();
-    if (!name) return;
+    const name = String(customerName == null ? '' : customerName);
+    if (!name.trim()) return;
 
     // جلب معلومات الفرع المرتبط بالعميل من آخر حركة
     const branchInfo = await ledgerIpc.invoke('db-query', `
@@ -1115,7 +2412,7 @@ async function printCustomerStatement(customerName) {
         WHERE customer_name = ?
         ${dateFilterForManual}
       ) all_tx
-      ORDER BY tx_date ASC, created_at ASC
+      ORDER BY tx_date DESC, created_at DESC
     `;
 
     const params = [
@@ -1127,30 +2424,70 @@ async function printCustomerStatement(customerName) {
 
     const allTx = await ledgerIpc.invoke('db-query', sql, params) || [];
 
-    let running = 0; let totalPost = 0; let totalRec = 0; const fmt = getCurrencyFormatter();
-    const rowsHtml = allTx.map(t => {
-      if (t.type === 'postpaid') { running += Number(t.amount || 0); totalPost += Number(t.amount || 0); }
-      else { running -= Number(t.amount || 0); totalRec += Number(t.amount || 0); }
-      const kind = t.type === 'postpaid' ? 'مبيعات آجلة' : 'مقبوض عميل';
+    let totalPost = 0;
+    let totalRec = 0;
+    allTx.forEach((t) => {
+      const amount = Number(t.amount || 0);
+      if (t.type === 'postpaid') totalPost += amount;
+      else totalRec += amount;
+    });
+
+    const fmt = getCurrencyFormatter();
+    const openingBalance = 0;
+    const balance = totalPost - totalRec;
+
+    const sortedTx = [...allTx].sort((left, right) => {
+      const leftDate = String(left?.tx_date || left?.created_at || '');
+      const rightDate = String(right?.tx_date || right?.created_at || '');
+      const dateCompare = leftDate.localeCompare(rightDate);
+      if (dateCompare !== 0) return dateCompare;
+      return String(left?.created_at || '').localeCompare(String(right?.created_at || ''));
+    });
+
+    let running = openingBalance;
+    const rowsHtml = sortedTx.map((t) => {
+      const amount = Math.abs(Number(t.amount || 0));
+      const isPostpaid = t.type === 'postpaid';
+      const debit = isPostpaid ? amount : 0;
+      const credit = isPostpaid ? 0 : amount;
+      running += (debit - credit);
+
       const reasonText = translateReason(t.reason || '-');
-      const amt = fmt(t.amount || 0);
-      const bal = fmt(running);
       const recNo = t.rec_no != null ? `#${t.rec_no}` : '-';
-      const cashierName = t.cashier_name || 'إدخال يدوي';
-      const d = t.tx_date || t.created_at || '';
+      const cashierName = String(t.cashier_name || 'إدخال يدوي').trim();
+      const sourceLabel = t.rec_no != null && t.rec_no !== 'يدوي'
+        ? `تصفية ${recNo}`
+        : 'قيد يدوي';
+      const statementMain = isPostpaid
+        ? `تحميل مديونية على ح/ ${customerName}`
+        : `تحصيل نقدي من ح/ ${customerName}`;
+      const statementDetails = [
+        reasonText && reasonText !== '-' ? `السبب: ${reasonText}` : '',
+        `المصدر: ${sourceLabel}`,
+        cashierName ? `المستخدم: ${cashierName}` : ''
+      ].filter(Boolean).join(' - ');
+
       return `
         <tr>
-          <td>${escapeHtml(d)}</td>
-          <td>${escapeHtml(kind)}</td>
-          <td>${escapeHtml(reasonText)}</td>
-          <td>${escapeHtml(recNo)} - ${escapeHtml(cashierName)}</td>
-          <td class="text-currency ${t.type === 'postpaid' ? 'text-deficit' : 'text-success'}">${amt}</td>
-          <td class="text-currency fw-bold">${bal}</td>
+          <td>${escapeHtml(formatDateTime(t.tx_date || t.created_at || ''))}</td>
+          <td>${escapeHtml(isPostpaid ? 'مبيعات آجلة' : 'مقبوضات عملاء')}</td>
+          <td>${escapeHtml(recNo)}</td>
+          <td class="statement-cell">
+            <div class="statement-main">${escapeHtml(statementMain)}</div>
+            ${statementDetails ? `<div class="statement-detail">${escapeHtml(statementDetails)}</div>` : ''}
+          </td>
+          <td class="text-currency">${debit > 0 ? fmt(debit) : ''}</td>
+          <td class="text-currency">${credit > 0 ? fmt(credit) : ''}</td>
+          <td class="text-currency fw-bold">${fmt(running)}</td>
         </tr>
       `;
     }).join('');
 
-    const balance = totalPost - totalRec;
+    const openingDebit = openingBalance >= 0 ? openingBalance : 0;
+    const openingCredit = openingBalance < 0 ? Math.abs(openingBalance) : 0;
+    const closingDebit = balance >= 0 ? balance : 0;
+    const closingCredit = balance < 0 ? Math.abs(balance) : 0;
+    const openingDebitText = (openingDebit > 0 || (openingDebit === 0 && openingCredit === 0)) ? fmt(openingDebit) : '';
 
     const printHTML = `
     <!DOCTYPE html>
@@ -1159,178 +2496,158 @@ async function printCustomerStatement(customerName) {
         <meta charset="UTF-8">
         <title>كشف حساب - ${customerName}</title>
         <style>
-            @page { size: A4; margin: 15mm 20mm }
+            @page { size: A4; margin: 12mm 14mm }
             body { 
                 font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                font-size: 12px; 
-                line-height: 1.3; 
-                color: #000;
-                max-width: 190mm;
+                font-size: 12px;
+                line-height: 1.5;
+                color: #0b1f35;
                 margin: 0 auto;
                 padding: 0;
             }
             .header { 
-                margin-bottom: 10mm; 
-                padding: 6mm; 
-                border: 1px solid #000; 
-                border-radius: 3mm;
+                margin-bottom: 6mm;
+                padding: 4mm 5mm;
+                border: 1px solid #738aa3;
+                border-radius: 2.5mm;
                 background-color: #fff;
-                width: 85%;
-                max-width: 160mm;
-                margin-left: auto;
-                margin-right: auto
             }
             .statement-title { 
                 text-align: center; 
-                margin-bottom: 6mm 
+                margin-bottom: 3mm 
             }
             .statement-title h2 { 
-                font-size: 16px; 
+                font-size: 18px; 
                 font-weight: bold; 
                 margin: 0; 
-                padding: 0; 
-                color: #000 
+                padding: 0;
+                color: #0b1f35;
             }
             .header-content { 
                 display: flex; 
                 justify-content: space-between; 
                 align-items: flex-start; 
-                margin-top: 4mm;
-                padding: 0 2mm
+                gap: 6mm;
             }
             .header-right, .header-left { flex: 1 }
             .header-right { 
-                padding-left: 5mm; 
-                border-left: 1px solid #ddd 
+                padding-left: 4mm;
+                border-left: 1px solid #d1d9e0;
             }
             .company-name { 
-                font-size: 14px; 
+                font-size: 15px; 
                 font-weight: bold; 
-                margin-bottom: 2mm; 
-                color: #000 
+                margin-bottom: 2mm;
+                color: #0b1f35;
             }
             .branch-name { 
                 font-size: 13px; 
                 margin-bottom: 2mm; 
-                color: #333 
+                color: #334155;
             }
             .branch-info { 
-                font-size: 12px; 
+                font-size: 11px;
                 line-height: 1.4; 
-                color: #555 
+                color: #475569;
             }
             .branch-info > div { margin-bottom: 1mm }
             .header-left { 
                 text-align: left; 
-                padding-right: 5mm 
+                padding-right: 4mm;
             }
             .customer-info, .print-date { 
-                margin-top: 2mm; 
-                font-size: 12px 
+                margin-top: 1.5mm;
+                font-size: 12px;
             }
             .detail-label { 
                 font-weight: 500; 
-                color: #555; 
-                margin-left: 2mm 
+                color: #475569;
+                margin-left: 2mm;
             }
             .summary { 
                 display: flex; 
                 justify-content: space-between; 
-                gap: 4mm; 
-                margin: 0 auto 6mm auto;
-                padding: 4mm; 
-                background-color: #f8f9fa; 
+                gap: 3mm;
+                margin: 0 0 5mm 0;
+                padding: 3mm;
+                background-color: #f8fafc;
                 border-radius: 2mm;
-                width: 85%;
-                max-width: 160mm
+                border: 1px solid #d1d9e0;
             }
             .summary-item { 
                 flex: 1; 
                 background-color: #fff; 
-                padding: 2.5mm 3mm; 
+                padding: 2mm 2.5mm;
                 border-radius: 2mm; 
-                border: 1px solid #ddd;
+                border: 1px solid #d1d9e0;
                 text-align: center
             }
             .summary-item .label { 
                 font-weight: bold; 
-                color: #333; 
-                font-size: 12px; 
+                color: #334155;
+                font-size: 11px;
                 margin-bottom: 1mm 
             }
             .summary-item .value { 
-                font-size: 13px; 
+                font-size: 13px;
                 font-weight: bold 
             }
             table { 
-                width: 95%; 
+                width: 100%;
                 border-collapse: collapse;
-                margin: 0 auto 6mm auto;
-                max-width: 180mm
+                margin: 0 0 6mm 0;
+                border: 1px solid #738aa3;
             }
             th, td { 
-                border: 1px solid #000; 
-                padding: 2mm; 
+                border: 1px solid #738aa3;
+                padding: 2.2mm;
                 text-align: right;
                 font-size: 11px 
             }
             th { 
-                background: #fff; 
+                background: #b6cfe8;
                 font-weight: bold;
                 font-size: 11px 
             }
+            td, th {
+                vertical-align: top;
+                text-align: center;
+            }
+            .statement-cell {
+                text-align: right;
+                line-height: 1.55;
+            }
+            .statement-main {
+                font-weight: 700;
+                color: #102a43;
+            }
+            .statement-detail {
+                margin-top: 1px;
+                color: #475569;
+                font-size: 10.5px;
+            }
+            .opening-row td {
+                color: #b42318;
+                font-weight: 700;
+            }
+            .totals-row td,
+            .closing-row td {
+                background: #f1f5f9;
+                font-weight: 700;
+            }
             .text-currency { 
-                font-family: monospace; 
-                color: #000;
+                font-family: 'Consolas', 'Cascadia Mono', monospace;
+                color: #0f172a;
                 font-size: 11px 
             }
-            .text-deficit { color: #000 }
-            .text-success { color: #000 }
-            .page-number { 
-                text-align: center;
-                font-size: 10px;
-                color: #666;
-                margin-top: 4mm;
-                margin-bottom: 4mm
-            }
-            .page-number:before { 
-                content: counter(page) " من " counter(pages);
-            }
             .footer { 
-                margin-top: 8mm; 
+                margin-top: 6mm;
                 text-align: center; 
-                font-size: 10px; 
-                color: #666
+                font-size: 10px;
+                color: #64748b
             }
             @media print { 
-                body { margin: 0; padding: 0 } 
-                .no-print { display: none }
-                @page { 
-                    counter-increment: page;
-                    @top-center {
-                        content: "العميل: ${customerName}";
-                        font-size: 11px;
-                        color: #666;
-                        display: none;
-                    }
-                    @bottom-center {
-                        content: counter(page) " من " counter(pages)
-                    }
-                }
-                @page:nth-of-type(1n + 2) {
-                    @top-center {
-                        display: block;
-                    }
-                }
-                .footer { 
-                    display: none;
-                    page-break-before: avoid;
-                    page-break-inside: avoid
-                }
-                .footer:last-of-type {
-                    display: block;
-                    margin-top: auto
-                }
+                body { margin: 0; padding: 0 }
             }
         </style>
     </head>
@@ -1357,15 +2674,53 @@ async function printCustomerStatement(customerName) {
             </div>
         </div>
         <div class="summary">
-          <div class="summary-item"><div class="label">إجمالي المبيعات الآجلة</div><div class="value text-currency text-deficit">${fmt(totalPost)}</div></div>
-          <div class="summary-item"><div class="label">إجمالي المقبوضات</div><div class="value text-currency text-success">${fmt(totalRec)}</div></div>
-          <div class="summary-item"><div class="label">الرصيد</div><div class="value text-currency ${balance > 0 ? 'text-deficit' : balance < 0 ? 'text-success' : ''}">${fmt(balance)}</div></div>
+          <div class="summary-item"><div class="label">إجمالي المدين</div><div class="value text-currency">${fmt(totalPost)}</div></div>
+          <div class="summary-item"><div class="label">إجمالي الدائن</div><div class="value text-currency">${fmt(totalRec)}</div></div>
+          <div class="summary-item"><div class="label">الرصيد النهائي</div><div class="value text-currency">${fmt(balance)}</div></div>
         </div>
         <table>
-                    <thead><tr><th>التاريخ</th><th>النوع</th><th>السبب</th><th>رقم التصفية - الكاشير</th><th>المبلغ</th><th>الرصيد التراكمي</th></tr></thead>
-          <tbody>${rowsHtml || '<tr><td colspan="6" class="text-center">لا توجد حركات</td></tr>'}</tbody>
+          <thead>
+            <tr>
+              <th rowspan="2">التاريخ</th>
+              <th rowspan="2">نوع الحركة</th>
+              <th rowspan="2">رقم المرجع</th>
+              <th rowspan="2">البيان</th>
+              <th colspan="2">المبلغ</th>
+              <th rowspan="2">الرصيد</th>
+            </tr>
+            <tr>
+              <th>مدين</th>
+              <th>دائن</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr class="opening-row">
+              <td>-</td>
+              <td>-</td>
+              <td>-</td>
+              <td class="statement-cell">
+                <div class="statement-main">قيد افتتاحي: رصيد أول المدة لحساب العميل</div>
+                <div class="statement-detail">ح/ ${escapeHtml(customerName)}</div>
+              </td>
+              <td class="text-currency">${openingDebitText}</td>
+              <td class="text-currency">${openingCredit > 0 ? fmt(openingCredit) : ''}</td>
+              <td class="text-currency fw-bold">${fmt(openingBalance)}</td>
+            </tr>
+            ${rowsHtml || '<tr><td colspan="7" class="text-center">لا توجد حركات</td></tr>'}
+            <tr class="totals-row">
+              <td colspan="4">إجمالي الحركات</td>
+              <td class="text-currency">${fmt(totalPost)}</td>
+              <td class="text-currency">${fmt(totalRec)}</td>
+              <td class="text-currency fw-bold">${fmt(balance)}</td>
+            </tr>
+            <tr class="closing-row">
+              <td colspan="4">الرصيد الختامي</td>
+              <td class="text-currency">${closingDebit > 0 || (closingDebit === 0 && closingCredit === 0) ? fmt(closingDebit) : ''}</td>
+              <td class="text-currency">${closingCredit > 0 ? fmt(closingCredit) : ''}</td>
+              <td class="text-currency fw-bold">${fmt(balance)}</td>
+            </tr>
+          </tbody>
         </table>
-            <div class="page-number"></div>
             <div class="footer">
                 تم تطوير هذا النظام بواسطة محمد أمين الكامل - جميع الحقوق محفوظة © تصفية برو - Tasfiya Pro
             </div>
@@ -1407,6 +2762,16 @@ function buildDateFilter(filters) {
   return { sql, params };
 }
 
+function sortTransactionsForStatement(transactions) {
+  return transactions.sort((a, b) => {
+    const leftDate = String(a.tx_date || a.created_at || '');
+    const rightDate = String(b.tx_date || b.created_at || '');
+    const dateCompare = rightDate.localeCompare(leftDate);
+    if (dateCompare !== 0) return dateCompare;
+    return String(b.created_at || '').localeCompare(String(a.created_at || ''));
+  });
+}
+
 function getCurrencyFormatter() {
   if (typeof window.formatCurrency === 'function') return window.formatCurrency;
   return function (amount) {
@@ -1418,11 +2783,48 @@ function getCurrencyFormatter() {
 
 async function getCompanyName() {
   try {
-    const result = await ledgerIpc.invoke('db-query',
-      'SELECT setting_value FROM system_settings WHERE category = ? AND setting_key = ?',
-      ['company', 'name']
-    );
-    return result && result[0] ? result[0].setting_value : 'شركة المثال التجارية';
+    const cachedCompanyName = String(window.currentCompanyName || '').trim();
+    const result = await ledgerIpc.invoke('db-query', `
+      SELECT category, setting_key, setting_value, id
+      FROM system_settings
+      WHERE category IN ('general', 'company')
+        AND setting_key IN ('company_name', 'name')
+      ORDER BY id DESC
+    `);
+
+    const rows = Array.isArray(result) ? result : [];
+    const latestByKey = new Map();
+    rows.forEach((row) => {
+      const category = String(row?.category || '').trim().toLowerCase();
+      const settingKey = String(row?.setting_key || '').trim().toLowerCase();
+      const settingValue = String(row?.setting_value || '').trim();
+      if (!category || !settingKey || !settingValue) return;
+
+      const compositeKey = `${category}:${settingKey}`;
+      if (!latestByKey.has(compositeKey)) {
+        latestByKey.set(compositeKey, settingValue);
+      }
+    });
+
+    const preferredKeys = [
+      'general:company_name',
+      'general:name',
+      'company:name',
+      'company:company_name'
+    ];
+
+    for (const key of preferredKeys) {
+      const value = latestByKey.get(key);
+      if (value) {
+        return value;
+      }
+    }
+
+    if (cachedCompanyName) {
+      return cachedCompanyName;
+    }
+
+    return 'شركة المثال التجارية';
   } catch (error) {
     console.error('Error getting company name:', error);
     return 'شركة المثال التجارية';
@@ -1440,6 +2842,11 @@ function escapeHtml(str) {
 
 function escapeAttr(str) {
   return String(str || '').replace(/['"\\]/g, s => ({ "'": '&#39;', '"': '&quot;', '\\': '\\\\' }[s]));
+}
+
+function formatMergeDateTime(dateTimeString) {
+  const formatted = formatDateTime(dateTimeString);
+  return formatted === 'غير محدد' ? '' : formatted;
 }
 
 function formatDateTime(dateTimeString) {
@@ -1547,36 +2954,39 @@ async function printCustomerStatementThermal(customerName) {
     // إظهار رسالة التحميل
     showTransactionAlert('جاري تحضير البيانات للطباعة...', 'info');
 
-    const postTx = await ledgerIpc.invoke('db-query', sqlPost, [...paramsPost, customerName]) || [];
-    const recTx = await ledgerIpc.invoke('db-query', sqlRec, [...paramsRec, customerName]) || [];
+    const [postTx, recTx] = await Promise.all([
+      ledgerIpc.invoke('db-query', sqlPost, [...paramsPost, customerName]),
+      ledgerIpc.invoke('db-query', sqlRec, [...paramsRec, customerName])
+    ]);
 
-    const allTx = [...postTx, ...recTx].sort((a, b) => {
-      const ad = (a.tx_date || '').localeCompare(b.tx_date || '');
-      if (ad !== 0) return ad;
-      return (a.created_at || '').localeCompare(b.created_at || '');
-    });
+    const allTx = sortTransactionsForStatement([
+      ...(postTx || []),
+      ...(recTx || [])
+    ]);
 
-    // حساب الرصيد التراكمي
-    let running = 0;
+    // حساب الإجماليات أولاً ثم الرصيد التراكمي للأحدث -> الأقدم
     let totalPost = 0;
     let totalRec = 0;
+    allTx.forEach(t => {
+      const amount = Number(t.amount || 0);
+      if (t.type === 'postpaid') totalPost += amount;
+      else totalRec += amount;
+    });
+    let running = totalPost - totalRec;
     const fmt = getCurrencyFormatter();
 
     // بيانات الجدول في صيغة منظمة
     const tableData = [];
     allTx.forEach(t => {
-      if (t.type === 'postpaid') {
-        running += Number(t.amount || 0);
-        totalPost += Number(t.amount || 0);
-      } else {
-        running -= Number(t.amount || 0);
-        totalRec += Number(t.amount || 0);
-      }
+      const amount = Number(t.amount || 0);
       const kind = t.type === 'postpaid' ? 'آجل' : 'مقبوض';
       const date = (t.tx_date || '').substring(0, 10);
-      const amt = Number(t.amount || 0);
+      const amt = amount;
       const bal = running;
       const cashier = t.cashier_name || 'يدوي';
+
+      if (t.type === 'postpaid') running -= amount;
+      else running += amount;
 
       tableData.push({
         date,
@@ -1853,7 +3263,7 @@ async function updateManualTransaction(id, initialType, customerName) {
 
   } catch (error) {
     console.error('Error updating manual transaction:', error);
-    showEditTxAlert('حدث خطأ أثناء حفظ التعديلات: ' + error.message, 'danger');
+    showEditTxAlert('حدث خطأ أثناء حفظ التعديلات: ' + mapCustomerLedgerDbError(error), 'danger');
     const saveBtn = document.querySelector('#editManualTxModal .btn-primary');
     if (saveBtn) {
       saveBtn.disabled = false;

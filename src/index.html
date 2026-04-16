@@ -16,6 +16,7 @@
     <meta http-equiv="Content-Security-Policy"
         content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' https://fonts.googleapis.com https://cdn.jsdelivr.net 'unsafe-inline'; style-src-elem 'self' https://fonts.googleapis.com https://cdn.jsdelivr.net 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com https://cdn.jsdelivr.net; img-src 'self' data: https:; connect-src 'self' http://localhost:4000 https://tasfiya-pro-max.onrender.com; base-uri 'self'; form-action 'self';">
     <title>تصفية برو</title>
+    <link rel="icon" type="image/png" href="../assets/icon.png">
     <link rel="icon" type="image/x-icon" href="../assets/icon.ico">
 
     <!-- Bootstrap CSS -->
@@ -25,7 +26,8 @@
     <link href="../node_modules/sweetalert2/dist/sweetalert2.min.css" rel="stylesheet">
 
     <!-- Google Fonts for Arabic -->
-    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700&family=Readex+Pro:wght@500;600;700&display=swap"
+        rel="stylesheet">
 
     <!-- Bootstrap Icons -->
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.0/font/bootstrap-icons.css">
@@ -39,7 +41,10 @@
     <div id="loginScreen" class="login-container">
         <div class="login-card">
             <div class="login-header">
-                <h2 class="text-center mb-4">تصفية برو</h2>
+                <div class="login-logo text-center mb-3">
+                    <img src="../assets/icon.png" alt="شعار تصفية برو" class="login-logo-img">
+                </div>
+                <h2 class="text-center mb-3">تصفية برو</h2>
                 <p class="text-center text-muted">تسجيل الدخول للمديرين</p>
             </div>
 
@@ -52,6 +57,11 @@
                 <div class="mb-3">
                     <label for="password" class="form-label">كلمة المرور</label>
                     <input type="password" class="form-control" id="password" required>
+                </div>
+
+                <div class="mb-3">
+                    <label for="fiscalYear" class="form-label">السنة المالية (ميلادي)</label>
+                    <select class="form-select" id="fiscalYear" required></select>
                 </div>
 
                 <div class="d-grid">
@@ -85,8 +95,15 @@
             <div class="sidebar-header">
                 <h4>تصفية برو</h4>
                 <div class="user-info">
-                    <span id="currentUser"></span>
+                    <div class="user-meta">
+                        <span id="currentUser"></span>
+                        <small id="currentFiscalYear"></small>
+                    </div>
                     <button id="logoutBtn" class="btn btn-sm btn-outline-light">خروج</button>
+                </div>
+                <div class="fiscal-year-switcher">
+                    <label for="fiscalYearSwitch">السنة المالية</label>
+                    <select class="form-select form-select-sm" id="fiscalYearSwitch"></select>
                 </div>
             </div>
 
@@ -99,6 +116,9 @@
                     </a></li>
                 <li><a href="#" data-section="cashiers" class="menu-item">
                         <i class="icon">👤</i> إدارة الكاشير
+                    </a></li>
+                <li><a href="#" data-section="cashboxes" class="menu-item">
+                        <i class="icon">🧾</i> الصناديق
                     </a></li>
                 <li><a href="#" data-section="admins" class="menu-item">
                         <i class="icon">🧑‍💼</i> إدارة المسؤولين
@@ -126,6 +146,9 @@
                     </a></li>
                 <li><a href="#" data-section="customer-ledger" class="menu-item">
                         <i class="icon">📘</i> دفتر العملاء
+                    </a></li>
+                <li><a href="#" data-section="supplier-ledger" class="menu-item">
+                        <i class="icon">🏪</i> دفتر الموردين
                     </a></li>
                 <li><a href="#" data-section="settings" class="menu-item">
                         <i class="icon">⚙️</i> الإعدادات
@@ -269,6 +292,7 @@
                                                         <th>الجهاز</th>
                                                         <th>البنك</th>
                                                         <th>المبلغ</th>
+                                                        <th>الحالة</th>
                                                         <th>الإجراءات</th>
                                                     </tr>
                                                 </thead>
@@ -300,6 +324,7 @@
                                                         <th>الفئة</th>
                                                         <th>العدد</th>
                                                         <th>المجموع</th>
+                                                        <th>الحالة</th>
                                                         <th>الإجراءات</th>
                                                     </tr>
                                                 </thead>
@@ -330,6 +355,7 @@
                                                     <tr>
                                                         <th>اسم العميل</th>
                                                         <th>المبلغ</th>
+                                                        <th>الحالة</th>
                                                         <th>الإجراءات</th>
                                                     </tr>
                                                 </thead>
@@ -361,6 +387,7 @@
                                                         <th>اسم العميل</th>
                                                         <th>المبلغ</th>
                                                         <th>نوع الدفع</th>
+                                                        <th>الحالة</th>
                                                         <th>الإجراءات</th>
                                                     </tr>
                                                 </thead>
@@ -391,6 +418,7 @@
                                                     <tr>
                                                         <th>رقم الفاتورة</th>
                                                         <th>المبلغ</th>
+                                                        <th>الحالة</th>
                                                         <th>الإجراءات</th>
                                                     </tr>
                                                 </thead>
@@ -408,8 +436,8 @@
                                 <!-- Suppliers Section -->
                                 <div class="card mb-4 edit-modal-section">
                                     <div class="card-header d-flex justify-content-between align-items-center">
-                                        <h6 class="mb-0">الموردين <small class="text-muted">(للعرض فقط - لا يؤثر على
-                                                المجاميع)</small></h6>
+                                        <h6 class="mb-0">الموردين <small class="text-muted">(التأثير على المجاميع
+                                                حسب معادلة التصفية)</small></h6>
                                         <button type="button" class="btn btn-sm btn-primary"
                                             onclick="addEditSupplier()">
                                             <i class="icon">➕</i> إضافة مورد
@@ -422,6 +450,7 @@
                                                     <tr>
                                                         <th>اسم المورد</th>
                                                         <th>المبلغ</th>
+                                                        <th>الحالة</th>
                                                         <th>الإجراءات</th>
                                                     </tr>
                                                 </thead>
@@ -430,7 +459,7 @@
                                             </table>
                                         </div>
                                         <div class="text-end">
-                                            <strong class="text-warning">إجمالي الموردين (للعرض فقط): <span
+                                            <strong class="text-warning">إجمالي الموردين: <span
                                                     id="editSuppliersTotal">0.00</span> ريال</strong>
                                         </div>
                                     </div>
@@ -463,7 +492,13 @@
                                 </div>
                             </form>
                         </div>
-                        <div class="modal-footer">
+                        <div class="modal-footer d-flex flex-wrap gap-2">
+                            <div class="form-check form-switch me-auto">
+                                <input class="form-check-input" type="checkbox" id="editCashboxPostingEnabled">
+                                <label class="form-check-label" for="editCashboxPostingEnabled">
+                                    ترحيل التصفية إلى الصندوق
+                                </label>
+                            </div>
                             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
                             <button type="button" class="btn btn-success" onclick="saveEditedReconciliation()">
                                 <i class="icon">💾</i> حفظ التعديلات
@@ -712,7 +747,10 @@
                             <form id="supplierEditForm">
                                 <div class="mb-3">
                                     <label for="supplierEditName" class="form-label">اسم المورد</label>
-                                    <input type="text" class="form-control" id="supplierEditName" required>
+                                    <input type="text" class="form-control" id="supplierEditName"
+                                        list="supplierEditList" placeholder="ابدأ بكتابة اسم المورد..." required>
+                                    <datalist id="supplierEditList">
+                                    </datalist>
                                 </div>
                                 <div class="mb-3">
                                     <label for="supplierEditAmount" class="form-label">المبلغ</label>
@@ -745,20 +783,23 @@
                             <div class="row g-3">
                                 <div class="col-md-12">
                                     <label for="recallReconciliationNumber" class="form-label">رقم التصفية</label>
-                                    <div class="input-group" style="width: fit-content;">
-                                        <input type="text" class="form-control" id="recallReconciliationNumber"
-                                            placeholder="رقم التصفية" style="width: 120px; min-width: 120px;">
+                                    <div class="input-group recall-reconciliation-group">
+                                        <span class="input-group-text recall-reconciliation-prefix">
+                                            <i class="icon">#</i>
+                                        </span>
+                                        <input type="text" class="form-control recall-reconciliation-input" id="recallReconciliationNumber"
+                                            placeholder="رقم التصفية" inputmode="numeric" autocomplete="off">
                                         <button type="button"
-                                            class="btn btn-primary rounded-2 d-inline-flex align-items-center shadow-sm"
-                                            id="recallReconciliationBtn" style="margin-inline-end: 8px;">
+                                            class="btn btn-primary recall-reconciliation-btn"
+                                            id="recallReconciliationBtn">
                                             <i class="icon me-1">📥</i> استدعاء التصفية
                                         </button>
-                                        <button type="button" class="btn btn-info" data-bs-toggle="modal"
+                                        <button type="button" class="btn btn-info recall-reconciliation-list-btn" data-bs-toggle="modal"
                                             data-bs-target="#reconciliationListModal">
-                                            <i class="icon">�</i> قائمة التصفيات
+                                            <i class="icon">📋</i> قائمة التصفيات
                                         </button>
                                     </div>
-                                    <small class="text-muted">أدخل رقم التصفية التي تريد استدعاؤها أو اضغط على زر قائمة
+                                    <small class="text-muted recall-reconciliation-hint">أدخل رقم التصفية التي تريد استدعاؤها أو اضغط على زر قائمة
                                         التصفيات للبحث</small>
                                 </div>
                             </div>
@@ -772,6 +813,7 @@
                         </div>
                         <div class="card-body">
                             <form id="newReconciliationForm" class="row g-3">
+                                <input type="hidden" id="activeReconciliationFormulaProfileId" value="">
                                 <div class="col-md-3">
                                     <label for="branchSelect" class="form-label">الفرع</label>
                                     <select class="form-select" id="branchSelect" required>
@@ -887,7 +929,9 @@
                                     <input type="number" class="form-control" id="bankAmount" step="0.01" required>
                                 </div>
                                 <div class="col-12">
-                                    <button type="submit" class="btn btn-primary">إضافة</button>
+                                    <button type="submit" class="btn btn-primary" id="bankReceiptSubmitBtn">إضافة</button>
+                                    <button type="button" class="btn btn-outline-secondary d-none"
+                                        id="cancelBankReceiptEditBtn">إلغاء التعديل</button>
                                 </div>
                             </form>
 
@@ -949,7 +993,9 @@
                                     <input type="number" class="form-control" id="cashTotal" readonly>
                                 </div>
                                 <div class="col-12">
-                                    <button type="submit" class="btn btn-primary">إضافة</button>
+                                    <button type="submit" class="btn btn-primary" id="cashReceiptSubmitBtn">إضافة</button>
+                                    <button type="button" class="btn btn-outline-secondary d-none"
+                                        id="cancelCashReceiptEditBtn">إلغاء التعديل</button>
                                 </div>
                             </form>
 
@@ -997,7 +1043,9 @@
                                     <input type="number" class="form-control" id="postpaidAmount" step="0.01" required>
                                 </div>
                                 <div class="col-12">
-                                    <button type="submit" class="btn btn-primary">إضافة</button>
+                                    <button type="submit" class="btn btn-primary" id="postpaidSaleSubmitBtn">إضافة</button>
+                                    <button type="button" class="btn btn-outline-secondary d-none"
+                                        id="cancelPostpaidSaleEditBtn">إلغاء التعديل</button>
                                 </div>
                             </form>
 
@@ -1055,7 +1103,9 @@
                                     </select>
                                 </div>
                                 <div class="col-12">
-                                    <button type="submit" class="btn btn-primary">إضافة</button>
+                                    <button type="submit" class="btn btn-primary" id="customerReceiptSubmitBtn">إضافة</button>
+                                    <button type="button" class="btn btn-outline-secondary d-none"
+                                        id="cancelCustomerReceiptEditBtn">إلغاء التعديل</button>
                                 </div>
                             </form>
 
@@ -1100,7 +1150,9 @@
                                     <input type="number" class="form-control" id="returnAmount" step="0.01" required>
                                 </div>
                                 <div class="col-12">
-                                    <button type="submit" class="btn btn-primary">إضافة</button>
+                                    <button type="submit" class="btn btn-primary" id="returnInvoiceSubmitBtn">إضافة</button>
+                                    <button type="button" class="btn btn-outline-secondary d-none"
+                                        id="cancelReturnInvoiceEditBtn">إلغاء التعديل</button>
                                 </div>
                             </form>
 
@@ -1131,13 +1183,16 @@
                     <!-- Suppliers Section -->
                     <div class="card mb-4">
                         <div class="card-header">
-                            <h5>الموردين <small class="text-muted">(للعرض فقط - لا يؤثر على المجاميع)</small></h5>
+                            <h5>الموردين <small class="text-muted">(التأثير على المجاميع حسب معادلة التصفية)</small></h5>
                         </div>
                         <div class="card-body">
                             <form id="supplierForm" class="row g-3">
                                 <div class="col-md-6">
                                     <label for="supplierMainName" class="form-label">اسم المورد</label>
-                                    <input type="text" class="form-control" id="supplierMainName" required>
+                                    <input type="text" class="form-control" id="supplierMainName"
+                                        list="supplierMainList" placeholder="اكتب اسم المورد..." required>
+                                    <datalist id="supplierMainList">
+                                    </datalist>
                                 </div>
                                 <div class="col-md-6">
                                     <label for="supplierMainAmount" class="form-label">المبلغ</label>
@@ -1145,7 +1200,9 @@
                                         min="0.01" required>
                                 </div>
                                 <div class="col-12">
-                                    <button type="submit" class="btn btn-primary">إضافة</button>
+                                    <button type="submit" class="btn btn-primary" id="supplierSubmitBtn">إضافة</button>
+                                    <button type="button" class="btn btn-outline-secondary d-none"
+                                        id="cancelSupplierEditBtn">إلغاء التعديل</button>
                                 </div>
                             </form>
 
@@ -1163,7 +1220,7 @@
                                     </tbody>
                                     <tfoot>
                                         <tr class="table-warning">
-                                            <th>المجموع (للعرض فقط)</th>
+                                            <th>المجموع</th>
                                             <th id="suppliersTotal">0.00</th>
                                             <th></th>
                                         </tr>
@@ -1299,16 +1356,63 @@
                         </div>
                     </div>
 
+                    <div class="row g-3 mb-3 ledger-summary-panel">
+                        <div class="col-12">
+                            <div class="ledger-summary-period" id="ledgerSummaryPeriod">الفترة: كل الفترات</div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="ledger-kpi-card ledger-kpi-postpaid">
+                                <div class="ledger-kpi-title">إجمالي الأجل</div>
+                                <div class="ledger-kpi-value text-currency" id="ledgerTotalPostpaidPeriod">0.00</div>
+                                <div class="ledger-kpi-note">مجموع المبيعات الآجلة خلال الفترة</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="ledger-kpi-card ledger-kpi-receipts">
+                                <div class="ledger-kpi-title">إجمالي التحصيل / السداد</div>
+                                <div class="ledger-kpi-value text-currency" id="ledgerTotalReceiptsPeriod">0.00</div>
+                                <div class="ledger-kpi-note">مجموع المقبوضات من العملاء خلال الفترة</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="ledger-kpi-card ledger-kpi-net">
+                                <div class="ledger-kpi-title">الصافي</div>
+                                <div class="ledger-kpi-value text-currency" id="ledgerNetBalancePeriod">0.00</div>
+                                <div class="ledger-kpi-note">إجمالي الأجل - إجمالي التحصيل</div>
+                            </div>
+                        </div>
+                    </div>
+
                     <div class="card">
                         <div class="card-header d-flex justify-content-between align-items-center">
                             <span>قائمة العملاء والأرصدة</span>
                             <small class="text-muted">المبيعات الآجلة تزيد الرصيد، مقبوضات العملاء تنقص ال��صيد</small>
                         </div>
                         <div class="card-body">
+                            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2"
+                                id="customerLedgerBulkActionsBar">
+                                <small class="text-muted" id="customerLedgerSelectionSummary">لم يتم تحديد أي عميل</small>
+                                <div class="d-flex flex-wrap gap-2">
+                                    <button class="btn btn-sm btn-outline-secondary" id="customerLedgerClearSelectionBtn"
+                                        disabled>
+                                        إلغاء التحديد
+                                    </button>
+                                    <button class="btn btn-sm btn-warning" id="customerLedgerMergeSelectedBtn" disabled>
+                                        <i class="bi bi-diagram-3"></i> دمج المحدد
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger" id="customerLedgerUndoMergeBtn" disabled>
+                                        <i class="bi bi-arrow-counterclockwise"></i> فك آخر دمج
+                                    </button>
+                                </div>
+                            </div>
                             <div class="table-responsive">
                                 <table class="table table-striped">
                                     <thead>
                                         <tr>
+                                            <th style="width: 42px;">
+                                                <input type="checkbox" class="form-check-input" id="customerLedgerSelectAll"
+                                                    aria-label="تحديد كل العملاء">
+                                            </th>
                                             <th>اسم العميل</th>
                                             <th>الفرع</th>
                                             <th>إجمالي المبيعات الآجلة</th>
@@ -1461,6 +1565,538 @@
                 </div>
             </div>
 
+            <!-- Supplier Ledger Section -->
+            <div id="supplier-ledger-section" class="content-section">
+                <div class="container-fluid">
+                    <h2 class="section-title">دفتر الموردين</h2>
+
+                    <div class="card mb-3">
+                        <div class="card-header">فلاتر البحث</div>
+                        <div class="card-body">
+                            <div class="row g-3 align-items-end">
+                                <div class="col-md-3">
+                                    <label class="form-label" for="supplierLedgerBranchFilter">الفرع</label>
+                                    <select class="form-select" id="supplierLedgerBranchFilter">
+                                        <option value="">جميع الفروع</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label" for="supplierLedgerSearchName">اسم المورد</label>
+                                    <input type="text" id="supplierLedgerSearchName" class="form-control"
+                                        placeholder="اكتب جزءاً من اسم المورد">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label" for="supplierLedgerDateFrom">من تاريخ</label>
+                                    <input type="date" id="supplierLedgerDateFrom" class="form-control">
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label" for="supplierLedgerDateTo">إلى تاريخ</label>
+                                    <input type="date" id="supplierLedgerDateTo" class="form-control">
+                                </div>
+                                <div class="col-md-2">
+                                    <div class="form-check" style="padding-top: 2rem;">
+                                        <input class="form-check-input" type="checkbox" id="supplierLedgerOnlyWithBalance">
+                                        <label class="form-check-label" for="supplierLedgerOnlyWithBalance">الموردون
+                                            ذوو رصيد فقط</label>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="mt-3 d-flex gap-2">
+                                <button class="btn btn-primary" id="supplierLedgerSearchBtn">بحث</button>
+                                <button class="btn btn-secondary" id="supplierLedgerClearBtn">مسح</button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-3 mb-3 ledger-summary-panel">
+                        <div class="col-12">
+                            <div class="ledger-summary-period" id="supplierLedgerSummaryPeriod">الفترة: كل الفترات</div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="ledger-kpi-card ledger-kpi-postpaid">
+                                <div class="ledger-kpi-title">إجمالي المستحقات</div>
+                                <div class="ledger-kpi-value text-currency" id="supplierLedgerTotalInvoicesPeriod">0.00</div>
+                                <div class="ledger-kpi-note">مجموع حركات الموردين الموجبة</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="ledger-kpi-card ledger-kpi-receipts">
+                                <div class="ledger-kpi-title">إجمالي السداد</div>
+                                <div class="ledger-kpi-value text-currency" id="supplierLedgerTotalPaymentsPeriod">0.00</div>
+                                <div class="ledger-kpi-note">مجموع الحركات السالبة (سداد المورد)</div>
+                            </div>
+                        </div>
+                        <div class="col-md-4">
+                            <div class="ledger-kpi-card ledger-kpi-net">
+                                <div class="ledger-kpi-title">الرصيد الصافي</div>
+                                <div class="ledger-kpi-value text-currency" id="supplierLedgerNetBalancePeriod">0.00</div>
+                                <div class="ledger-kpi-note">إجمالي المستحقات - إجمالي السداد</div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="card">
+                        <div class="card-header d-flex justify-content-between align-items-center">
+                            <span>قائمة الموردين والأرصدة</span>
+                            <small class="text-muted">قيود الموردين في التصفية تُسجل كسداد تلقائياً</small>
+                        </div>
+                        <div class="card-body">
+                            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-2"
+                                id="supplierLedgerBulkActionsBar">
+                                <small class="text-muted" id="supplierLedgerSelectionSummary">لم يتم تحديد أي مورد</small>
+                                <div class="d-flex flex-wrap gap-2">
+                                    <button class="btn btn-sm btn-outline-secondary" id="supplierLedgerClearSelectionBtn"
+                                        disabled>
+                                        إلغاء التحديد
+                                    </button>
+                                    <button class="btn btn-sm btn-warning" id="supplierLedgerMergeSelectedBtn" disabled>
+                                        <i class="bi bi-diagram-3"></i> دمج المحدد
+                                    </button>
+                                    <button class="btn btn-sm btn-outline-danger" id="supplierLedgerUndoMergeBtn" disabled>
+                                        <i class="bi bi-arrow-counterclockwise"></i> فك آخر دمج
+                                    </button>
+                                </div>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-striped">
+                                    <thead>
+                                        <tr>
+                                            <th style="width: 42px;">
+                                                <input type="checkbox" class="form-check-input" id="supplierLedgerSelectAll"
+                                                    aria-label="تحديد كل الموردين">
+                                            </th>
+                                            <th>اسم المورد</th>
+                                            <th>الفرع</th>
+                                            <th>إجمالي المستحقات</th>
+                                            <th>إجمالي السداد</th>
+                                            <th>الرصيد</th>
+                                            <th>آخر حركة</th>
+                                            <th>عدد الحركات</th>
+                                            <th>إجراءات</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="supplierLedgerTable"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Supplier Statement Modal -->
+            <div class="modal fade" id="supplierStatementModal" tabindex="-1">
+                <div class="modal-dialog modal-lg modal-xl">
+                    <div class="modal-content">
+                        <div
+                            class="modal-header bg-primary text-white d-flex justify-content-between align-items-center">
+                            <h5 class="modal-title" id="supplierStatementTitle">كشف حساب مورد</h5>
+                            <div>
+                                <button type="button" class="btn btn-light btn-sm me-2" id="printSupplierStatementBtn"
+                                    title="طباعة كشف حساب المورد">
+                                    <i class="bi bi-printer"></i> طباعة
+                                </button>
+                                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"
+                                    aria-label="إغلاق"></button>
+                            </div>
+                        </div>
+                        <div class="modal-body">
+                            <div class="card mb-3">
+                                <div class="card-header">
+                                    <h6 class="mb-0">إضافة حركة يدويًا</h6>
+                                </div>
+                                <div class="card-body">
+                                    <div class="row g-3">
+                                        <div class="col-md-3">
+                                            <label class="form-label">نوع الحركة</label>
+                                            <select class="form-select" id="newSupplierTransactionType">
+                                                <option value="payment">سداد مورد</option>
+                                                <option value="invoice">استحقاق مورد</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="form-label">المبلغ</label>
+                                            <input type="number" class="form-control" id="newSupplierTransactionAmount"
+                                                placeholder="0.00" step="0.01">
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="form-label">رقم الفاتورة/البيان</label>
+                                            <input type="text" class="form-control" id="newSupplierTransactionRef"
+                                                placeholder="اختياري">
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="form-label">ملاحظة</label>
+                                            <input type="text" class="form-control" id="newSupplierTransactionNotes"
+                                                placeholder="اختياري">
+                                        </div>
+                                        <div class="col-md-12">
+                                            <button type="button" class="btn btn-primary" id="addSupplierTransactionBtn">
+                                                <i class="bi bi-plus-circle"></i> إضافة الحركة
+                                            </button>
+                                            <button type="button" class="btn btn-outline-secondary d-none"
+                                                id="cancelSupplierTransactionEditBtn">
+                                                إلغاء التعديل
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div class="mt-2" id="supplierTransactionAlert" style="display: none;"></div>
+                                </div>
+                            </div>
+
+                            <div class="row g-3 mb-3">
+                                <div class="col-md-4">
+                                    <div class="card card-body p-2">
+                                        <small class="text-muted">إجمالي المستحقات</small>
+                                        <div class="fw-bold text-currency" id="supplierStatementTotalInvoices">0.00</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="card card-body p-2">
+                                        <small class="text-muted">إجمالي السداد</small>
+                                        <div class="fw-bold text-currency" id="supplierStatementTotalPayments">0.00</div>
+                                    </div>
+                                </div>
+                                <div class="col-md-4">
+                                    <div class="card card-body p-2">
+                                        <small class="text-muted">الرصيد</small>
+                                        <div class="fw-bold text-currency" id="supplierStatementBalance">0.00</div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="table-responsive">
+                                <table class="table table-striped">
+                                    <thead>
+                                        <tr>
+                                            <th>التاريخ</th>
+                                            <th>النوع</th>
+                                            <th>رقم الفاتورة/البيان</th>
+                                            <th>رقم التصفية</th>
+                                            <th>المبلغ</th>
+                                            <th>الرصيد التراكمي</th>
+                                            <th>إجراءات</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="supplierStatementTable"></tbody>
+                                </table>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إغلاق</button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Cashboxes Section -->
+            <div id="cashboxes-section" class="content-section">
+                <div class="container-fluid cashboxes-workspace">
+                    <div class="cashboxes-hero mb-4">
+                        <div>
+                            <h2 class="section-title mb-2">صناديق الفروع</h2>
+                            <p class="mb-0">وحدة مستقلة لإصدار سند قبض من الكاشير وسند صرف للمورد بعيدًا عن
+                                التصفيات وتقاريرها.</p>
+                        </div>
+                        <div class="cashboxes-hero-controls">
+                            <label class="form-label mb-1" for="cashboxContextBranchFilter">فرع العمل</label>
+                            <select class="form-select" id="cashboxContextBranchFilter">
+                                <option value="">اختر الفرع</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-3">
+                            <div class="cashbox-summary-card">
+                                <div class="cashbox-summary-label">الرصيد الافتتاحي</div>
+                                <div class="cashbox-summary-value text-currency" id="cashboxSummaryOpeningBalance">0.00</div>
+                                <small id="cashboxSummaryBranchLabel">الفرع المحدد</small>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="cashbox-summary-card cashbox-summary-card-receipt">
+                                <div class="cashbox-summary-label">إجمالي القبض</div>
+                                <div class="cashbox-summary-value text-currency" id="cashboxSummaryReceipts">0.00</div>
+                                <small>كل سندات القبض في الصندوق</small>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="cashbox-summary-card cashbox-summary-card-payment">
+                                <div class="cashbox-summary-label">إجمالي الصرف</div>
+                                <div class="cashbox-summary-value text-currency" id="cashboxSummaryPayments">0.00</div>
+                                <small>كل سندات الصرف في الصندوق</small>
+                            </div>
+                        </div>
+                        <div class="col-md-3">
+                            <div class="cashbox-summary-card cashbox-summary-card-balance">
+                                <div class="cashbox-summary-label">الرصيد الحالي</div>
+                                <div class="cashbox-summary-value text-currency" id="cashboxSummaryCurrentBalance">0.00</div>
+                                <small>الرصيد الافتتاحي + القبض - الصرف</small>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="row g-4">
+                        <div class="col-xl-4">
+                            <div class="card mb-4 cashbox-card">
+                                <div class="card-header">
+                                    <h5 class="mb-0">إعدادات صندوق الفرع</h5>
+                                </div>
+                                <div class="card-body">
+                                    <form id="cashboxSettingsForm">
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxNameInput">اسم الصندوق</label>
+                                            <input type="text" class="form-control" id="cashboxNameInput"
+                                                placeholder="مثال: صندوق فرع الرياض">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxOpeningBalanceInput">الرصيد
+                                                الافتتاحي</label>
+                                            <input type="number" class="form-control" id="cashboxOpeningBalanceInput"
+                                                step="0.01" placeholder="0.00">
+                                        </div>
+                                        <div class="form-check form-switch mb-3">
+                                            <input class="form-check-input" type="checkbox"
+                                                id="cashboxAutoPostReconciliationToggle">
+                                            <label class="form-check-label"
+                                                for="cashboxAutoPostReconciliationToggle">تفعيل الترحيل للصناديق
+                                                كاختيار افتراضي</label>
+                                            <div class="form-text mt-1">
+                                                عند حفظ التصفية سيظهر خيار الترحيل للصندوق. هذا الإعداد يحدد
+                                                الاختيار الافتراضي المقترح في نافذة الحفظ.
+                                            </div>
+                                        </div>
+                                        <button type="submit" class="btn btn-primary w-100"
+                                            id="saveCashboxSettingsBtn">حفظ إعدادات الصندوق</button>
+                                    </form>
+                                    <div class="mt-3" id="cashboxSettingsAlert" style="display: none;"></div>
+                                </div>
+                            </div>
+
+                            <div class="card mb-4 cashbox-card">
+                                <div class="card-header bg-success-subtle">
+                                    <div>
+                                        <h5 class="mb-1" id="cashboxReceiptTitle">سند قبض من كاشير</h5>
+                                        <small class="cashbox-form-mode d-none" id="cashboxReceiptModeHint"></small>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <form id="cashboxReceiptForm">
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxReceiptDate">تاريخ السند</label>
+                                            <input type="date" class="form-control" id="cashboxReceiptDate" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxReceiptCashier">اسم الكاشير</label>
+                                            <select class="form-select" id="cashboxReceiptCashier" required>
+                                                <option value="">اختر الكاشير</option>
+                                            </select>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxReceiptAmount">المبلغ</label>
+                                            <input type="number" class="form-control" id="cashboxReceiptAmount"
+                                                step="0.01" placeholder="0.00" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxReceiptReference">المرجع</label>
+                                            <input type="text" class="form-control" id="cashboxReceiptReference"
+                                                placeholder="رقم إشعار أو ملاحظة">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxReceiptDescription">البيان</label>
+                                            <textarea class="form-control" id="cashboxReceiptDescription" rows="2"
+                                                placeholder="وصف سبب سند القبض"></textarea>
+                                        </div>
+                                        <div class="d-grid gap-2">
+                                            <button type="submit" class="btn btn-success w-100"
+                                                id="createCashboxReceiptBtn">إصدار سند قبض</button>
+                                            <button type="button" class="btn btn-outline-secondary w-100 d-none"
+                                                id="cancelCashboxReceiptEditBtn">إلغاء تعديل السند</button>
+                                        </div>
+                                    </form>
+                                    <div class="mt-3" id="cashboxReceiptAlert" style="display: none;"></div>
+                                </div>
+                            </div>
+
+                            <div class="card cashbox-card">
+                                <div class="card-header bg-warning-subtle">
+                                    <div>
+                                        <h5 class="mb-1" id="cashboxPaymentTitle">سند صرف لمورد</h5>
+                                        <small class="cashbox-form-mode d-none" id="cashboxPaymentModeHint"></small>
+                                    </div>
+                                </div>
+                                <div class="card-body">
+                                    <form id="cashboxPaymentForm">
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxPaymentDate">تاريخ السند</label>
+                                            <input type="date" class="form-control" id="cashboxPaymentDate" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxPaymentSupplier">اسم المورد</label>
+                                            <input type="text" class="form-control" id="cashboxPaymentSupplier"
+                                                list="cashboxSupplierOptions" placeholder="ابدأ بكتابة اسم المورد..." required>
+                                            <datalist id="cashboxSupplierOptions"></datalist>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxPaymentAmount">المبلغ</label>
+                                            <input type="number" class="form-control" id="cashboxPaymentAmount"
+                                                step="0.01" placeholder="0.00" required>
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxPaymentReference">المرجع</label>
+                                            <input type="text" class="form-control" id="cashboxPaymentReference"
+                                                placeholder="رقم فاتورة أو بيان">
+                                        </div>
+                                        <div class="mb-3">
+                                            <label class="form-label" for="cashboxPaymentDescription">البيان</label>
+                                            <textarea class="form-control" id="cashboxPaymentDescription" rows="2"
+                                                placeholder="وصف سبب سند الصرف"></textarea>
+                                        </div>
+                                        <div class="d-grid gap-2">
+                                            <button type="submit" class="btn btn-warning w-100"
+                                                id="createCashboxPaymentBtn">إصدار سند صرف</button>
+                                            <button type="button" class="btn btn-outline-secondary w-100 d-none"
+                                                id="cancelCashboxPaymentEditBtn">إلغاء تعديل السند</button>
+                                        </div>
+                                    </form>
+                                    <div class="mt-3" id="cashboxPaymentAlert" style="display: none;"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="col-xl-8">
+                            <div class="card cashbox-card">
+                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                    <div>
+                                        <h5 class="mb-0">سجل السندات</h5>
+                                        <small class="text-muted">سجل مستقل خاص بالصناديق فقط</small>
+                                    </div>
+                                    <div class="cashbox-register-hint">يمكن تعديل أو طباعة أو حذف السندات من هنا</div>
+                                </div>
+                                <div class="card-body">
+                                    <div class="row g-3 align-items-end mb-3">
+                                        <div class="col-md-3">
+                                            <label class="form-label" for="cashboxVoucherBranchFilter">الفرع</label>
+                                            <select class="form-select" id="cashboxVoucherBranchFilter">
+                                                <option value="">جميع الفروع</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-2">
+                                            <label class="form-label" for="cashboxVoucherTypeFilter">نوع السند</label>
+                                            <select class="form-select" id="cashboxVoucherTypeFilter">
+                                                <option value="">الكل</option>
+                                                <option value="receipt">سند قبض</option>
+                                                <option value="payment">سند صرف</option>
+                                            </select>
+                                        </div>
+                                        <div class="col-md-3">
+                                            <label class="form-label" for="cashboxVoucherSearch">بحث</label>
+                                            <input type="text" class="form-control" id="cashboxVoucherSearch"
+                                                placeholder="رقم السند أو الطرف أو المرجع">
+                                        </div>
+                                        <div class="col-md-2">
+                                            <label class="form-label" for="cashboxVoucherDateFrom">من تاريخ</label>
+                                            <input type="date" class="form-control" id="cashboxVoucherDateFrom">
+                                        </div>
+                                        <div class="col-md-2">
+                                            <label class="form-label" for="cashboxVoucherDateTo">إلى تاريخ</label>
+                                            <input type="date" class="form-control" id="cashboxVoucherDateTo">
+                                        </div>
+                                    </div>
+                                    <div class="d-flex flex-wrap gap-2 mb-3">
+                                        <button class="btn btn-primary" id="cashboxVoucherSearchBtn">بحث</button>
+                                        <button class="btn btn-secondary" id="cashboxVoucherClearBtn">مسح</button>
+                                    </div>
+                                    <div class="cashbox-report-toolbar mb-3">
+                                        <div class="cashbox-report-overview">
+                                            <div class="cashbox-report-heading">ملخص التقرير الحالي</div>
+                                            <div class="cashbox-report-meta" id="cashboxReportMeta">يعتمد على فلاتر سجل السندات الحالية.</div>
+                                            <div class="cashbox-report-grid">
+                                                <div class="cashbox-report-card">
+                                                    <div class="cashbox-report-label">عدد السندات</div>
+                                                    <div class="cashbox-report-value" id="cashboxReportCount">0</div>
+                                                </div>
+                                                <div class="cashbox-report-card">
+                                                    <div class="cashbox-report-label">الرصيد الافتتاحي</div>
+                                                    <div class="cashbox-report-value text-currency" id="cashboxReportOpeningBalance">0.00</div>
+                                                </div>
+                                                <div class="cashbox-report-card">
+                                                    <div class="cashbox-report-label">إجمالي القبض</div>
+                                                    <div class="cashbox-report-value text-currency" id="cashboxReportReceipts">0.00</div>
+                                                </div>
+                                                <div class="cashbox-report-card">
+                                                    <div class="cashbox-report-label">إجمالي الصرف</div>
+                                                    <div class="cashbox-report-value text-currency" id="cashboxReportPayments">0.00</div>
+                                                </div>
+                                                <div class="cashbox-report-card">
+                                                    <div class="cashbox-report-label">صافي الحركة</div>
+                                                    <div class="cashbox-report-value text-currency" id="cashboxReportNetMovement">0.00</div>
+                                                </div>
+                                                <div class="cashbox-report-card">
+                                                    <div class="cashbox-report-label">الرصيد الناتج</div>
+                                                    <div class="cashbox-report-value text-currency" id="cashboxReportClosingBalance">0.00</div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="cashbox-report-actions">
+                                            <button type="button" class="btn btn-outline-primary" id="cashboxPrintReportBtn">طباعة التقرير</button>
+                                            <button type="button" class="btn btn-outline-danger" id="cashboxExportPdfBtn">PDF</button>
+                                            <button type="button" class="btn btn-outline-success" id="cashboxExportExcelBtn">Excel</button>
+                                        </div>
+                                    </div>
+                                    <div class="mb-3" id="cashboxReportAlert" style="display: none;"></div>
+                                    <div class="table-responsive">
+                                        <table class="table table-striped table-hover cashbox-voucher-table">
+                                            <thead class="table-light">
+                                                <tr>
+                                                    <th>رقم السند</th>
+                                                    <th>النوع</th>
+                                                    <th>الفرع</th>
+                                                    <th>الطرف</th>
+                                                    <th>التاريخ</th>
+                                                    <th>المرجع</th>
+                                                    <th>المبلغ</th>
+                                                    <th>المنشئ</th>
+                                                    <th>الإجراءات</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="cashboxVouchersTable"></tbody>
+                                        </table>
+                                    </div>
+                                    <div class="mt-3" id="cashboxVouchersAlert" style="display: none;"></div>
+                                </div>
+                            </div>
+
+                            <div class="card mt-4 cashbox-card">
+                                <div class="card-header d-flex flex-wrap justify-content-between align-items-center gap-2">
+                                    <div>
+                                        <h5 class="mb-0">سجل التدقيق</h5>
+                                        <small class="text-muted">آخر عمليات الإنشاء والتعديل والحذف على سندات الصناديق</small>
+                                    </div>
+                                    <div class="cashbox-register-hint">يعتمد على نفس فرع ونوع السند المحددين في سجل السندات</div>
+                                </div>
+                                <div class="card-body">
+                                    <div class="table-responsive">
+                                        <table class="table table-striped table-hover cashbox-audit-table">
+                                            <thead class="table-light">
+                                                <tr>
+                                                    <th>الوقت</th>
+                                                    <th>العملية</th>
+                                                    <th>رقم السند</th>
+                                                    <th>النوع</th>
+                                                    <th>المستخدم</th>
+                                                    <th>الوصف</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody id="cashboxAuditLogTable"></tbody>
+                                        </table>
+                                    </div>
+                                    <div class="mt-3" id="cashboxAuditAlert" style="display: none;"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
             <!-- Branches Management Section -->
             <div id="branches-section" class="content-section">
                 <div class="container-fluid">
@@ -1482,11 +2118,17 @@
                                         <label for="branchAddress" class="form-label">عنوان الفرع</label>
                                         <input type="text" class="form-control" id="branchAddress">
                                     </div>
-                                    <div class="col-md-3">
+                                    <div class="col-md-2">
                                         <label for="branchPhone" class="form-label">رقم الهاتف</label>
                                         <input type="text" class="form-control" id="branchPhone">
                                     </div>
-                                    <div class="col-md-3">
+                                    <div class="col-md-2">
+                                        <label for="branchFormulaProfileId" class="form-label">معادلة الفرع</label>
+                                        <select class="form-select" id="branchFormulaProfileId">
+                                            <option value="">الافتراضية العامة</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-2">
                                         <label for="branchStatus" class="form-label">حالة الفرع</label>
                                         <select class="form-select" id="branchStatus">
                                             <option value="1">نشط</option>
@@ -1517,6 +2159,7 @@
                                             <th>اسم الفرع</th>
                                             <th>العنوان</th>
                                             <th>رقم الهاتف</th>
+                                            <th>المعادلة</th>
                                             <th>الحالة</th>
                                             <th>تاريخ الإنشاء</th>
                                             <th>الإجراءات</th>
@@ -1524,7 +2167,7 @@
                                     </thead>
                                     <tbody id="branchesTable">
                                         <tr>
-                                            <td colspan="7" class="text-center">جاري تحميل البيانات...</td>
+                                            <td colspan="8" class="text-center">جاري تحميل البيانات...</td>
                                         </tr>
                                     </tbody>
                                 </table>
@@ -1619,7 +2262,7 @@
                                 </div>
                                 <div class="col-md-4">
                                     <label for="adminPasswordInput" class="form-label">كلمة المرور</label>
-                                    <input type="password" class="form-control" id="adminPasswordInput" required>
+                                    <input type="password" class="form-control" id="adminPasswordInput">
                                 </div>
                                 <div class="col-12">
                                     <button type="submit" class="btn btn-success">إضافة المسؤول</button>
@@ -1817,6 +2460,11 @@
                                         <option value="completed">مكتملة</option>
                                     </select>
                                 </div>
+                                <div class="col-md-2">
+                                    <label for="searchReconciliationNumber" class="form-label">رقم التصفية</label>
+                                    <input type="number" class="form-control" id="searchReconciliationNumber"
+                                        placeholder="مثال: 1369" min="1">
+                                </div>
                                 <div class="col-12">
                                     <button type="button" class="btn btn-primary" id="searchReconciliationsBtn">
                                         <i class="icon">🔍</i> بحث
@@ -2011,14 +2659,15 @@
                                 <table class="table table-striped table-hover" id="reportResultsTable">
                                     <thead class="table-dark">
                                         <tr>
-                                            <th>رقم التصفية</th>
-                                            <th>التاريخ</th>
-                                            <th>الكاشير</th>
-                                            <th>المحاسب</th>
-                                            <th>إجمالي المقبوضات</th>
-                                            <th>مبيعات النظام</th>
-                                            <th>الفائض/العجز</th>
-                                            <th>الحالة</th>
+                                            <th data-sort-key="reconciliation_number">رقم التصفية</th>
+                                            <th data-sort-key="reconciliation_date">التاريخ</th>
+                                            <th data-sort-key="branch_name">الفرع</th>
+                                            <th data-sort-key="cashier_name">الكاشير</th>
+                                            <th data-sort-key="accountant_name">المحاسب</th>
+                                            <th data-sort-key="total_receipts">إجمالي المقبوضات</th>
+                                            <th data-sort-key="system_sales">مبيعات النظام</th>
+                                            <th data-sort-key="surplus_deficit">الفائض/العجز</th>
+                                            <th data-sort-key="status">الحالة</th>
                                             <th>الإجراءات</th>
                                         </tr>
                                     </thead>
@@ -2153,9 +2802,39 @@
                                             <input type="date" class="form-control" id="timeReportTo">
                                         </div>
                                         <div class="col-12">
-                                            <button type="button" class="btn btn-primary" id="generateTimeReportBtn">
-                                                <i class="icon">📈</i> إنشاء التقرير
-                                            </button>
+                                            <div class="btn-group btn-group-sm" role="group" aria-label="نطاق زمني سريع">
+                                                <button type="button" class="btn btn-outline-secondary advanced-date-preset-btn"
+                                                    data-group="time-report-range" data-range="today"
+                                                    data-target-from="timeReportFrom" data-target-to="timeReportTo">
+                                                    اليوم
+                                                </button>
+                                                <button type="button" class="btn btn-secondary advanced-date-preset-btn active"
+                                                    data-group="time-report-range" data-range="week"
+                                                    data-target-from="timeReportFrom" data-target-to="timeReportTo">
+                                                    7 أيام
+                                                </button>
+                                                <button type="button" class="btn btn-outline-secondary advanced-date-preset-btn"
+                                                    data-group="time-report-range" data-range="month"
+                                                    data-target-from="timeReportFrom" data-target-to="timeReportTo">
+                                                    30 يوم
+                                                </button>
+                                                <button type="button" class="btn btn-outline-secondary advanced-date-preset-btn"
+                                                    data-group="time-report-range" data-range="quarter"
+                                                    data-target-from="timeReportFrom" data-target-to="timeReportTo">
+                                                    90 يوم
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="d-grid gap-2 d-md-flex justify-content-md-start">
+                                                <button type="button" class="btn btn-primary" id="generateTimeReportBtn">
+                                                    <i class="icon">📈</i> إنشاء التقرير
+                                                </button>
+                                                <button type="button" class="btn btn-outline-secondary"
+                                                    id="clearTimeReportFiltersBtn">
+                                                    <i class="icon">🗑️</i> مسح المرشحات
+                                                </button>
+                                            </div>
                                         </div>
                                     </div>
                                 </div>
@@ -2184,6 +2863,30 @@
                                             <input type="date" class="form-control" id="atmReportTo">
                                         </div>
                                         <div class="col-12">
+                                            <div class="btn-group btn-group-sm" role="group" aria-label="نطاق زمني سريع">
+                                                <button type="button" class="btn btn-outline-secondary advanced-date-preset-btn"
+                                                    data-group="atm-report-range" data-range="today"
+                                                    data-target-from="atmReportFrom" data-target-to="atmReportTo">
+                                                    اليوم
+                                                </button>
+                                                <button type="button" class="btn btn-secondary advanced-date-preset-btn active"
+                                                    data-group="atm-report-range" data-range="week"
+                                                    data-target-from="atmReportFrom" data-target-to="atmReportTo">
+                                                    7 أيام
+                                                </button>
+                                                <button type="button" class="btn btn-outline-secondary advanced-date-preset-btn"
+                                                    data-group="atm-report-range" data-range="month"
+                                                    data-target-from="atmReportFrom" data-target-to="atmReportTo">
+                                                    30 يوم
+                                                </button>
+                                                <button type="button" class="btn btn-outline-secondary advanced-date-preset-btn"
+                                                    data-group="atm-report-range" data-range="quarter"
+                                                    data-target-from="atmReportFrom" data-target-to="atmReportTo">
+                                                    90 يوم
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div class="col-12">
                                             <div class="d-grid gap-2">
                                                 <button type="button" class="btn btn-primary" id="generateAtmReportBtn">
                                                     <i class="icon">🏧</i> تقرير مجمع
@@ -2191,6 +2894,10 @@
                                                 <button type="button" class="btn btn-info"
                                                     id="generateDetailedAtmReportBtn">
                                                     <i class="icon">📊</i> تقرير تحليلي مفصل
+                                                </button>
+                                                <button type="button" class="btn btn-outline-secondary"
+                                                    id="clearAtmReportFiltersBtn">
+                                                    <i class="icon">🗑️</i> مسح المرشحات
                                                 </button>
                                             </div>
                                         </div>
@@ -2205,19 +2912,28 @@
                         <div class="col-md-12">
                             <div class="card mb-4">
                                 <div class="card-header">
-                                    <h5>📱 تقرير المبيعات الآجلة</h5>
+                                    <h5>📱 تقرير صافي أرصدة العملاء الآجلة</h5>
                                 </div>
                                 <div class="card-body">
                                     <div class="row g-3">
                                         <!-- Search by Name -->
-                                        <div class="col-md-4">
+                                        <div class="col-md-3">
                                             <label for="postpaidSalesSearchName" class="form-label">البحث بالاسم</label>
                                             <input type="text" class="form-control" id="postpaidSalesSearchName"
-                                                placeholder="اسم العميل أو المنتج">
+                                                placeholder="اسم العميل">
+                                        </div>
+
+                                        <!-- Report Mode -->
+                                        <div class="col-md-3">
+                                            <label for="postpaidSalesReportMode" class="form-label">وضع التقرير</label>
+                                            <select class="form-select" id="postpaidSalesReportMode">
+                                                <option value="current_balance" selected>الرصيد الحالي</option>
+                                                <option value="period_activity">حركة فترة</option>
+                                            </select>
                                         </div>
 
                                         <!-- Cashier Filter -->
-                                        <div class="col-md-4">
+                                        <div class="col-md-3">
                                             <label for="postpaidSalesCashierFilter" class="form-label">الكاشير</label>
                                             <select class="form-select" id="postpaidSalesCashierFilter">
                                                 <option value="">جميع الكاشير</option>
@@ -2225,7 +2941,7 @@
                                         </div>
 
                                         <!-- Branch Filter -->
-                                        <div class="col-md-4">
+                                        <div class="col-md-3">
                                             <label for="postpaidSalesBranchFilter" class="form-label">اختيار
                                                 الفرع</label>
                                             <select class="form-select" id="postpaidSalesBranchFilter">
@@ -2234,13 +2950,17 @@
                                         </div>
 
                                         <!-- Date Range -->
-                                        <div class="col-md-6">
-                                            <label for="postpaidSalesDateFrom" class="form-label">من تاريخ</label>
-                                            <input type="date" class="form-control" id="postpaidSalesDateFrom">
-                                        </div>
-                                        <div class="col-md-6">
-                                            <label for="postpaidSalesDateTo" class="form-label">إلى تاريخ</label>
-                                            <input type="date" class="form-control" id="postpaidSalesDateTo">
+                                        <div class="col-12" id="postpaidSalesDateRangeRow" style="display: none;">
+                                            <div class="row g-3">
+                                                <div class="col-md-6">
+                                                    <label for="postpaidSalesDateFrom" class="form-label">من تاريخ</label>
+                                                    <input type="date" class="form-control" id="postpaidSalesDateFrom">
+                                                </div>
+                                                <div class="col-md-6">
+                                                    <label for="postpaidSalesDateTo" class="form-label">إلى تاريخ</label>
+                                                    <input type="date" class="form-control" id="postpaidSalesDateTo">
+                                                </div>
+                                            </div>
                                         </div>
 
                                         <!-- Action Buttons -->
@@ -2265,7 +2985,7 @@
                     <!-- Postpaid Sales Report Results -->
                     <div class="card" id="postpaidSalesReportResultsCard" style="display: none;">
                         <div class="card-header d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0">📱 نتائج تقرير المبيعات الآجلة</h5>
+                            <h5 class="mb-0">📱 نتائج صافي أرصدة العملاء الآجلة</h5>
                             <div class="btn-group" role="group">
                                 <button type="button" class="btn btn-success btn-sm" id="exportPostpaidSalesReportPdf">
                                     <i class="icon">📄</i> تصدير PDF
@@ -2275,6 +2995,12 @@
                                 </button>
                                 <button type="button" class="btn btn-secondary btn-sm" id="printPostpaidSalesReport">
                                     <i class="icon">🖨️</i> طباعة
+                                </button>
+                                <button type="button" class="btn btn-warning btn-sm" id="previewPostpaidSalesReportThermal">
+                                    <i class="icon">👁️</i> معاينة حرارية
+                                </button>
+                                <button type="button" class="btn btn-dark btn-sm" id="printPostpaidSalesReportThermal">
+                                    <i class="icon">🔥</i> طباعة حرارية
                                 </button>
                             </div>
                         </div>
@@ -2303,22 +3029,10 @@
                                 <div>
                                     <span id="postpaidSalesReportPaginationInfo">عرض 0 من 0 نتيجة</span>
                                 </div>
-                                <nav aria-label="تنقل تقرير المبيعات الآجلة">
+                                <nav aria-label="تنقل تقرير صافي أرصدة العملاء الآجلة">
                                     <ul class="pagination pagination-sm mb-0" id="postpaidSalesReportPagination">
                                     </ul>
                                 </nav>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Advanced Report Results -->
-                    <div class="card" id="advancedReportResultsCard" style="display: none;">
-                        <div class="card-header">
-                            <h5>نتائج التقرير المتقدم</h5>
-                        </div>
-                        <div class="card-body">
-                            <div id="advancedReportContent">
-                                <!-- Content will be populated here -->
                             </div>
                         </div>
                     </div>
@@ -2344,6 +3058,23 @@
                                     </div>
                                 </div>
                                 <div class="card-body">
+                                    <div id="advancedReportActiveFiltersWrap" class="mb-3" style="display: none;">
+                                        <div class="small text-muted mb-2">الفلاتر المطبقة</div>
+                                        <div id="advancedReportActiveFilters" class="d-flex flex-wrap gap-2"></div>
+                                    </div>
+
+                                    <div id="advancedReportMetaBar" class="mb-3" style="display: none;">
+                                        <span class="advanced-report-meta-pill">
+                                            السجلات: <strong id="advancedReportMetaCount">0</strong>
+                                        </span>
+                                        <span class="advanced-report-meta-pill">
+                                            الصفحة: <strong id="advancedReportMetaPage">1/1</strong>
+                                        </span>
+                                        <span class="advanced-report-meta-pill">
+                                            العرض: <strong id="advancedReportMetaRange">0-0</strong>
+                                        </span>
+                                    </div>
+
                                     <!-- Summary Statistics -->
                                     <div class="row mb-4" id="advancedReportSummary">
                                         <!-- Summary cards will be populated here -->
@@ -2476,7 +3207,15 @@
                                         </button>
                                         <button type="button" class="btn btn-secondary btn-sm"
                                             id="printDetailedAtmReport">
-                                            <i class="icon">🖨️</i> طباعة
+                                            <i class="icon">🖨️</i> معاينة A4
+                                        </button>
+                                        <button type="button" class="btn btn-warning btn-sm"
+                                            id="previewDetailedAtmThermalReport">
+                                            <i class="icon">🔥</i> معاينة حرارية
+                                        </button>
+                                        <button type="button" class="btn btn-dark btn-sm"
+                                            id="printDetailedAtmThermalReport">
+                                            <i class="icon">🧾</i> طباعة حرارية
                                         </button>
                                     </div>
                                 </div>
@@ -2602,6 +3341,12 @@
                                     </button>
                                 </li>
                                 <li class="nav-item" role="presentation">
+                                    <button class="nav-link" id="reconciliation-formula-tab" data-bs-toggle="tab"
+                                        data-bs-target="#reconciliation-formula-settings" type="button" role="tab">
+                                        <i class="icon">🧮</i> معادلة التصفية
+                                    </button>
+                                </li>
+                                <li class="nav-item" role="presentation">
                                     <button class="nav-link" id="system-tab" data-bs-toggle="tab"
                                         data-bs-target="#system-info" type="button" role="tab">
                                         <i class="icon">ℹ️</i> معلومات النظام
@@ -2676,6 +3421,7 @@
                                                     <option value="ar" selected>العربية</option>
                                                     <option value="en">English</option>
                                                 </select>
+                                                <small class="text-muted">اللغة الإنجليزية قيد التطوير حالياً</small>
                                             </div>
                                             <div class="col-md-6">
                                                 <label for="systemTheme" class="form-label">مظهر النظام</label>
@@ -3018,6 +3764,187 @@
                                             </div>
                                         </div>
 
+                                        <!-- Archive -->
+                                        <div class="col-12">
+                                            <h6 class="border-bottom pb-2 mb-3">الأرشفة</h6>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="alert alert-info">
+                                                <h6 class="alert-heading">تقليل الضغط على قاعدة البيانات</h6>
+                                                <p class="mb-0">تقوم الأرشفة بنقل بيانات سنة محددة إلى جداول الأرشيف
+                                                    وإزالتها من الجداول النشطة. يُنصح بإنشاء نسخة احتياطية قبل الأرشفة.
+                                                </p>
+                                            </div>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="archiveYearSelect" class="form-label">السنة المراد أرشفتها</label>
+                                            <select class="form-select" id="archiveYearSelect">
+                                                <option value="">اختر السنة</option>
+                                            </select>
+                                            <small class="text-muted d-block mt-2" id="archiveYearHint">يتم أرشفة بيانات
+                                                السنة المختارة فقط.</small>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="card bg-light h-100">
+                                                <div class="card-body">
+                                                    <h6 class="card-title">ملخص السنة</h6>
+                                                    <p class="card-text mb-1"><strong>التصفيات:</strong> <span
+                                                            id="archiveYearReconciliations">-</span></p>
+                                                    <p class="card-text mb-1"><strong>المقبوضات البنكية:</strong>
+                                                        <span id="archiveYearBankReceipts">-</span></p>
+                                                    <p class="card-text mb-1"><strong>المقبوضات النقدية:</strong>
+                                                        <span id="archiveYearCashReceipts">-</span></p>
+                                                    <p class="card-text mb-1"><strong>البيع الآجل:</strong> <span
+                                                            id="archiveYearPostpaidSales">-</span></p>
+                                                    <p class="card-text mb-1"><strong>تحصيل العملاء:</strong> <span
+                                                            id="archiveYearCustomerReceipts">-</span></p>
+                                                    <p class="card-text mb-1"><strong>مرتجعات الفواتير:</strong> <span
+                                                            id="archiveYearReturnInvoices">-</span></p>
+                                                    <p class="card-text mb-0"><strong>الموردين:</strong> <span
+                                                            id="archiveYearSuppliers">-</span></p>
+                                                </div>
+                                            </div>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="d-flex gap-2 flex-wrap">
+                                                <button type="button" class="btn btn-outline-danger"
+                                                    id="archiveFiscalYearBtn">
+                                                    <i class="icon">🗄️</i> أرشفة السنة المحددة
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        <!-- Archive Viewer -->
+                                        <div class="col-12">
+                                            <h6 class="border-bottom pb-2 mb-3">عرض الأرشيف</h6>
+                                        </div>
+                                        <div class="col-12">
+                                            <div class="card border-secondary">
+                                                <div class="card-body">
+                                                    <div class="d-flex flex-wrap gap-2 align-items-end mb-3">
+                                                        <div>
+                                                            <label for="archiveBrowseYearSelect"
+                                                                class="form-label">سنة الأرشيف</label>
+                                                            <select class="form-select" id="archiveBrowseYearSelect">
+                                                                <option value="">اختر السنة</option>
+                                                            </select>
+                                                        </div>
+                                                        <button type="button" class="btn btn-outline-secondary"
+                                                            id="loadArchivedReconciliationsBtn">
+                                                            <i class="icon">🔎</i> تحميل القائمة
+                                                        </button>
+                                                        <button type="button" class="btn btn-outline-warning"
+                                                            id="restoreArchivedYearBtn">
+                                                            <i class="icon">♻️</i> استعادة السنة
+                                                        </button>
+                                                        <small class="text-muted" id="archiveBrowseHint">اختر سنة
+                                                            مؤرشفة لعرض التصفيات.</small>
+                                                    </div>
+                                                    <div class="row g-2 align-items-end mb-3">
+                                                        <div class="col-12 col-md-3">
+                                                            <label for="archiveBrowseSearchNumber"
+                                                                class="form-label">رقم التصفية</label>
+                                                            <input type="text" class="form-control"
+                                                                id="archiveBrowseSearchNumber" inputmode="numeric"
+                                                                placeholder="مثال: 102">
+                                                        </div>
+                                                        <div class="col-12 col-md-3">
+                                                            <label for="archiveBrowseSearchDate"
+                                                                class="form-label">تاريخ التصفية</label>
+                                                            <input type="date" class="form-control"
+                                                                id="archiveBrowseSearchDate">
+                                                        </div>
+                                                        <div class="col-12 col-md-3">
+                                                            <label for="archiveBrowseSearchCashier"
+                                                                class="form-label">اسم الكاشير</label>
+                                                            <input type="text" class="form-control"
+                                                                id="archiveBrowseSearchCashier"
+                                                                placeholder="اكتب الاسم">
+                                                        </div>
+                                                        <div class="col-12 col-md-3 d-flex gap-2">
+                                                            <button type="button"
+                                                                class="btn btn-outline-primary w-100"
+                                                                id="archiveBrowseSearchBtn">
+                                                                <i class="icon">🔎</i> بحث
+                                                            </button>
+                                                            <button type="button"
+                                                                class="btn btn-outline-secondary w-100"
+                                                                id="archiveBrowseClearBtn">
+                                                                <i class="icon">✖️</i> تفريغ
+                                                            </button>
+                                                            <button type="button"
+                                                                class="btn btn-outline-secondary w-100 d-none"
+                                                                id="archiveBrowseResetSortBtn">
+                                                                <i class="icon">↕️</i> إلغاء الفرز
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                    <div class="table-responsive">
+                                                        <table class="table table-sm table-striped mb-0">
+                                                            <thead>
+                                                                <tr>
+                                                                    <th class="archived-rec-sortable" data-sort-key="reconciliation_number"
+                                                                        aria-sort="none" tabindex="0" role="button" title="انقر للفرز"
+                                                                        style="cursor: pointer;">رقم التصفية<span
+                                                                            class="sort-indicator"></span></th>
+                                                                    <th class="archived-rec-sortable" data-sort-key="branch_name"
+                                                                        aria-sort="none" tabindex="0" role="button" title="انقر للفرز"
+                                                                        style="cursor: pointer;">الفرع<span
+                                                                            class="sort-indicator"></span></th>
+                                                                    <th class="archived-rec-sortable" data-sort-key="cashier_name"
+                                                                        aria-sort="none" tabindex="0" role="button" title="انقر للفرز"
+                                                                        style="cursor: pointer;">الكاشير<span
+                                                                            class="sort-indicator"></span></th>
+                                                                    <th class="archived-rec-sortable" data-sort-key="accountant_name"
+                                                                        aria-sort="none" tabindex="0" role="button" title="انقر للفرز"
+                                                                        style="cursor: pointer;">المحاسب<span
+                                                                            class="sort-indicator"></span></th>
+                                                                    <th class="archived-rec-sortable" data-sort-key="reconciliation_date"
+                                                                        aria-sort="none" tabindex="0" role="button" title="انقر للفرز"
+                                                                        style="cursor: pointer;">التاريخ<span
+                                                                            class="sort-indicator"></span></th>
+                                                                    <th class="archived-rec-sortable" data-sort-key="total_receipts"
+                                                                        aria-sort="none" tabindex="0" role="button" title="انقر للفرز"
+                                                                        style="cursor: pointer;">إجمالي المقبوضات<span
+                                                                            class="sort-indicator"></span></th>
+                                                                    <th class="archived-rec-sortable" data-sort-key="system_sales"
+                                                                        aria-sort="none" tabindex="0" role="button" title="انقر للفرز"
+                                                                        style="cursor: pointer;">مبيعات النظام<span
+                                                                            class="sort-indicator"></span></th>
+                                                                    <th class="archived-rec-sortable" data-sort-key="surplus_deficit"
+                                                                        aria-sort="none" tabindex="0" role="button" title="انقر للفرز"
+                                                                        style="cursor: pointer;">العجز/الزيادة<span
+                                                                            class="sort-indicator"></span></th>
+                                                                    <th class="archived-rec-sortable" data-sort-key="status" aria-sort="none"
+                                                                        tabindex="0" role="button" title="انقر للفرز"
+                                                                        style="cursor: pointer;">الحالة<span
+                                                                            class="sort-indicator"></span></th>
+                                                                    <th>إجراءات</th>
+                                                                </tr>
+                                                            </thead>
+                                                            <tbody id="archivedReconciliationsTableBody">
+                                                                <tr>
+                                                                    <td colspan="10"
+                                                                        class="text-center text-muted py-3">اختر سنة
+                                                                        لعرض التصفيات المؤرشفة</td>
+                                                                </tr>
+                                                            </tbody>
+                                                        </table>
+                                                    </div>
+                                                    <div class="d-flex justify-content-between align-items-center mt-2">
+                                                        <small class="text-muted"
+                                                            id="archivedReconciliationsMeta">عرض 0 من 0</small>
+                                                        <div class="btn-group btn-group-sm">
+                                                            <button type="button" class="btn btn-outline-secondary"
+                                                                id="archivedRecPrevPage" disabled>السابق</button>
+                                                            <button type="button" class="btn btn-outline-secondary"
+                                                                id="archivedRecNextPage" disabled>التالي</button>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
                                         <!-- Database Maintenance -->
                                         <div class="col-12">
                                             <h6 class="border-bottom pb-2 mb-3">صيانة قاعدة البيانات</h6>
@@ -3065,7 +3992,7 @@
                                             <h6 class="border-bottom pb-2 mb-3">المستخدم الحالي</h6>
                                         </div>
                                         <div class="col-md-6">
-                                            <div class="card bg-primary text-white">
+                                            <div class="card bg-light text-dark border-primary">
                                                 <div class="card-body">
                                                     <h6 class="card-title">معلومات المستخدم</h6>
                                                     <p class="card-text">
@@ -3093,6 +4020,59 @@
                                             </div>
                                         </div>
 
+                                        <!-- Permissions Management -->
+                                        <div class="col-12">
+                                            <h6 class="border-bottom pb-2 mb-3">إدارة صلاحيات المستخدمين</h6>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <label for="permissionsUserSelect" class="form-label">اختر المستخدم</label>
+                                            <select class="form-select" id="permissionsUserSelect">
+                                                <option value="">اختر مستخدمًا لإدارة صلاحياته</option>
+                                            </select>
+                                            <small class="text-muted d-block mt-2" id="permissionsHint">يتم تطبيق الصلاحيات مباشرة عند تسجيل دخول المستخدم.</small>
+                                        </div>
+                                        <div class="col-md-6">
+                                            <div class="card border-info">
+                                                <div class="card-body py-3">
+                                                    <div><strong>الاسم:</strong> <span id="permissionsSelectedUserName">-</span></div>
+                                                    <div><strong>الدور:</strong> <span id="permissionsSelectedUserRole">-</span></div>
+                                                    <div><strong>الحالة:</strong> <span id="permissionsSelectedUserStatus">-</span></div>
+                                                </div>
+                                            </div>
+                                        </div>
+
+                                        <div class="col-12">
+                                            <div class="card">
+                                                <div class="card-header d-flex flex-wrap gap-2 align-items-center justify-content-between">
+                                                    <h6 class="mb-0">مصفوفة الصلاحيات</h6>
+                                                    <div class="d-flex flex-wrap gap-2">
+                                                        <button type="button" class="btn btn-outline-success btn-sm" id="selectAllPermissionsBtn">
+                                                            تحديد الكل
+                                                        </button>
+                                                        <button type="button" class="btn btn-outline-secondary btn-sm" id="clearAllPermissionsBtn">
+                                                            إلغاء الكل
+                                                        </button>
+                                                    </div>
+                                                </div>
+                                                <div class="card-body">
+                                                    <div class="row g-3">
+                                                        <div class="col-lg-4">
+                                                            <h6 class="mb-2">صلاحيات الشاشات</h6>
+                                                            <div id="screenPermissionsContainer" class="permissions-grid"></div>
+                                                        </div>
+                                                        <div class="col-lg-4">
+                                                            <h6 class="mb-2">صلاحيات تبويبات الإعدادات</h6>
+                                                            <div id="settingsTabPermissionsContainer" class="permissions-grid"></div>
+                                                        </div>
+                                                        <div class="col-lg-4">
+                                                            <h6 class="mb-2">صلاحيات العمليات</h6>
+                                                            <div id="operationPermissionsContainer" class="permissions-grid"></div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+
                                         <!-- Security Settings -->
                                         <div class="col-12">
                                             <h6 class="border-bottom pb-2 mb-3">إعدادات الأمان</h6>
@@ -3106,6 +4086,7 @@
                                                 <option value="120">120 دقيقة</option>
                                                 <option value="0">بدون انتهاء</option>
                                             </select>
+                                            <small class="text-muted d-block mt-2">ينهي الجلسة بعد هذه المدة حتى لو كان المستخدم نشطًا.</small>
                                         </div>
                                         <div class="col-md-6">
                                             <label for="autoLock" class="form-label">القفل التلقائي عند عدم
@@ -3116,6 +4097,7 @@
                                                 <option value="10" selected>10 دقائق</option>
                                                 <option value="15">15 دقيقة</option>
                                             </select>
+                                            <small class="text-muted d-block mt-2">يقفل الجلسة فقط عند عدم وجود نشاط خلال المدة المحددة.</small>
                                         </div>
 
                                         <!-- Password Change -->
@@ -3263,6 +4245,176 @@
                                     </form>
                                 </div>
 
+                                <!-- Reconciliation Formula Settings Tab -->
+                                <div class="tab-pane fade" id="reconciliation-formula-settings" role="tabpanel">
+                                    <h5 class="mb-4">إعدادات معادلة التصفية</h5>
+
+                                    <div id="reconciliationFormulaSettingsForm" class="reconciliation-formula-form">
+                                        <div class="row g-4">
+                                            <div class="col-12">
+                                                <div class="card border-secondary-subtle">
+                                                    <div class="card-body">
+                                                        <div class="row g-2 align-items-end">
+                                                            <div class="col-md-6">
+                                                                <label for="formulaProfileName"
+                                                                    class="form-label">المعادلة المحددة</label>
+                                                                <input type="text" class="form-control"
+                                                                    id="formulaProfileName"
+                                                                    placeholder="اختر معادلة من الجدول"
+                                                                    readonly>
+                                                            </div>
+                                                            <div class="col-md-6 d-flex flex-wrap gap-2">
+                                                                <button type="button"
+                                                                    class="btn btn-outline-primary flex-fill"
+                                                                    id="createFormulaProfileBtn">
+                                                                    <i class="icon">➕</i> إضافة معادلة جديدة
+                                                                </button>
+                                                                <button type="button"
+                                                                    class="btn btn-outline-danger flex-fill"
+                                                                    id="deleteSelectedFormulaProfileBtn">
+                                                                    <i class="icon">🗑️</i> حذف المحددة
+                                                                </button>
+                                                            </div>
+                                                            <div class="col-12">
+                                                                <small class="text-muted">
+                                                                    استخدم <strong>إضافة معادلة جديدة</strong> أو
+                                                                    <strong>تعديل</strong> من الجدول لفتح نافذة اسم وصيغة المعادلة.
+                                                                </small>
+                                                            </div>
+                                                            <input type="hidden" id="selectedFormulaProfileId" value="">
+                                                            <select class="form-select d-none" id="formulaProfileSelect">
+                                                                <option value="">اختر معادلة...</option>
+                                                            </select>
+                                                            <div class="col-12">
+                                                                <div class="formula-profiles-table-wrap">
+                                                                    <div class="formula-profiles-table-title">المعادلات المحفوظة</div>
+                                                                    <div class="table-responsive">
+                                                                        <table class="table formula-profiles-table mb-0">
+                                                                            <thead>
+                                                                                <tr>
+                                                                                    <th style="width: 26%">اسم المعادلة</th>
+                                                                                    <th style="width: 43%">عملية المعادلة</th>
+                                                                                    <th style="width: 16%">الارتباطات</th>
+                                                                                    <th style="width: 15%">الإجراءات</th>
+                                                                                </tr>
+                                                                            </thead>
+                                                                            <tbody id="formulaProfilesTableBody">
+                                                                                <tr>
+                                                                                    <td colspan="4" class="text-center text-muted py-3">
+                                                                                        لا توجد معادلات محفوظة
+                                                                                    </td>
+                                                                                </tr>
+                                                                            </tbody>
+                                                                        </table>
+                                                                    </div>
+                                                                </div>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                            <div class="col-12">
+                                                <div class="card border-primary formula-preview-card">
+                                                    <div class="card-body py-3">
+                                                        <div class="small text-muted mb-1">معاينة المعادلة المحددة (قراءة فقط)</div>
+                                                        <div id="reconciliationFormulaPreview"
+                                                            class="fw-bold formula-preview-text">
+                                                            إجمالي المقبوضات = المقبوضات البنكية + المقبوضات النقدية + المبيعات الآجلة - مقبوضات العملاء + فواتير المرتجع
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="modal fade" id="formulaProfileModal" tabindex="-1"
+                                        aria-labelledby="formulaProfileModalLabel" aria-hidden="true">
+                                        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                                            <div class="modal-content">
+                                                <div class="modal-header">
+                                                    <h5 class="modal-title" id="formulaProfileModalLabel">إضافة معادلة جديدة</h5>
+                                                    <button type="button" class="btn-close" data-bs-dismiss="modal"
+                                                        aria-label="إغلاق"></button>
+                                                </div>
+                                                <div class="modal-body">
+                                                    <input type="hidden" id="formulaProfileModalMode" value="create">
+                                                    <input type="hidden" id="formulaProfileModalId" value="">
+
+                                                    <div class="mb-3">
+                                                        <label for="formulaProfileModalName" class="form-label">اسم المعادلة</label>
+                                                        <input type="text" class="form-control" id="formulaProfileModalName"
+                                                            placeholder="مثال: معادلة الفرع الرئيسي">
+                                                    </div>
+
+                                                    <div class="row g-3">
+                                                        <div class="col-md-6 col-xl-4">
+                                                            <label for="formulaModalBankReceipts" class="form-label">المقبوضات البنكية</label>
+                                                            <select class="form-select" id="formulaModalBankReceipts">
+                                                                <option value="1" selected>إضافة (+)</option>
+                                                                <option value="-1">طرح (-)</option>
+                                                                <option value="0">تجاهل (0)</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-6 col-xl-4">
+                                                            <label for="formulaModalCashReceipts" class="form-label">المقبوضات النقدية</label>
+                                                            <select class="form-select" id="formulaModalCashReceipts">
+                                                                <option value="1" selected>إضافة (+)</option>
+                                                                <option value="-1">طرح (-)</option>
+                                                                <option value="0">تجاهل (0)</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-6 col-xl-4">
+                                                            <label for="formulaModalPostpaidSales" class="form-label">المبيعات الآجلة</label>
+                                                            <select class="form-select" id="formulaModalPostpaidSales">
+                                                                <option value="1" selected>إضافة (+)</option>
+                                                                <option value="-1">طرح (-)</option>
+                                                                <option value="0">تجاهل (0)</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-6 col-xl-4">
+                                                            <label for="formulaModalCustomerReceipts" class="form-label">مقبوضات العملاء</label>
+                                                            <select class="form-select" id="formulaModalCustomerReceipts">
+                                                                <option value="1">إضافة (+)</option>
+                                                                <option value="-1" selected>طرح (-)</option>
+                                                                <option value="0">تجاهل (0)</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-6 col-xl-4">
+                                                            <label for="formulaModalReturnInvoices" class="form-label">فواتير المرتجع</label>
+                                                            <select class="form-select" id="formulaModalReturnInvoices">
+                                                                <option value="1" selected>إضافة (+)</option>
+                                                                <option value="-1">طرح (-)</option>
+                                                                <option value="0">تجاهل (0)</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-6 col-xl-4">
+                                                            <label for="formulaModalSuppliers" class="form-label">الموردين</label>
+                                                            <select class="form-select" id="formulaModalSuppliers">
+                                                                <option value="1">إضافة (+)</option>
+                                                                <option value="-1">طرح (-)</option>
+                                                                <option value="0" selected>تجاهل (0)</option>
+                                                            </select>
+                                                        </div>
+                                                    </div>
+
+                                                    <div class="card border-primary formula-preview-card mt-3">
+                                                        <div class="card-body py-3">
+                                                            <div class="small text-muted mb-1">معاينة صيغة المعادلة</div>
+                                                            <div id="formulaProfileModalPreview" class="fw-bold formula-preview-text">
+                                                                إجمالي المقبوضات = المقبوضات البنكية + المقبوضات النقدية + المبيعات الآجلة - مقبوضات العملاء + فواتير المرتجع
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                                <div class="modal-footer">
+                                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                                                    <button type="button" class="btn btn-primary" id="saveFormulaProfileModalBtn">إضافة المعادلة</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <!-- System Information Tab -->
                                 <div class="tab-pane fade" id="system-info" role="tabpanel">
                                     <h5 class="mb-4">معلومات النظام</h5>
@@ -3280,7 +4432,7 @@
                                                             class="text-primary fw-bold">تصفية برو</span>
                                                     </div>
                                                     <div class="info-item">
-                                                        <strong>الإصدار:</strong> V4.0.0
+                                                        <strong>الإصدار:</strong> V5.0.1
                                                     </div>
 
                                                     <div class="info-item">
@@ -3423,13 +4575,18 @@
                 </div>
                 <div class="modal-body">
                     <!-- Search Controls -->
-                    <div class="row mb-4">
-                        <div class="col-md-6">
-                            <div class="input-group">
-                                <span class="input-group-text"><i class="icon">🔍</i></span>
-                                <input type="text" class="form-control" id="reconciliationSearchInput"
+                    <div class="row rec-list-toolbar">
+                        <div class="col-12 col-lg-8">
+                            <div class="input-group rec-list-search-group">
+                                <span class="input-group-text rec-list-search-icon"><i class="icon">🔍</i></span>
+                                <input type="text" class="form-control rec-list-search-input" id="reconciliationSearchInput"
                                     placeholder="ابحث برقم أو اسم التصفية...">
+                                <button type="button" class="btn rec-list-clear-btn" id="clearReconciliationSearchBtn"
+                                    title="مسح البحث">
+                                    <i class="icon">✖️</i> مسح
+                                </button>
                             </div>
+                            <div class="rec-list-search-hint">البحث يشمل رقم التصفية، التاريخ، الفرع، الكاشير، والمحاسب - استخدم Ctrl+Enter لاستدعاء الصف المحدد</div>
                         </div>
                     </div>
 
@@ -3442,8 +4599,10 @@
                                     <th>التاريخ</th>
                                     <th>الفرع</th>
                                     <th>الكاشير</th>
+                                    <th>المحاسب</th>
                                     <th>المبلغ الإجمالي</th>
                                     <th>الحالة</th>
+                                    <th>إجراءات</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -3526,27 +4685,23 @@
 
                         <!-- Margins -->
                         <div class="col-12 mb-3">
-                            <label class="form-label">الهوامش (سم)</label>
+                            <label class="form-label">الهوامش (مم)</label>
                             <div class="row">
                                 <div class="col-3">
-                                    <label for="marginTop" class="form-label">أعلى</label>
-                                    <input type="number" class="form-control" id="marginTop" value="1" min="0" max="5"
-                                        step="0.1">
+                                    <label for="printDialogMarginTop" class="form-label">أعلى</label>
+                                    <input type="number" class="form-control" id="printDialogMarginTop" value="20" min="0" max="50">
                                 </div>
                                 <div class="col-3">
-                                    <label for="marginRight" class="form-label">يمين</label>
-                                    <input type="number" class="form-control" id="marginRight" value="1" min="0" max="5"
-                                        step="0.1">
+                                    <label for="printDialogMarginRight" class="form-label">يمين</label>
+                                    <input type="number" class="form-control" id="printDialogMarginRight" value="15" min="0" max="50">
                                 </div>
                                 <div class="col-3">
-                                    <label for="marginBottom" class="form-label">أسفل</label>
-                                    <input type="number" class="form-control" id="marginBottom" value="1" min="0"
-                                        max="5" step="0.1">
+                                    <label for="printDialogMarginBottom" class="form-label">أسفل</label>
+                                    <input type="number" class="form-control" id="printDialogMarginBottom" value="20" min="0" max="50">
                                 </div>
                                 <div class="col-3">
-                                    <label for="marginLeft" class="form-label">يسار</label>
-                                    <input type="number" class="form-control" id="marginLeft" value="1" min="0" max="5"
-                                        step="0.1">
+                                    <label for="printDialogMarginLeft" class="form-label">يسار</label>
+                                    <input type="number" class="form-control" id="printDialogMarginLeft" value="15" min="0" max="50">
                                 </div>
                             </div>
                         </div>
@@ -3572,6 +4727,8 @@
 
     <!-- Environment Manager -->
     <script src="environment.js"></script>
+    <script src="../node_modules/dexie/dist/dexie.js"></script>
+    <script src="renderer-ipc.js"></script>
 
     <!-- Development Scripts - Only load in development mode -->
     <script>
@@ -3582,27 +4739,10 @@
                 window.EnvironmentManager.shouldLoadTestScripts();
 
             if (shouldLoadTests) {
-                const testScripts = [
-                    'dialog-test.js',
-                    'customer-receipts-test.js',
-                    'suppliers-test.js',
-                    'new-features-test.js',
-                    'bug-fixes-test.js',
-                    'advanced-bug-fixes-test.js',
-                    'edit-reconciliation-diagnostic.js',
-                    'direct-edit-test.js',
-                    'reconciliation-debug-test.js',
-                    'advanced-print-system-test.js',
-                    'bank-receipts-fix-test.js',
-                    'edit-data-loading-diagnostic.js',
-                    'quick-edit-test.js',
-                    'final-edit-verification.js',
-                    'save-and-calculation-test.js',
-                    'export-print-test.js',
-                    'pdf-export-test.js',
-                    'filter-save-button-fix-test.js',
-                    'test-functions.js'
-                ];
+                // Legacy standalone test scripts were removed after the renderer
+                // runtime moved to bundled modules. Keep the loader inert to avoid
+                // noisy ERR_FILE_NOT_FOUND warnings in development.
+                const testScripts = [];
 
                 let loadedScripts = 0;
                 let failedScripts = 0;
@@ -3646,9 +4786,11 @@
         });
     </script>
     <script src="autocomplete.js"></script>
-    <script src="customer-ledger.js"></script>
-    <script src="reconciliation-requests-manager.js"></script>
-    <script src="app.js"></script>
+    <script src="renderer-bundles/customer-ledger.bundle.js"></script>
+    <script src="renderer-bundles/supplier-ledger.bundle.js"></script>
+    <script src="renderer-bundles/cashboxes.bundle.js"></script>
+    <script src="renderer-bundles/reconciliation-requests-manager.bundle.js"></script>
+    <script src="renderer-bundles/app.bundle.js"></script>
 </body>
 
 </html>

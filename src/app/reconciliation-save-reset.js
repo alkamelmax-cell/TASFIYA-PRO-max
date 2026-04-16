@@ -1,7 +1,6 @@
 const { createReconciliationSaveResetHelpers } = require('./reconciliation-save-reset-helpers');
 const { getEffectiveFormulaSettingsFromDocument } = require('./reconciliation-formula');
 const { mapDbErrorMessage } = require('./db-error-messages');
-const { getSyncUpdateStatusUrl } = require('./sync-endpoints');
 
 function createReconciliationSaveResetHandlers(deps) {
   const doc = deps.document;
@@ -470,20 +469,11 @@ async function handleSaveReconciliation() {
         logger.log(`✅ [SAVE] Request ${reqId} marked as completed in local DB.`);
 
         if (await isSyncEnabled()) {
-          const remoteUrl = getSyncUpdateStatusUrl({ preferLocal: false });
-          const localUrl = getSyncUpdateStatusUrl({ preferLocal: true });
-          fetchFn(remoteUrl, {
+          fetchFn('http://localhost:4000/api/sync/update-status', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ id: reqId, status: 'completed' })
-          }).catch(() => {
-            // Fallback to local sync endpoint if remote is unavailable
-            fetchFn(localUrl, {
-              method: 'POST',
-              headers: { 'Content-Type': 'application/json' },
-              body: JSON.stringify({ id: reqId, status: 'completed' })
-            }).catch(() => {});
-          });
+          }).catch(() => {});
         } else {
           logger.log('⛔ [SAVE] Sync disabled - skipping server notification');
         }
