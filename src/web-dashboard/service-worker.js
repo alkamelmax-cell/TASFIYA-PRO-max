@@ -1,5 +1,5 @@
 // Service Worker for Tasfiya Pro PWA
-// Version: 2.8 - Network-first for protected HTML pages
+// Version: 2.7 - Network-first for protected HTML pages
 try {
     // Import local SDK instead of CDN
     importScripts('/OneSignalSDKWorker.js');
@@ -7,9 +7,7 @@ try {
     console.warn('⚠️ [SW] Local OneSignal SDK failed to load.', e);
 }
 
-const CACHE_NAME = 'tasfiya-pro-v2.8';
-const LOCALHOST_ORIGINS = new Set(['localhost', '127.0.0.1', '[::1]']);
-const IS_LOCALHOST_ORIGIN = LOCALHOST_ORIGINS.has(String(self.location.hostname || '').toLowerCase());
+const CACHE_NAME = 'tasfiya-pro-v2.7';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
@@ -156,13 +154,7 @@ async function fetchApiWithFallback(eventRequest) {
 
 // Install event - cache only static assets
 self.addEventListener('install', (event) => {
-    console.log('🔧 [SW] Installing Service Worker v2.8');
-    if (IS_LOCALHOST_ORIGIN) {
-        console.log('ℹ️ [SW] Localhost detected - skipping cache install.');
-        self.skipWaiting();
-        return;
-    }
-
+    console.log('🔧 [SW] Installing Service Worker v2.7');
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => {
@@ -178,12 +170,12 @@ self.addEventListener('install', (event) => {
 
 // Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
-    console.log('🔄 [SW] Activating Service Worker v2.8');
+    console.log('🔄 [SW] Activating Service Worker v2.7');
     event.waitUntil(
         caches.keys().then((cacheNames) => {
             return Promise.all(
                 cacheNames.map((cacheName) => {
-                    if (cacheName !== CACHE_NAME || IS_LOCALHOST_ORIGIN) {
+                    if (cacheName !== CACHE_NAME) {
                         console.log('🗑️ [SW] Deleting old cache:', cacheName);
                         return caches.delete(cacheName);
                     }
@@ -196,11 +188,6 @@ self.addEventListener('activate', (event) => {
 
 // Fetch event - NEVER cache API requests
 self.addEventListener('fetch', (event) => {
-    if (IS_LOCALHOST_ORIGIN) {
-        // On localhost, bypass SW fetch interception to avoid stale cached assets and API fallback noise.
-        return;
-    }
-
     const url = new URL(event.request.url);
 
     // Strategy 1: API Requests - ALWAYS fetch from network, NEVER cache

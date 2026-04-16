@@ -11,7 +11,6 @@
     const NATIVE_BOOTSTRAP_COOLDOWN_MS = 15000;
 
     let serviceWorkerRegistrationPromise = null;
-    let localhostCleanupPromise = null;
 
     function isNativeAppEnvironment() {
         const userAgent = String(windowObj.navigator.userAgent || '').toLowerCase();
@@ -132,46 +131,6 @@
         );
     }
 
-    function isTasfiyaCacheName(cacheKey) {
-        return typeof cacheKey === 'string' && cacheKey.startsWith('tasfiya-pro-');
-    }
-
-    async function disableServiceWorkerOnLocalhost() {
-        if (!canUseServiceWorkers()) {
-            return;
-        }
-
-        if (!localhostCleanupPromise) {
-            localhostCleanupPromise = (async () => {
-                try {
-                    const registrations = await windowObj.navigator.serviceWorker.getRegistrations();
-                    for (const registration of registrations) {
-                        await registration.unregister();
-                    }
-                } catch (error) {
-                    console.warn('[Tasfiya PWA] Failed to unregister Service Workers on localhost:', error);
-                }
-
-                if (!('caches' in windowObj)) {
-                    return;
-                }
-
-                try {
-                    const cacheKeys = await windowObj.caches.keys();
-                    for (const cacheKey of cacheKeys) {
-                        if (LEGACY_CACHE_NAMES.has(cacheKey) || isTasfiyaCacheName(cacheKey)) {
-                            await windowObj.caches.delete(cacheKey);
-                        }
-                    }
-                } catch (error) {
-                    console.warn('[Tasfiya PWA] Failed cleaning caches on localhost:', error);
-                }
-            })();
-        }
-
-        return localhostCleanupPromise;
-    }
-
     async function cleanLegacyCaches() {
         if (!('caches' in windowObj)) {
             return;
@@ -191,11 +150,6 @@
 
     async function registerServiceWorker() {
         if (!canUseServiceWorkers()) {
-            return null;
-        }
-
-        if (isLocalhostLike()) {
-            await disableServiceWorkerOnLocalhost();
             return null;
         }
 
