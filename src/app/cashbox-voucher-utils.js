@@ -3,65 +3,73 @@ function toNumber(value, fallback = 0) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-function normalizeSyncKeyText(value) {
+function parseInteger(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? Math.trunc(parsed) : null;
+}
+
+function toOptionalText(value) {
   if (value === null || value === undefined) {
-    return '';
+    return null;
   }
 
-  return String(value).trim();
+  const normalized = String(value).trim();
+  return normalized.length > 0 ? normalized : null;
 }
 
-function encodeSyncKeyPart(value, fallback = '-') {
-  const normalized = normalizeSyncKeyText(value);
-  return String(normalized || fallback).replace(/\s/g, '%20');
-}
-
-function normalizeSyncTimestamp(value) {
-  const normalized = normalizeSyncKeyText(value);
-  if (!normalized) {
-    return '';
-  }
-
-  return normalized
-    .replace('T', ' ')
-    .replace(/Z$/i, '')
-    .replace(/\.\d+$/, '')
-    .trim();
-}
-
-function buildCashboxVoucherSyncKey(voucher = {}) {
-  const explicitSyncKey = normalizeSyncKeyText(voucher.sync_key || voucher.syncKey);
+function buildCashboxVoucherSyncKey(voucher = {}, options = {}) {
+  const explicitSyncKey = toOptionalText(voucher.sync_key ?? voucher.syncKey);
   if (explicitSyncKey) {
     return explicitSyncKey;
   }
 
-  const sourceReconciliationId = toNumber(
-    voucher.source_reconciliation_id ?? voucher.sourceReconciliationId,
-    0
-  );
-  const sourceEntryKey = normalizeSyncKeyText(
-    voucher.source_entry_key ?? voucher.sourceEntryKey
-  );
+  const localCashboxToBranchMap = options.localCashboxToBranchMap instanceof Map
+    ? options.localCashboxToBranchMap
+    : new Map();
 
-  if (sourceReconciliationId > 0 && sourceEntryKey) {
-    return `recon:${sourceReconciliationId}:${encodeSyncKeyPart(sourceEntryKey)}`;
+  const localCashboxId = parseInteger(voucher.cashbox_id ?? voucher.cashboxId);
+  let branchId = parseInteger(options.branchId ?? voucher.branch_id ?? voucher.branchId);
+  if (branchId === null && localCashboxId !== null && localCashboxToBranchMap.has(localCashboxId)) {
+    branchId = localCashboxToBranchMap.get(localCashboxId);
   }
 
-  const localId = toNumber(voucher.id ?? voucher.local_id ?? voucher.localId, 0);
-  const voucherNumber = toNumber(voucher.voucher_number ?? voucher.voucherNumber, 0);
-  const voucherSequenceNumber = toNumber(
-    voucher.voucher_sequence_number ?? voucher.voucherSequenceNumber,
-    0
-  );
-  const localIdentity = localId > 0
-    ? localId
-    : (voucherNumber > 0 ? voucherNumber : voucherSequenceNumber);
-  const createdAt = normalizeSyncTimestamp(voucher.created_at ?? voucher.createdAt)
-    || normalizeSyncTimestamp(voucher.updated_at ?? voucher.updatedAt)
-    || normalizeSyncTimestamp(voucher.voucher_date ?? voucher.voucherDate)
-    || 'no-timestamp';
+  if (branchId === null) {
+    return null;
+  }
 
-  return `manual:${encodeSyncKeyPart(createdAt, 'no-timestamp')}:${localIdentity || 0}`;
+  const sourceReconciliationId = parseInteger(
+    voucher.source_reconciliation_id ?? voucher.sourceReconciliationId
+  );
+  const sourceEntryKey = toOptionalText(voucher.source_entry_key ?? voucher.sourceEntryKey);
+  if (sourceReconciliationId !== null && sourceEntryKey) {
+    return `recon:${sourceReconciliationId}:${sourceEntryKey}`;
+  }
+
+  const voucherType = toOptionalText(voucher.voucher_type ?? voucher.voucherType) || 'unknown';
+  const voucherSequenceNumber = parseInteger(
+    voucher.voucher_sequence_number ?? voucher.voucherSequenceNumber
+  );
+  if (voucherSequenceNumber !== null) {
+    return `seq:${branchId}:${voucherType}:${voucherSequenceNumber}`;
+  }
+
+  const voucherNumber = parseInteger(voucher.voucher_number ?? voucher.voucherNumber);
+  if (voucherNumber !== null) {
+    return `num:${branchId}:${voucherType}:${voucherNumber}`;
+  }
+
+  const voucherDate = toOptionalText(voucher.voucher_date ?? voucher.voucherDate) || 'na';
+  const amount = toNumber(voucher.amount, 0);
+  const counterpartyType = toOptionalText(voucher.counterparty_type ?? voucher.counterpartyType) || 'na';
+  const counterpartyName = toOptionalText(voucher.counterparty_name ?? voucher.counterpartyName) || 'na';
+  const createdAt = toOptionalText(voucher.created_at ?? voucher.createdAt) || 'na';
+  const localId = toOptionalText(voucher.id ?? voucher.local_id ?? voucher.localId) || 'na';
+
+  return `fallback:${branchId}:${voucherType}:${voucherDate}:${amount}:${counterpartyType}:${counterpartyName}:${createdAt}:${localId}`;
 }
 
 function buildCashboxVoucherLabel(voucherType, voucherSequenceNumber, fallbackVoucherNumber = 0) {

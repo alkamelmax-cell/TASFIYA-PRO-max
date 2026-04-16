@@ -51,6 +51,11 @@ try {
     const branch_cashboxes = db.prepare('SELECT * FROM branch_cashboxes').all();
     const cashbox_vouchers = db.prepare('SELECT * FROM cashbox_vouchers ORDER BY id DESC').all();
     const cashbox_voucher_audit_log = db.prepare('SELECT * FROM cashbox_voucher_audit_log ORDER BY id DESC').all();
+    const localCashboxToBranchMap = new Map(
+        branch_cashboxes
+            .map(row => [Number(row && row.id), Number(row && row.branch_id)])
+            .filter(([cashboxId, branchId]) => Number.isFinite(cashboxId) && Number.isFinite(branchId))
+    );
 
     // 4. Prepare Payload
     const payload = {
@@ -62,9 +67,14 @@ try {
         branch_cashboxes,
         cashbox_vouchers,
         cashbox_voucher_audit_log,
-        active_branch_cashboxes_branch_ids: branch_cashboxes.map(row => row.branch_id),
+        active_branch_cashboxes_branch_ids: branch_cashboxes
+            .map(row => row && row.branch_id)
+            .filter(branchId => Number.isFinite(Number(branchId)))
+            .map(branchId => Number(branchId)),
         active_branch_cashboxes_ids: branch_cashboxes.map(row => row.id),
-        active_cashbox_voucher_sync_keys: cashbox_vouchers.map(row => buildCashboxVoucherSyncKey(row)).filter(Boolean),
+        active_cashbox_voucher_sync_keys: cashbox_vouchers
+            .map(row => buildCashboxVoucherSyncKey(row, { localCashboxToBranchMap }))
+            .filter(Boolean),
         active_cashbox_vouchers_ids: cashbox_vouchers.map(row => row.id),
         active_cashbox_voucher_audit_log_ids: cashbox_voucher_audit_log.map(row => row.id)
     };
