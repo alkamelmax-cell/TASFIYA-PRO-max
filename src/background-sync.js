@@ -2,11 +2,12 @@ const { app } = require('electron');
 
 const { ipcMain } = require('electron');
 const fetch = require('node-fetch');
-const { buildCashboxVoucherSyncKey } = require('./app/cashbox-voucher-utils');
 
 // Configuration
 const REMOTE_URL = 'https://tasfiya-pro-max.onrender.com/api/sync/users'; // Ensure this matches your Render URL
 const SYNC_INTERVAL_MS = 30000; // 30 seconds
+const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
+const SEND_RETRY_DELAYS_MS = [700, 1500, 3000];
 
 class BackgroundSync {
     constructor(dbManager) {
@@ -90,17 +91,20 @@ class BackgroundSync {
         }
     }
 
+    async safePushStep(label, fn) {
+        try {
+            await fn();
+        } catch (error) {
+            console.error(`⚠️ [SYNC] ${label} step failed:`, error.message);
+        }
+    }
+
+    async delay(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
     async pushLocalData(db) {
         // --- PUSH: Upload Local Data ---
-        const nonBlockingStep = async (label, callback) => {
-            try {
-                await callback();
-                return true;
-            } catch (error) {
-                console.error(`⚠️ [SYNC] Step failed (${label}):`, error.message);
-                return false;
-            }
-        };
 
         // 1. Fetch Lookups (Small data, send all at once)
         const admins = db.prepare('SELECT * FROM admins').all();
@@ -112,9 +116,7 @@ class BackgroundSync {
 
         console.log(`🔍 [SYNC] Local counts: admins=${admins.length}, branches=${branches.length}, cashiers=${cashiers.length}, accountants=${accountants.length}, atms=${atms.length}, branch_cashboxes=${branch_cashboxes.length}`);
 
-        await nonBlockingStep('lookups', async () => {
-            await this.sendPayload({ admins, branches, cashiers, accountants, atms, branch_cashboxes });
-        });
+        await this.sendPayload({ admins, branches, cashiers, accountants, atms, branch_cashboxes });
 
         // 2. Mirror Sync: Send ALL active IDs first to allow server to clean up deleted records
         // This is the robust way to handle deletions without risking data loss during chunked upload
@@ -133,16 +135,6 @@ class BackgroundSync {
 
         const allIdsPayload = {};
         let hasIds = false;
-        const activeBranchCashboxBranchIds = [...new Set(
-            branch_cashboxes
-                .map((row) => Number(row.branch_id))
-                .filter((branchId) => Number.isInteger(branchId) && branchId > 0)
-        )];
-        const activeCashboxVoucherSyncKeys = [...new Set(
-            db.prepare('SELECT * FROM cashbox_vouchers').all()
-                .map((row) => buildCashboxVoucherSyncKey(row))
-                .filter((syncKey) => typeof syncKey === 'string' && syncKey.trim() !== '')
-        )];
 
         for (const table of idTables) {
             try {
@@ -154,81 +146,77 @@ class BackgroundSync {
             } catch (e) { console.error(`Error fetching IDs for ${table}:`, e.message); }
         }
 
+        // Cashbox cleanup on Render should be keyed by branch_id, not local SQLite id.
+        const activeBranchCashboxBranchIds = branch_cashboxes
+            .map(row => row && row.branch_id)
+            .filter(branchId => Number.isFinite(Number(branchId)))
+            .map(branchId => Number(branchId));
         if (activeBranchCashboxBranchIds.length > 0) {
             allIdsPayload.active_branch_cashboxes_branch_ids = activeBranchCashboxBranchIds;
-            hasIds = true;
-        }
-
-        if (activeCashboxVoucherSyncKeys.length > 0) {
-            allIdsPayload.active_cashbox_voucher_sync_keys = activeCashboxVoucherSyncKeys;
             hasIds = true;
         }
 
         if (hasIds) {
             console.log('🧹 [SYNC] Sending ID lists for mirror cleanup...');
             // We send this as a separate payload type so the server knows it's an ID list, not full data
-            await nonBlockingStep('mirror-cleanup-ids', async () => {
-                await this.sendPayload(allIdsPayload);
-            });
+            await this.sendPayload(allIdsPayload);
         }
 
-        // 3. Prioritize cashbox payloads to avoid losing cashbox sync when a later table fails.
-        const cashbox_vouchers = db.prepare('SELECT * FROM cashbox_vouchers ORDER BY id DESC').all();
-        await nonBlockingStep('cashbox_vouchers', async () => {
+        // 3. High-priority cashbox mirror first (faster web consistency under heavy sync load)
+        await this.safePushStep('cashbox_vouchers', async () => {
+            const cashbox_vouchers = db.prepare('SELECT * FROM cashbox_vouchers ORDER BY id DESC').all();
             await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, 500);
         });
 
-        const cashbox_voucher_audit_log = db.prepare('SELECT * FROM cashbox_voucher_audit_log ORDER BY id DESC').all();
-        await nonBlockingStep('cashbox_voucher_audit_log', async () => {
+        await this.safePushStep('cashbox_voucher_audit_log', async () => {
+            const cashbox_voucher_audit_log = db.prepare('SELECT * FROM cashbox_voucher_audit_log ORDER BY id DESC').all();
             await this.sendInBatches('cashbox_voucher_audit_log', cashbox_voucher_audit_log, 500);
         });
 
-        // 4. Fetch & Send Reconciliations (Chunked) - ALL History
-        const reconciliations = db.prepare("SELECT * FROM reconciliations ORDER BY id DESC").all();
-        await nonBlockingStep('reconciliations', async () => {
+        // 4. Fetch & send the rest of history
+        await this.safePushStep('reconciliations', async () => {
+            const reconciliations = db.prepare('SELECT * FROM reconciliations ORDER BY id DESC').all();
             await this.sendInBatches('reconciliations', reconciliations, 200);
         });
 
-        // 5. Fetch & Send Details (Chunked) - Independent Full History
-        const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC').all();
-        await nonBlockingStep('manual_postpaid_sales', async () => {
+        await this.safePushStep('manual_postpaid_sales', async () => {
+            const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC').all();
             await this.sendInBatches('manual_postpaid_sales', manual_postpaid_sales, 500);
         });
 
-        const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC').all();
-        await nonBlockingStep('manual_customer_receipts', async () => {
+        await this.safePushStep('manual_customer_receipts', async () => {
+            const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC').all();
             await this.sendInBatches('manual_customer_receipts', manual_customer_receipts, 500);
         });
 
-        const postpaid_sales = db.prepare('SELECT * FROM postpaid_sales ORDER BY id DESC').all();
-        await nonBlockingStep('postpaid_sales', async () => {
+        await this.safePushStep('postpaid_sales', async () => {
+            const postpaid_sales = db.prepare('SELECT * FROM postpaid_sales ORDER BY id DESC').all();
             await this.sendInBatches('postpaid_sales', postpaid_sales, 500);
         });
 
-        const customer_receipts = db.prepare('SELECT * FROM customer_receipts ORDER BY id DESC').all();
-        await nonBlockingStep('customer_receipts', async () => {
+        await this.safePushStep('customer_receipts', async () => {
+            const customer_receipts = db.prepare('SELECT * FROM customer_receipts ORDER BY id DESC').all();
             await this.sendInBatches('customer_receipts', customer_receipts, 500);
         });
 
-        // 6. Fetch Details Linked to Reconciliations
-        const cash_receipts = db.prepare('SELECT * FROM cash_receipts ORDER BY id DESC LIMIT 10000').all();
-        await nonBlockingStep('cash_receipts', async () => {
+        await this.safePushStep('cash_receipts', async () => {
+            const cash_receipts = db.prepare('SELECT * FROM cash_receipts ORDER BY id DESC LIMIT 10000').all();
             await this.sendInBatches('cash_receipts', cash_receipts, 500);
         });
 
-        const bank_receipts = db.prepare('SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000').all();
-        await nonBlockingStep('bank_receipts', async () => {
+        await this.safePushStep('bank_receipts', async () => {
+            const bank_receipts = db.prepare('SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000').all();
             await this.sendInBatches('bank_receipts', bank_receipts, 500);
         });
 
-        // 7. Push Reconciliation Requests Status Updates
-        const reconciliation_requests = db.prepare('SELECT * FROM reconciliation_requests').all();
-        if (reconciliation_requests && reconciliation_requests.length > 0) {
-            console.log(`📤 [SYNC] Pushing ${reconciliation_requests.length} reconciliation requests...`);
-            await nonBlockingStep('reconciliation_requests', async () => {
+        // 5. Push Reconciliation Requests Status Updates
+        await this.safePushStep('reconciliation_requests', async () => {
+            const reconciliation_requests = db.prepare('SELECT * FROM reconciliation_requests').all();
+            if (reconciliation_requests && reconciliation_requests.length > 0) {
+                console.log(`📤 [SYNC] Pushing ${reconciliation_requests.length} reconciliation requests...`);
                 await this.sendPayload({ reconciliation_requests });
-            });
-        }
+            }
+        });
 
         console.log('✅ [SYNC] Push completed successfully');
     }
@@ -261,11 +249,10 @@ class BackgroundSync {
             return;
         }
 
-        const transientStatusCodes = new Set([408, 425, 429, 500, 502, 503, 504]);
-        const maxAttempts = 3;
+        const payloadKeys = Object.keys(dataToSend).join(', ');
         let lastError = null;
 
-        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+        for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt++) {
             try {
                 const res = await fetch(REMOTE_URL, {
                     method: 'POST',
@@ -273,23 +260,18 @@ class BackgroundSync {
                     body: JSON.stringify(dataToSend)
                 });
 
-                const responseJson = await res.json().catch(() => null);
-                const isTransient = transientStatusCodes.has(res.status);
-                const shouldRetry = !res.ok && isTransient && attempt < maxAttempts;
-
                 if (!res.ok) {
-                    const serverError = responseJson && responseJson.error
-                        ? responseJson.error
-                        : `HTTP Error: ${res.status} ${res.statusText}`;
-                    if (shouldRetry) {
-                        const delayMs = 350 * attempt;
-                        console.warn(`⚠️ [SYNC] Transient failure (attempt ${attempt}/${maxAttempts}) for ${Object.keys(dataToSend).join(', ')}. Retrying in ${delayMs}ms...`);
-                        await new Promise((resolve) => setTimeout(resolve, delayMs));
+                    const isTransient = TRANSIENT_HTTP_STATUSES.has(res.status);
+                    if (isTransient && attempt < SEND_RETRY_DELAYS_MS.length) {
+                        const waitMs = SEND_RETRY_DELAYS_MS[attempt];
+                        console.warn(`⚠️ [SYNC] Transient HTTP ${res.status} while sending ${payloadKeys}, retrying in ${waitMs}ms...`);
+                        await this.delay(waitMs);
                         continue;
                     }
-                    throw new Error(serverError);
+                    throw new Error(`HTTP Error: ${res.status} ${res.statusText}`);
                 }
 
+                const responseJson = await res.json().catch(() => null);
                 if (responseJson && responseJson.success === false) {
                     const failureSummary = Array.isArray(responseJson.failures) && responseJson.failures.length > 0
                         ? ` | Failures: ${responseJson.failures.map(item => `${item.table}#${item.id ?? '?'}`).join(', ')}`
@@ -297,23 +279,22 @@ class BackgroundSync {
                     throw new Error(`${responseJson.error || 'SYNC_FAILED'}${failureSummary}`);
                 }
 
-                console.log(`✅ [SYNC] Server accepted: ${Object.keys(dataToSend).join(', ')}`);
+                console.log(`✅ [SYNC] Server accepted: ${payloadKeys}`);
                 return;
             } catch (e) {
                 lastError = e;
-                const isLastAttempt = attempt >= maxAttempts;
-                if (isLastAttempt) {
-                    break;
+                if (attempt < SEND_RETRY_DELAYS_MS.length) {
+                    const waitMs = SEND_RETRY_DELAYS_MS[attempt];
+                    console.warn(`⚠️ [SYNC] Send attempt ${attempt + 1} failed for ${payloadKeys}: ${e.message}. Retrying in ${waitMs}ms...`);
+                    await this.delay(waitMs);
+                    continue;
                 }
-
-                const delayMs = 350 * attempt;
-                console.warn(`⚠️ [SYNC] Send attempt ${attempt}/${maxAttempts} failed for ${Object.keys(dataToSend).join(', ')}: ${e.message}. Retrying in ${delayMs}ms...`);
-                await new Promise((resolve) => setTimeout(resolve, delayMs));
+                break;
             }
         }
 
-        console.error(`❌ [SYNC] Error sending ${Object.keys(dataToSend).join(', ')}:`, lastError ? lastError.message : 'UNKNOWN_ERROR');
-        throw lastError || new Error('UNKNOWN_SYNC_ERROR');
+        console.error(`❌ [SYNC] Error sending ${payloadKeys}:`, lastError ? lastError.message : 'Unknown error');
+        throw lastError || new Error(`Failed sending ${payloadKeys}`);
     }
 
     // Helper: Split array into chunks and send
@@ -335,7 +316,7 @@ class BackgroundSync {
             // Adjust URL to point to GET /api/reconciliation-requests
             // BASE URL is https://tasfiya-pro-max.onrender.com/api/sync/users
             // We need https://tasfiya-pro-max.onrender.com/api/reconciliation-requests
-            const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests');
+            const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests?status=all&include_deleted=1');
             console.log(`📥 [SYNC] Pulling requests from: ${reqUrl}`);
 
             const res = await fetch(reqUrl);
