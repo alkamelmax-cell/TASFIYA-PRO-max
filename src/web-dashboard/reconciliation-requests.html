@@ -10,6 +10,7 @@
     <!-- PWA Manifest -->
     <link rel="manifest" href="manifest.json">
     <meta name="theme-color" content="#6366f1">
+    <meta name="mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <meta name="apple-mobile-web-app-title" content="تصفية برو">
@@ -19,8 +20,29 @@
     <link href="css/custom.css?v=21" rel="stylesheet">
     <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" rel="stylesheet">
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script>
+        (function purgeLocalhostPwaState() {
+            const host = String(window.location.hostname || '').toLowerCase();
+            const isLocalhost = host === 'localhost' || host === '127.0.0.1' || host === '[::1]';
+            if (!isLocalhost) return;
+
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations()
+                    .then(registrations => Promise.all(registrations.map(reg => reg.unregister())))
+                    .catch(() => { });
+            }
+
+            if ('caches' in window) {
+                caches.keys()
+                    .then(keys => Promise.all(keys
+                        .filter(key => String(key || '').startsWith('tasfiya-pro-'))
+                        .map(key => caches.delete(key))))
+                    .catch(() => { });
+            }
+        })();
+    </script>
     <script src="/js/page-access.js?v=2"></script>
-    <script src="/js/onesignal-bootstrap.js?v=2"></script>
+    <script src="/js/onesignal-bootstrap.js?v=20260416b"></script>
 
     <!-- OneSignal SDK -->
     <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
