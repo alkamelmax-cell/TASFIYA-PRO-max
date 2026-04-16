@@ -92,6 +92,15 @@ class BackgroundSync {
 
     async pushLocalData(db) {
         // --- PUSH: Upload Local Data ---
+        const nonBlockingStep = async (label, callback) => {
+            try {
+                await callback();
+                return true;
+            } catch (error) {
+                console.error(`⚠️ [SYNC] Step failed (${label}):`, error.message);
+                return false;
+            }
+        };
 
         // 1. Fetch Lookups (Small data, send all at once)
         const admins = db.prepare('SELECT * FROM admins').all();
@@ -103,7 +112,9 @@ class BackgroundSync {
 
         console.log(`🔍 [SYNC] Local counts: admins=${admins.length}, branches=${branches.length}, cashiers=${cashiers.length}, accountants=${accountants.length}, atms=${atms.length}, branch_cashboxes=${branch_cashboxes.length}`);
 
-        await this.sendPayload({ admins, branches, cashiers, accountants, atms, branch_cashboxes });
+        await nonBlockingStep('lookups', async () => {
+            await this.sendPayload({ admins, branches, cashiers, accountants, atms, branch_cashboxes });
+        });
 
         // 2. Mirror Sync: Send ALL active IDs first to allow server to clean up deleted records
         // This is the robust way to handle deletions without risking data loss during chunked upload
@@ -156,44 +167,67 @@ class BackgroundSync {
         if (hasIds) {
             console.log('🧹 [SYNC] Sending ID lists for mirror cleanup...');
             // We send this as a separate payload type so the server knows it's an ID list, not full data
-            await this.sendPayload(allIdsPayload);
+            await nonBlockingStep('mirror-cleanup-ids', async () => {
+                await this.sendPayload(allIdsPayload);
+            });
         }
 
-        // 3. Fetch & Send Reconciliations (Chunked) - ALL History
-        const reconciliations = db.prepare("SELECT * FROM reconciliations ORDER BY id DESC").all();
-        await this.sendInBatches('reconciliations', reconciliations, 200);
-
-        // 3. Fetch & Send Details (Chunked) - Independent Full History
-        const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC').all();
-        await this.sendInBatches('manual_postpaid_sales', manual_postpaid_sales, 500);
-
-        const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC').all();
-        await this.sendInBatches('manual_customer_receipts', manual_customer_receipts, 500);
-
-        const postpaid_sales = db.prepare('SELECT * FROM postpaid_sales ORDER BY id DESC').all();
-        await this.sendInBatches('postpaid_sales', postpaid_sales, 500);
-
-        const customer_receipts = db.prepare('SELECT * FROM customer_receipts ORDER BY id DESC').all();
-        await this.sendInBatches('customer_receipts', customer_receipts, 500);
-
-        // 4. Fetch Details Linked to Reconciliations
-        const cash_receipts = db.prepare('SELECT * FROM cash_receipts ORDER BY id DESC LIMIT 10000').all();
-        await this.sendInBatches('cash_receipts', cash_receipts, 500);
-
-        const bank_receipts = db.prepare('SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000').all();
-        await this.sendInBatches('bank_receipts', bank_receipts, 500);
-
+        // 3. Prioritize cashbox payloads to avoid losing cashbox sync when a later table fails.
         const cashbox_vouchers = db.prepare('SELECT * FROM cashbox_vouchers ORDER BY id DESC').all();
-        await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, 500);
+        await nonBlockingStep('cashbox_vouchers', async () => {
+            await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, 500);
+        });
 
         const cashbox_voucher_audit_log = db.prepare('SELECT * FROM cashbox_voucher_audit_log ORDER BY id DESC').all();
-        await this.sendInBatches('cashbox_voucher_audit_log', cashbox_voucher_audit_log, 500);
+        await nonBlockingStep('cashbox_voucher_audit_log', async () => {
+            await this.sendInBatches('cashbox_voucher_audit_log', cashbox_voucher_audit_log, 500);
+        });
 
-        // 5. Push Reconciliation Requests Status Updates
+        // 4. Fetch & Send Reconciliations (Chunked) - ALL History
+        const reconciliations = db.prepare("SELECT * FROM reconciliations ORDER BY id DESC").all();
+        await nonBlockingStep('reconciliations', async () => {
+            await this.sendInBatches('reconciliations', reconciliations, 200);
+        });
+
+        // 5. Fetch & Send Details (Chunked) - Independent Full History
+        const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC').all();
+        await nonBlockingStep('manual_postpaid_sales', async () => {
+            await this.sendInBatches('manual_postpaid_sales', manual_postpaid_sales, 500);
+        });
+
+        const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC').all();
+        await nonBlockingStep('manual_customer_receipts', async () => {
+            await this.sendInBatches('manual_customer_receipts', manual_customer_receipts, 500);
+        });
+
+        const postpaid_sales = db.prepare('SELECT * FROM postpaid_sales ORDER BY id DESC').all();
+        await nonBlockingStep('postpaid_sales', async () => {
+            await this.sendInBatches('postpaid_sales', postpaid_sales, 500);
+        });
+
+        const customer_receipts = db.prepare('SELECT * FROM customer_receipts ORDER BY id DESC').all();
+        await nonBlockingStep('customer_receipts', async () => {
+            await this.sendInBatches('customer_receipts', customer_receipts, 500);
+        });
+
+        // 6. Fetch Details Linked to Reconciliations
+        const cash_receipts = db.prepare('SELECT * FROM cash_receipts ORDER BY id DESC LIMIT 10000').all();
+        await nonBlockingStep('cash_receipts', async () => {
+            await this.sendInBatches('cash_receipts', cash_receipts, 500);
+        });
+
+        const bank_receipts = db.prepare('SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000').all();
+        await nonBlockingStep('bank_receipts', async () => {
+            await this.sendInBatches('bank_receipts', bank_receipts, 500);
+        });
+
+        // 7. Push Reconciliation Requests Status Updates
         const reconciliation_requests = db.prepare('SELECT * FROM reconciliation_requests').all();
         if (reconciliation_requests && reconciliation_requests.length > 0) {
             console.log(`📤 [SYNC] Pushing ${reconciliation_requests.length} reconciliation requests...`);
-            await this.sendPayload({ reconciliation_requests });
+            await nonBlockingStep('reconciliation_requests', async () => {
+                await this.sendPayload({ reconciliation_requests });
+            });
         }
 
         console.log('✅ [SYNC] Push completed successfully');
@@ -227,25 +261,59 @@ class BackgroundSync {
             return;
         }
 
-        try {
-            const res = await fetch(REMOTE_URL, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(dataToSend)
-            });
-            if (!res.ok) throw new Error(`HTTP Error: ${res.status} ${res.statusText}`);
-            const responseJson = await res.json().catch(() => null);
-            if (responseJson && responseJson.success === false) {
-                const failureSummary = Array.isArray(responseJson.failures) && responseJson.failures.length > 0
-                    ? ` | Failures: ${responseJson.failures.map(item => `${item.table}#${item.id ?? '?'}`).join(', ')}`
-                    : '';
-                throw new Error(`${responseJson.error || 'SYNC_FAILED'}${failureSummary}`);
+        const transientStatusCodes = new Set([408, 425, 429, 500, 502, 503, 504]);
+        const maxAttempts = 3;
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+            try {
+                const res = await fetch(REMOTE_URL, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(dataToSend)
+                });
+
+                const responseJson = await res.json().catch(() => null);
+                const isTransient = transientStatusCodes.has(res.status);
+                const shouldRetry = !res.ok && isTransient && attempt < maxAttempts;
+
+                if (!res.ok) {
+                    const serverError = responseJson && responseJson.error
+                        ? responseJson.error
+                        : `HTTP Error: ${res.status} ${res.statusText}`;
+                    if (shouldRetry) {
+                        const delayMs = 350 * attempt;
+                        console.warn(`⚠️ [SYNC] Transient failure (attempt ${attempt}/${maxAttempts}) for ${Object.keys(dataToSend).join(', ')}. Retrying in ${delayMs}ms...`);
+                        await new Promise((resolve) => setTimeout(resolve, delayMs));
+                        continue;
+                    }
+                    throw new Error(serverError);
+                }
+
+                if (responseJson && responseJson.success === false) {
+                    const failureSummary = Array.isArray(responseJson.failures) && responseJson.failures.length > 0
+                        ? ` | Failures: ${responseJson.failures.map(item => `${item.table}#${item.id ?? '?'}`).join(', ')}`
+                        : '';
+                    throw new Error(`${responseJson.error || 'SYNC_FAILED'}${failureSummary}`);
+                }
+
+                console.log(`✅ [SYNC] Server accepted: ${Object.keys(dataToSend).join(', ')}`);
+                return;
+            } catch (e) {
+                lastError = e;
+                const isLastAttempt = attempt >= maxAttempts;
+                if (isLastAttempt) {
+                    break;
+                }
+
+                const delayMs = 350 * attempt;
+                console.warn(`⚠️ [SYNC] Send attempt ${attempt}/${maxAttempts} failed for ${Object.keys(dataToSend).join(', ')}: ${e.message}. Retrying in ${delayMs}ms...`);
+                await new Promise((resolve) => setTimeout(resolve, delayMs));
             }
-            console.log(`✅ [SYNC] Server accepted: ${Object.keys(dataToSend).join(', ')}`);
-        } catch (e) {
-            console.error(`❌ [SYNC] Error sending ${Object.keys(dataToSend).join(', ')}:`, e.message);
-            throw e;
         }
+
+        console.error(`❌ [SYNC] Error sending ${Object.keys(dataToSend).join(', ')}:`, lastError ? lastError.message : 'UNKNOWN_ERROR');
+        throw lastError || new Error('UNKNOWN_SYNC_ERROR');
     }
 
     // Helper: Split array into chunks and send

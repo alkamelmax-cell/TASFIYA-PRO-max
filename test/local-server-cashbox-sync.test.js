@@ -66,10 +66,17 @@ function createSyncPool(initialState = {}) {
         return { rowCount, rows: [] };
       }
 
-      if (normalized === 'DELETE FROM cashbox_vouchers WHERE sync_key != ALL($1::text[])') {
+      if (normalized.startsWith('DELETE FROM cashbox_vouchers WHERE') && normalized.includes('sync_key')) {
         const activeSyncKeys = new Set((params[0] || []).map((value) => String(value)));
         const before = state.cashboxVouchers.length;
-        state.cashboxVouchers = state.cashboxVouchers.filter((voucher) => activeSyncKeys.has(String(voucher.sync_key || '')));
+        const shouldDeleteNullOrEmpty = normalized.includes('sync_key IS NULL') || normalized.includes("BTRIM(sync_key::text) = ''");
+        state.cashboxVouchers = state.cashboxVouchers.filter((voucher) => {
+          const syncKey = String(voucher.sync_key || '').trim();
+          if (!syncKey) {
+            return !shouldDeleteNullOrEmpty;
+          }
+          return activeSyncKeys.has(syncKey);
+        });
         const rowCount = before - state.cashboxVouchers.length;
         state.cleanupCalls.push({ table: 'cashbox_vouchers', ids: [...activeSyncKeys] });
         return { rowCount, rows: [] };
@@ -361,6 +368,51 @@ test('legacy active_cashbox_vouchers_ids payload does not delete canonical Rende
   assert.equal(legacyResponse.success, true);
   assert.equal(pool.state.cashboxVouchers.length, 1);
   assert.equal(pool.state.cleanupCalls.length, cleanupCountBeforeLegacyPayload);
+});
+
+test('active_cashbox_voucher_sync_keys cleanup removes stale and null sync key vouchers', async () => {
+  const pool = createSyncPool({
+    branches: [{ id: 7, branch_name: 'فرع الرياض', is_active: 1 }],
+    branchCashboxes: [{ id: 701, branch_id: 7, cashbox_name: 'صندوق الرياض', opening_balance: 0, is_active: 1 }],
+    cashboxVouchers: [
+      {
+        id: 901,
+        sync_key: 'manual:2026-04-12%2012:00:00:1',
+        voucher_number: 1,
+        voucher_sequence_number: 1,
+        voucher_type: 'receipt',
+        cashbox_id: 701,
+        branch_id: 7
+      },
+      {
+        id: 902,
+        sync_key: null,
+        voucher_number: 2,
+        voucher_sequence_number: 2,
+        voucher_type: 'receipt',
+        cashbox_id: 701,
+        branch_id: 7
+      },
+      {
+        id: 903,
+        sync_key: 'manual:old:3',
+        voucher_number: 3,
+        voucher_sequence_number: 3,
+        voucher_type: 'receipt',
+        cashbox_id: 701,
+        branch_id: 7
+      }
+    ]
+  });
+  const server = new LocalWebServer({ pool }, 0);
+
+  const response = await sendSync(server, {
+    active_cashbox_voucher_sync_keys: ['manual:2026-04-12%2012:00:00:1']
+  });
+
+  assert.equal(response.success, true);
+  assert.equal(pool.state.cashboxVouchers.length, 1);
+  assert.equal(pool.state.cashboxVouchers[0].sync_key, 'manual:2026-04-12%2012:00:00:1');
 });
 
 test('cashbox vouchers with colliding local numbers still sync as distinct canonical rows on Render', async () => {

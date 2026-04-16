@@ -2267,6 +2267,7 @@ class LocalWebServer {
 
                     const column = options.column || 'id';
                     const castType = options.castType || 'int';
+                    const deleteNullOrEmpty = options.deleteNullOrEmpty === true;
                     const normalizer = typeof options.normalizer === 'function'
                         ? options.normalizer
                         : normalizeIdList;
@@ -2277,8 +2278,11 @@ class LocalWebServer {
                             // Delete records NOT in the activeIds list (Mirror Sync)
                             // "DELETE FROM table WHERE id NOT IN (...)"
                             // Optimized for Postgres using ANY/ALL
+                            const cleanupCondition = deleteNullOrEmpty
+                                ? `(${column} IS NULL OR BTRIM(${column}::text) = '' OR ${column} != ALL($1::${castType}[]))`
+                                : `${column} != ALL($1::${castType}[])`;
                             const result = await pool.query(
-                                `DELETE FROM ${table} WHERE ${column} != ALL($1::${castType}[])`,
+                                `DELETE FROM ${table} WHERE ${cleanupCondition}`,
                                 [normalizedIds]
                             );
                             if (result.rowCount > 0) {
@@ -2685,7 +2689,8 @@ class LocalWebServer {
                     await handleCleanup('cashbox_vouchers', activeCashboxVoucherSyncKeys, {
                         column: 'sync_key',
                         castType: 'text',
-                        normalizer: normalizeTextList
+                        normalizer: normalizeTextList,
+                        deleteNullOrEmpty: true
                     });
                 } else if (Array.isArray(data.active_cashbox_vouchers_ids) && data.active_cashbox_vouchers_ids.length > 0) {
                     console.log('ℹ️ [SYNC] Ignoring legacy active_cashbox_vouchers_ids cleanup on PostgreSQL; voucher ids are local and not globally stable.');
