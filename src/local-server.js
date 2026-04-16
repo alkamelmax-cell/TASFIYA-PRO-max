@@ -2684,14 +2684,26 @@ class LocalWebServer {
                     console.log('ℹ️ [SYNC] Ignoring legacy active_cashbox_voucher_audit_log_ids cleanup on PostgreSQL; local audit-log ids are not globally stable.');
                 }
 
+                const hasCashboxVoucherSyncKeys = Array.isArray(data.active_cashbox_voucher_sync_keys);
                 const activeCashboxVoucherSyncKeys = normalizeTextList(data.active_cashbox_voucher_sync_keys);
-                if (activeCashboxVoucherSyncKeys.length > 0) {
-                    await handleCleanup('cashbox_vouchers', activeCashboxVoucherSyncKeys, {
-                        column: 'sync_key',
-                        castType: 'text',
-                        normalizer: normalizeTextList,
-                        deleteNullOrEmpty: true
-                    });
+                if (hasCashboxVoucherSyncKeys) {
+                    if (activeCashboxVoucherSyncKeys.length > 0) {
+                        await handleCleanup('cashbox_vouchers', activeCashboxVoucherSyncKeys, {
+                            column: 'sync_key',
+                            castType: 'text',
+                            normalizer: normalizeTextList,
+                            deleteNullOrEmpty: true
+                        });
+                    } else {
+                        try {
+                            const wipeResult = await pool.query('DELETE FROM cashbox_vouchers');
+                            if (wipeResult.rowCount > 0) {
+                                console.log(`🧹 [SYNC] Removed ${wipeResult.rowCount} cashbox_vouchers because active sync keys payload is empty.`);
+                            }
+                        } catch (wipeError) {
+                            console.error('⚠️ [SYNC] cashbox_vouchers empty-sync-key cleanup failed:', wipeError.message);
+                        }
+                    }
                 } else if (Array.isArray(data.active_cashbox_vouchers_ids) && data.active_cashbox_vouchers_ids.length > 0) {
                     console.log('ℹ️ [SYNC] Ignoring legacy active_cashbox_vouchers_ids cleanup on PostgreSQL; voucher ids are local and not globally stable.');
                 }

@@ -103,6 +103,64 @@ class BackgroundSync {
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
+    parseInteger(value) {
+        if (value === null || value === undefined || value === '') return null;
+        const numeric = Number(value);
+        if (!Number.isFinite(numeric)) return null;
+        return Math.trunc(numeric);
+    }
+
+    parseNumber(value, fallback = 0) {
+        if (value === null || value === undefined || value === '') return fallback;
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : fallback;
+    }
+
+    toOptionalText(value) {
+        if (value === null || value === undefined) return null;
+        const normalized = String(value).trim();
+        return normalized.length > 0 ? normalized : null;
+    }
+
+    buildCashboxVoucherSyncKey(voucher, localCashboxToBranchMap = new Map()) {
+        const localCashboxId = this.parseInteger(voucher?.cashbox_id);
+        let branchId = this.parseInteger(voucher?.branch_id);
+        if (branchId === null && localCashboxId !== null && localCashboxToBranchMap.has(localCashboxId)) {
+            branchId = localCashboxToBranchMap.get(localCashboxId);
+        }
+        if (branchId === null) {
+            return null;
+        }
+
+        const explicitSyncKey = this.toOptionalText(voucher?.sync_key);
+        if (explicitSyncKey) return explicitSyncKey;
+
+        const sourceReconciliationId = this.parseInteger(voucher?.source_reconciliation_id);
+        const sourceEntryKey = this.toOptionalText(voucher?.source_entry_key);
+        if (sourceReconciliationId !== null && sourceEntryKey) {
+            return `recon:${sourceReconciliationId}:${sourceEntryKey}`;
+        }
+
+        const voucherType = this.toOptionalText(voucher?.voucher_type) || 'unknown';
+        const voucherSequence = this.parseInteger(voucher?.voucher_sequence_number);
+        if (voucherSequence !== null) {
+            return `seq:${branchId}:${voucherType}:${voucherSequence}`;
+        }
+
+        const voucherNumber = this.parseInteger(voucher?.voucher_number);
+        if (voucherNumber !== null) {
+            return `num:${branchId}:${voucherType}:${voucherNumber}`;
+        }
+
+        const voucherDate = this.toOptionalText(voucher?.voucher_date) || 'na';
+        const amount = this.parseNumber(voucher?.amount, 0);
+        const counterpartyType = this.toOptionalText(voucher?.counterparty_type) || 'na';
+        const counterpartyName = this.toOptionalText(voucher?.counterparty_name) || 'na';
+        const createdAt = this.toOptionalText(voucher?.created_at) || 'na';
+        const localId = this.toOptionalText(voucher?.id) || 'na';
+        return `fallback:${branchId}:${voucherType}:${voucherDate}:${amount}:${counterpartyType}:${counterpartyName}:${createdAt}:${localId}`;
+    }
+
     async pushLocalData(db) {
         // --- PUSH: Upload Local Data ---
 
@@ -113,10 +171,20 @@ class BackgroundSync {
         const accountants = db.prepare('SELECT * FROM accountants').all();
         const atms = db.prepare('SELECT * FROM atms').all();
         const branch_cashboxes = db.prepare('SELECT * FROM branch_cashboxes').all();
+        const cashbox_vouchers = db.prepare('SELECT * FROM cashbox_vouchers ORDER BY id DESC').all();
 
         console.log(`🔍 [SYNC] Local counts: admins=${admins.length}, branches=${branches.length}, cashiers=${cashiers.length}, accountants=${accountants.length}, atms=${atms.length}, branch_cashboxes=${branch_cashboxes.length}`);
 
         await this.sendPayload({ admins, branches, cashiers, accountants, atms, branch_cashboxes });
+
+        const localCashboxToBranchMap = new Map();
+        branch_cashboxes.forEach((row) => {
+            const localCashboxId = this.parseInteger(row?.id);
+            const branchId = this.parseInteger(row?.branch_id);
+            if (localCashboxId !== null && branchId !== null) {
+                localCashboxToBranchMap.set(localCashboxId, branchId);
+            }
+        });
 
         // 2. Mirror Sync: Send ALL active IDs first to allow server to clean up deleted records
         // This is the robust way to handle deletions without risking data loss during chunked upload
@@ -151,20 +219,27 @@ class BackgroundSync {
             .map(row => row && row.branch_id)
             .filter(branchId => Number.isFinite(Number(branchId)))
             .map(branchId => Number(branchId));
-        if (activeBranchCashboxBranchIds.length > 0) {
-            allIdsPayload.active_branch_cashboxes_branch_ids = activeBranchCashboxBranchIds;
-            hasIds = true;
-        }
+        allIdsPayload.active_branch_cashboxes_branch_ids = activeBranchCashboxBranchIds;
+        hasIds = true;
+
+        const activeCashboxVoucherSyncKeys = Array.from(
+            new Set(
+                cashbox_vouchers
+                    .map((voucher) => this.buildCashboxVoucherSyncKey(voucher, localCashboxToBranchMap))
+                    .filter((value) => typeof value === 'string' && value.length > 0)
+            )
+        );
+        allIdsPayload.active_cashbox_voucher_sync_keys = activeCashboxVoucherSyncKeys;
+        hasIds = true;
 
         if (hasIds) {
             console.log('🧹 [SYNC] Sending ID lists for mirror cleanup...');
             // We send this as a separate payload type so the server knows it's an ID list, not full data
-            await this.sendPayload(allIdsPayload);
+            await this.sendPayload(allIdsPayload, { preserveEmptyArrays: true });
         }
 
         // 3. High-priority cashbox mirror first (faster web consistency under heavy sync load)
         await this.safePushStep('cashbox_vouchers', async () => {
-            const cashbox_vouchers = db.prepare('SELECT * FROM cashbox_vouchers ORDER BY id DESC').all();
             await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, 500);
         });
 
@@ -222,19 +297,30 @@ class BackgroundSync {
     }
 
     // Helper: Send a specific payload
-    async sendPayload(payload) {
+    async sendPayload(payload, options = {}) {
         // Check if sync is enabled before sending
         if (!this.enabled) {
             console.log('⛔ [SYNC] sendPayload blocked - sync is disabled');
             return;
         }
 
+        const preserveEmptyArrays = Boolean(options.preserveEmptyArrays);
+
         // Filter out empty arrays to save bandwidth
         const dataToSend = {};
         let hasData = false;
         for (const key in payload) {
-            if (payload[key] && payload[key].length > 0) {
-                dataToSend[key] = payload[key];
+            const value = payload[key];
+            if (Array.isArray(value)) {
+                if (value.length > 0 || preserveEmptyArrays) {
+                    dataToSend[key] = value;
+                    hasData = true;
+                }
+                continue;
+            }
+
+            if (value && value.length > 0) {
+                dataToSend[key] = value;
                 hasData = true;
             }
         }

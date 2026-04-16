@@ -94,31 +94,6 @@ function createRequestsDb(initialRows = []) {
   };
 }
 
-function createPushDb(tables = {}) {
-  return {
-    prepare(sql) {
-      const selectMatch = sql.match(/SELECT\s+(\*|id)\s+FROM\s+([a-z_]+)/i);
-      if (!selectMatch) {
-        throw new Error(`Unexpected SQL in push test double: ${sql}`);
-      }
-
-      const column = selectMatch[1].toLowerCase();
-      const table = selectMatch[2];
-      const rows = (tables[table] || []).map((row) => ({ ...row }));
-
-      return {
-        all() {
-          if (column === 'id') {
-            return rows.map((row) => ({ id: row.id }));
-          }
-
-          return rows;
-        }
-      };
-    }
-  };
-}
-
 test('fetchRemoteRequests persists full request fields and executes transaction', async () => {
   const remoteRequests = [
     {
@@ -194,6 +169,28 @@ test('fetchRemoteRequests persists full request fields and executes transaction'
   assert.equal(insertedRow.notes, 'new row');
 });
 
+test('fetchRemoteRequests requests all statuses including deleted for mirror sync', async () => {
+  let requestedUrl = '';
+  const { BackgroundSync } = loadBackgroundSyncWithMocks(async (url) => {
+    requestedUrl = String(url || '');
+    return {
+      ok: true,
+      async json() {
+        return { success: true, data: [] };
+      }
+    };
+  });
+
+  const db = createRequestsDb([]);
+  const sync = new BackgroundSync({ db });
+  await sync.fetchRemoteRequests(db);
+
+  assert.ok(
+    requestedUrl.includes('/api/reconciliation-requests?status=all&include_deleted=1'),
+    `unexpected pull url: ${requestedUrl}`
+  );
+});
+
 test('doSync still pulls remote requests when pushLocalData fails', async () => {
   const { BackgroundSync } = loadBackgroundSyncWithMocks(async () => ({
     ok: true,
@@ -220,57 +217,142 @@ test('doSync still pulls remote requests when pushLocalData fails', async () => 
 });
 
 test('pushLocalData sends branch-based active cashbox ids alongside legacy ids', async () => {
-  const { BackgroundSync } = loadBackgroundSyncWithMocks(async () => ({
-    ok: true,
-    async json() {
-      return { success: true };
-    }
-  }));
-
-  const db = createPushDb({
-    admins: [{ id: 1, username: 'admin' }],
-    branches: [{ id: 5, branch_name: 'الرياض' }, { id: 8, branch_name: 'جدة' }],
-    cashiers: [],
-    accountants: [],
-    atms: [],
-    branch_cashboxes: [
-      { id: 91, branch_id: 5, cashbox_name: 'صندوق الرياض' },
-      { id: 92, branch_id: 8, cashbox_name: 'صندوق جدة' }
-    ],
-    cashbox_vouchers: [
-      {
-        id: 10,
-        voucher_number: 1,
-        voucher_sequence_number: 1,
-        voucher_type: 'receipt',
-        branch_id: 5,
-        created_at: '2026-04-10T10:00:00.000Z'
+  const sentPayloads = [];
+  const { BackgroundSync } = loadBackgroundSyncWithMocks(async (_url, options = {}) => {
+    const body = options.body ? JSON.parse(options.body) : {};
+    sentPayloads.push(body);
+    return {
+      ok: true,
+      async json() {
+        return { success: true };
       }
-    ],
-    reconciliations: [],
-    postpaid_sales: [],
-    customer_receipts: [],
-    manual_postpaid_sales: [],
-    manual_customer_receipts: [],
-    cash_receipts: [],
-    bank_receipts: [],
-    cashbox_voucher_audit_log: [],
-    reconciliation_requests: []
+    };
   });
 
-  const sync = new BackgroundSync({ db });
-  const payloads = [];
+  const branchCashboxes = [
+    { id: 501, branch_id: 11, cashbox_name: 'Main 11' },
+    { id: 502, branch_id: 12, cashbox_name: 'Main 12' }
+  ];
 
-  sync.sendPayload = async (payload) => {
-    payloads.push(payload);
+  const db = {
+    prepare(sql) {
+      if (sql === 'SELECT * FROM admins') return { all: () => [] };
+      if (sql === 'SELECT * FROM branches') return { all: () => [] };
+      if (sql === 'SELECT * FROM cashiers') return { all: () => [] };
+      if (sql === 'SELECT * FROM accountants') return { all: () => [] };
+      if (sql === 'SELECT * FROM atms') return { all: () => [] };
+      if (sql === 'SELECT * FROM branch_cashboxes') return { all: () => branchCashboxes };
+      if (sql.startsWith('SELECT id FROM branch_cashboxes')) return { all: () => branchCashboxes.map(row => ({ id: row.id })) };
+      if (sql.startsWith('SELECT id FROM')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM reconciliations')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM manual_postpaid_sales')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM manual_customer_receipts')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM postpaid_sales')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM customer_receipts')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM cash_receipts')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM bank_receipts')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM cashbox_vouchers')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM cashbox_voucher_audit_log')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM reconciliation_requests')) return { all: () => [] };
+      throw new Error(`Unexpected SQL in test double: ${sql}`);
+    }
   };
-  sync.sendInBatches = async () => {};
 
+  const sync = new BackgroundSync({ db });
   await sync.pushLocalData(db);
 
-  const cleanupPayload = payloads.find((payload) => Object.prototype.hasOwnProperty.call(payload, 'active_branch_cashboxes_ids'));
-  assert.ok(cleanupPayload, 'expected cleanup payload to be sent');
-  assert.deepEqual(cleanupPayload.active_branch_cashboxes_ids, [91, 92]);
-  assert.deepEqual(cleanupPayload.active_branch_cashboxes_branch_ids, [5, 8]);
-  assert.deepEqual(cleanupPayload.active_cashbox_voucher_sync_keys, ['manual:2026-04-10%2010:00:00:10']);
+  const cleanupPayload = sentPayloads.find(payload => Object.prototype.hasOwnProperty.call(payload, 'active_branch_cashboxes_ids'));
+  assert.ok(cleanupPayload, 'expected cleanup payload with active_branch_cashboxes_ids');
+  assert.deepEqual(cleanupPayload.active_branch_cashboxes_ids, [501, 502]);
+  assert.deepEqual(cleanupPayload.active_branch_cashboxes_branch_ids, [11, 12]);
+  assert.deepEqual(cleanupPayload.active_cashbox_voucher_sync_keys, []);
+});
+
+test('pushLocalData sends active cashbox voucher sync keys for mirror-safe deletions', async () => {
+  const sentPayloads = [];
+  const { BackgroundSync } = loadBackgroundSyncWithMocks(async (_url, options = {}) => {
+    const body = options.body ? JSON.parse(options.body) : {};
+    sentPayloads.push(body);
+    return {
+      ok: true,
+      async json() {
+        return { success: true };
+      }
+    };
+  });
+
+  const branchCashboxes = [
+    { id: 91, branch_id: 7, cashbox_name: 'Branch 7' }
+  ];
+  const cashboxVouchers = [
+    {
+      id: 1001,
+      cashbox_id: 91,
+      branch_id: 7,
+      voucher_type: 'receipt',
+      voucher_sequence_number: 11,
+      voucher_number: 101,
+      source_reconciliation_id: null,
+      source_entry_key: null
+    },
+    {
+      id: 1002,
+      cashbox_id: 91,
+      branch_id: 7,
+      voucher_type: 'payment',
+      voucher_sequence_number: null,
+      voucher_number: 44,
+      source_reconciliation_id: null,
+      source_entry_key: null
+    },
+    {
+      id: 1003,
+      cashbox_id: 91,
+      branch_id: 7,
+      voucher_type: 'receipt',
+      voucher_sequence_number: null,
+      voucher_number: 77,
+      source_reconciliation_id: 555,
+      source_entry_key: 'supplier:9'
+    }
+  ];
+
+  const db = {
+    prepare(sql) {
+      if (sql === 'SELECT * FROM admins') return { all: () => [] };
+      if (sql === 'SELECT * FROM branches') return { all: () => [] };
+      if (sql === 'SELECT * FROM cashiers') return { all: () => [] };
+      if (sql === 'SELECT * FROM accountants') return { all: () => [] };
+      if (sql === 'SELECT * FROM atms') return { all: () => [] };
+      if (sql === 'SELECT * FROM branch_cashboxes') return { all: () => branchCashboxes };
+      if (sql.startsWith('SELECT * FROM cashbox_vouchers')) return { all: () => cashboxVouchers };
+      if (sql.startsWith('SELECT id FROM branch_cashboxes')) return { all: () => branchCashboxes.map(row => ({ id: row.id })) };
+      if (sql.startsWith('SELECT id FROM cashbox_vouchers')) return { all: () => cashboxVouchers.map(row => ({ id: row.id })) };
+      if (sql.startsWith('SELECT id FROM')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM reconciliations')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM manual_postpaid_sales')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM manual_customer_receipts')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM postpaid_sales')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM customer_receipts')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM cash_receipts')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM bank_receipts')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM cashbox_voucher_audit_log')) return { all: () => [] };
+      if (sql.startsWith('SELECT * FROM reconciliation_requests')) return { all: () => [] };
+      throw new Error(`Unexpected SQL in test double: ${sql}`);
+    }
+  };
+
+  const sync = new BackgroundSync({ db });
+  await sync.pushLocalData(db);
+
+  const cleanupPayload = sentPayloads.find(payload => Object.prototype.hasOwnProperty.call(payload, 'active_cashbox_voucher_sync_keys'));
+  assert.ok(cleanupPayload, 'expected cleanup payload with active_cashbox_voucher_sync_keys');
+  assert.deepEqual(
+    cleanupPayload.active_cashbox_voucher_sync_keys.slice().sort(),
+    [
+      'recon:555:supplier:9',
+      'seq:7:receipt:11',
+      'num:7:payment:44'
+    ].sort()
+  );
 });
