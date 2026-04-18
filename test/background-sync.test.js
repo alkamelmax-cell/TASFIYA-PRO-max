@@ -186,7 +186,7 @@ test('fetchRemoteRequests requests all statuses including deleted for mirror syn
   await sync.fetchRemoteRequests(db);
 
   assert.ok(
-    requestedUrl.includes('/api/reconciliation-requests?status=all&include_deleted=1'),
+    requestedUrl.includes('/api/reconciliation-requests?status=all&include_deleted=1&include_details=raw'),
     `unexpected pull url: ${requestedUrl}`
   );
 });

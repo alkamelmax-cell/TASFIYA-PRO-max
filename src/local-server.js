@@ -11,6 +11,25 @@ const { buildCashboxVoucherSyncKey } = require('./app/cashbox-voucher-utils');
 
 const SESSION_COOKIE_NAME = 'tasfiya_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const DEFAULT_JSON_BODY_LIMIT_BYTES = 512 * 1024;
+const LARGE_JSON_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
+
+function isTruthyQueryValue(value) {
+    return value === true || value === '1' || value === 'true';
+}
+
+function parseNumericDbValue(value, fallback = 0) {
+    if (value === null || value === undefined || value === '') {
+        return fallback;
+    }
+
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : fallback;
+    }
+
+    const normalized = Number.parseFloat(String(value).replace(/,/g, '').trim());
+    return Number.isFinite(normalized) ? normalized : fallback;
+}
 
 class LocalWebServer {
     constructor(dbManager, port = 4000, options = {}) {
@@ -34,6 +53,122 @@ class LocalWebServer {
         this.startedAt = null;
         this.indexesReady = false;
         this.ensureIndexesInFlight = null;
+    }
+
+    async readJsonBody(req, options = {}) {
+        const maxBytes = Number.isFinite(options.maxBytes) && options.maxBytes > 0
+            ? options.maxBytes
+            : DEFAULT_JSON_BODY_LIMIT_BYTES;
+        const routeLabel = options.routeLabel || 'request body';
+
+        return new Promise((resolve, reject) => {
+            const chunks = [];
+            let totalBytes = 0;
+            let limitExceeded = false;
+
+            req.on('data', (chunk) => {
+                if (limitExceeded) {
+                    return;
+                }
+
+                totalBytes += chunk.length;
+                if (totalBytes > maxBytes) {
+                    limitExceeded = true;
+                    return;
+                }
+
+                chunks.push(chunk);
+            });
+
+            req.on('end', () => {
+                if (limitExceeded) {
+                    const error = new Error(`${routeLabel} exceeded the ${maxBytes} byte limit`);
+                    error.statusCode = 413;
+                    reject(error);
+                    return;
+                }
+
+                const rawBody = chunks.length > 0
+                    ? Buffer.concat(chunks).toString('utf8').trim()
+                    : '';
+
+                if (!rawBody) {
+                    resolve({});
+                    return;
+                }
+
+                try {
+                    resolve(JSON.parse(rawBody));
+                } catch (error) {
+                    error.statusCode = 400;
+                    reject(error);
+                }
+            });
+
+            req.on('error', reject);
+        });
+    }
+
+    getReconciliationRequestSelectColumns(includeDetailsMode = 'none', tableAlias = 'r') {
+        const prefix = tableAlias ? `${tableAlias}.` : '';
+        const columns = [
+            `${prefix}id`,
+            `${prefix}cashier_id`,
+            `${prefix}request_date`,
+            `${prefix}system_sales`,
+            `${prefix}total_cash`,
+            `${prefix}total_bank`,
+            `${prefix}status`,
+            `${prefix}notes`,
+            `${prefix}created_at`,
+            `${prefix}updated_at`,
+            `${prefix}restored_at`,
+            `${prefix}restored_reason`
+        ];
+
+        if (includeDetailsMode === 'parsed' || includeDetailsMode === 'raw') {
+            columns.push(`${prefix}details_json`);
+        }
+
+        return columns.join(', ');
+    }
+
+    normalizeReconciliationRequestRow(requestRow, includeDetailsMode = 'none') {
+        const normalizedRow = {
+            id: requestRow.id,
+            cashier_id: requestRow.cashier_id,
+            request_date: requestRow.request_date,
+            system_sales: requestRow.system_sales,
+            total_cash: requestRow.total_cash,
+            total_bank: requestRow.total_bank,
+            status: requestRow.status,
+            notes: requestRow.notes,
+            created_at: requestRow.created_at,
+            updated_at: requestRow.updated_at,
+            restored_at: requestRow.restored_at || null,
+            restored_reason: requestRow.restored_reason || '',
+            cashier_name: requestRow.cashier_name || 'غير معروف',
+            branch_id: requestRow.branch_id || null
+        };
+
+        if (includeDetailsMode === 'raw') {
+            if (typeof requestRow.details_json === 'string') {
+                normalizedRow.details_json = requestRow.details_json;
+            } else {
+                normalizedRow.details_json = JSON.stringify(requestRow.details_json || {});
+            }
+        } else if (includeDetailsMode === 'parsed') {
+            try {
+                normalizedRow.details = requestRow.details_json
+                    ? (typeof requestRow.details_json === 'string' ? JSON.parse(requestRow.details_json) : requestRow.details_json)
+                    : {};
+            } catch (error) {
+                console.warn(`⚠️ [API] Failed to parse reconciliation request details for request ${requestRow.id}:`, error.message);
+                normalizedRow.details = {};
+            }
+        }
+
+        return normalizedRow;
     }
 
     setDatabaseReady(metadata = {}) {
@@ -549,6 +684,11 @@ class LocalWebServer {
                     await this.handleCompleteReconciliationRequest(res, id);
                     return;
                 }
+                else if (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && req.method === 'GET') {
+                    const id = pathname.split('/').pop();
+                    await this.handleGetReconciliationRequestById(res, id, parsedUrl.query);
+                    return;
+                }
                 else if (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && req.method === 'DELETE') {
                     const id = pathname.split('/').pop();
                     await this.handleDeleteReconciliationRequest(res, id);
@@ -930,82 +1070,57 @@ class LocalWebServer {
     async handleGetReconciliationsStats(res, query) {
         try {
             const params = [];
-            let whereClause = "WHERE 1=1";
+            let whereClause = 'WHERE 1=1';
 
-            // Build WHERE clause reused for both queries
-            if (query.dateFrom) { whereClause += ` AND r.reconciliation_date >= ?`; params.push(query.dateFrom); }
-            if (query.dateTo) { whereClause += ` AND r.reconciliation_date <= ?`; params.push(query.dateTo); }
-            if (query.cashierId && query.cashierId !== 'all') { whereClause += ` AND r.cashier_id = ?`; params.push(query.cashierId); }
-            if (query.branchId && query.branchId !== 'all') { whereClause += ` AND c.branch_id = ?`; params.push(query.branchId); }
-            if (query.status && query.status !== 'all') { whereClause += ` AND r.status = ?`; params.push(query.status); }
+            if (query.dateFrom) {
+                whereClause += ' AND r.reconciliation_date >= ?';
+                params.push(query.dateFrom);
+            }
+            if (query.dateTo) {
+                whereClause += ' AND r.reconciliation_date <= ?';
+                params.push(query.dateTo);
+            }
+            if (query.cashierId && query.cashierId !== 'all') {
+                whereClause += ' AND r.cashier_id = ?';
+                params.push(query.cashierId);
+            }
+            if (query.branchId && query.branchId !== 'all') {
+                whereClause += ' AND c.branch_id = ?';
+                params.push(query.branchId);
+            }
+            if (query.status && query.status !== 'all') {
+                whereClause += ' AND r.status = ?';
+                params.push(query.status);
+            }
 
-            // Strategy: Fetch RAW data and sum in JS to handle any data type weirdness (String vs Number)
-
-            // 1. Get Main Totals (Fetch raw columns only)
-            // IMPORTANT: Use same JOINs as handleGetReconciliations for identical counts
-            const sqlMain = `
-                SELECT 
-                    r.total_receipts,
-                    r.system_sales
-                FROM reconciliations r
-                LEFT JOIN cashiers c ON r.cashier_id = c.id
-                LEFT JOIN accountants a ON r.accountant_id = a.id
-                ${whereClause}
-            `;
-
-            console.log('📊 [STATS] Calculating via JS Loop...');
-            const mainRows = await this.dbManager.db.prepare(sqlMain).all(params);
-
-            let count = 0;
-            let totalReceipts = 0;
-            let totalSales = 0;
-
-            // Safe Summation Function
-            const safeParse = (val) => {
-                if (val === null || val === undefined) return 0;
-                if (typeof val === 'number') return val;
-                // Clean string: remove commas, allow dots
-                const clean = String(val).replace(/,/g, '').trim();
-                const num = parseFloat(clean);
-                return isNaN(num) ? 0 : num;
-            };
-
-            mainRows.forEach(row => {
-                count++;
-                totalReceipts += safeParse(row.total_receipts);
-                totalSales += safeParse(row.system_sales);
-            });
-
-            console.log(`📊 [STATS] JS Result -> Count: ${count}, Receipts: ${totalReceipts}, Sales: ${totalSales}`);
-
-            // 2. Get Cash Totals (Fetch raw total_amount)
-            const sqlCash = `
-                SELECT 
-                    cr.total_amount
-                FROM cash_receipts cr
-                JOIN reconciliations r ON cr.reconciliation_id = r.id
-                LEFT JOIN cashiers c ON r.cashier_id = c.id
-                LEFT JOIN accountants a ON r.accountant_id = a.id
-                ${whereClause}
-            `;
-
-            const cashRows = await this.dbManager.db.prepare(sqlCash).all(params);
-
-            console.log(`📊 [STATS] Cash Rows Found: ${cashRows.length}`);
-
-            let totalCash = 0;
-            cashRows.forEach(row => {
-                totalCash += safeParse(row.total_amount);
-            });
-            console.log(`📊 [STATS] Total Cash Calculated: ${totalCash}`);
-
-            console.log(`📊 [STATS] JS Cash Result -> Rows: ${cashRows.length}, Total: ${totalCash}`);
+            const statsRow = await this.dbManager.db.prepare(`
+                WITH filtered_reconciliations AS (
+                    SELECT
+                        r.id,
+                        COALESCE(CAST(r.total_receipts AS NUMERIC), 0) AS total_receipts,
+                        COALESCE(CAST(r.system_sales AS NUMERIC), 0) AS system_sales
+                    FROM reconciliations r
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    LEFT JOIN accountants a ON r.accountant_id = a.id
+                    ${whereClause}
+                )
+                SELECT
+                    COUNT(*) AS count,
+                    COALESCE(SUM(total_receipts), 0) AS total_receipts,
+                    COALESCE(SUM(system_sales), 0) AS total_sales,
+                    COALESCE((
+                        SELECT SUM(COALESCE(CAST(cr.total_amount AS NUMERIC), 0))
+                        FROM cash_receipts cr
+                        JOIN filtered_reconciliations fr ON fr.id = cr.reconciliation_id
+                    ), 0) AS total_cash
+                FROM filtered_reconciliations
+            `).get(params);
 
             const result = {
-                count: count,
-                totalReceipts: totalReceipts,
-                totalSales: totalSales,
-                totalCash: totalCash
+                count: parseNumericDbValue(statsRow?.count, 0),
+                totalReceipts: parseNumericDbValue(statsRow?.total_receipts, 0),
+                totalSales: parseNumericDbValue(statsRow?.total_sales, 0),
+                totalCash: parseNumericDbValue(statsRow?.total_cash, 0)
             };
 
             this.sendJson(res, { success: true, stats: result });
@@ -2030,11 +2145,11 @@ class LocalWebServer {
     }
 
     async handleSyncUsers(req, res) {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', async () => {
-            try {
-                const data = JSON.parse(body);
+        try {
+            const data = await this.readJsonBody(req, {
+                maxBytes: LARGE_JSON_BODY_LIMIT_BYTES,
+                routeLabel: '/api/sync/users payload'
+            });
                 console.log('🔄 [SYNC] Received sync data:', Object.keys(data));
 
                 // **ROOT FIX**: Use pool.query() directly for PostgreSQL
@@ -3015,13 +3130,16 @@ class LocalWebServer {
                     return;
                 }
 
-                console.log('✅ [SYNC] Full sync completed successfully');
-                this.sendJson(res, { success: true, message: 'Full sync completed' });
-            } catch (error) {
-                console.error('❌ [SYNC] Fatal error:', error);
-                this.sendJson(res, { success: false, error: error.message });
-            }
-        });
+            console.log('✅ [SYNC] Full sync completed successfully');
+            this.sendJson(res, { success: true, message: 'Full sync completed' });
+        } catch (error) {
+            console.error('❌ [SYNC] Fatal error:', error);
+            this.sendJson(
+                res,
+                { success: false, error: error.message },
+                { statusCode: error.statusCode || 500 }
+            );
+        }
     }
 
     async handleUpdateRequestStatus(req, res) {
@@ -3317,11 +3435,11 @@ class LocalWebServer {
 
 
     async handleCreateReconciliationRequest(req, res) {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', async () => {
-            try {
-                const data = JSON.parse(body);
+        try {
+            const data = await this.readJsonBody(req, {
+                maxBytes: LARGE_JSON_BODY_LIMIT_BYTES,
+                routeLabel: '/api/reconciliation-requests payload'
+            });
                 const authUser = req && req.authUser ? req.authUser : null;
 
                 if (authUser && authUser.role === 'cashier') {
@@ -3414,15 +3532,15 @@ class LocalWebServer {
                     );
                 } catch (e) { console.error('Notification Error', e); }
 
-                this.sendJson(res, { success: true, id: insertedId });
-
-
-
-            } catch (error) {
-                console.error('❌ [API] Error creating reconciliation request:', error);
-                this.sendJson(res, { success: false, error: error.message });
-            }
-        });
+            this.sendJson(res, { success: true, id: insertedId });
+        } catch (error) {
+            console.error('❌ [API] Error creating reconciliation request:', error);
+            this.sendJson(
+                res,
+                { success: false, error: error.message },
+                { statusCode: error.statusCode || 500 }
+            );
+        }
     }
 
     async handleGetReconciliationRequests(res, query) {
@@ -3431,6 +3549,11 @@ class LocalWebServer {
 
             let statusFilter = 'pending';
             if (query && query.status) statusFilter = query.status;
+            const includeDeleted = Boolean(query && isTruthyQueryValue(query.include_deleted));
+            const includeDetailsMode = query && query.include_details === 'raw'
+                ? 'raw'
+                : (query && isTruthyQueryValue(query.include_details) ? 'parsed' : 'none');
+            const selectColumns = this.getReconciliationRequestSelectColumns(includeDetailsMode);
 
             const pool = this.dbManager.pool;
             let requests = [];
@@ -3440,7 +3563,7 @@ class LocalWebServer {
                 if (pool) {
                     // Postgres Logic
                     let sql = `
-                        SELECT r.*, c.name as cashier_name, c.branch_id
+                        SELECT ${selectColumns}, c.name as cashier_name, c.branch_id
                         FROM reconciliation_requests r
                         LEFT JOIN cashiers c ON r.cashier_id = c.id
                     `;
@@ -3448,6 +3571,8 @@ class LocalWebServer {
                     if (statusFilter !== 'all') {
                         sql += ' WHERE r.status = $1';
                         params.push(statusFilter);
+                    } else if (!includeDeleted) {
+                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
                     }
                     sql += ' ORDER BY r.created_at DESC';
 
@@ -3456,7 +3581,7 @@ class LocalWebServer {
                 } else {
                     // SQLite Logic
                     let sql = `
-                        SELECT r.*, c.name as cashier_name, c.branch_id
+                        SELECT ${selectColumns}, c.name as cashier_name, c.branch_id
                         FROM reconciliation_requests r
                         LEFT JOIN cashiers c ON r.cashier_id = c.id
                     `;
@@ -3464,6 +3589,8 @@ class LocalWebServer {
                     if (statusFilter !== 'all') {
                         sql += ' WHERE r.status = ?';
                         params.push(statusFilter);
+                    } else if (!includeDeleted) {
+                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
                     }
                     sql += ' ORDER BY r.created_at DESC';
 
@@ -3474,24 +3601,28 @@ class LocalWebServer {
 
                 // Fallback: Fetch without cashier info
                 if (pool) {
-                    let sql = `SELECT * FROM reconciliation_requests`;
+                    let sql = `SELECT ${selectColumns} FROM reconciliation_requests r`;
                     const params = [];
                     if (statusFilter !== 'all') {
-                        sql += ' WHERE status = $1';
+                        sql += ' WHERE r.status = $1';
                         params.push(statusFilter);
+                    } else if (!includeDeleted) {
+                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
                     }
-                    sql += ' ORDER BY created_at DESC';
+                    sql += ' ORDER BY r.created_at DESC';
 
                     const result = await pool.query(sql, params);
                     requests = result.rows;
                 } else {
-                    let sql = `SELECT * FROM reconciliation_requests`;
+                    let sql = `SELECT ${selectColumns} FROM reconciliation_requests r`;
                     const params = [];
                     if (statusFilter !== 'all') {
-                        sql += ' WHERE status = ?';
+                        sql += ' WHERE r.status = ?';
                         params.push(statusFilter);
+                    } else if (!includeDeleted) {
+                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
                     }
-                    sql += ' ORDER BY created_at DESC';
+                    sql += ' ORDER BY r.created_at DESC';
 
                     requests = this.dbManager.db.prepare(sql).all(params);
                 }
@@ -3499,17 +3630,75 @@ class LocalWebServer {
 
             console.log(`📋 [API] Found ${requests.length} requests`);
 
-            const enrichedRequests = requests.map(req => ({
-                ...req,
-                cashier_name: req.cashier_name || 'غير معروف',
-                branch_id: req.branch_id || null, // Send branch_id instead of branch_name
-                details: req.details_json ? (typeof req.details_json === 'string' ? JSON.parse(req.details_json) : req.details_json) : {}
-            }));
+            const enrichedRequests = requests.map((requestRow) =>
+                this.normalizeReconciliationRequestRow(requestRow, includeDetailsMode)
+            );
 
             console.log('✅ [API] Sending enriched requests');
             this.sendJson(res, { success: true, data: enrichedRequests });
         } catch (error) {
             console.error('❌ [API] Error fetching requests:', error);
+            this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    async handleGetReconciliationRequestById(res, id, query = {}) {
+        try {
+            const includeDetailsMode = query && query.include_details === 'raw' ? 'raw' : 'parsed';
+            const selectColumns = this.getReconciliationRequestSelectColumns(includeDetailsMode);
+            const pool = this.dbManager.pool;
+            let requestRow;
+
+            try {
+                if (pool) {
+                    const result = await pool.query(`
+                        SELECT ${selectColumns}, c.name as cashier_name, c.branch_id
+                        FROM reconciliation_requests r
+                        LEFT JOIN cashiers c ON r.cashier_id = c.id
+                        WHERE r.id = $1
+                        LIMIT 1
+                    `, [id]);
+                    requestRow = result.rows?.[0] || null;
+                } else {
+                    requestRow = this.dbManager.db.prepare(`
+                        SELECT ${selectColumns}, c.name as cashier_name, c.branch_id
+                        FROM reconciliation_requests r
+                        LEFT JOIN cashiers c ON r.cashier_id = c.id
+                        WHERE r.id = ?
+                        LIMIT 1
+                    `).get(id);
+                }
+            } catch (queryError) {
+                console.warn('⚠️ [API] Could not fetch reconciliation request details with cashier info:', queryError.message);
+                if (pool) {
+                    const result = await pool.query(`
+                        SELECT ${selectColumns}
+                        FROM reconciliation_requests r
+                        WHERE r.id = $1
+                        LIMIT 1
+                    `, [id]);
+                    requestRow = result.rows?.[0] || null;
+                } else {
+                    requestRow = this.dbManager.db.prepare(`
+                        SELECT ${selectColumns}
+                        FROM reconciliation_requests r
+                        WHERE r.id = ?
+                        LIMIT 1
+                    `).get(id);
+                }
+            }
+
+            if (!requestRow) {
+                this.sendJson(res, { success: false, error: 'الطلب غير موجود' }, { statusCode: 404 });
+                return;
+            }
+
+            this.sendJson(res, {
+                success: true,
+                data: this.normalizeReconciliationRequestRow(requestRow, includeDetailsMode)
+            });
+        } catch (error) {
+            console.error('❌ [API] Error fetching reconciliation request by id:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
     }

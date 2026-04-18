@@ -8,6 +8,8 @@ const REMOTE_URL = 'https://tasfiya-pro-max.onrender.com/api/sync/users'; // Ens
 const SYNC_INTERVAL_MS = 30000; // 30 seconds
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const SEND_RETRY_DELAYS_MS = [700, 1500, 3000];
+const DEFAULT_SYNC_BATCH_SIZE = 100;
+const RECONCILIATION_SYNC_BATCH_SIZE = 50;
 
 class BackgroundSync {
     constructor(dbManager) {
@@ -240,48 +242,48 @@ class BackgroundSync {
 
         // 3. High-priority cashbox mirror first (faster web consistency under heavy sync load)
         await this.safePushStep('cashbox_vouchers', async () => {
-            await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, 500);
+            await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('cashbox_voucher_audit_log', async () => {
             const cashbox_voucher_audit_log = db.prepare('SELECT * FROM cashbox_voucher_audit_log ORDER BY id DESC').all();
-            await this.sendInBatches('cashbox_voucher_audit_log', cashbox_voucher_audit_log, 500);
+            await this.sendInBatches('cashbox_voucher_audit_log', cashbox_voucher_audit_log, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         // 4. Fetch & send the rest of history
         await this.safePushStep('reconciliations', async () => {
             const reconciliations = db.prepare('SELECT * FROM reconciliations ORDER BY id DESC').all();
-            await this.sendInBatches('reconciliations', reconciliations, 200);
+            await this.sendInBatches('reconciliations', reconciliations, RECONCILIATION_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('manual_postpaid_sales', async () => {
             const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC').all();
-            await this.sendInBatches('manual_postpaid_sales', manual_postpaid_sales, 500);
+            await this.sendInBatches('manual_postpaid_sales', manual_postpaid_sales, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('manual_customer_receipts', async () => {
             const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC').all();
-            await this.sendInBatches('manual_customer_receipts', manual_customer_receipts, 500);
+            await this.sendInBatches('manual_customer_receipts', manual_customer_receipts, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('postpaid_sales', async () => {
             const postpaid_sales = db.prepare('SELECT * FROM postpaid_sales ORDER BY id DESC').all();
-            await this.sendInBatches('postpaid_sales', postpaid_sales, 500);
+            await this.sendInBatches('postpaid_sales', postpaid_sales, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('customer_receipts', async () => {
             const customer_receipts = db.prepare('SELECT * FROM customer_receipts ORDER BY id DESC').all();
-            await this.sendInBatches('customer_receipts', customer_receipts, 500);
+            await this.sendInBatches('customer_receipts', customer_receipts, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('cash_receipts', async () => {
             const cash_receipts = db.prepare('SELECT * FROM cash_receipts ORDER BY id DESC LIMIT 10000').all();
-            await this.sendInBatches('cash_receipts', cash_receipts, 500);
+            await this.sendInBatches('cash_receipts', cash_receipts, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('bank_receipts', async () => {
             const bank_receipts = db.prepare('SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000').all();
-            await this.sendInBatches('bank_receipts', bank_receipts, 500);
+            await this.sendInBatches('bank_receipts', bank_receipts, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         // 5. Push Reconciliation Requests Status Updates
@@ -289,7 +291,7 @@ class BackgroundSync {
             const reconciliation_requests = db.prepare('SELECT * FROM reconciliation_requests').all();
             if (reconciliation_requests && reconciliation_requests.length > 0) {
                 console.log(`📤 [SYNC] Pushing ${reconciliation_requests.length} reconciliation requests...`);
-                await this.sendPayload({ reconciliation_requests });
+                await this.sendInBatches('reconciliation_requests', reconciliation_requests, DEFAULT_SYNC_BATCH_SIZE);
             }
         });
 
@@ -384,7 +386,7 @@ class BackgroundSync {
     }
 
     // Helper: Split array into chunks and send
-    async sendInBatches(key, items, batchSize = 500) {
+    async sendInBatches(key, items, batchSize = DEFAULT_SYNC_BATCH_SIZE) {
         if (!items || items.length === 0) return;
 
         console.log(`📦 [SYNC] Syncing ${key} (${items.length} items)...`);
@@ -402,7 +404,7 @@ class BackgroundSync {
             // Adjust URL to point to GET /api/reconciliation-requests
             // BASE URL is https://tasfiya-pro-max.onrender.com/api/sync/users
             // We need https://tasfiya-pro-max.onrender.com/api/reconciliation-requests
-            const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests?status=all&include_deleted=1');
+            const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests?status=all&include_deleted=1&include_details=raw');
             console.log(`📥 [SYNC] Pulling requests from: ${reqUrl}`);
 
             const res = await fetch(reqUrl);
