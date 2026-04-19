@@ -208,13 +208,35 @@
             }
         }
 
+        function hasMeaningfulRequestDetailsValue(rawValue) {
+            if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+                return Object.keys(rawValue).length > 0;
+            }
+
+            if (typeof rawValue !== 'string') {
+                return false;
+            }
+
+            const normalized = rawValue.trim();
+            return Boolean(normalized) && !['{}', '[]', 'null'].includes(normalized);
+        }
+
+        function hasRequestDetails(request) {
+            return hasMeaningfulRequestDetailsValue(request?.details)
+                || hasMeaningfulRequestDetailsValue(request?.details_json);
+        }
+
         function rememberRequestDetails(request) {
             const numericId = Number(request?.id);
             if (!Number.isFinite(numericId)) {
                 return request;
             }
 
-            requestDetailsCache.set(numericId, request);
+            if (hasRequestDetails(request)) {
+                requestDetailsCache.set(numericId, request);
+            } else {
+                requestDetailsCache.delete(numericId);
+            }
             currentRequests = currentRequests.map((item) => (
                 Number(item?.id) === numericId
                     ? { ...item, ...request }
@@ -225,11 +247,12 @@
 
         async function loadRequestDetails(id) {
             const numericId = Number(id);
-            if (requestDetailsCache.has(numericId)) {
-                return requestDetailsCache.get(numericId);
+            const cachedRequest = requestDetailsCache.get(numericId);
+            if (cachedRequest && hasRequestDetails(cachedRequest)) {
+                return cachedRequest;
             }
 
-            const res = await fetch(`/api/reconciliation-requests/${numericId}`, { cache: 'no-store' });
+            const res = await fetch(`/api/reconciliation-requests/${numericId}?include_details=raw`, { cache: 'no-store' });
             const data = await res.json();
             if (!res.ok || !data.success) {
                 throw new Error(data.error || `HTTP ${res.status}`);
@@ -290,7 +313,7 @@
         async function showRequestDetails(id) {
             try {
                 let req = currentRequests.find(r => Number(r.id) === Number(id));
-                if (!req || (!req.details && !req.details_json)) {
+                if (!req || !hasRequestDetails(req)) {
                     req = await loadRequestDetails(id);
                 }
                 if (!req) return;

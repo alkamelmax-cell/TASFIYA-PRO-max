@@ -587,10 +587,13 @@
     }
 
     async function loadRequestsFromServer(status, page, limit) {
-        const url = getReconciliationRequestsUrl(
-            { preferLocal: false },
-            `?status=${status}&page=${page}&limit=${limit}`
-        );
+        const params = new URLSearchParams({
+            status: status || 'pending',
+            page: String(page || 1),
+            limit: String(limit || REQUESTS_PAGE_SIZE),
+            include_details: 'raw'
+        });
+        const url = getReconciliationRequestsUrl({ preferLocal: false }, `?${params.toString()}`);
         const response = await fetch(url);
 
         let result = {};
@@ -821,6 +824,93 @@
         }
     }
 
+    function hasMeaningfulRequestDetailsValue(rawValue) {
+        if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+            return Object.keys(rawValue).length > 0;
+        }
+
+        if (typeof rawValue !== 'string') {
+            return false;
+        }
+
+        const normalized = rawValue.trim();
+        return Boolean(normalized) && !['{}', '[]', 'null'].includes(normalized);
+    }
+
+    function hasRequestDetails(request) {
+        return hasMeaningfulRequestDetailsValue(request?.details)
+            || hasMeaningfulRequestDetailsValue(request?.details_json);
+    }
+
+    async function fetchRequestDetailsFromLocalDb(requestId) {
+        const rows = await requestsIpc.invoke(
+            'db-query',
+            `SELECT r.*, c.name AS cashier_name, c.branch_id
+             FROM reconciliation_requests r
+             LEFT JOIN cashiers c ON r.cashier_id = c.id
+             WHERE r.id = ?
+             LIMIT 1`,
+            [requestId]
+        );
+
+        const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+        if (!row) {
+            const error = new Error('الطلب غير موجود محلياً');
+            error.statusCode = 404;
+            throw error;
+        }
+
+        return normalizeRequestRow(row);
+    }
+
+    async function fetchRequestDetailsFromServer(requestId) {
+        const url = getReconciliationRequestsUrl(
+            { preferLocal: false },
+            `/${requestId}?include_details=raw`
+        );
+        const response = await fetch(url);
+
+        let result = {};
+        try {
+            result = await response.json();
+        } catch (_error) {
+            result = {};
+        }
+
+        if (!response.ok || !result.success || !result.data) {
+            const error = new Error(result.error || `HTTP ${response.status}`);
+            error.statusCode = response.status;
+            throw error;
+        }
+
+        return normalizeRequestRow(result.data);
+    }
+
+    async function fetchRequestDetails(requestId) {
+        let localError = null;
+
+        if (hasDesktopDbBridge()) {
+            try {
+                const localRequest = await fetchRequestDetailsFromLocalDb(requestId);
+                if (hasRequestDetails(localRequest)) {
+                    return localRequest;
+                }
+            } catch (error) {
+                localError = error;
+                console.warn('⚠️ [REVIEW] Failed to load request details from local DB:', error);
+            }
+        }
+
+        try {
+            return await fetchRequestDetailsFromServer(requestId);
+        } catch (serverError) {
+            if (localError) {
+                serverError.localError = localError;
+            }
+            throw serverError;
+        }
+    }
+
     function delay(ms) {
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
@@ -854,8 +944,8 @@
     }
 
     async function openRequestAsReconciliation(requestId) {
-        const request = requestsData.find(r => r.id === requestId);
-        if (!request) {
+        const existingRequest = requestsData.find(r => r.id === requestId);
+        if (!existingRequest) {
             alert('الطلب غير موجود');
             return;
         }
@@ -867,6 +957,17 @@
 
         currentRequestId = requestId;
         const openFlowToken = ++requestOpenFlowToken;
+        let request = existingRequest;
+        const hasInlineDetails = Boolean(request && hasRequestDetails(request));
+
+        if (!hasInlineDetails) {
+            try {
+                request = await fetchRequestDetails(requestId);
+                requestsData = requestsData.map((item) => (item.id === requestId ? request : item));
+            } catch (error) {
+                console.error('Failed to fetch full reconciliation request details:', error);
+            }
+        }
 
         const details = parseRequestDetailsSafely(request);
 

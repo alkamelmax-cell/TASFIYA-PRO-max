@@ -31,6 +31,27 @@ function parseNumericDbValue(value, fallback = 0) {
     return Number.isFinite(normalized) ? normalized : fallback;
 }
 
+function normalizeDetailsJsonPayload(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim();
+        return normalized.length > 0 ? normalized : null;
+    }
+
+    if (typeof value === 'object') {
+        try {
+            return JSON.stringify(value);
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    return null;
+}
+
 class LocalWebServer {
     constructor(dbManager, port = 4000, options = {}) {
         const normalizedPort = Number(port);
@@ -3108,12 +3129,19 @@ class LocalWebServer {
                         ...r,
                         system_sales: safeFloat(r.system_sales),
                         total_cash: safeFloat(r.total_cash),
-                        total_bank: safeFloat(r.total_bank)
+                        total_bank: safeFloat(r.total_bank),
+                        details_json: (() => {
+                            const normalizedDetails = normalizeDetailsJsonPayload(r.details_json ?? r.details);
+                            if (!normalizedDetails || ['{}', '[]', 'null'].includes(normalizedDetails)) {
+                                return null;
+                            }
+                            return normalizedDetails;
+                        })()
                     }));
 
                     await syncTable('reconciliation_requests', cleanRequests, [
                         { name: 'id' }, { name: 'cashier_id' }, { name: 'system_sales' },
-                        { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json' },
+                        { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json', preserveIfNull: true },
                         { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
                         { name: 'created_at' }, { name: 'updated_at' }
                     ]);

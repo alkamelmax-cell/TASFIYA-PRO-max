@@ -124,6 +124,32 @@ class BackgroundSync {
         return normalized.length > 0 ? normalized : null;
     }
 
+    normalizeRequestDetailsPayload(value) {
+        if (value === null || value === undefined) {
+            return null;
+        }
+
+        if (typeof value === 'string') {
+            const normalized = value.trim();
+            return normalized.length > 0 ? normalized : null;
+        }
+
+        if (typeof value === 'object') {
+            try {
+                return JSON.stringify(value);
+            } catch (_error) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    hasMeaningfulRequestDetailsPayload(value) {
+        const normalized = this.normalizeRequestDetailsPayload(value);
+        return Boolean(normalized) && !['{}', '[]', 'null'].includes(normalized);
+    }
+
     buildCashboxVoucherSyncKey(voucher, localCashboxToBranchMap = new Map()) {
         const localCashboxId = this.parseInteger(voucher?.cashbox_id);
         let branchId = this.parseInteger(voucher?.branch_id);
@@ -439,15 +465,21 @@ class BackgroundSync {
                 const existingIds = new Set(
                     db.prepare('SELECT id FROM reconciliation_requests').all().map(r => r.id)
                 );
+                const existingDetailsById = new Map(
+                    db.prepare('SELECT id, details_json FROM reconciliation_requests').all().map((row) => [row.id, row.details_json || null])
+                );
 
                 const writeRequests = db.transaction((remoteRequests) => {
                     remoteRequests.forEach((request) => {
-                        let details = '{}';
-                        if (request.details && typeof request.details === 'object') {
-                            details = JSON.stringify(request.details);
-                        } else if (request.details_json) {
-                            details = request.details_json;
-                        }
+                        const incomingDetails = this.normalizeRequestDetailsPayload(
+                            request.details && typeof request.details === 'object'
+                                ? request.details
+                                : request.details_json
+                        );
+                        const existingDetails = existingDetailsById.get(request.id) || null;
+                        const details = this.hasMeaningfulRequestDetailsPayload(incomingDetails)
+                            ? incomingDetails
+                            : (this.normalizeRequestDetailsPayload(existingDetails) || incomingDetails || '{}');
 
                         const requestDate = request.request_date || request.created_at || null;
                         const systemSales = Number(request.system_sales || 0);
@@ -470,6 +502,7 @@ class BackgroundSync {
                                 request.id
                             );
                             updateCount++;
+                            existingDetailsById.set(request.id, details);
                             return;
                         }
 
@@ -487,6 +520,7 @@ class BackgroundSync {
                             updatedAt
                         );
                         newCount++;
+                        existingDetailsById.set(request.id, details);
                     });
                 });
 

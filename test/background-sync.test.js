@@ -38,6 +38,14 @@ function createRequestsDb(initialRows = []) {
   return {
     rows,
     prepare(sql) {
+      if (sql.includes('SELECT id, details_json FROM reconciliation_requests')) {
+        return {
+          all() {
+            return rows.map((row) => ({ id: row.id, details_json: row.details_json }));
+          }
+        };
+      }
+
       if (sql.includes('SELECT id FROM reconciliation_requests')) {
         return {
           all() {
