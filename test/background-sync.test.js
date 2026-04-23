@@ -46,6 +46,14 @@ function createRequestsDb(initialRows = []) {
         };
       }
 
+      if (sql.includes('SELECT id, details_json FROM reconciliation_requests')) {
+        return {
+          all() {
+            return rows.map((row) => ({ id: row.id, details_json: row.details_json ?? null }));
+          }
+        };
+      }
+
       if (sql.includes('INSERT OR IGNORE INTO reconciliation_requests')) {
         return {
           run(id, cashierId, requestDate, systemSales, totalCash, totalBank, status, detailsJson, notes, createdAt, updatedAt) {
@@ -186,7 +194,7 @@ test('fetchRemoteRequests requests all statuses including deleted for mirror syn
   await sync.fetchRemoteRequests(db);
 
   assert.ok(
-    requestedUrl.includes('/api/reconciliation-requests?status=all&include_deleted=1'),
+    requestedUrl.includes('/api/reconciliation-requests?status=all&include_deleted=1&include_details=raw'),
     `unexpected pull url: ${requestedUrl}`
   );
 });
@@ -214,6 +222,30 @@ test('doSync still pulls remote requests when pushLocalData fails', async () => 
 
   assert.equal(pullCount, 1);
   assert.equal(sync.isSyncing, false);
+});
+
+test('doSync pulls remote requests before pushing local data', async () => {
+  const { BackgroundSync } = loadBackgroundSyncWithMocks(async () => ({
+    ok: true,
+    async json() {
+      return { success: true, data: [] };
+    }
+  }));
+
+  const sync = new BackgroundSync({ db: {} });
+  const order = [];
+
+  sync.fetchRemoteRequests = async () => {
+    order.push('pull');
+  };
+
+  sync.pushLocalData = async () => {
+    order.push('push');
+  };
+
+  await sync.doSync();
+
+  assert.deepEqual(order, ['pull', 'push']);
 });
 
 test('pushLocalData sends branch-based active cashbox ids alongside legacy ids', async () => {

@@ -32,6 +32,7 @@ class PostgresManager {
             await this.createTables();
             await this.migrateSchema();
             await this.insertDefaultData();
+            await this.repairCashboxSyncData();
             await this.migrateSensitiveCredentials();
             return true;
         } catch (error) {
@@ -46,6 +47,7 @@ class PostgresManager {
             // Fix denomination column type from INTEGER to DECIMAL to support fraction coins (0.5, 0.25)
             // This is safe to run multiple times (it will just set the type)
             await client.query('ALTER TABLE cash_receipts ALTER COLUMN denomination TYPE DECIMAL(10,2)');
+            await client.query('ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT');
 
             // Ensure username is UNIQUE for admins (Critical for Sync ON CONFLICT logic)
             try {
@@ -66,6 +68,9 @@ class PostgresManager {
                     console.log('[DB] Username constraint note:', e.message);
                 }
             }
+
+            await client.query('DROP INDEX IF EXISTS idx_cashbox_vouchers_sync_key_unique');
+            await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)');
 
             client.release();
             console.log('✅ [DB] Schema migration applied (cash_receipts modified).');
@@ -297,6 +302,7 @@ class PostgresManager {
                 id SERIAL PRIMARY KEY,
                 voucher_number INTEGER NOT NULL UNIQUE,
                 voucher_sequence_number INTEGER,
+                sync_key TEXT UNIQUE,
                 voucher_type TEXT NOT NULL,
                 cashbox_id INTEGER NOT NULL REFERENCES branch_cashboxes(id) ON DELETE CASCADE,
                 branch_id INTEGER NOT NULL REFERENCES branches(id),
@@ -397,6 +403,7 @@ class PostgresManager {
             'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_voucher_action ON cashbox_voucher_audit_log(voucher_id, action_at DESC)',
             'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_branch_action ON cashbox_voucher_audit_log(branch_id, action_at DESC)',
             'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_action_type ON cashbox_voucher_audit_log(action_type, action_at DESC)',
+            'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)',
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence_unique ON cashbox_vouchers(voucher_type, voucher_sequence_number)',
             'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_unique ON cashbox_vouchers(source_reconciliation_id, source_entry_key)'
         ];
@@ -457,6 +464,119 @@ class PostgresManager {
 
         } catch (error) {
             console.error('❌ Error inserting default data:', error);
+        }
+    }
+
+    async repairCashboxSyncData() {
+        const client = await this.pool.connect();
+        let branchCashboxesCreated = 0;
+        let vouchersRelinked = 0;
+        let voucherSyncKeysBackfilled = 0;
+
+        try {
+            await client.query('BEGIN');
+
+            await client.query('ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT');
+            await client.query('DROP INDEX IF EXISTS idx_cashbox_vouchers_sync_key_unique');
+            await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)');
+
+            const createMissingCashboxesResult = await client.query(`
+                WITH missing_branches AS (
+                    SELECT b.id AS branch_id, COALESCE(NULLIF(TRIM(b.branch_name), ''), CONCAT('Branch ', b.id)) AS branch_name
+                    FROM branches b
+                    LEFT JOIN branch_cashboxes cb ON cb.branch_id = b.id
+                    WHERE cb.id IS NULL
+                )
+                INSERT INTO branch_cashboxes (branch_id, cashbox_name, opening_balance, is_active, created_at, updated_at)
+                SELECT
+                    mb.branch_id,
+                    CONCAT(mb.branch_name, ' - Cashbox'),
+                    0,
+                    1,
+                    NOW(),
+                    NOW()
+                FROM missing_branches mb
+                RETURNING id
+            `);
+            branchCashboxesCreated = createMissingCashboxesResult.rowCount || 0;
+
+            const relinkVouchersResult = await client.query(`
+                WITH canonical AS (
+                    SELECT branch_id, MIN(id) AS canonical_cashbox_id
+                    FROM branch_cashboxes
+                    GROUP BY branch_id
+                ),
+                invalid_rows AS (
+                    SELECT
+                        v.id,
+                        c.canonical_cashbox_id
+                    FROM cashbox_vouchers v
+                    LEFT JOIN branch_cashboxes current_cb ON current_cb.id = v.cashbox_id
+                    JOIN canonical c ON c.branch_id = v.branch_id
+                    WHERE
+                        current_cb.id IS NULL
+                        OR current_cb.branch_id <> v.branch_id
+                        OR v.cashbox_id <> c.canonical_cashbox_id
+                )
+                UPDATE cashbox_vouchers v
+                SET
+                    cashbox_id = invalid_rows.canonical_cashbox_id,
+                    updated_at = NOW()
+                FROM invalid_rows
+                WHERE v.id = invalid_rows.id
+                RETURNING v.id
+            `);
+            vouchersRelinked = relinkVouchersResult.rowCount || 0;
+
+            const backfillSyncKeysResult = await client.query(`
+                WITH candidates AS (
+                    SELECT
+                        id,
+                        COALESCE(
+                            NULLIF(TRIM(sync_key), ''),
+                            CASE
+                                WHEN source_reconciliation_id IS NOT NULL
+                                     AND source_entry_key IS NOT NULL
+                                     AND TRIM(source_entry_key) <> ''
+                                THEN CONCAT('recon:', source_reconciliation_id, ':', source_entry_key)
+                                WHEN voucher_sequence_number IS NOT NULL
+                                THEN CONCAT('seq:', branch_id, ':', voucher_type, ':', voucher_sequence_number)
+                                WHEN voucher_number IS NOT NULL
+                                THEN CONCAT('num:', branch_id, ':', voucher_type, ':', voucher_number)
+                                ELSE CONCAT('legacy:', id)
+                            END
+                        ) AS candidate_key
+                    FROM cashbox_vouchers
+                ),
+                deduped AS (
+                    SELECT
+                        id,
+                        CASE
+                            WHEN ROW_NUMBER() OVER (PARTITION BY candidate_key ORDER BY id) = 1
+                            THEN candidate_key
+                            ELSE CONCAT(candidate_key, ':dup:', id)
+                        END AS final_sync_key
+                    FROM candidates
+                )
+                UPDATE cashbox_vouchers v
+                SET sync_key = d.final_sync_key
+                FROM deduped d
+                WHERE
+                    v.id = d.id
+                    AND (v.sync_key IS NULL OR TRIM(v.sync_key) = '')
+                RETURNING v.id
+            `);
+            voucherSyncKeysBackfilled = backfillSyncKeysResult.rowCount || 0;
+
+            await client.query('COMMIT');
+            console.log(
+                `[DB] Cashbox sync repair complete: branch_cashboxes_created=${branchCashboxesCreated}, vouchers_relinked=${vouchersRelinked}, voucher_sync_keys_backfilled=${voucherSyncKeysBackfilled}`
+            );
+        } catch (error) {
+            await client.query('ROLLBACK');
+            console.error('⚠️ [DB] Cashbox sync repair failed:', error.message);
+        } finally {
+            client.release();
         }
     }
 

@@ -9,6 +9,46 @@ const { WebSessionStore } = require('./security/web-session-store');
 
 const SESSION_COOKIE_NAME = 'tasfiya_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
+const DEFAULT_JSON_BODY_LIMIT_BYTES = 512 * 1024;
+const LARGE_JSON_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
+
+function isTruthyQueryValue(value) {
+    return value === true || value === '1' || value === 'true';
+}
+
+function parseNumericDbValue(value, fallback = 0) {
+    if (value === null || value === undefined || value === '') {
+        return fallback;
+    }
+
+    if (typeof value === 'number') {
+        return Number.isFinite(value) ? value : fallback;
+    }
+
+    const normalized = Number.parseFloat(String(value).replace(/,/g, '').trim());
+    return Number.isFinite(normalized) ? normalized : fallback;
+}
+
+function normalizeDetailsJsonPayload(value) {
+    if (value === null || value === undefined) {
+        return null;
+    }
+
+    if (typeof value === 'string') {
+        const normalized = value.trim();
+        return normalized.length > 0 ? normalized : null;
+    }
+
+    if (typeof value === 'object') {
+        try {
+            return JSON.stringify(value);
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    return null;
+}
 
 class LocalWebServer {
     constructor(dbManager, port = 4000) {
@@ -16,6 +56,118 @@ class LocalWebServer {
         this.port = port;
         this.server = null;
         this.sessionStore = new WebSessionStore({ ttlMs: SESSION_TTL_MS });
+    }
+
+    async readJsonBody(req, options = {}) {
+        const maxBytes = Number.isFinite(options.maxBytes) && options.maxBytes > 0
+            ? options.maxBytes
+            : DEFAULT_JSON_BODY_LIMIT_BYTES;
+        const routeLabel = options.routeLabel || 'request body';
+
+        return new Promise((resolve, reject) => {
+            const chunks = [];
+            let totalBytes = 0;
+            let limitExceeded = false;
+
+            req.on('data', (chunk) => {
+                if (limitExceeded) {
+                    return;
+                }
+
+                totalBytes += chunk.length;
+                if (totalBytes > maxBytes) {
+                    limitExceeded = true;
+                    return;
+                }
+
+                chunks.push(chunk);
+            });
+
+            req.on('end', () => {
+                if (limitExceeded) {
+                    const error = new Error(`${routeLabel} exceeded the ${maxBytes} byte limit`);
+                    error.statusCode = 413;
+                    reject(error);
+                    return;
+                }
+
+                const rawBody = chunks.length > 0
+                    ? Buffer.concat(chunks).toString('utf8').trim()
+                    : '';
+
+                if (!rawBody) {
+                    resolve({});
+                    return;
+                }
+
+                try {
+                    resolve(JSON.parse(rawBody));
+                } catch (error) {
+                    error.statusCode = 400;
+                    reject(error);
+                }
+            });
+
+            req.on('error', reject);
+        });
+    }
+
+    getReconciliationRequestSelectColumns(includeDetailsMode = 'none', tableAlias = 'r') {
+        const prefix = tableAlias ? `${tableAlias}.` : '';
+        const columns = [
+            `${prefix}id`,
+            `${prefix}cashier_id`,
+            `${prefix}request_date`,
+            `${prefix}system_sales`,
+            `${prefix}total_cash`,
+            `${prefix}total_bank`,
+            `${prefix}status`,
+            `${prefix}notes`,
+            `${prefix}created_at`,
+            `${prefix}updated_at`
+        ];
+
+        if (includeDetailsMode === 'parsed' || includeDetailsMode === 'raw') {
+            columns.push(`${prefix}details_json`);
+        }
+
+        return columns.join(', ');
+    }
+
+    normalizeReconciliationRequestRow(requestRow, includeDetailsMode = 'none') {
+        const normalizedRow = {
+            id: requestRow.id,
+            cashier_id: requestRow.cashier_id,
+            request_date: requestRow.request_date,
+            system_sales: requestRow.system_sales,
+            total_cash: requestRow.total_cash,
+            total_bank: requestRow.total_bank,
+            status: requestRow.status,
+            notes: requestRow.notes,
+            created_at: requestRow.created_at,
+            updated_at: requestRow.updated_at,
+            cashier_name: requestRow.cashier_name || 'غير معروف',
+            branch_id: requestRow.branch_id || null
+        };
+
+        if (includeDetailsMode === 'raw') {
+            if (typeof requestRow.details_json === 'string') {
+                normalizedRow.details_json = requestRow.details_json;
+            } else {
+                normalizedRow.details_json = JSON.stringify(requestRow.details_json || {});
+            }
+        } else if (includeDetailsMode === 'parsed') {
+            try {
+                normalizedRow.details = requestRow.details_json
+                    ? (typeof requestRow.details_json === 'string' ? JSON.parse(requestRow.details_json) : requestRow.details_json)
+                    : {};
+            } catch (error) {
+                console.warn(`⚠️ [API] Failed to parse reconciliation request details for request ${requestRow.id}:`, error.message);
+                normalizedRow.details = {};
+            }
+        }
+
+        return normalizedRow;
     }
 
     parseCookies(req) {
@@ -80,6 +232,7 @@ class LocalWebServer {
             // Desktop-to-cloud sync bridge routes do not carry browser sessions.
             || (pathname === '/api/sync/users' && method === 'POST')
             || (pathname === '/api/reconciliation-requests' && method === 'GET')
+            || (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && method === 'GET')
             || (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && method === 'DELETE')
         );
     }
@@ -399,6 +552,11 @@ class LocalWebServer {
                 else if (pathname.match(/^\/api\/reconciliation-requests\/\d+\/complete$/) && req.method === 'POST') {
                     const id = pathname.split('/')[3]; // /api/reconciliation-requests/ID/complete
                     await this.handleCompleteReconciliationRequest(res, id);
+                    return;
+                }
+                else if (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && req.method === 'GET') {
+                    const id = pathname.split('/').pop();
+                    await this.handleGetReconciliationRequestById(res, id, parsedUrl.query);
                     return;
                 }
                 else if (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && req.method === 'DELETE') {
@@ -746,82 +904,57 @@ class LocalWebServer {
     async handleGetReconciliationsStats(res, query) {
         try {
             const params = [];
-            let whereClause = "WHERE 1=1";
+            let whereClause = 'WHERE 1=1';
 
-            // Build WHERE clause reused for both queries
-            if (query.dateFrom) { whereClause += ` AND r.reconciliation_date >= ?`; params.push(query.dateFrom); }
-            if (query.dateTo) { whereClause += ` AND r.reconciliation_date <= ?`; params.push(query.dateTo); }
-            if (query.cashierId && query.cashierId !== 'all') { whereClause += ` AND r.cashier_id = ?`; params.push(query.cashierId); }
-            if (query.branchId && query.branchId !== 'all') { whereClause += ` AND c.branch_id = ?`; params.push(query.branchId); }
-            if (query.status && query.status !== 'all') { whereClause += ` AND r.status = ?`; params.push(query.status); }
+            if (query.dateFrom) {
+                whereClause += ' AND r.reconciliation_date >= ?';
+                params.push(query.dateFrom);
+            }
+            if (query.dateTo) {
+                whereClause += ' AND r.reconciliation_date <= ?';
+                params.push(query.dateTo);
+            }
+            if (query.cashierId && query.cashierId !== 'all') {
+                whereClause += ' AND r.cashier_id = ?';
+                params.push(query.cashierId);
+            }
+            if (query.branchId && query.branchId !== 'all') {
+                whereClause += ' AND c.branch_id = ?';
+                params.push(query.branchId);
+            }
+            if (query.status && query.status !== 'all') {
+                whereClause += ' AND r.status = ?';
+                params.push(query.status);
+            }
 
-            // Strategy: Fetch RAW data and sum in JS to handle any data type weirdness (String vs Number)
-
-            // 1. Get Main Totals (Fetch raw columns only)
-            // IMPORTANT: Use same JOINs as handleGetReconciliations for identical counts
-            const sqlMain = `
-                SELECT 
-                    r.total_receipts,
-                    r.system_sales
-                FROM reconciliations r
-                LEFT JOIN cashiers c ON r.cashier_id = c.id
-                LEFT JOIN accountants a ON r.accountant_id = a.id
-                ${whereClause}
-            `;
-
-            console.log('📊 [STATS] Calculating via JS Loop...');
-            const mainRows = await this.dbManager.db.prepare(sqlMain).all(params);
-
-            let count = 0;
-            let totalReceipts = 0;
-            let totalSales = 0;
-
-            // Safe Summation Function
-            const safeParse = (val) => {
-                if (val === null || val === undefined) return 0;
-                if (typeof val === 'number') return val;
-                // Clean string: remove commas, allow dots
-                const clean = String(val).replace(/,/g, '').trim();
-                const num = parseFloat(clean);
-                return isNaN(num) ? 0 : num;
-            };
-
-            mainRows.forEach(row => {
-                count++;
-                totalReceipts += safeParse(row.total_receipts);
-                totalSales += safeParse(row.system_sales);
-            });
-
-            console.log(`📊 [STATS] JS Result -> Count: ${count}, Receipts: ${totalReceipts}, Sales: ${totalSales}`);
-
-            // 2. Get Cash Totals (Fetch raw total_amount)
-            const sqlCash = `
-                SELECT 
-                    cr.total_amount
-                FROM cash_receipts cr
-                JOIN reconciliations r ON cr.reconciliation_id = r.id
-                LEFT JOIN cashiers c ON r.cashier_id = c.id
-                LEFT JOIN accountants a ON r.accountant_id = a.id
-                ${whereClause}
-            `;
-
-            const cashRows = await this.dbManager.db.prepare(sqlCash).all(params);
-
-            console.log(`📊 [STATS] Cash Rows Found: ${cashRows.length}`);
-
-            let totalCash = 0;
-            cashRows.forEach(row => {
-                totalCash += safeParse(row.total_amount);
-            });
-            console.log(`📊 [STATS] Total Cash Calculated: ${totalCash}`);
-
-            console.log(`📊 [STATS] JS Cash Result -> Rows: ${cashRows.length}, Total: ${totalCash}`);
+            const statsRow = await this.dbManager.db.prepare(`
+                WITH filtered_reconciliations AS (
+                    SELECT
+                        r.id,
+                        COALESCE(CAST(r.total_receipts AS NUMERIC), 0) AS total_receipts,
+                        COALESCE(CAST(r.system_sales AS NUMERIC), 0) AS system_sales
+                    FROM reconciliations r
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    LEFT JOIN accountants a ON r.accountant_id = a.id
+                    ${whereClause}
+                )
+                SELECT
+                    COUNT(*) AS count,
+                    COALESCE(SUM(total_receipts), 0) AS total_receipts,
+                    COALESCE(SUM(system_sales), 0) AS total_sales,
+                    COALESCE((
+                        SELECT SUM(COALESCE(CAST(cr.total_amount AS NUMERIC), 0))
+                        FROM cash_receipts cr
+                        JOIN filtered_reconciliations fr ON fr.id = cr.reconciliation_id
+                    ), 0) AS total_cash
+                FROM filtered_reconciliations
+            `).get(params);
 
             const result = {
-                count: count,
-                totalReceipts: totalReceipts,
-                totalSales: totalSales,
-                totalCash: totalCash
+                count: parseNumericDbValue(statsRow?.count, 0),
+                totalReceipts: parseNumericDbValue(statsRow?.total_receipts, 0),
+                totalSales: parseNumericDbValue(statsRow?.total_sales, 0),
+                totalCash: parseNumericDbValue(statsRow?.total_cash, 0)
             };
 
             this.sendJson(res, { success: true, stats: result });
@@ -1635,11 +1768,16 @@ class LocalWebServer {
         try {
             const pool = this.dbManager.pool;
             if (pool) {
-                // Postgres Mode
-                await pool.query('DELETE FROM reconciliation_requests WHERE id = $1', [id]);
+                // Postgres Mode: soft-delete to prevent resurrecting rows on next desktop push.
+                await pool.query(
+                    "UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+                    [id]
+                );
             } else {
-                // SQLite Mode
-                await this.dbManager.db.prepare("DELETE FROM reconciliation_requests WHERE id = ?").run(id);
+                // SQLite Mode: soft-delete for mirror-safe sync recovery.
+                await this.dbManager.db
+                    .prepare("UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                    .run(id);
             }
 
             // Check if sync is enabled before deleting from cloud
@@ -1681,9 +1819,11 @@ class LocalWebServer {
             const pool = this.dbManager.pool;
 
             if (pool) {
-                await pool.query('DELETE FROM reconciliation_requests');
+                await pool.query("UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP");
             } else {
-                this.dbManager.db.prepare('DELETE FROM reconciliation_requests').run();
+                this.dbManager.db
+                    .prepare("UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP")
+                    .run();
             }
 
             this.sendJson(res, { success: true });
@@ -1820,11 +1960,11 @@ class LocalWebServer {
     }
 
     async handleSyncUsers(req, res) {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', async () => {
-            try {
-                const data = JSON.parse(body);
+        try {
+            const data = await this.readJsonBody(req, {
+                maxBytes: LARGE_JSON_BODY_LIMIT_BYTES,
+                routeLabel: '/api/sync/users payload'
+            });
                 console.log('🔄 [SYNC] Received sync data:', Object.keys(data));
 
                 // **ROOT FIX**: Use pool.query() directly for PostgreSQL
@@ -1850,6 +1990,7 @@ class LocalWebServer {
                             id SERIAL PRIMARY KEY,
                             voucher_number INTEGER NOT NULL UNIQUE,
                             voucher_sequence_number INTEGER,
+                            sync_key TEXT UNIQUE,
                             voucher_type TEXT NOT NULL,
                             cashbox_id INTEGER NOT NULL REFERENCES branch_cashboxes(id) ON DELETE CASCADE,
                             branch_id INTEGER NOT NULL REFERENCES branches(id),
@@ -1867,6 +2008,7 @@ class LocalWebServer {
                             source_entry_key TEXT,
                             is_auto_generated INTEGER DEFAULT 0
                         )`,
+                        'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT',
                         `CREATE TABLE IF NOT EXISTS cashbox_voucher_audit_log (
                             id SERIAL PRIMARY KEY,
                             voucher_id INTEGER,
@@ -1891,6 +2033,7 @@ class LocalWebServer {
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_voucher_action ON cashbox_voucher_audit_log(voucher_id, action_at DESC)',
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_branch_action ON cashbox_voucher_audit_log(branch_id, action_at DESC)',
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_action_type ON cashbox_voucher_audit_log(action_type, action_at DESC)',
+                        'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)',
                         'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence_unique ON cashbox_vouchers(voucher_type, voucher_sequence_number)',
                         'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_unique ON cashbox_vouchers(source_reconciliation_id, source_entry_key)'
                     ];
@@ -1898,12 +2041,25 @@ class LocalWebServer {
                     for (const statement of statements) {
                         await pool.query(statement);
                     }
+
+                    const syncKeyIndexResult = await pool.query(`
+                        SELECT indexdef
+                        FROM pg_indexes
+                        WHERE schemaname = 'public' AND indexname = 'idx_cashbox_vouchers_sync_key_unique'
+                    `);
+                    const syncKeyIndexDefinition = syncKeyIndexResult.rows?.[0]?.indexdef || '';
+                    if (syncKeyIndexDefinition.toUpperCase().includes(' WHERE ')) {
+                        await pool.query('DROP INDEX IF EXISTS idx_cashbox_vouchers_sync_key_unique');
+                        await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)');
+                    }
                 };
 
                 const hasCashboxPayload = Boolean(
                     data.branch_cashboxes
                     || data.cashbox_vouchers
                     || data.cashbox_voucher_audit_log
+                    || data.active_cashbox_voucher_sync_keys
+                    || data.active_branch_cashboxes_branch_ids
                     || data.active_branch_cashboxes_ids
                     || data.active_cashbox_vouchers_ids
                     || data.active_cashbox_voucher_audit_log_ids
@@ -1934,6 +2090,328 @@ class LocalWebServer {
                         }
                     } catch (err) {
                         console.error(`⚠️ [SYNC] Cleanup failed for ${table}:`, err.message);
+                    }
+                };
+
+                const parseInteger = (value) => {
+                    if (value === null || value === undefined || value === '') return null;
+                    const numeric = Number(value);
+                    if (!Number.isFinite(numeric)) return null;
+                    return Math.trunc(numeric);
+                };
+
+                const parseNumber = (value, fallback = 0) => {
+                    if (value === null || value === undefined || value === '') return fallback;
+                    const numeric = Number(value);
+                    return Number.isFinite(numeric) ? numeric : fallback;
+                };
+
+                const toOptionalText = (value) => {
+                    if (value === null || value === undefined) return null;
+                    const normalized = String(value).trim();
+                    return normalized.length > 0 ? normalized : null;
+                };
+
+                const ensureCanonicalCashboxByBranchId = async (branchId, fallbackName = null) => {
+                    if (!Number.isFinite(Number(branchId))) return null;
+                    const normalizedBranchId = Number(branchId);
+                    const cashboxName = toOptionalText(fallbackName) || `Branch ${normalizedBranchId} Cashbox`;
+
+                    await pool.query(
+                        `
+                            INSERT INTO branch_cashboxes (branch_id, cashbox_name, opening_balance, is_active, created_at, updated_at)
+                            VALUES ($1, $2, 0, 1, NOW(), NOW())
+                            ON CONFLICT (branch_id)
+                            DO UPDATE SET
+                                cashbox_name = EXCLUDED.cashbox_name,
+                                updated_at = NOW()
+                        `,
+                        [normalizedBranchId, cashboxName]
+                    );
+
+                    const canonicalResult = await pool.query(
+                        'SELECT id, branch_id FROM branch_cashboxes WHERE branch_id = $1 LIMIT 1',
+                        [normalizedBranchId]
+                    );
+                    return canonicalResult.rows?.[0] || null;
+                };
+
+                const buildCanonicalCashboxIdMap = async () => {
+                    const result = await pool.query('SELECT id, branch_id FROM branch_cashboxes');
+                    const map = new Map();
+                    for (const row of result.rows || []) {
+                        if (Number.isFinite(Number(row.branch_id)) && Number.isFinite(Number(row.id))) {
+                            map.set(Number(row.branch_id), Number(row.id));
+                        }
+                    }
+                    return map;
+                };
+
+                const syncBranchCashboxesCanonical = async (items = []) => {
+                    if (!Array.isArray(items) || items.length === 0) {
+                        return { canonicalMap: await buildCanonicalCashboxIdMap(), localCashboxToBranchMap: new Map() };
+                    }
+
+                    const localCashboxToBranchMap = new Map();
+                    const seenBranchIds = new Set();
+                    for (const item of items) {
+                        const branchId = parseInteger(item?.branch_id);
+                        if (!Number.isFinite(branchId)) continue;
+
+                        if (Number.isFinite(parseInteger(item?.id))) {
+                            localCashboxToBranchMap.set(parseInteger(item.id), branchId);
+                        }
+
+                        if (seenBranchIds.has(branchId)) continue;
+                        seenBranchIds.add(branchId);
+
+                        await ensureCanonicalCashboxByBranchId(branchId, item?.cashbox_name);
+
+                        await pool.query(
+                            `
+                                UPDATE branch_cashboxes
+                                SET
+                                    opening_balance = $2,
+                                    is_active = $3,
+                                    updated_at = COALESCE($4, NOW())
+                                WHERE branch_id = $1
+                            `,
+                            [
+                                branchId,
+                                parseNumber(item?.opening_balance, 0),
+                                parseInteger(item?.is_active) === 0 ? 0 : 1,
+                                item?.updated_at || null
+                            ]
+                        );
+                    }
+
+                    return {
+                        canonicalMap: await buildCanonicalCashboxIdMap(),
+                        localCashboxToBranchMap
+                    };
+                };
+
+                const buildCashboxVoucherSyncKey = (voucher, branchId) => {
+                    const explicitSyncKey = toOptionalText(voucher?.sync_key);
+                    if (explicitSyncKey) return explicitSyncKey;
+
+                    const sourceReconciliationId = parseInteger(voucher?.source_reconciliation_id);
+                    const sourceEntryKey = toOptionalText(voucher?.source_entry_key);
+                    if (sourceReconciliationId !== null && sourceEntryKey) {
+                        return `recon:${sourceReconciliationId}:${sourceEntryKey}`;
+                    }
+
+                    const voucherType = toOptionalText(voucher?.voucher_type) || 'unknown';
+                    const voucherSequence = parseInteger(voucher?.voucher_sequence_number);
+                    if (voucherSequence !== null) {
+                        return `seq:${branchId}:${voucherType}:${voucherSequence}`;
+                    }
+
+                    const voucherNumber = parseInteger(voucher?.voucher_number);
+                    if (voucherNumber !== null) {
+                        return `num:${branchId}:${voucherType}:${voucherNumber}`;
+                    }
+
+                    const voucherDate = toOptionalText(voucher?.voucher_date) || 'na';
+                    const amount = parseNumber(voucher?.amount, 0);
+                    const counterpartyType = toOptionalText(voucher?.counterparty_type) || 'na';
+                    const counterpartyName = toOptionalText(voucher?.counterparty_name) || 'na';
+                    const createdAt = toOptionalText(voucher?.created_at) || 'na';
+                    const localId = toOptionalText(voucher?.id) || 'na';
+
+                    return `fallback:${branchId}:${voucherType}:${voucherDate}:${amount}:${counterpartyType}:${counterpartyName}:${createdAt}:${localId}`;
+                };
+
+                const syncCashboxVouchersCanonical = async (items = [], canonicalMap = new Map(), localCashboxToBranchMap = new Map()) => {
+                    if (!Array.isArray(items) || items.length === 0) return;
+
+                    console.log(`🔄 [SYNC] Syncing cashbox_vouchers (${items.length} items) with canonical sync keys...`);
+
+                    const BATCH_SIZE = 200;
+                    const columns = [
+                        'sync_key',
+                        'voucher_number',
+                        'voucher_sequence_number',
+                        'voucher_type',
+                        'cashbox_id',
+                        'branch_id',
+                        'counterparty_type',
+                        'counterparty_name',
+                        'cashier_id',
+                        'amount',
+                        'reference_no',
+                        'description',
+                        'voucher_date',
+                        'created_by',
+                        'created_at',
+                        'updated_at',
+                        'source_reconciliation_id',
+                        'source_entry_key',
+                        'is_auto_generated'
+                    ];
+                    const updateSet = columns
+                        .filter(columnName => columnName !== 'sync_key' && columnName !== 'created_at')
+                        .map(columnName => `${columnName} = EXCLUDED.${columnName}`)
+                        .join(', ');
+
+                    const normalizedItems = [];
+                    for (const item of items) {
+                        const localCashboxId = parseInteger(item?.cashbox_id);
+                        let branchId = parseInteger(item?.branch_id);
+                        if (branchId === null && localCashboxId !== null && localCashboxToBranchMap.has(localCashboxId)) {
+                            branchId = localCashboxToBranchMap.get(localCashboxId);
+                        }
+                        if (branchId === null) {
+                            const failure = { table: 'cashbox_vouchers', id: item?.id ?? null, error: 'Missing branch_id for cashbox voucher' };
+                            syncFailures.push(failure);
+                            continue;
+                        }
+
+                        if (!canonicalMap.has(branchId)) {
+                            const createdCanonical = await ensureCanonicalCashboxByBranchId(branchId, null);
+                            if (createdCanonical && Number.isFinite(Number(createdCanonical.id))) {
+                                canonicalMap.set(branchId, Number(createdCanonical.id));
+                            }
+                        }
+
+                        const canonicalCashboxId = canonicalMap.get(branchId);
+                        if (!Number.isFinite(Number(canonicalCashboxId))) {
+                            const failure = { table: 'cashbox_vouchers', id: item?.id ?? null, error: `Failed to resolve canonical cashbox for branch ${branchId}` };
+                            syncFailures.push(failure);
+                            continue;
+                        }
+
+                        normalizedItems.push({
+                            sync_key: buildCashboxVoucherSyncKey(item, branchId),
+                            voucher_number: parseInteger(item?.voucher_number),
+                            voucher_sequence_number: parseInteger(item?.voucher_sequence_number),
+                            voucher_type: toOptionalText(item?.voucher_type),
+                            cashbox_id: canonicalCashboxId,
+                            branch_id: branchId,
+                            counterparty_type: toOptionalText(item?.counterparty_type),
+                            counterparty_name: toOptionalText(item?.counterparty_name),
+                            cashier_id: parseInteger(item?.cashier_id),
+                            amount: parseNumber(item?.amount, 0),
+                            reference_no: toOptionalText(item?.reference_no),
+                            description: toOptionalText(item?.description),
+                            voucher_date: toOptionalText(item?.voucher_date),
+                            created_by: toOptionalText(item?.created_by),
+                            created_at: item?.created_at || null,
+                            updated_at: item?.updated_at || null,
+                            source_reconciliation_id: parseInteger(item?.source_reconciliation_id),
+                            source_entry_key: toOptionalText(item?.source_entry_key),
+                            is_auto_generated: parseInteger(item?.is_auto_generated) === 1 ? 1 : 0
+                        });
+                    }
+
+                    let successCount = 0;
+                    let errorCount = 0;
+                    for (let i = 0; i < normalizedItems.length; i += BATCH_SIZE) {
+                        const batch = normalizedItems.slice(i, i + BATCH_SIZE);
+                        const placeholders = [];
+                        const values = [];
+                        let paramCounter = 1;
+
+                        for (const item of batch) {
+                            const rowPlaceholders = [];
+                            for (const columnName of columns) {
+                                values.push(item[columnName] === undefined ? null : item[columnName]);
+                                rowPlaceholders.push(`$${paramCounter++}`);
+                            }
+                            placeholders.push(`(${rowPlaceholders.join(', ')})`);
+                        }
+
+                        const sql = `
+                            INSERT INTO cashbox_vouchers (${columns.join(', ')})
+                            VALUES ${placeholders.join(', ')}
+                            ON CONFLICT (sync_key) DO UPDATE SET ${updateSet}
+                        `;
+
+                        try {
+                            await pool.query(sql, values);
+                            successCount += batch.length;
+                        } catch (err) {
+                            console.error('❌ [SYNC] Batch Error cashbox_vouchers:', err.message);
+                            for (const item of batch) {
+                                try {
+                                    const singleValues = columns.map(columnName => item[columnName] === undefined ? null : item[columnName]);
+                                    const singlePlaceholders = singleValues.map((_, idx) => `$${idx + 1}`).join(', ');
+                                    await pool.query(
+                                        `INSERT INTO cashbox_vouchers (${columns.join(', ')}) VALUES (${singlePlaceholders}) ON CONFLICT (sync_key) DO UPDATE SET ${updateSet}`,
+                                        singleValues
+                                    );
+                                    successCount += 1;
+                                } catch (singleError) {
+                                    errorCount += 1;
+                                    syncFailures.push({
+                                        table: 'cashbox_vouchers',
+                                        id: item.sync_key || item.voucher_number || null,
+                                        error: singleError.message
+                                    });
+                                    console.error('❌ [SYNC] Row insert failed for cashbox_vouchers:', singleError.message, 'Data:', item);
+                                }
+                            }
+                        }
+                    }
+
+                    console.log(`✅ [SYNC] cashbox_vouchers: Processed ${successCount} items.${errorCount > 0 ? ` Failed ${errorCount} items.` : ''}`);
+                };
+
+                const handleBranchCashboxCleanupByBranchId = async (activeBranchIds) => {
+                    if (!Array.isArray(activeBranchIds) || activeBranchIds.length === 0) return;
+                    const normalizedIds = Array.from(
+                        new Set(
+                            activeBranchIds
+                                .map(parseInteger)
+                                .filter(branchId => Number.isFinite(branchId))
+                        )
+                    );
+                    if (normalizedIds.length === 0) return;
+
+                    try {
+                        const result = await pool.query(
+                            'DELETE FROM branch_cashboxes WHERE branch_id != ALL($1::int[])',
+                            [normalizedIds]
+                        );
+                        if (result.rowCount > 0) {
+                            console.log(`🧹 [SYNC] Cleaned ${result.rowCount} orphaned branch_cashboxes via branch_id mirror cleanup.`);
+                        }
+                    } catch (err) {
+                        console.error('⚠️ [SYNC] branch_cashboxes branch_id cleanup failed:', err.message);
+                    }
+                };
+
+                const handleCashboxVoucherCleanupBySyncKeys = async (activeSyncKeys) => {
+                    if (!Array.isArray(activeSyncKeys)) return;
+                    const normalizedSyncKeys = Array.from(
+                        new Set(
+                            activeSyncKeys
+                                .map(toOptionalText)
+                                .filter((syncKey) => syncKey !== null)
+                        )
+                    );
+
+                    try {
+                        let result;
+                        if (normalizedSyncKeys.length === 0) {
+                            result = await pool.query('DELETE FROM cashbox_vouchers');
+                        } else {
+                            result = await pool.query(
+                                `
+                                    DELETE FROM cashbox_vouchers
+                                    WHERE sync_key IS NULL
+                                       OR TRIM(sync_key) = ''
+                                       OR sync_key != ALL($1::text[])
+                                `,
+                                [normalizedSyncKeys]
+                            );
+                        }
+
+                        if (result.rowCount > 0) {
+                            console.log(`🧹 [SYNC] Cleaned ${result.rowCount} orphaned cashbox_vouchers via sync-key mirror cleanup.`);
+                        }
+                    } catch (err) {
+                        console.error('⚠️ [SYNC] cashbox_vouchers sync-key cleanup failed:', err.message);
                     }
                 };
 
@@ -2049,9 +2527,22 @@ class LocalWebServer {
                 if (data.active_manual_customer_receipts_ids) await handleCleanup('manual_customer_receipts', data.active_manual_customer_receipts_ids);
                 if (data.active_cash_receipts_ids) await handleCleanup('cash_receipts', data.active_cash_receipts_ids);
                 if (data.active_bank_receipts_ids) await handleCleanup('bank_receipts', data.active_bank_receipts_ids);
-                if (data.active_cashbox_voucher_audit_log_ids) await handleCleanup('cashbox_voucher_audit_log', data.active_cashbox_voucher_audit_log_ids);
-                if (data.active_cashbox_vouchers_ids) await handleCleanup('cashbox_vouchers', data.active_cashbox_vouchers_ids);
-                if (data.active_branch_cashboxes_ids) await handleCleanup('branch_cashboxes', data.active_branch_cashboxes_ids);
+                if (data.active_cashbox_voucher_audit_log_ids) {
+                    console.log('ℹ️ [SYNC] Ignoring legacy active_cashbox_voucher_audit_log_ids cleanup on PostgreSQL; local audit-log ids are not globally stable.');
+                }
+                if (Array.isArray(data.active_cashbox_voucher_sync_keys)) {
+                    await handleCashboxVoucherCleanupBySyncKeys(data.active_cashbox_voucher_sync_keys);
+                } else if (data.active_cashbox_vouchers_ids) {
+                    console.log('ℹ️ [SYNC] Ignoring legacy active_cashbox_vouchers_ids cleanup on PostgreSQL; voucher ids are local and not globally stable.');
+                }
+
+                if (Array.isArray(data.active_branch_cashboxes_branch_ids)) {
+                    await handleBranchCashboxCleanupByBranchId(data.active_branch_cashboxes_branch_ids);
+                } else if (Array.isArray(data.branch_cashboxes) && data.branch_cashboxes.length > 0) {
+                    await handleBranchCashboxCleanupByBranchId(data.branch_cashboxes.map(row => row && row.branch_id));
+                } else if (data.active_branch_cashboxes_ids) {
+                    console.log('ℹ️ [SYNC] Ignoring legacy active_branch_cashboxes_ids for branch_cashboxes cleanup on PostgreSQL; waiting for branch_id-based payload.');
+                }
 
 
                 if (data.admins) {
@@ -2077,12 +2568,14 @@ class LocalWebServer {
                     ]);
                 }
 
-                if (data.branch_cashboxes) {
-                    await syncTable('branch_cashboxes', data.branch_cashboxes, [
-                        { name: 'id' }, { name: 'branch_id' }, { name: 'cashbox_name' },
-                        { name: 'opening_balance' }, { name: 'is_active' },
-                        { name: 'created_at' }, { name: 'updated_at' }
-                    ]);
+                let canonicalCashboxByBranchId = new Map();
+                let localCashboxToBranchMap = new Map();
+                if (Array.isArray(data.branch_cashboxes) && data.branch_cashboxes.length > 0) {
+                    const canonicalResult = await syncBranchCashboxesCanonical(data.branch_cashboxes);
+                    canonicalCashboxByBranchId = canonicalResult.canonicalMap;
+                    localCashboxToBranchMap = canonicalResult.localCashboxToBranchMap;
+                } else if (hasCashboxPayload) {
+                    canonicalCashboxByBranchId = await buildCanonicalCashboxIdMap();
                 }
 
 
@@ -2275,16 +2768,12 @@ class LocalWebServer {
                     ]);
                 }
 
-                if (data.cashbox_vouchers) {
-                    await syncTable('cashbox_vouchers', data.cashbox_vouchers, [
-                        { name: 'id' }, { name: 'voucher_number' }, { name: 'voucher_sequence_number' },
-                        { name: 'voucher_type' }, { name: 'cashbox_id' }, { name: 'branch_id' },
-                        { name: 'counterparty_type' }, { name: 'counterparty_name' }, { name: 'cashier_id' },
-                        { name: 'amount' }, { name: 'reference_no' }, { name: 'description' },
-                        { name: 'voucher_date' }, { name: 'created_by' }, { name: 'created_at' },
-                        { name: 'updated_at' }, { name: 'source_reconciliation_id' }, { name: 'source_entry_key' },
-                        { name: 'is_auto_generated' }
-                    ]);
+                if (Array.isArray(data.cashbox_vouchers) && data.cashbox_vouchers.length > 0) {
+                    await syncCashboxVouchersCanonical(
+                        data.cashbox_vouchers,
+                        canonicalCashboxByBranchId,
+                        localCashboxToBranchMap
+                    );
                 }
 
                 if (data.cashbox_voucher_audit_log) {
@@ -2336,15 +2825,86 @@ class LocalWebServer {
                         ...r,
                         system_sales: safeFloat(r.system_sales),
                         total_cash: safeFloat(r.total_cash),
-                        total_bank: safeFloat(r.total_bank)
+                        total_bank: safeFloat(r.total_bank),
+                        details_json: normalizeDetailsJsonPayload(r.details_json ?? r.details)
                     }));
 
-                    await syncTable('reconciliation_requests', cleanRequests, [
-                        { name: 'id' }, { name: 'cashier_id' }, { name: 'system_sales' },
-                        { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json' },
-                        { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
-                        { name: 'created_at' }, { name: 'updated_at' }
-                    ]);
+                    const BATCH_SIZE = 200;
+                    let successCount = 0;
+                    let errorCount = 0;
+
+                    for (let i = 0; i < cleanRequests.length; i += BATCH_SIZE) {
+                        const batch = cleanRequests.slice(i, i + BATCH_SIZE);
+                        for (const requestItem of batch) {
+                            try {
+                                await pool.query(
+                                    `
+                                        INSERT INTO reconciliation_requests (
+                                            id,
+                                            cashier_id,
+                                            system_sales,
+                                            total_cash,
+                                            total_bank,
+                                            details_json,
+                                            notes,
+                                            status,
+                                            request_date,
+                                            created_at,
+                                            updated_at
+                                        )
+                                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                                        ON CONFLICT (id) DO UPDATE SET
+                                            cashier_id = EXCLUDED.cashier_id,
+                                            system_sales = EXCLUDED.system_sales,
+                                            total_cash = EXCLUDED.total_cash,
+                                            total_bank = EXCLUDED.total_bank,
+                                            details_json = CASE
+                                                WHEN EXCLUDED.details_json IS NULL
+                                                     OR BTRIM(EXCLUDED.details_json) = ''
+                                                     OR BTRIM(EXCLUDED.details_json) IN ('{}', '[]', 'null')
+                                                THEN COALESCE(NULLIF(BTRIM(reconciliation_requests.details_json), ''), EXCLUDED.details_json, '{}')
+                                                ELSE EXCLUDED.details_json
+                                            END,
+                                            notes = EXCLUDED.notes,
+                                            request_date = COALESCE(EXCLUDED.request_date, reconciliation_requests.request_date),
+                                            created_at = COALESCE(reconciliation_requests.created_at, EXCLUDED.created_at),
+                                            updated_at = COALESCE(EXCLUDED.updated_at, CURRENT_TIMESTAMP),
+                                            status = CASE
+                                                WHEN reconciliation_requests.status = 'deleted' THEN 'deleted'
+                                                WHEN reconciliation_requests.status IN ('approved', 'completed')
+                                                     AND COALESCE(EXCLUDED.status, 'pending') = 'pending'
+                                                THEN reconciliation_requests.status
+                                                ELSE COALESCE(EXCLUDED.status, reconciliation_requests.status, 'pending')
+                                            END
+                                    `,
+                                    [
+                                        requestItem.id,
+                                        requestItem.cashier_id,
+                                        requestItem.system_sales,
+                                        requestItem.total_cash,
+                                        requestItem.total_bank,
+                                        requestItem.details_json,
+                                        requestItem.notes || '',
+                                        requestItem.status || 'pending',
+                                        requestItem.request_date || requestItem.created_at || null,
+                                        requestItem.created_at || null,
+                                        requestItem.updated_at || null
+                                    ]
+                                );
+                                successCount += 1;
+                            } catch (itemError) {
+                                errorCount += 1;
+                                syncFailures.push({
+                                    table: 'reconciliation_requests',
+                                    id: requestItem.id ?? null,
+                                    error: itemError.message
+                                });
+                                console.error('❌ [SYNC] reconciliation_requests row failed:', itemError.message, 'Data:', requestItem);
+                            }
+                        }
+                    }
+
+                    console.log(`✅ [SYNC] reconciliation_requests: Processed ${successCount} items.${errorCount > 0 ? ` Failed ${errorCount} items.` : ''}`);
                 }
 
                 if (syncFailures.length > 0) {
@@ -2358,13 +2918,16 @@ class LocalWebServer {
                     return;
                 }
 
-                console.log('✅ [SYNC] Full sync completed successfully');
-                this.sendJson(res, { success: true, message: 'Full sync completed' });
-            } catch (error) {
-                console.error('❌ [SYNC] Fatal error:', error);
-                this.sendJson(res, { success: false, error: error.message });
-            }
-        });
+            console.log('✅ [SYNC] Full sync completed successfully');
+            this.sendJson(res, { success: true, message: 'Full sync completed' });
+        } catch (error) {
+            console.error('❌ [SYNC] Fatal error:', error);
+            this.sendJson(
+                res,
+                { success: false, error: error.message },
+                { statusCode: error.statusCode || 500 }
+            );
+        }
     }
 
     async handleUpdateRequestStatus(req, res) {
@@ -2587,11 +3150,11 @@ class LocalWebServer {
 
 
     async handleCreateReconciliationRequest(req, res) {
-        let body = '';
-        req.on('data', chunk => { body += chunk.toString(); });
-        req.on('end', async () => {
-            try {
-                const data = JSON.parse(body);
+        try {
+            const data = await this.readJsonBody(req, {
+                maxBytes: LARGE_JSON_BODY_LIMIT_BYTES,
+                routeLabel: '/api/reconciliation-requests payload'
+            });
                 const authUser = req && req.authUser ? req.authUser : null;
 
                 if (authUser && authUser.role === 'cashier') {
@@ -2659,7 +3222,7 @@ class LocalWebServer {
                     insertedId = info.lastInsertRowid;
                 }
 
-                console.log('✅ [API] Reconciliation Request Saved. ID:', insertedId);
+            console.log('✅ [API] Reconciliation Request Saved. ID:', insertedId);
 
                 // --- TRIGGER NOTIFICATION (Notify Admin using OneSignal) ---
                 try {
@@ -2684,15 +3247,15 @@ class LocalWebServer {
                     );
                 } catch (e) { console.error('Notification Error', e); }
 
-                this.sendJson(res, { success: true, id: insertedId });
-
-
-
-            } catch (error) {
-                console.error('❌ [API] Error creating reconciliation request:', error);
-                this.sendJson(res, { success: false, error: error.message });
-            }
-        });
+            this.sendJson(res, { success: true, id: insertedId });
+        } catch (error) {
+            console.error('❌ [API] Error creating reconciliation request:', error);
+            this.sendJson(
+                res,
+                { success: false, error: error.message },
+                { statusCode: error.statusCode || 500 }
+            );
+        }
     }
 
     async handleGetReconciliationRequests(res, query) {
@@ -2701,6 +3264,11 @@ class LocalWebServer {
 
             let statusFilter = 'pending';
             if (query && query.status) statusFilter = query.status;
+            const includeDeleted = Boolean(query && isTruthyQueryValue(query.include_deleted));
+            const includeDetailsMode = query && query.include_details === 'raw'
+                ? 'raw'
+                : (query && isTruthyQueryValue(query.include_details) ? 'parsed' : 'none');
+            const selectColumns = this.getReconciliationRequestSelectColumns(includeDetailsMode);
 
             const pool = this.dbManager.pool;
             let requests = [];
@@ -2710,7 +3278,7 @@ class LocalWebServer {
                 if (pool) {
                     // Postgres Logic
                     let sql = `
-                        SELECT r.*, c.name as cashier_name, c.branch_id
+                        SELECT ${selectColumns}, c.name as cashier_name, c.branch_id
                         FROM reconciliation_requests r
                         LEFT JOIN cashiers c ON r.cashier_id = c.id
                     `;
@@ -2718,6 +3286,8 @@ class LocalWebServer {
                     if (statusFilter !== 'all') {
                         sql += ' WHERE r.status = $1';
                         params.push(statusFilter);
+                    } else if (!includeDeleted) {
+                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
                     }
                     sql += ' ORDER BY r.created_at DESC';
 
@@ -2726,7 +3296,7 @@ class LocalWebServer {
                 } else {
                     // SQLite Logic
                     let sql = `
-                        SELECT r.*, c.name as cashier_name, c.branch_id
+                        SELECT ${selectColumns}, c.name as cashier_name, c.branch_id
                         FROM reconciliation_requests r
                         LEFT JOIN cashiers c ON r.cashier_id = c.id
                     `;
@@ -2734,6 +3304,8 @@ class LocalWebServer {
                     if (statusFilter !== 'all') {
                         sql += ' WHERE r.status = ?';
                         params.push(statusFilter);
+                    } else if (!includeDeleted) {
+                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
                     }
                     sql += ' ORDER BY r.created_at DESC';
 
@@ -2744,24 +3316,28 @@ class LocalWebServer {
 
                 // Fallback: Fetch without cashier info
                 if (pool) {
-                    let sql = `SELECT * FROM reconciliation_requests`;
+                    let sql = `SELECT ${selectColumns} FROM reconciliation_requests r`;
                     const params = [];
                     if (statusFilter !== 'all') {
-                        sql += ' WHERE status = $1';
+                        sql += ' WHERE r.status = $1';
                         params.push(statusFilter);
+                    } else if (!includeDeleted) {
+                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
                     }
-                    sql += ' ORDER BY created_at DESC';
+                    sql += ' ORDER BY r.created_at DESC';
 
                     const result = await pool.query(sql, params);
                     requests = result.rows;
                 } else {
-                    let sql = `SELECT * FROM reconciliation_requests`;
+                    let sql = `SELECT ${selectColumns} FROM reconciliation_requests r`;
                     const params = [];
                     if (statusFilter !== 'all') {
-                        sql += ' WHERE status = ?';
+                        sql += ' WHERE r.status = ?';
                         params.push(statusFilter);
+                    } else if (!includeDeleted) {
+                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
                     }
-                    sql += ' ORDER BY created_at DESC';
+                    sql += ' ORDER BY r.created_at DESC';
 
                     requests = this.dbManager.db.prepare(sql).all(params);
                 }
@@ -2769,17 +3345,75 @@ class LocalWebServer {
 
             console.log(`📋 [API] Found ${requests.length} requests`);
 
-            const enrichedRequests = requests.map(req => ({
-                ...req,
-                cashier_name: req.cashier_name || 'غير معروف',
-                branch_id: req.branch_id || null, // Send branch_id instead of branch_name
-                details: req.details_json ? (typeof req.details_json === 'string' ? JSON.parse(req.details_json) : req.details_json) : {}
-            }));
+            const enrichedRequests = requests.map((requestRow) =>
+                this.normalizeReconciliationRequestRow(requestRow, includeDetailsMode)
+            );
 
             console.log('✅ [API] Sending enriched requests');
             this.sendJson(res, { success: true, data: enrichedRequests });
         } catch (error) {
             console.error('❌ [API] Error fetching requests:', error);
+            this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    async handleGetReconciliationRequestById(res, id, query = {}) {
+        try {
+            const includeDetailsMode = query && query.include_details === 'raw' ? 'raw' : 'parsed';
+            const selectColumns = this.getReconciliationRequestSelectColumns(includeDetailsMode);
+            const pool = this.dbManager.pool;
+            let requestRow;
+
+            try {
+                if (pool) {
+                    const result = await pool.query(`
+                        SELECT ${selectColumns}, c.name as cashier_name, c.branch_id
+                        FROM reconciliation_requests r
+                        LEFT JOIN cashiers c ON r.cashier_id = c.id
+                        WHERE r.id = $1
+                        LIMIT 1
+                    `, [id]);
+                    requestRow = result.rows?.[0] || null;
+                } else {
+                    requestRow = this.dbManager.db.prepare(`
+                        SELECT ${selectColumns}, c.name as cashier_name, c.branch_id
+                        FROM reconciliation_requests r
+                        LEFT JOIN cashiers c ON r.cashier_id = c.id
+                        WHERE r.id = ?
+                        LIMIT 1
+                    `).get(id);
+                }
+            } catch (queryError) {
+                console.warn('⚠️ [API] Could not fetch reconciliation request details with cashier info:', queryError.message);
+                if (pool) {
+                    const result = await pool.query(`
+                        SELECT ${selectColumns}
+                        FROM reconciliation_requests r
+                        WHERE r.id = $1
+                        LIMIT 1
+                    `, [id]);
+                    requestRow = result.rows?.[0] || null;
+                } else {
+                    requestRow = this.dbManager.db.prepare(`
+                        SELECT ${selectColumns}
+                        FROM reconciliation_requests r
+                        WHERE r.id = ?
+                        LIMIT 1
+                    `).get(id);
+                }
+            }
+
+            if (!requestRow) {
+                this.sendJson(res, { success: false, error: 'الطلب غير موجود' }, { statusCode: 404 });
+                return;
+            }
+
+            this.sendJson(res, {
+                success: true,
+                data: this.normalizeReconciliationRequestRow(requestRow, includeDetailsMode)
+            });
+        } catch (error) {
+            console.error('❌ [API] Error fetching reconciliation request by id:', error);
             this.sendJson(res, { success: false, error: error.message });
         }
     }

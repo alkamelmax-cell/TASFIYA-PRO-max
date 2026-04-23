@@ -135,6 +135,7 @@
         }
 
         let currentRequests = [];
+        const requestDetailsCache = new Map();
 
         function toSafeNumber(value) {
             if (value === null || value === undefined || value === '') return 0;
@@ -159,8 +160,79 @@
                 .replace(/'/g, '&#39;');
         }
 
+        function parseRequestDetailsValue(rawValue) {
+            if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+                return rawValue;
+            }
+
+            const normalized = typeof rawValue === 'string' ? rawValue.trim() : '';
+            if (!normalized) {
+                return {};
+            }
+
+            try {
+                return JSON.parse(normalized);
+            } catch (error) {
+                console.warn('Failed to parse request details payload:', error);
+                return {};
+            }
+        }
+
+        function hasMeaningfulRequestDetailsValue(rawValue) {
+            if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+                return Object.keys(rawValue).length > 0;
+            }
+
+            if (typeof rawValue !== 'string') {
+                return false;
+            }
+
+            const normalized = rawValue.trim();
+            return Boolean(normalized) && !['{}', '[]', 'null'].includes(normalized);
+        }
+
+        function hasRequestDetails(request) {
+            return hasMeaningfulRequestDetailsValue(request?.details)
+                || hasMeaningfulRequestDetailsValue(request?.details_json);
+        }
+
+        function rememberRequestDetails(request) {
+            const numericId = Number(request?.id);
+            if (!Number.isFinite(numericId)) {
+                return request;
+            }
+
+            if (hasRequestDetails(request)) {
+                requestDetailsCache.set(numericId, request);
+            } else {
+                requestDetailsCache.delete(numericId);
+            }
+            currentRequests = currentRequests.map((item) => (
+                Number(item?.id) === numericId
+                    ? { ...item, ...request }
+                    : item
+            ));
+            return request;
+        }
+
+        async function loadRequestDetails(id) {
+            const numericId = Number(id);
+            const cachedRequest = requestDetailsCache.get(numericId);
+            if (cachedRequest && hasRequestDetails(cachedRequest)) {
+                return cachedRequest;
+            }
+
+            const res = await fetch(`/api/reconciliation-requests/${numericId}?include_details=raw`, { cache: 'no-store' });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.error || `HTTP ${res.status}`);
+            }
+
+            return rememberRequestDetails(data.data || {});
+        }
+
         function getRequestDetails(req) {
-            const details = (req && typeof req.details === 'object' && req.details) ? req.details : {};
+            const details = parseRequestDetailsValue(req?.details ?? req?.details_json);
             return {
                 cash: toArray(details.cash_breakdown).length ? toArray(details.cash_breakdown) : toArray(details.cashItems),
                 bank: toArray(details.bank_receipts).length ? toArray(details.bank_receipts) : toArray(details.bankItems),
@@ -208,24 +280,28 @@
             `;
         }
 
-        function showRequestDetails(id) {
-            const req = currentRequests.find(r => Number(r.id) === Number(id));
-            if (!req) return;
+        async function showRequestDetails(id) {
+            try {
+                let req = currentRequests.find(r => Number(r.id) === Number(id));
+                if (!req || !hasRequestDetails(req)) {
+                    req = await loadRequestDetails(id);
+                }
+                if (!req) return;
 
-            const d = getRequestDetails(req);
+                const d = getRequestDetails(req);
 
-            const totalCash = calculateCashTotal(req);
-            const totalBank = toSafeNumber(req?.total_bank) > 0
-                ? toSafeNumber(req.total_bank)
-                : d.bank.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
-            const totalPostpaid = d.postpaid.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
-            const totalCustomerReceipts = d.customerReceipts.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
-            const totalReturns = d.returns.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
-            const systemSales = toSafeNumber(req?.system_sales);
-            const totalReceipts = totalCash + totalBank + totalPostpaid + totalReturns - totalCustomerReceipts;
-            const surplusDeficit = totalReceipts - systemSales;
+                const totalCash = calculateCashTotal(req);
+                const totalBank = toSafeNumber(req?.total_bank) > 0
+                    ? toSafeNumber(req.total_bank)
+                    : d.bank.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
+                const totalPostpaid = d.postpaid.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
+                const totalCustomerReceipts = d.customerReceipts.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
+                const totalReturns = d.returns.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
+                const systemSales = toSafeNumber(req?.system_sales);
+                const totalReceipts = totalCash + totalBank + totalPostpaid + totalReturns - totalCustomerReceipts;
+                const surplusDeficit = totalReceipts - systemSales;
 
-            const cashRows = d.cash.map(item => `
+                const cashRows = d.cash.map(item => `
                 <tr>
                     <td>${escapeHtml(item?.val ?? '-')}</td>
                     <td>${escapeHtml(item?.qty ?? '-')}</td>
@@ -273,15 +349,15 @@
                 </tr>
             `);
 
-            const notes = req.notes && String(req.notes).trim() !== '' ? escapeHtml(req.notes) : 'لا توجد ملاحظات';
+                const notes = req.notes && String(req.notes).trim() !== '' ? escapeHtml(req.notes) : 'لا توجد ملاحظات';
 
-            Swal.fire({
-                title: `تفاصيل التصفية #${req.id}`,
-                width: 1100,
-                background: '#1e293b',
-                color: '#fff',
-                confirmButtonText: 'إغلاق',
-                html: `
+                Swal.fire({
+                    title: `تفاصيل التصفية #${req.id}`,
+                    width: 1100,
+                    background: '#1e293b',
+                    color: '#fff',
+                    confirmButtonText: 'إغلاق',
+                    html: `
                     <div class="text-start">
                         <div class="mb-3 small text-white-50">
                             <div><strong>الكاشير:</strong> ${escapeHtml(req.cashier_name || 'غير معروف')}</div>
@@ -308,7 +384,17 @@
                         ${buildDetailsSection('تفصيل الموردين/المصروفات', ['الجهة', 'رقم الفاتورة', 'المبلغ'], supplierRows)}
                     </div>
                 `
-            });
+                });
+            } catch (error) {
+                console.error('❌ [Frontend] Error loading request details:', error);
+                Swal.fire({
+                    title: 'خطأ',
+                    text: error.message || 'تعذر تحميل تفاصيل الطلب',
+                    icon: 'error',
+                    background: '#1e293b',
+                    color: '#fff'
+                });
+            }
         }
 
         async function loadRequests(silent = false) {
@@ -338,9 +424,12 @@
 
                 // Safety: Ensure data.data exists and is an array
                 const requests = Array.isArray(data.data) ? data.data : [];
-                currentRequests = requests;
+                currentRequests = requests.map((requestItem) => {
+                    const cached = requestDetailsCache.get(Number(requestItem?.id));
+                    return cached ? { ...requestItem, ...cached } : requestItem;
+                });
 
-                if (requests.length === 0) {
+                if (currentRequests.length === 0) {
                     const emptyHtml = '<tr><td colspan="5" class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</td></tr>';
                     tbody.innerHTML = emptyHtml;
                     cardsContainer.innerHTML = '<div class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</div>';
@@ -348,7 +437,7 @@
                 }
 
                 // Render Desktop Table
-                tbody.innerHTML = requests.map(req => {
+                tbody.innerHTML = currentRequests.map(req => {
                     const cashTotal = calculateCashTotal(req);
 
                     // Date Formatting
@@ -382,7 +471,7 @@
                 }).join('');
 
                 // Render Mobile Cards
-                cardsContainer.innerHTML = requests.map(req => {
+                cardsContainer.innerHTML = currentRequests.map(req => {
                     const cashTotal = calculateCashTotal(req);
 
                     let dateStr = req.created_at;
@@ -457,6 +546,7 @@
                     const data = await res.json();
 
                     if (data.success) {
+                        requestDetailsCache.delete(Number(id));
                         await Swal.fire({
                             title: 'تم الحذف!',
                             text: 'تم حذف الطلب بنجاح.',

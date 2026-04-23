@@ -3,7 +3,6 @@
  * @description وحدة المقبوضات - تحتوي على عمليات إضافة وتحرير وحذف المقبوضات المختلفة
  */
 
-const { ipcRenderer } = require('electron');
 const DialogUtils = require('./dialog-utils');
 const reconciliationCore = require('./reconciliation-core');
 const { formatCurrency } = require('./utils');
@@ -11,6 +10,142 @@ const { formatCurrency } = require('./utils');
 class ReceiptsManager {
     constructor() {
         this.editingReceipt = null;
+        this.bindGlobalHandlers();
+    }
+
+    /**
+     * ربط دوال الإجراءات العامة لتجنب أخطاء onclick غير المعرفة
+     */
+    bindGlobalHandlers() {
+        if (typeof window === 'undefined') {
+            return;
+        }
+
+        if (typeof window.editBankReceipt !== 'function') {
+            window.editBankReceipt = (index) => this.runSafely(() => this.editBankReceipt(index));
+        }
+        if (typeof window.deleteBankReceipt !== 'function') {
+            window.deleteBankReceipt = (index) => this.runSafely(() => this.deleteBankReceipt(index));
+        }
+        if (typeof window.editCashReceipt !== 'function') {
+            window.editCashReceipt = (index) => this.runSafely(() => this.editCashReceipt(index));
+        }
+        if (typeof window.deleteCashReceipt !== 'function') {
+            window.deleteCashReceipt = (index) => this.runSafely(() => this.deleteCashReceipt(index));
+        }
+        if (typeof window.editPostpaidSale !== 'function') {
+            window.editPostpaidSale = (index) => this.runSafely(() => this.editPostpaidSale(index));
+        }
+        if (typeof window.deletePostpaidSale !== 'function') {
+            window.deletePostpaidSale = (index) => this.runSafely(() => this.deletePostpaidSale(index));
+        }
+        if (typeof window.editCustomerReceipt !== 'function') {
+            window.editCustomerReceipt = (index) => this.runSafely(() => this.editCustomerReceipt(index));
+        }
+        if (typeof window.deleteCustomerReceipt !== 'function') {
+            window.deleteCustomerReceipt = (index) => this.runSafely(() => this.deleteCustomerReceipt(index));
+        }
+        if (typeof window.editReturnInvoice !== 'function') {
+            window.editReturnInvoice = (index) => this.runSafely(() => this.editReturnInvoice(index));
+        }
+        if (typeof window.deleteReturnInvoice !== 'function') {
+            window.deleteReturnInvoice = (index) => this.runSafely(() => this.deleteReturnInvoice(index));
+        }
+        if (typeof window.editSupplier !== 'function') {
+            window.editSupplier = (index) => this.runSafely(() => this.editSupplier(index));
+        }
+        if (typeof window.deleteSupplier !== 'function') {
+            window.deleteSupplier = (index) => this.runSafely(() => this.deleteSupplier(index));
+        }
+    }
+
+    runSafely(action) {
+        Promise.resolve(action()).catch((error) => {
+            this.handleActionError(error);
+        });
+    }
+
+    handleActionError(error) {
+        const message = error?.message || 'حدث خطأ غير متوقع';
+        console.error('❌ [RECEIPTS] إجراء فشل:', error);
+        if (typeof DialogUtils.showErrorToast === 'function') {
+            DialogUtils.showErrorToast(message);
+        }
+    }
+
+    getItemByIndex(items, index, itemLabel) {
+        const safeIndex = parseInt(index, 10);
+        if (isNaN(safeIndex) || safeIndex < 0 || safeIndex >= items.length) {
+            throw new Error(`تعذر العثور على ${itemLabel}`);
+        }
+        return { item: items[safeIndex], safeIndex };
+    }
+
+    async editCollectionItem(items, index, itemLabel, fields, refreshFn) {
+        const { item, safeIndex } = this.getItemByIndex(items, index, itemLabel);
+
+        if (typeof window === 'undefined' || typeof window.prompt !== 'function') {
+            throw new Error('ميزة التعديل غير متاحة في هذا السياق');
+        }
+
+        const updatedItem = { ...item };
+
+        for (const field of fields) {
+            const currentValue = updatedItem[field.key] ?? '';
+            const raw = window.prompt(`تعديل ${field.label}:`, String(currentValue));
+
+            if (raw === null) {
+                return false;
+            }
+
+            const value = field.transform ? field.transform(raw) : raw;
+            if (field.validate && !field.validate(value)) {
+                throw new Error(field.errorMessage || `قيمة ${field.label} غير صحيحة`);
+            }
+
+            updatedItem[field.key] = value;
+        }
+
+        items[safeIndex] = updatedItem;
+        await refreshFn();
+        this.updateSummary();
+
+        if (typeof DialogUtils.showSuccessToast === 'function') {
+            DialogUtils.showSuccessToast(`تم تعديل ${itemLabel} بنجاح`);
+        }
+
+        return true;
+    }
+
+    async deleteCollectionItem(items, index, itemLabel, refreshFn) {
+        const { safeIndex } = this.getItemByIndex(items, index, itemLabel);
+
+        let confirmed = true;
+        if (typeof DialogUtils.showConfirm === 'function') {
+            confirmed = await DialogUtils.showConfirm(`هل تريد حذف ${itemLabel}؟`, 'تأكيد الحذف');
+        }
+
+        if (!confirmed) {
+            return false;
+        }
+
+        items.splice(safeIndex, 1);
+        await refreshFn();
+        this.updateSummary();
+
+        if (typeof DialogUtils.showSuccessToast === 'function') {
+            DialogUtils.showSuccessToast(`تم حذف ${itemLabel} بنجاح`);
+        }
+
+        return true;
+    }
+
+    parseAmount(value) {
+        const amount = parseFloat(value);
+        if (isNaN(amount) || amount <= 0) {
+            throw new Error('يرجى إدخال مبلغ صحيح أكبر من صفر');
+        }
+        return amount;
     }
 
     /**
@@ -260,6 +395,175 @@ class ReceiptsManager {
             console.error('❌ [SUPPLIER] خطأ في إضافة بيانات المورد:', error);
             throw error;
         }
+    }
+
+    async editBankReceipt(index) {
+        return this.editCollectionItem(
+            reconciliationCore.bankReceipts,
+            index,
+            'المقبوضة البنكية',
+            [
+                { key: 'operationType', label: 'نوع العملية', validate: (value) => String(value).trim().length > 0 },
+                { key: 'bankName', label: 'اسم البنك' },
+                {
+                    key: 'amount',
+                    label: 'المبلغ',
+                    transform: (value) => this.parseAmount(value),
+                    validate: (value) => !isNaN(parseFloat(value))
+                },
+                { key: 'notes', label: 'ملاحظات' }
+            ],
+            () => this.updateBankReceiptsDisplay()
+        );
+    }
+
+    async deleteBankReceipt(index) {
+        return this.deleteCollectionItem(
+            reconciliationCore.bankReceipts,
+            index,
+            'المقبوضة البنكية',
+            () => this.updateBankReceiptsDisplay()
+        );
+    }
+
+    async editCashReceipt(index) {
+        return this.editCollectionItem(
+            reconciliationCore.cashReceipts,
+            index,
+            'المقبوضة النقدية',
+            [
+                {
+                    key: 'total_amount',
+                    label: 'المبلغ',
+                    transform: (value) => this.parseAmount(value),
+                    validate: (value) => !isNaN(parseFloat(value))
+                },
+                { key: 'notes', label: 'ملاحظات' }
+            ],
+            () => this.updateCashReceiptsDisplay()
+        );
+    }
+
+    async deleteCashReceipt(index) {
+        return this.deleteCollectionItem(
+            reconciliationCore.cashReceipts,
+            index,
+            'المقبوضة النقدية',
+            () => this.updateCashReceiptsDisplay()
+        );
+    }
+
+    async editPostpaidSale(index) {
+        return this.editCollectionItem(
+            reconciliationCore.postpaidSales,
+            index,
+            'المبيعة الآجلة',
+            [
+                { key: 'customerName', label: 'اسم العميل', validate: (value) => String(value).trim().length > 0 },
+                {
+                    key: 'amount',
+                    label: 'المبلغ',
+                    transform: (value) => this.parseAmount(value),
+                    validate: (value) => !isNaN(parseFloat(value))
+                },
+                { key: 'notes', label: 'ملاحظات' }
+            ],
+            () => this.updatePostpaidSalesDisplay()
+        );
+    }
+
+    async deletePostpaidSale(index) {
+        return this.deleteCollectionItem(
+            reconciliationCore.postpaidSales,
+            index,
+            'المبيعة الآجلة',
+            () => this.updatePostpaidSalesDisplay()
+        );
+    }
+
+    async editCustomerReceipt(index) {
+        return this.editCollectionItem(
+            reconciliationCore.customerReceipts,
+            index,
+            'مقبوض العميل',
+            [
+                { key: 'customerName', label: 'اسم العميل', validate: (value) => String(value).trim().length > 0 },
+                {
+                    key: 'amount',
+                    label: 'المبلغ',
+                    transform: (value) => this.parseAmount(value),
+                    validate: (value) => !isNaN(parseFloat(value))
+                },
+                { key: 'paymentType', label: 'نوع الدفع' },
+                { key: 'notes', label: 'ملاحظات' }
+            ],
+            () => this.updateCustomerReceiptsDisplay()
+        );
+    }
+
+    async deleteCustomerReceipt(index) {
+        return this.deleteCollectionItem(
+            reconciliationCore.customerReceipts,
+            index,
+            'مقبوض العميل',
+            () => this.updateCustomerReceiptsDisplay()
+        );
+    }
+
+    async editReturnInvoice(index) {
+        return this.editCollectionItem(
+            reconciliationCore.returnInvoices,
+            index,
+            'فاتورة المرتجع',
+            [
+                { key: 'invoiceNumber', label: 'رقم الفاتورة', validate: (value) => String(value).trim().length > 0 },
+                {
+                    key: 'amount',
+                    label: 'المبلغ',
+                    transform: (value) => this.parseAmount(value),
+                    validate: (value) => !isNaN(parseFloat(value))
+                },
+                { key: 'notes', label: 'ملاحظات' }
+            ],
+            () => this.updateReturnInvoicesDisplay()
+        );
+    }
+
+    async deleteReturnInvoice(index) {
+        return this.deleteCollectionItem(
+            reconciliationCore.returnInvoices,
+            index,
+            'فاتورة المرتجع',
+            () => this.updateReturnInvoicesDisplay()
+        );
+    }
+
+    async editSupplier(index) {
+        return this.editCollectionItem(
+            reconciliationCore.suppliers,
+            index,
+            'المورد',
+            [
+                { key: 'supplierName', label: 'اسم المورد', validate: (value) => String(value).trim().length > 0 },
+                {
+                    key: 'amount',
+                    label: 'المبلغ',
+                    transform: (value) => this.parseAmount(value),
+                    validate: (value) => !isNaN(parseFloat(value))
+                },
+                { key: 'notes', label: 'ملاحظات' }
+            ],
+            () => this.updateSuppliersDisplay()
+        );
+    }
+
+    async deleteSupplier(index) {
+        return this.deleteCollectionItem(
+            reconciliationCore.suppliers,
+            index,
+            'المورد',
+            () => this.updateSuppliersDisplay()
+        );
     }
 
     /**

@@ -76,6 +76,7 @@
     --btn-info-focus: rgba(14, 165, 233, 0.35);
 }
 
+
 /* Global Scrollbar Reset - App Like Feel */
 * {
     box-sizing: border-box;
@@ -257,6 +258,7 @@ body {
     border-color: var(--primary);
     box-shadow: 0 0 15px var(--primary-glow);
 }
+
 
 .stat-box {
     padding: 1.5rem;

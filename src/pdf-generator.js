@@ -14,9 +14,28 @@ class PDFGenerator {
     constructor(dbManager = null) {
         this.browser = null;
         this.dbManager = dbManager;
+        this.isInitializing = false;
+        this.initializationPromise = null;
     }
 
     async initialize() {
+        if (this.browser && this.browser.isConnected()) {
+            return true;
+        }
+
+        if (this.isInitializing && this.initializationPromise) {
+            return this.initializationPromise;
+        }
+
+        this.isInitializing = true;
+        this.initializationPromise = this.initializeInternal();
+        const success = await this.initializationPromise;
+        this.isInitializing = false;
+        this.initializationPromise = null;
+        return success;
+    }
+
+    async initializeInternal() {
         try {
             // محاولة العثور على متصفح مثبت
             const executablePath = this.findChromiumExecutable();
@@ -39,6 +58,10 @@ class PDFGenerator {
             }
 
             this.browser = await puppeteer.launch(launchOptions);
+            this.browser.on('disconnected', () => {
+                console.warn('⚠️ [PDF] تم قطع اتصال المتصفح الداخلي، سيتم إعادة التهيئة عند الطلب');
+                this.browser = null;
+            });
             console.log('✅ [PDF] تم تهيئة مولد PDF بنجاح');
             return true;
         } catch (error) {
@@ -47,11 +70,87 @@ class PDFGenerator {
             // محاولة إصلاح تلقائي
             const fixed = await this.attemptAutoFix();
             if (fixed) {
-                return await this.initialize(); // إعادة المحاولة
+                return await this.initializeInternal(); // إعادة المحاولة
             }
 
             return false;
         }
+    }
+
+    async ensureBrowser() {
+        if (this.browser && this.browser.isConnected()) {
+            return;
+        }
+
+        this.browser = null;
+        const initialized = await this.initialize();
+        if (!initialized || !this.browser || !this.browser.isConnected()) {
+            throw new Error('Failed to initialize PDF browser');
+        }
+    }
+
+    async resetBrowser() {
+        if (this.browser) {
+            try {
+                await this.browser.close();
+            } catch (_error) {
+                // Ignore close errors for corrupted/disconnected browser instance.
+            }
+        }
+        this.browser = null;
+    }
+
+    shouldRetryPdfError(error) {
+        const message = (error && error.message ? error.message : '').toLowerCase();
+        if (!message) {
+            return false;
+        }
+
+        return (
+            message.includes('target closed') ||
+            message.includes('session closed') ||
+            message.includes('browser has disconnected') ||
+            message.includes('protocol error') ||
+            message.includes('navigation timeout') ||
+            message.includes('execution context was destroyed')
+        );
+    }
+
+    async generatePdfWithRetry(renderCallback) {
+        let lastError = null;
+
+        for (let attempt = 1; attempt <= 2; attempt += 1) {
+            let page = null;
+            try {
+                await this.ensureBrowser();
+                page = await this.browser.newPage();
+                page.setDefaultNavigationTimeout(45000);
+                page.setDefaultTimeout(45000);
+
+                const result = await renderCallback(page);
+                await page.close();
+                return result;
+            } catch (error) {
+                lastError = error;
+                if (page) {
+                    try {
+                        await page.close();
+                    } catch (_closeError) {
+                        // Ignore close errors after generation failure.
+                    }
+                }
+
+                if (attempt < 2 && this.shouldRetryPdfError(error)) {
+                    console.warn('⚠️ [PDF] فشل توليد PDF، محاولة إعادة تهيئة المتصفح وإعادة المحاولة...');
+                    await this.resetBrowser();
+                    continue;
+                }
+
+                throw error;
+            }
+        }
+
+        throw lastError || new Error('Unknown PDF generation failure');
     }
 
     /**
@@ -112,52 +211,34 @@ class PDFGenerator {
     }
 
     async generateReconciliationReport(reconciliationData) {
-        if (!this.browser) {
-            const initialized = await this.initialize();
-            if (!initialized) {
-                throw new Error('Failed to initialize PDF generator');
-            }
-        }
-
         try {
-            const page = await this.browser.newPage();
-
-            // Set page to A4 size
-            await page.setViewport({ width: 794, height: 1123 });
-
-            // Generate HTML content with options
             const htmlContent = await this.generateReportHTML(reconciliationData, {});
+            return await this.generatePdfWithRetry(async (page) => {
+                await page.setViewport({ width: 794, height: 1123 });
+                await page.setContent(htmlContent, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 45000
+                });
 
-            // Set content with unlimited timeout and less strict wait condition for large data
-            await page.setContent(htmlContent, {
-                waitUntil: ['load', 'domcontentloaded'],
-                timeout: 0
+                return page.pdf({
+                    format: 'A4',
+                    printBackground: true,
+                    timeout: 60000,
+                    margin: {
+                        top: '20mm',
+                        right: '15mm',
+                        bottom: '25mm',
+                        left: '15mm'
+                    },
+                    displayHeaderFooter: true,
+                    footerTemplate: `
+                        <div style="font-size: 10px; color: #666; text-align: center; width: 100%; padding: 5px 0; font-family: 'Cairo', Arial, sans-serif;">
+                            © 2025 محمد أمين الكامل - جميع الحقوق محفوظة - تصفية برو - Tasfiya Pro
+                        </div>
+                    `,
+                    headerTemplate: '<div></div>'
+                });
             });
-
-            // Generate PDF with footer on every page
-            const pdfBuffer = await page.pdf({
-                format: 'A4',
-                printBackground: true,
-                timeout: 0, // Unlimited timeout for PDF generation
-                margin: {
-                    top: '20mm',
-                    right: '15mm',
-                    bottom: '25mm', // زيادة الهامش السفلي لاستيعاب الفوتر
-                    left: '15mm'
-                },
-                displayHeaderFooter: true,
-                footerTemplate: `
-                    <div style="font-size: 10px; color: #666; text-align: center; width: 100%; padding: 5px 0; font-family: 'Cairo', Arial, sans-serif;">
-                        © 2025 محمد أمين الكامل - جميع الحقوق محفوظة - تصفية برو - Tasfiya Pro
-                    </div>
-                `,
-                headerTemplate: '<div></div>' // فوتر فارغ
-            });
-
-            await page.close();
-
-            return pdfBuffer;
-
         } catch (error) {
             console.error('Error generating PDF:', error);
             throw error;
@@ -165,49 +246,33 @@ class PDFGenerator {
     }
 
     async generateFromHTML(htmlContent) {
-        if (!this.browser) {
-            const initialized = await this.initialize();
-            if (!initialized) {
-                throw new Error('Failed to initialize PDF generator');
-            }
-        }
-
         try {
-            const page = await this.browser.newPage();
+            return await this.generatePdfWithRetry(async (page) => {
+                await page.setViewport({ width: 794, height: 1123 });
+                await page.setContent(htmlContent, {
+                    waitUntil: 'domcontentloaded',
+                    timeout: 45000
+                });
 
-            // Set page to A4 size
-            await page.setViewport({ width: 794, height: 1123 });
-
-            // Set content with unlimited timeout
-            await page.setContent(htmlContent, {
-                waitUntil: ['load', 'domcontentloaded'],
-                timeout: 0
+                return page.pdf({
+                    format: 'A4',
+                    printBackground: true,
+                    timeout: 60000,
+                    margin: {
+                        top: '20mm',
+                        right: '15mm',
+                        bottom: '25mm',
+                        left: '15mm'
+                    },
+                    displayHeaderFooter: true,
+                    footerTemplate: `
+                        <div style="font-size: 10px; color: #666; text-align: center; width: 100%; padding: 5px 0; font-family: 'Cairo', Arial, sans-serif;">
+                            © 2025 محمد أمين الكامل - جميع الحقوق محفوظة - تصفية برو - Tasfiya Pro
+                        </div>
+                    `,
+                    headerTemplate: '<div></div>'
+                });
             });
-
-            // Generate PDF with footer on every page
-            const pdfBuffer = await page.pdf({
-                format: 'A4',
-                printBackground: true,
-                timeout: 0,
-                margin: {
-                    top: '20mm',
-                    right: '15mm',
-                    bottom: '25mm', // زيادة الهامش السفلي لاستيعاب الفوتر
-                    left: '15mm'
-                },
-                displayHeaderFooter: true,
-                footerTemplate: `
-                    <div style="font-size: 10px; color: #666; text-align: center; width: 100%; padding: 5px 0; font-family: 'Cairo', Arial, sans-serif;">
-                        © 2025 محمد أمين الكامل - جميع الحقوق محفوظة - تصفية برو - Tasfiya Pro
-                    </div>
-                `,
-                headerTemplate: '<div></div>' // هيدر فارغ
-            });
-
-            await page.close();
-
-            return pdfBuffer;
-
         } catch (error) {
             console.error('PDF generation from HTML error:', error);
             throw error;
@@ -271,8 +336,6 @@ class PDFGenerator {
             <meta name="viewport" content="width=device-width, initial-scale=1.0">
             <title>تقرير تصفية الكاشير - ${companyName}</title>
             <style>
-                @import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700&display=swap');
-
                 * {
                     font-family: 'Cairo', 'Arial', sans-serif;
                     margin: 0;
@@ -1013,7 +1076,11 @@ class PDFGenerator {
 
     async close() {
         if (this.browser) {
-            await this.browser.close();
+            try {
+                await this.browser.close();
+            } catch (_error) {
+                // Ignore close errors during shutdown.
+            }
             this.browser = null;
         }
     }

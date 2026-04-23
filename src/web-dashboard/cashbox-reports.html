@@ -234,7 +234,8 @@
             'request-reconciliation.html'
         ];
 
-        if (user.permissions && Array.isArray(user.permissions)) {
+        const hasExplicitPermissions = Array.isArray(user.permissions) && user.permissions.length > 0;
+        if (user.role !== 'admin' && hasExplicitPermissions) {
             protectedPages.forEach(page => {
                 if (!user.permissions.includes(page)) {
                     const el = document.querySelector(`a[href="${page}"]`);

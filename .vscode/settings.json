@@ -1,0 +1,13 @@
+{
+  "terminal.integrated.defaultProfile.windows": "PowerShell",
+  "terminal.integrated.automationProfile.windows": {
+    "path": "pwsh",
+    "args": [
+      "-NoLogo",
+      "-NoProfile"
+    ]
+  },
+  "terminal.integrated.env.windows": {
+    "ELECTRON_RUN_AS_NODE": null
+  }
+}

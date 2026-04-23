@@ -8,6 +8,19 @@
 
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
+const { buildCashboxVoucherSyncKey } = require('./app/cashbox-voucher-utils');
+const { resolveAdminSeedPolicy } = require('./security/admin-seed-policy');
+const { hashSecret, isHashedSecret } = require('./security/auth-service');
+
+const DEFAULT_RECONCILIATION_FORMULA_SETTINGS = Object.freeze({
+  bank_receipts_sign: 1,
+  cash_receipts_sign: 1,
+  postpaid_sales_sign: 1,
+  customer_receipts_sign: -1,
+  return_invoices_sign: 1,
+  suppliers_sign: 0
+});
 
 let app;
 try {
@@ -27,13 +40,16 @@ class DatabaseManager {
     try {
       let dbPath;
       if (app) {
-        dbPath = path.join(app.getPath('userData'), 'casher.db');
+        const userDataDir = app.getPath('userData');
+        if (!fs.existsSync(userDataDir)) {
+          fs.mkdirSync(userDataDir, { recursive: true });
+        }
+        dbPath = path.join(userDataDir, 'casher.db');
       } else {
         // In server mode, store db in a 'data' folder
         const dataDir = path.join(process.cwd(), 'data');
-        const fs = require('fs');
         if (!fs.existsSync(dataDir)) {
-          fs.mkdirSync(dataDir);
+          fs.mkdirSync(dataDir, { recursive: true });
         }
         dbPath = path.join(dataDir, 'casher.db');
       }
@@ -45,6 +61,7 @@ class DatabaseManager {
 
       console.log('Database initialized at:', dbPath);
       this.createTables();
+      this.migrateSensitiveCredentials();
       this.insertDefaultData();
 
       return true;
@@ -89,6 +106,79 @@ class DatabaseManager {
       )
     `);
 
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS manual_supplier_transactions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        supplier_name TEXT NOT NULL,
+        transaction_type TEXT NOT NULL DEFAULT 'payment',
+        amount DECIMAL(10,2) NOT NULL,
+        reference_no TEXT,
+        notes TEXT,
+        branch_id INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL
+      )
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS branch_cashboxes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        branch_id INTEGER NOT NULL UNIQUE,
+        cashbox_name TEXT NOT NULL,
+        opening_balance DECIMAL(10,2) NOT NULL DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE CASCADE
+      )
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS cashbox_vouchers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        voucher_number INTEGER NOT NULL UNIQUE,
+        voucher_sequence_number INTEGER,
+        sync_key TEXT UNIQUE,
+        voucher_type TEXT NOT NULL,
+        cashbox_id INTEGER NOT NULL,
+        branch_id INTEGER NOT NULL,
+        counterparty_type TEXT NOT NULL,
+        counterparty_name TEXT NOT NULL,
+        cashier_id INTEGER,
+        amount DECIMAL(10,2) NOT NULL,
+        reference_no TEXT,
+        description TEXT,
+        voucher_date DATE NOT NULL,
+        created_by TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        source_reconciliation_id INTEGER,
+        source_entry_key TEXT,
+        is_auto_generated INTEGER DEFAULT 0,
+        FOREIGN KEY (cashbox_id) REFERENCES branch_cashboxes(id) ON DELETE CASCADE,
+        FOREIGN KEY (branch_id) REFERENCES branches(id),
+        FOREIGN KEY (cashier_id) REFERENCES cashiers(id) ON DELETE SET NULL
+      )
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS cashbox_voucher_audit_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        voucher_id INTEGER,
+        voucher_number INTEGER,
+        voucher_sequence_number INTEGER,
+        voucher_type TEXT NOT NULL,
+        branch_id INTEGER,
+        action_type TEXT NOT NULL,
+        action_by TEXT,
+        action_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        payload_json TEXT,
+        notes TEXT,
+        FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL
+      )
+    `);
+
     // Admins table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS admins (
@@ -103,6 +193,19 @@ class DatabaseManager {
       )
     `);
 
+    // Reconciliation formula profiles table
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS reconciliation_formula_profiles (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        formula_name TEXT NOT NULL UNIQUE,
+        settings_json TEXT NOT NULL,
+        is_default INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+
     // Branches table
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS branches (
@@ -110,9 +213,11 @@ class DatabaseManager {
         branch_name TEXT NOT NULL,
         branch_address TEXT,
         branch_phone TEXT,
+        reconciliation_formula_id INTEGER,
         is_active INTEGER DEFAULT 1,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (reconciliation_formula_id) REFERENCES reconciliation_formula_profiles (id)
       )
     `);
 
@@ -169,11 +274,15 @@ class DatabaseManager {
         surplus_deficit DECIMAL(10,2) DEFAULT 0,
         status TEXT DEFAULT 'draft',
         notes TEXT,
+        formula_profile_id INTEGER,
+        formula_settings TEXT,
+        cashbox_posting_enabled INTEGER,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         last_modified_date DATETIME,
         FOREIGN KEY (cashier_id) REFERENCES cashiers(id),
-        FOREIGN KEY (accountant_id) REFERENCES accountants(id)
+        FOREIGN KEY (accountant_id) REFERENCES accountants(id),
+        FOREIGN KEY (formula_profile_id) REFERENCES reconciliation_formula_profiles(id)
       )
     `);
 
@@ -198,6 +307,18 @@ class DatabaseManager {
     // Add last_modified_date column if it doesn't exist (for existing databases)
     try {
       this.db.exec(`ALTER TABLE reconciliations ADD COLUMN last_modified_date DATETIME`);
+    } catch (error) {
+      // Column already exists, ignore error
+    }
+
+    try {
+      this.db.exec(`ALTER TABLE reconciliations ADD COLUMN formula_settings TEXT`);
+    } catch (error) {
+      // Column already exists, ignore error
+    }
+
+    try {
+      this.db.exec(`ALTER TABLE reconciliations ADD COLUMN cashbox_posting_enabled INTEGER`);
     } catch (error) {
       // Column already exists, ignore error
     }
@@ -233,6 +354,7 @@ class DatabaseManager {
         operation_type TEXT NOT NULL, -- مدى، فيزا، ماستر كارد
         atm_id INTEGER NOT NULL,
         amount DECIMAL(10,2) NOT NULL,
+        is_modified INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE,
         FOREIGN KEY (atm_id) REFERENCES atms(id)
@@ -247,6 +369,7 @@ class DatabaseManager {
         denomination INTEGER NOT NULL, -- 500, 200, 100, 50, 20, 10, 5, 1
         quantity INTEGER NOT NULL,
         total_amount DECIMAL(10,2) NOT NULL,
+        is_modified INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE
       )
@@ -259,6 +382,7 @@ class DatabaseManager {
         reconciliation_id INTEGER NOT NULL,
         customer_name TEXT NOT NULL,
         amount DECIMAL(10,2) NOT NULL,
+        is_modified INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE
       )
@@ -272,6 +396,7 @@ class DatabaseManager {
         customer_name TEXT NOT NULL,
         amount DECIMAL(10,2) NOT NULL,
         payment_type TEXT NOT NULL,
+        is_modified INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE
       )
@@ -292,6 +417,7 @@ class DatabaseManager {
             customer_name TEXT NOT NULL,
             amount DECIMAL(10,2) NOT NULL,
             payment_type TEXT NOT NULL,
+            is_modified INTEGER DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE
           )
@@ -306,6 +432,7 @@ class DatabaseManager {
             customer_name TEXT NOT NULL,
             amount DECIMAL(10,2) NOT NULL,
             payment_type TEXT NOT NULL,
+            is_modified INTEGER DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE
           )
@@ -341,6 +468,7 @@ class DatabaseManager {
             customer_name TEXT NOT NULL,
             amount DECIMAL(10,2) NOT NULL,
             payment_type TEXT NOT NULL DEFAULT 'نقدي',
+            is_modified INTEGER DEFAULT 0,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
           )
         `);
@@ -357,6 +485,7 @@ class DatabaseManager {
         reconciliation_id INTEGER NOT NULL,
         invoice_number TEXT NOT NULL,
         amount DECIMAL(10,2) NOT NULL,
+        is_modified INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE
       )
@@ -371,6 +500,7 @@ class DatabaseManager {
         invoice_number TEXT,
         amount DECIMAL(10,2) NOT NULL,
         notes TEXT,
+        is_modified INTEGER DEFAULT 0,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE
       )
@@ -388,6 +518,21 @@ class DatabaseManager {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
       `);
+
+    // Ledger merge history for safe undo operations in customer/supplier ledgers
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS ledger_merge_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        entity_type TEXT NOT NULL,
+        branch_id INTEGER DEFAULT 0,
+        target_name TEXT NOT NULL,
+        source_names_json TEXT NOT NULL,
+        affected_rows_json TEXT NOT NULL,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        undone_at DATETIME,
+        undo_details_json TEXT
+      )
+    `);
 
     // Settings table
     this.db.exec(`
@@ -407,11 +552,30 @@ class DatabaseManager {
 
     // Check and add missing columns for existing databases
     this.updateDatabaseSchema();
+
+    // Ensure performance indexes for heavy reporting/ledger queries.
+    this.createPerformanceIndexes();
+
+    // Apply core data-integrity constraints/triggers for critical tables.
+    this.applyDataIntegrityLayer();
   }
 
   updateDatabaseSchema() {
     try {
       console.log('🔄 [DB] فحص وتحديث مخطط قاعدة البيانات...');
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS reconciliation_formula_profiles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          formula_name TEXT NOT NULL UNIQUE,
+          settings_json TEXT NOT NULL,
+          is_default INTEGER DEFAULT 0,
+          is_active INTEGER DEFAULT 1,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_formula_profiles_default ON reconciliation_formula_profiles(is_default, is_active)');
 
       // Check if branch_id column exists in cashiers table
       const cashierColumns = this.db.pragma('table_info(cashiers)');
@@ -437,6 +601,12 @@ class DatabaseManager {
       const hasTimeRangeStart = reconciliationColumns.some(col => col.name === 'time_range_start');
       const hasTimeRangeEnd = reconciliationColumns.some(col => col.name === 'time_range_end');
       const hasFilterNotes = reconciliationColumns.some(col => col.name === 'filter_notes');
+      const hasFormulaSettings = reconciliationColumns.some(col => col.name === 'formula_settings');
+      const hasFormulaProfileId = reconciliationColumns.some(col => col.name === 'formula_profile_id');
+      const hasCashboxPostingEnabled = reconciliationColumns.some(col => col.name === 'cashbox_posting_enabled');
+
+      const branchColumns = this.db.pragma('table_info(branches)');
+      const hasBranchFormulaId = branchColumns.some(col => col.name === 'reconciliation_formula_id');
 
       if (!hasTimeRangeStart) {
         console.log('➕ [DB] إضافة عمود time_range_start إلى جدول التصفيات...');
@@ -454,6 +624,30 @@ class DatabaseManager {
         console.log('➕ [DB] إضافة عمود filter_notes إلى جدول التصفيات...');
         this.db.exec('ALTER TABLE reconciliations ADD COLUMN filter_notes TEXT NULL');
         console.log('✅ [DB] تم إضافة عمود filter_notes بنجاح');
+      }
+
+      if (!hasFormulaSettings) {
+        console.log('➕ [DB] إضافة عمود formula_settings إلى جدول التصفيات...');
+        this.db.exec('ALTER TABLE reconciliations ADD COLUMN formula_settings TEXT');
+        console.log('✅ [DB] تم إضافة عمود formula_settings بنجاح');
+      }
+
+      if (!hasFormulaProfileId) {
+        console.log('➕ [DB] إضافة عمود formula_profile_id إلى جدول التصفيات...');
+        this.db.exec('ALTER TABLE reconciliations ADD COLUMN formula_profile_id INTEGER');
+        console.log('✅ [DB] تم إضافة عمود formula_profile_id بنجاح');
+      }
+
+      if (!hasCashboxPostingEnabled) {
+        console.log('➕ [DB] إضافة عمود cashbox_posting_enabled إلى جدول التصفيات...');
+        this.db.exec('ALTER TABLE reconciliations ADD COLUMN cashbox_posting_enabled INTEGER');
+        console.log('✅ [DB] تم إضافة عمود cashbox_posting_enabled بنجاح');
+      }
+
+      if (!hasBranchFormulaId) {
+        console.log('➕ [DB] إضافة عمود reconciliation_formula_id إلى جدول الفروع...');
+        this.db.exec('ALTER TABLE branches ADD COLUMN reconciliation_formula_id INTEGER');
+        console.log('✅ [DB] تم إضافة عمود reconciliation_formula_id بنجاح');
       }
 
       // Check for role column in admins
@@ -481,13 +675,576 @@ class DatabaseManager {
         console.log('✅ [DB] pin_code column added to cashiers.');
       }
 
+      const manualSupplierColumns = this.db.pragma('table_info(manual_supplier_transactions)');
+      const hasManualSupplierUpdatedAt = manualSupplierColumns.some(col => col.name === 'updated_at');
+      if (!hasManualSupplierUpdatedAt) {
+        console.log('➕ [DB] Adding updated_at column to manual_supplier_transactions table...');
+        this.db.exec('ALTER TABLE manual_supplier_transactions ADD COLUMN updated_at DATETIME');
+        console.log('✅ [DB] updated_at column added to manual_supplier_transactions.');
+      }
+      this.db.exec(`
+        UPDATE manual_supplier_transactions
+        SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
+        WHERE updated_at IS NULL
+      `);
+
+      const cashboxVoucherColumns = this.db.pragma('table_info(cashbox_vouchers)');
+      const hasVoucherSequenceNumber = cashboxVoucherColumns.some(col => col.name === 'voucher_sequence_number');
+      const hasSyncKey = cashboxVoucherColumns.some(col => col.name === 'sync_key');
+      if (!hasVoucherSequenceNumber) {
+        console.log('➕ [DB] Adding voucher_sequence_number column to cashbox_vouchers table...');
+        this.db.exec('ALTER TABLE cashbox_vouchers ADD COLUMN voucher_sequence_number INTEGER');
+        console.log('✅ [DB] voucher_sequence_number column added to cashbox_vouchers.');
+      }
+
+      if (!hasSyncKey) {
+        console.log('➕ [DB] Adding sync_key column to cashbox_vouchers table...');
+        this.db.exec('ALTER TABLE cashbox_vouchers ADD COLUMN sync_key TEXT');
+        console.log('✅ [DB] sync_key column added to cashbox_vouchers.');
+      }
+
+      const hasSourceReconciliationId = cashboxVoucherColumns.some(col => col.name === 'source_reconciliation_id');
+      if (!hasSourceReconciliationId) {
+        console.log('➕ [DB] Adding source_reconciliation_id column to cashbox_vouchers table...');
+        this.db.exec('ALTER TABLE cashbox_vouchers ADD COLUMN source_reconciliation_id INTEGER');
+        console.log('✅ [DB] source_reconciliation_id column added to cashbox_vouchers.');
+      }
+
+      const hasSourceEntryKey = cashboxVoucherColumns.some(col => col.name === 'source_entry_key');
+      if (!hasSourceEntryKey) {
+        console.log('➕ [DB] Adding source_entry_key column to cashbox_vouchers table...');
+        this.db.exec('ALTER TABLE cashbox_vouchers ADD COLUMN source_entry_key TEXT');
+        console.log('✅ [DB] source_entry_key column added to cashbox_vouchers.');
+      }
+
+      const hasAutoGeneratedFlag = cashboxVoucherColumns.some(col => col.name === 'is_auto_generated');
+      if (!hasAutoGeneratedFlag) {
+        console.log('➕ [DB] Adding is_auto_generated column to cashbox_vouchers table...');
+        this.db.exec('ALTER TABLE cashbox_vouchers ADD COLUMN is_auto_generated INTEGER DEFAULT 0');
+        console.log('✅ [DB] is_auto_generated column added to cashbox_vouchers.');
+      }
+
+      this.db.exec(`
+        UPDATE cashbox_vouchers
+        SET is_auto_generated = COALESCE(is_auto_generated, 0)
+        WHERE is_auto_generated IS NULL
+      `);
+
+      const orphanAutoVouchersCleanup = this.db.prepare(`
+        DELETE FROM cashbox_vouchers
+        WHERE source_reconciliation_id IS NOT NULL
+          AND COALESCE(is_auto_generated, 0) = 1
+          AND NOT EXISTS (
+            SELECT 1
+            FROM reconciliations r
+            WHERE r.id = cashbox_vouchers.source_reconciliation_id
+          )
+      `).run();
+      if (orphanAutoVouchersCleanup.changes > 0) {
+        console.log(`🧹 [DB] تم حذف ${orphanAutoVouchersCleanup.changes} سند تلقائي يتيم من الصندوق`);
+      }
+
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS cashbox_voucher_audit_log (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          voucher_id INTEGER,
+          voucher_number INTEGER,
+          voucher_sequence_number INTEGER,
+          voucher_type TEXT NOT NULL,
+          branch_id INTEGER,
+          action_type TEXT NOT NULL,
+          action_by TEXT,
+          action_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          payload_json TEXT,
+          notes TEXT,
+          FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL
+        )
+      `);
+
+      this.db.exec(`
+        INSERT OR IGNORE INTO branch_cashboxes (
+          branch_id,
+          cashbox_name,
+          opening_balance,
+          is_active,
+          created_at,
+          updated_at
+        )
+        SELECT
+          b.id,
+          'صندوق ' || TRIM(COALESCE(b.branch_name, 'الفرع')),
+          0,
+          1,
+          CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP
+        FROM branches b
+        WHERE b.id IS NOT NULL
+      `);
+
+      this.db.exec(`
+        INSERT OR IGNORE INTO system_settings (
+          category,
+          setting_key,
+          setting_value,
+          created_at,
+          updated_at
+        ) VALUES (
+          'cashboxes',
+          'auto_post_reconciliation_vouchers',
+          'false',
+          CURRENT_TIMESTAMP,
+          CURRENT_TIMESTAMP
+        )
+      `);
+
+      this.normalizeCashboxVoucherSequences();
+      this.backfillCashboxVoucherSyncKeys();
+
       console.log('✅ [DB] تم فحص وتحديث مخطط قاعدة البيانات بنجاح');
+
+      this.ensureReconciliationFormulaProfiles();
 
       // إصلاح ترقيم التصفيات المكتملة الموجودة (يتم تشغيله مرة واحدة فقط)
       this.fixExistingCompletedReconciliations();
 
     } catch (error) {
       console.error('❌ [DB] خطأ في تحديث مخطط قاعدة البيانات:', error);
+    }
+  }
+
+  normalizeCashboxVoucherSequences() {
+    try {
+      const tableInfo = this.db.prepare('PRAGMA table_info(cashbox_vouchers)').all();
+      const hasVoucherSequenceNumber = Array.isArray(tableInfo)
+        && tableInfo.some((column) => column.name === 'voucher_sequence_number');
+
+      if (!hasVoucherSequenceNumber) {
+        return;
+      }
+
+      const vouchers = this.db.prepare(`
+        SELECT id, voucher_type
+        FROM cashbox_vouchers
+        ORDER BY voucher_number ASC, id ASC
+      `).all();
+
+      if (!Array.isArray(vouchers) || vouchers.length === 0) {
+        return;
+      }
+
+      const counters = {
+        receipt: 0,
+        payment: 0
+      };
+
+      const updateSequence = this.db.prepare(`
+        UPDATE cashbox_vouchers
+        SET voucher_sequence_number = ?
+        WHERE id = ?
+      `);
+
+      const transaction = this.db.transaction((rows) => {
+        rows.forEach((row) => {
+          const voucherType = row.voucher_type === 'payment' ? 'payment' : 'receipt';
+          counters[voucherType] += 1;
+          updateSequence.run(counters[voucherType], row.id);
+        });
+      });
+
+      transaction(vouchers);
+      console.log(`✅ [DB] تم تحديث الترقيم النوعي لعدد ${vouchers.length} سند من الصناديق`);
+    } catch (error) {
+      console.warn('⚠️ [DB] تعذر تحديث الترقيم النوعي لسندات الصناديق:', error && error.message ? error.message : error);
+    }
+  }
+
+  backfillCashboxVoucherSyncKeys() {
+    try {
+      const tableInfo = this.db.prepare('PRAGMA table_info(cashbox_vouchers)').all();
+      const hasSyncKey = Array.isArray(tableInfo)
+        && tableInfo.some((column) => column.name === 'sync_key');
+
+      if (!hasSyncKey) {
+        return;
+      }
+
+      const vouchers = this.db.prepare(`
+        SELECT
+          id,
+          voucher_number,
+          voucher_sequence_number,
+          sync_key,
+          voucher_type,
+          cashbox_id,
+          branch_id,
+          counterparty_type,
+          counterparty_name,
+          amount,
+          voucher_date,
+          created_at,
+          updated_at,
+          source_reconciliation_id,
+          source_entry_key
+        FROM cashbox_vouchers
+        WHERE sync_key IS NULL OR TRIM(sync_key) = ''
+      `).all();
+
+      if (!Array.isArray(vouchers) || vouchers.length === 0) {
+        this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)');
+        return;
+      }
+
+      const updateSyncKey = this.db.prepare(`
+        UPDATE cashbox_vouchers
+        SET sync_key = ?
+        WHERE id = ?
+      `);
+
+      const transaction = this.db.transaction((rows) => {
+        rows.forEach((row) => {
+          const syncKey = buildCashboxVoucherSyncKey(row, { branchId: row.branch_id });
+          if (syncKey) {
+            updateSyncKey.run(syncKey, row.id);
+          }
+        });
+      });
+
+      transaction(vouchers);
+      this.db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)');
+      console.log(`✅ [DB] تم توليد sync_key لعدد ${vouchers.length} سند من الصناديق`);
+    } catch (error) {
+      console.warn('⚠️ [DB] تعذر تحديث sync_key لسندات الصناديق:', error && error.message ? error.message : error);
+    }
+  }
+
+  createPerformanceIndexes() {
+    try {
+      const indexStatements = [
+        'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_date ON postpaid_sales(customer_name, created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_reconciliation_id ON postpaid_sales(reconciliation_id)',
+        'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_date ON customer_receipts(customer_name, created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_customer_receipts_reconciliation_id ON customer_receipts(reconciliation_id)',
+        'CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer_date ON manual_postpaid_sales(customer_name, created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_date ON manual_customer_receipts(customer_name, created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_manual_supplier_name_date ON manual_supplier_transactions(supplier_name, created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_manual_supplier_branch_date ON manual_supplier_transactions(branch_id, created_at)',
+        'CREATE INDEX IF NOT EXISTS idx_branch_cashboxes_branch_id ON branch_cashboxes(branch_id)',
+        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_branch_date ON cashbox_vouchers(branch_id, voucher_date)',
+        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_cashbox_date ON cashbox_vouchers(cashbox_id, voucher_date)',
+        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_date ON cashbox_vouchers(voucher_type, voucher_date)',
+        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence ON cashbox_vouchers(voucher_type, voucher_sequence_number)',
+        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_counterparty_name ON cashbox_vouchers(counterparty_name)',
+        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_reconciliation ON cashbox_vouchers(source_reconciliation_id, source_entry_key)',
+        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_auto_generated ON cashbox_vouchers(is_auto_generated, source_reconciliation_id)',
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)',
+        'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_voucher_action ON cashbox_voucher_audit_log(voucher_id, action_at DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_branch_action ON cashbox_voucher_audit_log(branch_id, action_at DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_ledger_merge_history_entity_open ON ledger_merge_history(entity_type, undone_at, id DESC)',
+        'CREATE INDEX IF NOT EXISTS idx_reconciliations_date_status ON reconciliations(reconciliation_date, status)',
+        'CREATE INDEX IF NOT EXISTS idx_reconciliations_cashier_date ON reconciliations(cashier_id, reconciliation_date)',
+        'CREATE INDEX IF NOT EXISTS idx_reconciliations_cashbox_posting ON reconciliations(cashbox_posting_enabled, status)',
+        'CREATE INDEX IF NOT EXISTS idx_cashiers_branch_id ON cashiers(branch_id)',
+        'CREATE INDEX IF NOT EXISTS idx_branches_formula_id ON branches(reconciliation_formula_id)'
+      ];
+
+      for (const statement of indexStatements) {
+        this.db.prepare(statement).run();
+      }
+
+      console.log('✅ [DB] تم إنشاء/التحقق من فهارس الأداء');
+    } catch (error) {
+      console.warn('⚠️ [DB] تعذر إنشاء بعض فهارس الأداء:', error && error.message ? error.message : error);
+    }
+  }
+
+  createUniqueIndexIfNoDuplicates(indexName, duplicateCheckSql, createIndexSql, valueLabel = 'value') {
+    try {
+      const duplicates = this.db.prepare(duplicateCheckSql).all();
+      if (Array.isArray(duplicates) && duplicates.length > 0) {
+        const sampleValues = duplicates
+          .slice(0, 3)
+          .map((row) => String(row?.[valueLabel] ?? ''))
+          .filter((value) => value.length > 0)
+          .join(', ');
+        console.warn(
+          `⚠️ [DB] تم تجاوز إنشاء الفهرس الفريد ${indexName} بسبب بيانات مكررة حالياً.` +
+          (sampleValues ? ` أمثلة: ${sampleValues}` : '')
+        );
+        return false;
+      }
+
+      this.db.exec(createIndexSql);
+      console.log(`✅ [DB] تم إنشاء/التحقق من الفهرس الفريد: ${indexName}`);
+      return true;
+    } catch (error) {
+      console.warn(
+        `⚠️ [DB] تعذر إنشاء الفهرس الفريد ${indexName}:`,
+        error && error.message ? error.message : error
+      );
+      return false;
+    }
+  }
+
+  createDataValidationTriggers() {
+    const triggerStatements = [
+      `CREATE TRIGGER IF NOT EXISTS trg_manual_supplier_transactions_validate_insert
+       BEFORE INSERT ON manual_supplier_transactions
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.supplier_name, '')) = ''
+         OR NEW.amount IS NULL
+         OR CAST(NEW.amount AS REAL) <= 0
+         OR NEW.transaction_type NOT IN ('payment', 'invoice')
+       BEGIN
+         SELECT RAISE(ABORT, 'manual_supplier_transactions_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_manual_supplier_transactions_validate_update
+       BEFORE UPDATE ON manual_supplier_transactions
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.supplier_name, '')) = ''
+         OR NEW.amount IS NULL
+         OR CAST(NEW.amount AS REAL) <= 0
+         OR NEW.transaction_type NOT IN ('payment', 'invoice')
+       BEGIN
+         SELECT RAISE(ABORT, 'manual_supplier_transactions_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_cashbox_vouchers_validate_insert
+       BEFORE INSERT ON cashbox_vouchers
+       FOR EACH ROW
+       WHEN NEW.voucher_number IS NULL
+         OR NEW.voucher_sequence_number IS NULL
+         OR NEW.branch_id IS NULL
+         OR NEW.cashbox_id IS NULL
+         OR TRIM(COALESCE(NEW.counterparty_name, '')) = ''
+         OR CAST(COALESCE(NEW.amount, 0) AS REAL) <= 0
+         OR TRIM(COALESCE(NEW.voucher_date, '')) = ''
+         OR NEW.voucher_type NOT IN ('receipt', 'payment')
+         OR NEW.counterparty_type NOT IN ('cashier', 'supplier')
+       BEGIN
+         SELECT RAISE(ABORT, 'cashbox_vouchers_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_cashbox_vouchers_validate_update
+       BEFORE UPDATE ON cashbox_vouchers
+       FOR EACH ROW
+       WHEN NEW.voucher_number IS NULL
+         OR NEW.voucher_sequence_number IS NULL
+         OR NEW.branch_id IS NULL
+         OR NEW.cashbox_id IS NULL
+         OR TRIM(COALESCE(NEW.counterparty_name, '')) = ''
+         OR CAST(COALESCE(NEW.amount, 0) AS REAL) <= 0
+         OR TRIM(COALESCE(NEW.voucher_date, '')) = ''
+         OR NEW.voucher_type NOT IN ('receipt', 'payment')
+         OR NEW.counterparty_type NOT IN ('cashier', 'supplier')
+       BEGIN
+         SELECT RAISE(ABORT, 'cashbox_vouchers_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_branches_create_cashbox_after_insert
+       AFTER INSERT ON branches
+       FOR EACH ROW
+       BEGIN
+         INSERT OR IGNORE INTO branch_cashboxes (
+           branch_id,
+           cashbox_name,
+           opening_balance,
+           is_active,
+           created_at,
+           updated_at
+         ) VALUES (
+           NEW.id,
+           'صندوق ' || TRIM(COALESCE(NEW.branch_name, 'الفرع')),
+           0,
+           1,
+           CURRENT_TIMESTAMP,
+           CURRENT_TIMESTAMP
+         );
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_manual_postpaid_sales_validate_insert
+       BEFORE INSERT ON manual_postpaid_sales
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.customer_name, '')) = ''
+         OR NEW.amount IS NULL
+         OR CAST(NEW.amount AS REAL) <= 0
+       BEGIN
+         SELECT RAISE(ABORT, 'manual_postpaid_sales_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_manual_postpaid_sales_validate_update
+       BEFORE UPDATE ON manual_postpaid_sales
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.customer_name, '')) = ''
+         OR NEW.amount IS NULL
+         OR CAST(NEW.amount AS REAL) <= 0
+       BEGIN
+         SELECT RAISE(ABORT, 'manual_postpaid_sales_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_manual_customer_receipts_validate_insert
+       BEFORE INSERT ON manual_customer_receipts
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.customer_name, '')) = ''
+         OR NEW.amount IS NULL
+         OR CAST(NEW.amount AS REAL) <= 0
+       BEGIN
+         SELECT RAISE(ABORT, 'manual_customer_receipts_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_manual_customer_receipts_validate_update
+       BEFORE UPDATE ON manual_customer_receipts
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.customer_name, '')) = ''
+         OR NEW.amount IS NULL
+         OR CAST(NEW.amount AS REAL) <= 0
+       BEGIN
+         SELECT RAISE(ABORT, 'manual_customer_receipts_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_postpaid_sales_validate_insert
+       BEFORE INSERT ON postpaid_sales
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.customer_name, '')) = ''
+         OR NEW.amount IS NULL
+         OR CAST(NEW.amount AS REAL) <= 0
+       BEGIN
+         SELECT RAISE(ABORT, 'postpaid_sales_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_postpaid_sales_validate_update
+       BEFORE UPDATE ON postpaid_sales
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.customer_name, '')) = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'postpaid_sales_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_customer_receipts_validate_insert
+       BEFORE INSERT ON customer_receipts
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.customer_name, '')) = ''
+         OR TRIM(COALESCE(NEW.payment_type, '')) = ''
+         OR NEW.amount IS NULL
+         OR CAST(NEW.amount AS REAL) <= 0
+       BEGIN
+         SELECT RAISE(ABORT, 'customer_receipts_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_customer_receipts_validate_update
+       BEFORE UPDATE ON customer_receipts
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.customer_name, '')) = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'customer_receipts_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_suppliers_validate_insert
+       BEFORE INSERT ON suppliers
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.supplier_name, '')) = ''
+         OR NEW.amount IS NULL
+         OR CAST(NEW.amount AS REAL) <= 0
+       BEGIN
+         SELECT RAISE(ABORT, 'suppliers_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_suppliers_validate_update
+       BEFORE UPDATE ON suppliers
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.supplier_name, '')) = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'suppliers_invalid_data');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_reconciliations_status_validate_insert
+       BEFORE INSERT ON reconciliations
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.status, '')) = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'reconciliations_invalid_status');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_reconciliations_status_validate_update
+       BEFORE UPDATE ON reconciliations
+       FOR EACH ROW
+       WHEN TRIM(COALESCE(NEW.status, '')) = ''
+       BEGIN
+         SELECT RAISE(ABORT, 'reconciliations_invalid_status');
+       END`,
+      `CREATE TRIGGER IF NOT EXISTS trg_reconciliations_delete_auto_cashbox_vouchers
+       AFTER DELETE ON reconciliations
+       FOR EACH ROW
+       BEGIN
+         DELETE FROM cashbox_vouchers
+         WHERE source_reconciliation_id = OLD.id
+           AND COALESCE(is_auto_generated, 0) = 1;
+       END`
+    ];
+
+    for (const statement of triggerStatements) {
+      this.db.exec(statement);
+    }
+
+    console.log('✅ [DB] تم إنشاء/التحقق من Triggers سلامة البيانات');
+  }
+
+  applyDataIntegrityLayer() {
+    try {
+      // Enforce uniqueness of reconciliation numbers when present.
+      this.createUniqueIndexIfNoDuplicates(
+        'idx_reconciliations_number_unique',
+        `SELECT reconciliation_number AS value, COUNT(*) AS count
+         FROM reconciliations
+         WHERE reconciliation_number IS NOT NULL
+         GROUP BY reconciliation_number
+         HAVING COUNT(*) > 1`,
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliations_number_unique
+         ON reconciliations(reconciliation_number)
+         WHERE reconciliation_number IS NOT NULL`
+      );
+
+      // Prevent duplicate branch names by trimmed case-insensitive value.
+      this.createUniqueIndexIfNoDuplicates(
+        'idx_branches_name_unique_nocase',
+        `SELECT LOWER(TRIM(branch_name)) AS value, COUNT(*) AS count
+         FROM branches
+         WHERE branch_name IS NOT NULL AND TRIM(branch_name) != ''
+         GROUP BY LOWER(TRIM(branch_name))
+         HAVING COUNT(*) > 1`,
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_branches_name_unique_nocase
+         ON branches(LOWER(TRIM(branch_name)))`
+      );
+
+      this.createUniqueIndexIfNoDuplicates(
+        'idx_cashbox_vouchers_type_sequence_unique',
+        `SELECT voucher_type || ':' || CAST(voucher_sequence_number AS TEXT) AS value, COUNT(*) AS count
+         FROM cashbox_vouchers
+         WHERE voucher_sequence_number IS NOT NULL
+         GROUP BY voucher_type, voucher_sequence_number
+         HAVING COUNT(*) > 1`,
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence_unique
+         ON cashbox_vouchers(voucher_type, voucher_sequence_number)
+         WHERE voucher_sequence_number IS NOT NULL`
+      );
+
+      this.createUniqueIndexIfNoDuplicates(
+        'idx_cashbox_vouchers_source_unique',
+        `SELECT CAST(source_reconciliation_id AS TEXT) || ':' || source_entry_key AS value, COUNT(*) AS count
+         FROM cashbox_vouchers
+         WHERE source_reconciliation_id IS NOT NULL
+           AND source_entry_key IS NOT NULL
+         GROUP BY source_reconciliation_id, source_entry_key
+         HAVING COUNT(*) > 1`,
+        `CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_unique
+         ON cashbox_vouchers(source_reconciliation_id, source_entry_key)
+         WHERE source_reconciliation_id IS NOT NULL
+           AND source_entry_key IS NOT NULL`
+      );
+
+      // Keep requests and operations joins fast.
+      const extraIndexStatements = [
+        'CREATE INDEX IF NOT EXISTS idx_bank_receipts_reconciliation_id ON bank_receipts(reconciliation_id)',
+        'CREATE INDEX IF NOT EXISTS idx_cash_receipts_reconciliation_id ON cash_receipts(reconciliation_id)',
+        'CREATE INDEX IF NOT EXISTS idx_suppliers_reconciliation_id ON suppliers(reconciliation_id)',
+        'CREATE INDEX IF NOT EXISTS idx_return_invoices_reconciliation_id ON return_invoices(reconciliation_id)',
+        'CREATE INDEX IF NOT EXISTS idx_reconciliations_formula_profile_id ON reconciliations(formula_profile_id)',
+        'CREATE INDEX IF NOT EXISTS idx_system_settings_category_key ON system_settings(category, setting_key)',
+        'CREATE UNIQUE INDEX IF NOT EXISTS idx_branch_cashboxes_branch_unique ON branch_cashboxes(branch_id)',
+        'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_action_type ON cashbox_voucher_audit_log(action_type, action_at DESC)'
+      ];
+      for (const statement of extraIndexStatements) {
+        this.db.exec(statement);
+      }
+      console.log('✅ [DB] تم إنشاء/التحقق من فهارس سلامة وأداء إضافية');
+
+      this.createDataValidationTriggers();
+    } catch (error) {
+      console.warn('⚠️ [DB] تعذر تطبيق كامل طبقة سلامة البيانات:', error && error.message ? error.message : error);
     }
   }
 
@@ -685,6 +1442,248 @@ class DatabaseManager {
     } catch (error) {
       console.error('❌ [DB] خطأ في إضافة عمود الملاحظات إلى جدول المرتجعات:', error);
     }
+
+    // Migration: Add is_modified flag to reconciliation operation tables
+    try {
+      console.log('🔄 [DB] فحص جداول العمليات لإضافة عمود is_modified...');
+
+      const operationTables = [
+        'bank_receipts',
+        'cash_receipts',
+        'postpaid_sales',
+        'customer_receipts',
+        'return_invoices',
+        'suppliers'
+      ];
+
+      for (const tableName of operationTables) {
+        const tableInfo = this.db.prepare(`PRAGMA table_info(${tableName})`).all();
+        const hasIsModified = tableInfo.some((col) => col.name === 'is_modified');
+
+        if (!hasIsModified) {
+          this.db.exec(`ALTER TABLE ${tableName} ADD COLUMN is_modified INTEGER DEFAULT 0`);
+          console.log(`✅ [DB] تم إضافة عمود is_modified إلى جدول ${tableName}`);
+        } else {
+          console.log(`ℹ️ [DB] عمود is_modified موجود بالفعل في جدول ${tableName}`);
+        }
+      }
+    } catch (error) {
+      console.error('❌ [DB] خطأ في إضافة عمود is_modified إلى جداول العمليات:', error);
+    }
+  }
+
+  normalizeReconciliationFormulaSign(value, fallback = 0) {
+    if (value === null || value === undefined || value === '') {
+      return fallback;
+    }
+
+    const normalizedText = String(value).trim().toLowerCase();
+    if (['+', '+1', '1', 'add', 'plus', 'true'].includes(normalizedText)) return 1;
+    if (['-', '-1', 'subtract', 'minus', 'true-negative'].includes(normalizedText)) return -1;
+    if (['0', 'ignore', 'none', 'off', 'false'].includes(normalizedText)) return 0;
+
+    const numeric = Number(normalizedText);
+    if (numeric > 0) return 1;
+    if (numeric < 0) return -1;
+    if (numeric === 0) return 0;
+
+    return fallback;
+  }
+
+  normalizeReconciliationFormulaSettings(rawSettings = {}) {
+    const safeRaw = (rawSettings && typeof rawSettings === 'object') ? rawSettings : {};
+    return {
+      bank_receipts_sign: this.normalizeReconciliationFormulaSign(
+        safeRaw.bank_receipts_sign,
+        DEFAULT_RECONCILIATION_FORMULA_SETTINGS.bank_receipts_sign
+      ),
+      cash_receipts_sign: this.normalizeReconciliationFormulaSign(
+        safeRaw.cash_receipts_sign,
+        DEFAULT_RECONCILIATION_FORMULA_SETTINGS.cash_receipts_sign
+      ),
+      postpaid_sales_sign: this.normalizeReconciliationFormulaSign(
+        safeRaw.postpaid_sales_sign,
+        DEFAULT_RECONCILIATION_FORMULA_SETTINGS.postpaid_sales_sign
+      ),
+      customer_receipts_sign: this.normalizeReconciliationFormulaSign(
+        safeRaw.customer_receipts_sign,
+        DEFAULT_RECONCILIATION_FORMULA_SETTINGS.customer_receipts_sign
+      ),
+      return_invoices_sign: this.normalizeReconciliationFormulaSign(
+        safeRaw.return_invoices_sign,
+        DEFAULT_RECONCILIATION_FORMULA_SETTINGS.return_invoices_sign
+      ),
+      suppliers_sign: this.normalizeReconciliationFormulaSign(
+        safeRaw.suppliers_sign,
+        DEFAULT_RECONCILIATION_FORMULA_SETTINGS.suppliers_sign
+      )
+    };
+  }
+
+  getLegacyReconciliationFormulaSettings() {
+    const rows = this.db.prepare(`
+      SELECT setting_key, setting_value
+      FROM system_settings
+      WHERE category = 'reconciliation_formula'
+    `).all();
+
+    if (!rows || rows.length === 0) {
+      return this.normalizeReconciliationFormulaSettings(DEFAULT_RECONCILIATION_FORMULA_SETTINGS);
+    }
+
+    const settingsMap = {};
+    rows.forEach((row) => {
+      if (!row || !row.setting_key) return;
+      settingsMap[row.setting_key] = row.setting_value;
+    });
+
+    return this.normalizeReconciliationFormulaSettings({
+      ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+      ...settingsMap
+    });
+  }
+
+  syncLegacyReconciliationFormulaSettings(formulaSettings, activeProfileId = null) {
+    const normalizedSettings = this.normalizeReconciliationFormulaSettings(formulaSettings);
+    const upsertStmt = this.db.prepare(`
+      INSERT OR REPLACE INTO system_settings (category, setting_key, setting_value, updated_at)
+      VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+    `);
+
+    Object.entries(normalizedSettings).forEach(([settingKey, settingValue]) => {
+      upsertStmt.run('reconciliation_formula', settingKey, String(settingValue));
+    });
+
+    if (activeProfileId !== null && activeProfileId !== undefined) {
+      upsertStmt.run('reconciliation_formula', 'active_profile_id', String(activeProfileId));
+    }
+  }
+
+  ensureReconciliationFormulaProfiles() {
+    try {
+      this.db.exec(`
+        CREATE TABLE IF NOT EXISTS reconciliation_formula_profiles (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          formula_name TEXT NOT NULL UNIQUE,
+          settings_json TEXT NOT NULL,
+          is_default INTEGER DEFAULT 0,
+          is_active INTEGER DEFAULT 1,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+      `);
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_formula_profiles_default ON reconciliation_formula_profiles(is_default, is_active)');
+
+      const profilesCount = this.db.prepare('SELECT COUNT(*) AS count FROM reconciliation_formula_profiles').get();
+      let defaultProfileId = null;
+
+      if (!profilesCount || profilesCount.count === 0) {
+        const legacySettings = this.getLegacyReconciliationFormulaSettings();
+        const insertResult = this.db.prepare(`
+          INSERT INTO reconciliation_formula_profiles (formula_name, settings_json, is_default, is_active)
+          VALUES (?, ?, 1, 1)
+        `).run('المعادلة الافتراضية', JSON.stringify(legacySettings));
+        defaultProfileId = insertResult.lastInsertRowid;
+        console.log('✅ [DB] تم إنشاء المعادلة الافتراضية الأولى');
+      } else {
+        const defaultProfile = this.db.prepare(`
+          SELECT id, is_default
+          FROM reconciliation_formula_profiles
+          WHERE is_active = 1
+          ORDER BY is_default DESC, id ASC
+          LIMIT 1
+        `).get();
+
+        if (defaultProfile) {
+          defaultProfileId = defaultProfile.id;
+          if (!defaultProfile.is_default) {
+            this.db.prepare('UPDATE reconciliation_formula_profiles SET is_default = 0').run();
+            this.db.prepare('UPDATE reconciliation_formula_profiles SET is_default = 1 WHERE id = ?').run(defaultProfileId);
+          }
+        }
+      }
+
+      if (!defaultProfileId) {
+        return;
+      }
+
+      this.db.prepare(`
+        UPDATE branches
+        SET reconciliation_formula_id = ?
+        WHERE reconciliation_formula_id IS NULL
+      `).run(defaultProfileId);
+
+      const defaultProfileRow = this.db.prepare(`
+        SELECT settings_json
+        FROM reconciliation_formula_profiles
+        WHERE id = ?
+        LIMIT 1
+      `).get(defaultProfileId);
+
+      let parsedSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS;
+      if (defaultProfileRow && defaultProfileRow.settings_json) {
+        try {
+          parsedSettings = JSON.parse(defaultProfileRow.settings_json);
+        } catch (error) {
+          parsedSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS;
+        }
+      }
+
+      this.syncLegacyReconciliationFormulaSettings(parsedSettings, defaultProfileId);
+    } catch (error) {
+      console.error('❌ [DB] خطأ في تهيئة معادلات التصفية:', error);
+    }
+  }
+
+  migrateSensitiveCredentials() {
+    try {
+      let migratedAdmins = 0;
+      let migratedCashiers = 0;
+
+      const adminRows = this.db.prepare(`
+        SELECT id, password
+        FROM admins
+        WHERE password IS NOT NULL AND TRIM(password) != ''
+      `).all();
+
+      const updateAdminPassword = this.db.prepare(`
+        UPDATE admins
+        SET password = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `);
+
+      adminRows.forEach((admin) => {
+        if (!isHashedSecret(admin.password)) {
+          updateAdminPassword.run(hashSecret(admin.password), admin.id);
+          migratedAdmins += 1;
+        }
+      });
+
+      const cashierRows = this.db.prepare(`
+        SELECT id, pin_code
+        FROM cashiers
+        WHERE pin_code IS NOT NULL AND TRIM(pin_code) != ''
+      `).all();
+
+      const updateCashierPin = this.db.prepare(`
+        UPDATE cashiers
+        SET pin_code = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?
+      `);
+
+      cashierRows.forEach((cashier) => {
+        if (!isHashedSecret(cashier.pin_code)) {
+          updateCashierPin.run(hashSecret(cashier.pin_code), cashier.id);
+          migratedCashiers += 1;
+        }
+      });
+
+      if (migratedAdmins > 0 || migratedCashiers > 0) {
+        console.log(`🔐 [DB] Migrated sensitive credentials: admins=${migratedAdmins}, cashiers=${migratedCashiers}`);
+      }
+    } catch (error) {
+      console.error('⚠️ [DB] Failed to migrate sensitive credentials:', error);
+    }
   }
 
   insertDefaultData() {
@@ -692,11 +1691,17 @@ class DatabaseManager {
       // Insert default admin if not exists
       const adminCount = this.db.prepare('SELECT COUNT(*) as count FROM admins').get();
       if (adminCount.count === 0) {
-        this.db.prepare(`
-          INSERT INTO admins(name, username, password) 
-          VALUES(?, ?, ?)
-        `).run('المدير العام', 'admin', 'admin123');
-        console.log('Default admin created');
+        const adminSeed = resolveAdminSeedPolicy({ app, env: process.env });
+        if (adminSeed.shouldSeed) {
+          this.db.prepare(`
+            INSERT INTO admins(name, username, password) 
+            VALUES(?, ?, ?)
+          `).run(adminSeed.name, adminSeed.username, hashSecret(adminSeed.password));
+          console.log(`Default admin created (${adminSeed.source})`);
+        } else {
+          console.log('⚠️ [DB] Default admin credentials disabled in this environment');
+          console.log('ℹ️ [DB] To bootstrap an admin in production set INITIAL_ADMIN_PASSWORD (+ optional INITIAL_ADMIN_USERNAME/INITIAL_ADMIN_NAME)');
+        }
       }
 
       // Insert default branch if not exists
@@ -771,7 +1776,8 @@ class DatabaseManager {
         ['general', 'theme_color', '#007bff'],
         ['reports', 'print_header', 'تصفية برو - Tasfiya Pro'],
         ['reports', 'print_footer', '© 2025 محمد أمين الكامل - جميع الحقوق محفوظة'],
-        ['reports', 'default_save_path', '']
+        ['reports', 'default_save_path', ''],
+        ['cashboxes', 'auto_post_reconciliation_vouchers', 'false']
       ];
 
       const insertSystemSetting = this.db.prepare(`
@@ -783,6 +1789,8 @@ class DatabaseManager {
       });
 
       console.log('Default system settings inserted');
+
+      this.ensureReconciliationFormulaProfiles();
 
     } catch (error) {
       console.error('Error inserting default data:', error);
@@ -1039,15 +2047,682 @@ class DatabaseManager {
   }
 
   // Update reconciliation with last modified date
-  updateReconciliationModified(reconciliationId, systemSales, totalReceipts, surplusDeficit, status = 'completed') {
+  normalizeOptionalBoolean(value) {
+    if (value === null || value === undefined || value === '') {
+      return null;
+    }
+
+    if (typeof value === 'boolean') {
+      return value ? 1 : 0;
+    }
+
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        return null;
+      }
+      return value > 0 ? 1 : 0;
+    }
+
+    const normalized = String(value).trim().toLowerCase();
+    if (!normalized) {
+      return null;
+    }
+
+    if (normalized === '1' || normalized === 'true' || normalized === 'yes' || normalized === 'on') {
+      return 1;
+    }
+
+    if (normalized === '0' || normalized === 'false' || normalized === 'no' || normalized === 'off') {
+      return 0;
+    }
+
+    return null;
+  }
+
+  parseBooleanSettingValue(value, fallback = false) {
+    const normalized = this.normalizeOptionalBoolean(value);
+    if (normalized === null) {
+      return fallback;
+    }
+    return normalized === 1;
+  }
+
+  isCashboxAutoPostingEnabled(database = this.db) {
+    try {
+      const row = database.prepare(`
+        SELECT setting_value
+        FROM system_settings
+        WHERE category = ?
+          AND setting_key = ?
+        LIMIT 1
+      `).get('cashboxes', 'auto_post_reconciliation_vouchers');
+
+      return this.parseBooleanSettingValue(row && row.setting_value, false);
+    } catch (_error) {
+      return false;
+    }
+  }
+
+  ensureBranchCashboxRecord(database, branchId) {
+    const numericBranchId = Number(branchId);
+    if (!Number.isInteger(numericBranchId) || numericBranchId <= 0) {
+      return null;
+    }
+
+    const existing = database.prepare(`
+      SELECT id, cashbox_name
+      FROM branch_cashboxes
+      WHERE branch_id = ?
+      LIMIT 1
+    `).get(numericBranchId);
+    if (existing) {
+      return existing;
+    }
+
+    database.prepare(`
+      INSERT OR IGNORE INTO branch_cashboxes (
+        branch_id,
+        cashbox_name,
+        opening_balance,
+        is_active,
+        created_at,
+        updated_at
+      )
+      SELECT
+        b.id,
+        'صندوق ' || TRIM(COALESCE(b.branch_name, 'الفرع')),
+        0,
+        1,
+        CURRENT_TIMESTAMP,
+        CURRENT_TIMESTAMP
+      FROM branches b
+      WHERE b.id = ?
+    `).run(numericBranchId);
+
+    return database.prepare(`
+      SELECT id, cashbox_name
+      FROM branch_cashboxes
+      WHERE branch_id = ?
+      LIMIT 1
+    `).get(numericBranchId) || null;
+  }
+
+  appendCashboxAuditLog(database, entry) {
+    database.prepare(`
+      INSERT INTO cashbox_voucher_audit_log (
+        voucher_id,
+        voucher_number,
+        voucher_sequence_number,
+        voucher_type,
+        branch_id,
+        action_type,
+        action_by,
+        action_at,
+        payload_json,
+        notes
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?)
+    `).run(
+      entry.voucher_id || null,
+      entry.voucher_number || null,
+      entry.voucher_sequence_number || null,
+      entry.voucher_type || null,
+      entry.branch_id || null,
+      entry.action_type || 'update',
+      entry.action_by || 'النظام (تلقائي)',
+      entry.payload_json || null,
+      entry.notes || null
+    );
+  }
+
+  syncCashboxVouchersFromReconciliation(reconciliationId) {
+    const numericReconciliationId = Number(reconciliationId);
+    if (!Number.isInteger(numericReconciliationId) || numericReconciliationId <= 0) {
+      throw new Error('معرف التصفية غير صالح للترحيل التلقائي إلى الصندوق.');
+    }
+
+    const toAmount = (value) => {
+      const numeric = Number(value);
+      return Number.isFinite(numeric) ? Math.abs(numeric) : 0;
+    };
+
+    const toComparableText = (value) => String(value == null ? '' : value).trim();
+    const parseBooleanFlag = (value, fallback = false) => this.parseBooleanSettingValue(value, fallback);
+
+    const hasDifference = (existing, desired) => {
+      const existingAmount = toAmount(existing.amount);
+      if (Math.abs(existingAmount - desired.amount) > 0.0001) return true;
+      if (toComparableText(existing.voucher_type) !== toComparableText(desired.voucherType)) return true;
+      if (Number(existing.cashbox_id || 0) !== Number(desired.cashboxId || 0)) return true;
+      if (Number(existing.branch_id || 0) !== Number(desired.branchId || 0)) return true;
+      if (toComparableText(existing.counterparty_type) !== toComparableText(desired.counterpartyType)) return true;
+      if (toComparableText(existing.counterparty_name) !== toComparableText(desired.counterpartyName)) return true;
+      if (Number(existing.cashier_id || 0) !== Number(desired.cashierId || 0)) return true;
+      if (toComparableText(existing.reference_no) !== toComparableText(desired.referenceNo)) return true;
+      if (toComparableText(existing.description) !== toComparableText(desired.description)) return true;
+      if (toComparableText(existing.voucher_date) !== toComparableText(desired.voucherDate)) return true;
+      return false;
+    };
+
+    try {
+      const transaction = this.db.transaction((targetReconciliationId) => {
+        const vouchersTable = this.db.prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'cashbox_vouchers'"
+        ).get();
+        const cashboxesTable = this.db.prepare(
+          "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'branch_cashboxes'"
+        ).get();
+
+        if (!vouchersTable || !cashboxesTable) {
+          return {
+            enabled: false,
+            created: 0,
+            updated: 0,
+            deleted: 0,
+            skippedReason: 'cashbox_tables_missing'
+          };
+        }
+
+        this.db.prepare(`
+          INSERT OR IGNORE INTO system_settings (
+            category,
+            setting_key,
+            setting_value,
+            created_at,
+            updated_at
+          ) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        `).run('cashboxes', 'auto_post_reconciliation_vouchers', 'false');
+
+        const reconciliation = this.db.prepare(`
+          SELECT
+            r.id,
+            r.reconciliation_number,
+            r.reconciliation_date,
+            r.cashier_id,
+            r.status,
+            r.cashbox_posting_enabled,
+            c.name AS cashier_name,
+            c.branch_id
+          FROM reconciliations r
+          LEFT JOIN cashiers c ON c.id = r.cashier_id
+          WHERE r.id = ?
+          LIMIT 1
+        `).get(targetReconciliationId);
+
+        if (!reconciliation) {
+          return {
+            enabled: true,
+            created: 0,
+            updated: 0,
+            deleted: 0,
+            skippedReason: 'reconciliation_not_found'
+          };
+        }
+
+        if (String(reconciliation.status || '').trim() !== 'completed') {
+          return {
+            enabled: true,
+            created: 0,
+            updated: 0,
+            deleted: 0,
+            skippedReason: 'reconciliation_not_completed'
+          };
+        }
+
+        const globalAutoPostingEnabled = this.isCashboxAutoPostingEnabled(this.db);
+        const hasExplicitPostingPreference = reconciliation.cashbox_posting_enabled !== null
+          && reconciliation.cashbox_posting_enabled !== undefined
+          && reconciliation.cashbox_posting_enabled !== '';
+        const reconciliationPostingEnabled = hasExplicitPostingPreference
+          ? parseBooleanFlag(reconciliation.cashbox_posting_enabled, false)
+          : globalAutoPostingEnabled;
+
+        if (!reconciliationPostingEnabled) {
+          const reconciliationLabel = reconciliation.reconciliation_number || reconciliation.id;
+          const existingAutoVouchers = this.db.prepare(`
+            SELECT id, voucher_number, voucher_sequence_number, voucher_type, branch_id, source_entry_key
+            FROM cashbox_vouchers
+            WHERE source_reconciliation_id = ?
+              AND source_entry_key IS NOT NULL
+              AND COALESCE(is_auto_generated, 0) = 1
+          `).all(targetReconciliationId);
+
+          const deleteVoucherStatement = this.db.prepare('DELETE FROM cashbox_vouchers WHERE id = ?');
+          let deleted = 0;
+
+          (Array.isArray(existingAutoVouchers) ? existingAutoVouchers : []).forEach((voucher) => {
+            deleteVoucherStatement.run(voucher.id);
+            deleted += 1;
+            this.appendCashboxAuditLog(this.db, {
+              voucher_id: voucher.id,
+              voucher_number: voucher.voucher_number,
+              voucher_sequence_number: voucher.voucher_sequence_number,
+              voucher_type: voucher.voucher_type,
+              branch_id: voucher.branch_id,
+              action_type: 'delete',
+              action_by: 'النظام (إلغاء ترحيل التصفية)',
+              payload_json: JSON.stringify({
+                source: 'reconciliation_auto_post',
+                reconciliation_id: targetReconciliationId,
+                source_entry_key: voucher.source_entry_key || null,
+                reason: 'cashbox_posting_disabled_for_reconciliation'
+              }),
+              notes: `إلغاء ترحيل التصفية #${reconciliationLabel} وحذف السند التلقائي`
+            });
+          });
+
+          return {
+            enabled: false,
+            created: 0,
+            updated: 0,
+            deleted,
+            skippedReason: hasExplicitPostingPreference ? 'disabled_for_reconciliation' : 'disabled_by_default_setting'
+          };
+        }
+
+        let branchId = Number(reconciliation.branch_id || 0);
+        if (!Number.isInteger(branchId) || branchId <= 0) {
+          try {
+            const cashboxBranchRows = this.db.prepare(`
+              SELECT DISTINCT branch_id
+              FROM branch_cashboxes
+              WHERE branch_id IS NOT NULL
+                AND branch_id > 0
+                AND COALESCE(is_active, 1) = 1
+            `).all();
+            const uniqueCashboxBranchIds = Array.from(
+              new Set(
+                (Array.isArray(cashboxBranchRows) ? cashboxBranchRows : [])
+                  .map((row) => Number(row && row.branch_id))
+                  .filter((value) => Number.isInteger(value) && value > 0)
+              )
+            );
+
+            if (uniqueCashboxBranchIds.length === 1) {
+              branchId = uniqueCashboxBranchIds[0];
+            } else {
+              const activeBranchRows = this.db.prepare(`
+                SELECT id
+                FROM branches
+                WHERE COALESCE(is_active, 1) = 1
+              `).all();
+              const uniqueActiveBranchIds = Array.from(
+                new Set(
+                  (Array.isArray(activeBranchRows) ? activeBranchRows : [])
+                    .map((row) => Number(row && row.id))
+                    .filter((value) => Number.isInteger(value) && value > 0)
+                )
+              );
+              if (uniqueActiveBranchIds.length === 1) {
+                branchId = uniqueActiveBranchIds[0];
+              }
+            }
+          } catch (_branchFallbackError) {
+            // Ignore fallback resolution errors and keep original branch check.
+          }
+        }
+
+        if (!Number.isInteger(branchId) || branchId <= 0) {
+          return {
+            enabled: true,
+            created: 0,
+            updated: 0,
+            deleted: 0,
+            skippedReason: 'branch_not_found'
+          };
+        }
+
+        const cashbox = this.ensureBranchCashboxRecord(this.db, branchId);
+        if (!cashbox || !cashbox.id) {
+          return {
+            enabled: true,
+            created: 0,
+            updated: 0,
+            deleted: 0,
+            skippedReason: 'cashbox_not_found'
+          };
+        }
+
+        const cashSummary = this.db.prepare(`
+          SELECT COALESCE(SUM(total_amount), 0) AS total_cash
+          FROM cash_receipts
+          WHERE reconciliation_id = ?
+        `).get(targetReconciliationId);
+
+        const suppliers = this.db.prepare(`
+          SELECT id, supplier_name, invoice_number, notes, amount
+          FROM suppliers
+          WHERE reconciliation_id = ?
+          ORDER BY id ASC
+        `).all(targetReconciliationId);
+
+        const reconciliationLabel = reconciliation.reconciliation_number || reconciliation.id;
+        const voucherDate = String(reconciliation.reconciliation_date || new Date().toISOString().split('T')[0]);
+        const fallbackReference = `REC-${reconciliationLabel}`;
+        const desiredEntries = [];
+
+        const totalCashReceipts = toAmount(cashSummary && cashSummary.total_cash);
+        if (totalCashReceipts > 0) {
+          desiredEntries.push({
+            sourceEntryKey: 'cash_receipts_total',
+            voucherType: 'receipt',
+            cashboxId: cashbox.id,
+            branchId,
+            counterpartyType: 'cashier',
+            counterpartyName: toComparableText(reconciliation.cashier_name) || `كاشير ${reconciliation.cashier_id}`,
+            cashierId: reconciliation.cashier_id || null,
+            amount: totalCashReceipts,
+            referenceNo: fallbackReference,
+            description: `ترحيل تلقائي من التصفية #${reconciliationLabel} - إجمالي المقبوضات النقدية`,
+            voucherDate
+          });
+        }
+
+        (Array.isArray(suppliers) ? suppliers : []).forEach((supplier) => {
+          const amount = toAmount(supplier && supplier.amount);
+          if (amount <= 0) {
+            return;
+          }
+
+          const supplierName = toComparableText(supplier && supplier.supplier_name);
+          if (!supplierName) {
+            return;
+          }
+
+          const supplierReference = toComparableText(supplier && supplier.invoice_number) || fallbackReference;
+          const supplierNotes = toComparableText(supplier && supplier.notes);
+          desiredEntries.push({
+            sourceEntryKey: `supplier:${supplier.id}`,
+            voucherType: 'payment',
+            cashboxId: cashbox.id,
+            branchId,
+            counterpartyType: 'supplier',
+            counterpartyName: supplierName,
+            cashierId: null,
+            amount,
+            referenceNo: supplierReference,
+            description: supplierNotes || `ترحيل تلقائي من التصفية #${reconciliationLabel} - مصروفات مورد`,
+            voucherDate
+          });
+        });
+
+        const existingAutoVouchers = this.db.prepare(`
+          SELECT
+            id,
+            voucher_number,
+            voucher_sequence_number,
+            voucher_type,
+            cashbox_id,
+            branch_id,
+            counterparty_type,
+            counterparty_name,
+            cashier_id,
+            amount,
+            reference_no,
+            description,
+            voucher_date,
+            source_entry_key
+          FROM cashbox_vouchers
+          WHERE source_reconciliation_id = ?
+            AND source_entry_key IS NOT NULL
+            AND COALESCE(is_auto_generated, 0) = 1
+        `).all(targetReconciliationId);
+
+        const existingMap = new Map();
+        (Array.isArray(existingAutoVouchers) ? existingAutoVouchers : []).forEach((voucher) => {
+          existingMap.set(String(voucher.source_entry_key || ''), voucher);
+        });
+
+        const insertVoucherStatement = this.db.prepare(`
+          INSERT INTO cashbox_vouchers (
+            voucher_number,
+            voucher_sequence_number,
+            sync_key,
+            voucher_type,
+            cashbox_id,
+            branch_id,
+            counterparty_type,
+            counterparty_name,
+            cashier_id,
+            amount,
+            reference_no,
+            description,
+            voucher_date,
+            created_by,
+            created_at,
+            updated_at,
+            source_reconciliation_id,
+            source_entry_key,
+            is_auto_generated
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+
+        const updateVoucherStatement = this.db.prepare(`
+          UPDATE cashbox_vouchers
+          SET sync_key = ?,
+              voucher_type = ?,
+              cashbox_id = ?,
+              branch_id = ?,
+              counterparty_type = ?,
+              counterparty_name = ?,
+              cashier_id = ?,
+              amount = ?,
+              reference_no = ?,
+              description = ?,
+              voucher_date = ?,
+              is_auto_generated = 1,
+              updated_at = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `);
+
+        const deleteVoucherStatement = this.db.prepare('DELETE FROM cashbox_vouchers WHERE id = ?');
+
+        let created = 0;
+        let updated = 0;
+        let deleted = 0;
+        const consumedKeys = new Set();
+
+        desiredEntries.forEach((entry) => {
+          const existing = existingMap.get(entry.sourceEntryKey);
+
+          if (existing) {
+            consumedKeys.add(entry.sourceEntryKey);
+            if (!hasDifference(existing, entry)) {
+              return;
+            }
+
+            updateVoucherStatement.run(
+              buildCashboxVoucherSyncKey({
+                branch_id: entry.branchId,
+                voucher_type: entry.voucherType,
+                source_reconciliation_id: targetReconciliationId,
+                source_entry_key: entry.sourceEntryKey
+              }),
+              entry.voucherType,
+              entry.cashboxId,
+              entry.branchId,
+              entry.counterpartyType,
+              entry.counterpartyName,
+              entry.cashierId,
+              entry.amount,
+              entry.referenceNo,
+              entry.description,
+              entry.voucherDate,
+              existing.id
+            );
+            updated += 1;
+
+            this.appendCashboxAuditLog(this.db, {
+              voucher_id: existing.id,
+              voucher_number: existing.voucher_number,
+              voucher_sequence_number: existing.voucher_sequence_number,
+              voucher_type: entry.voucherType,
+              branch_id: entry.branchId,
+              action_type: 'update',
+              action_by: 'النظام (ترحيل تلقائي)',
+              payload_json: JSON.stringify({
+                source: 'reconciliation_auto_post',
+                reconciliation_id: targetReconciliationId,
+                source_entry_key: entry.sourceEntryKey,
+                previous: existing,
+                next: entry
+              }),
+              notes: `تحديث تلقائي لسند مرتبط بالتصفية #${reconciliationLabel}`
+            });
+            return;
+          }
+
+          const nextVoucherNumberRow = this.db.prepare(
+            'SELECT COALESCE(MAX(voucher_number), 0) + 1 AS next_number FROM cashbox_vouchers'
+          ).get();
+          const nextVoucherSequenceRow = this.db.prepare(
+            'SELECT COALESCE(MAX(voucher_sequence_number), 0) + 1 AS next_number FROM cashbox_vouchers WHERE voucher_type = ?'
+          ).get(entry.voucherType);
+
+          const voucherNumber = Number(nextVoucherNumberRow && nextVoucherNumberRow.next_number) || 1;
+          const voucherSequenceNumber = Number(nextVoucherSequenceRow && nextVoucherSequenceRow.next_number) || 1;
+          const createdBy = 'النظام (تلقائي من التصفية)';
+          const nowIso = new Date().toISOString();
+          const syncKey = buildCashboxVoucherSyncKey({
+            branch_id: entry.branchId,
+            voucher_type: entry.voucherType,
+            voucher_sequence_number: voucherSequenceNumber,
+            voucher_number: voucherNumber,
+            source_reconciliation_id: targetReconciliationId,
+            source_entry_key: entry.sourceEntryKey,
+            created_at: nowIso
+          });
+
+          const insertResult = insertVoucherStatement.run(
+            voucherNumber,
+            voucherSequenceNumber,
+            syncKey,
+            entry.voucherType,
+            entry.cashboxId,
+            entry.branchId,
+            entry.counterpartyType,
+            entry.counterpartyName,
+            entry.cashierId,
+            entry.amount,
+            entry.referenceNo,
+            entry.description,
+            entry.voucherDate,
+            createdBy,
+            nowIso,
+            nowIso,
+            targetReconciliationId,
+            entry.sourceEntryKey,
+            1
+          );
+
+          created += 1;
+          const voucherId = insertResult && insertResult.lastInsertRowid ? insertResult.lastInsertRowid : null;
+          this.appendCashboxAuditLog(this.db, {
+            voucher_id: voucherId,
+            voucher_number: voucherNumber,
+            voucher_sequence_number: voucherSequenceNumber,
+            voucher_type: entry.voucherType,
+            branch_id: entry.branchId,
+            action_type: 'create',
+            action_by: createdBy,
+            payload_json: JSON.stringify({
+              source: 'reconciliation_auto_post',
+              reconciliation_id: targetReconciliationId,
+              source_entry_key: entry.sourceEntryKey,
+              voucher: entry
+            }),
+            notes: `إنشاء تلقائي لسند من التصفية #${reconciliationLabel}`
+          });
+        });
+
+        (Array.isArray(existingAutoVouchers) ? existingAutoVouchers : []).forEach((voucher) => {
+          const sourceKey = String(voucher && voucher.source_entry_key ? voucher.source_entry_key : '');
+          if (!sourceKey || consumedKeys.has(sourceKey)) {
+            return;
+          }
+
+          deleteVoucherStatement.run(voucher.id);
+          deleted += 1;
+
+          this.appendCashboxAuditLog(this.db, {
+            voucher_id: voucher.id,
+            voucher_number: voucher.voucher_number,
+            voucher_sequence_number: voucher.voucher_sequence_number,
+            voucher_type: voucher.voucher_type,
+            branch_id: voucher.branch_id,
+            action_type: 'delete',
+            action_by: 'النظام (ترحيل تلقائي)',
+            payload_json: JSON.stringify({
+              source: 'reconciliation_auto_post',
+              reconciliation_id: targetReconciliationId,
+              source_entry_key: sourceKey,
+              voucher
+            }),
+            notes: `حذف تلقائي لسند لم يعد له مرجع من التصفية #${reconciliationLabel}`
+          });
+        });
+
+        return {
+          enabled: true,
+          created,
+          updated,
+          deleted,
+          skippedReason: ''
+        };
+      });
+
+      return transaction(numericReconciliationId);
+    } catch (error) {
+      console.error('❌ [DB] خطأ أثناء ترحيل سندات الصندوق تلقائيًا من التصفية:', error);
+      throw error;
+    }
+  }
+
+  // Update reconciliation with last modified date
+  updateReconciliationModified(
+    reconciliationId,
+    systemSales,
+    totalReceipts,
+    surplusDeficit,
+    status = 'completed',
+    formulaSettingsJson = null,
+    formulaProfileId = null
+  ) {
     try {
       return this.run(`
         UPDATE reconciliations
         SET system_sales = ?, total_receipts = ?, surplus_deficit = ?, status = ?,
-      updated_at = CURRENT_TIMESTAMP, last_modified_date = CURRENT_TIMESTAMP
+            formula_profile_id = COALESCE(?, formula_profile_id),
+            formula_settings = COALESCE(?, formula_settings),
+            updated_at = CURRENT_TIMESTAMP, last_modified_date = CURRENT_TIMESTAMP
         WHERE id = ?
-      `, [systemSales, totalReceipts, surplusDeficit, status, reconciliationId]);
+      `, [
+        systemSales,
+        totalReceipts,
+        surplusDeficit,
+        status,
+        formulaProfileId,
+        formulaSettingsJson,
+        reconciliationId
+      ]);
     } catch (error) {
+      if (error && String(error.message || '').includes('no such column: formula_profile_id')) {
+        return this.run(`
+          UPDATE reconciliations
+          SET system_sales = ?, total_receipts = ?, surplus_deficit = ?, status = ?,
+              formula_settings = COALESCE(?, formula_settings),
+              updated_at = CURRENT_TIMESTAMP, last_modified_date = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `, [systemSales, totalReceipts, surplusDeficit, status, formulaSettingsJson, reconciliationId]);
+      }
+      if (error && String(error.message || '').includes('no such column: formula_settings')) {
+        console.warn('⚠️ [DB] formula_settings غير موجود، سيتم التحديث بدونه (توافق مع قواعد بيانات قديمة)');
+        return this.run(`
+          UPDATE reconciliations
+          SET system_sales = ?, total_receipts = ?, surplus_deficit = ?, status = ?,
+          updated_at = CURRENT_TIMESTAMP, last_modified_date = CURRENT_TIMESTAMP
+          WHERE id = ?
+        `, [systemSales, totalReceipts, surplusDeficit, status, reconciliationId]);
+      }
       console.error('Error updating reconciliation:', error);
       throw error;
     }
@@ -1068,14 +2743,16 @@ class DatabaseManager {
         let nextNum = maxNum + 1;
 
         // Validate that this number is not already used (in case of any inconsistencies)
-        while (true) {
+        let isDuplicateNumber = true;
+        while (isDuplicateNumber) {
           const exists = this.db.prepare(`
             SELECT COUNT(*) as count
             FROM reconciliations 
             WHERE reconciliation_number = ? AND status = 'completed'
       `).get(nextNum);
 
-          if (exists.count === 0) break;
+          isDuplicateNumber = exists.count !== 0;
+          if (!isDuplicateNumber) break;
           console.warn(`���️ [DB] الرقم ${nextNum} مستخدم بالفعل في تصفية مكتملة، جاري تجربة الرقم التالي`);
           nextNum++;
         }
@@ -1092,8 +2769,18 @@ class DatabaseManager {
   }
 
   // Update reconciliation with reconciliation number when completing
-  completeReconciliation(reconciliationId, systemSales, totalReceipts, surplusDeficit, reconciliationNumber) {
+  completeReconciliation(
+    reconciliationId,
+    systemSales,
+    totalReceipts,
+    surplusDeficit,
+    reconciliationNumber,
+    formulaSettingsJson = null,
+    formulaProfileId = null,
+    cashboxPostingEnabled = null
+  ) {
     try {
+      const normalizedCashboxPosting = this.normalizeOptionalBoolean(cashboxPostingEnabled);
       const transaction = this.db.transaction(() => {
         // First validate that this number is not already used
         const exists = this.db.prepare(`
@@ -1112,12 +2799,24 @@ class DatabaseManager {
           SET system_sales = ?, 
               total_receipts = ?, 
               surplus_deficit = ?,
+              formula_profile_id = COALESCE(?, formula_profile_id),
+              formula_settings = COALESCE(?, formula_settings),
+              cashbox_posting_enabled = COALESCE(?, cashbox_posting_enabled),
               status = 'completed', 
               reconciliation_number = ?,
               updated_at = CURRENT_TIMESTAMP, 
               last_modified_date = CURRENT_TIMESTAMP
           WHERE id = ?
-        `).run(systemSales, totalReceipts, surplusDeficit, reconciliationNumber, reconciliationId);
+        `).run(
+          systemSales,
+          totalReceipts,
+          surplusDeficit,
+          formulaProfileId,
+          formulaSettingsJson,
+          normalizedCashboxPosting,
+          reconciliationNumber,
+          reconciliationId
+        );
 
         // Log the update for debugging
         console.log('✅ [DB] تم إكمال التصفية:', {
@@ -1133,6 +2832,117 @@ class DatabaseManager {
       transaction();
       return true;
     } catch (error) {
+      if (error && String(error.message || '').includes('no such column: formula_profile_id')) {
+        console.warn('⚠️ [DB] formula_profile_id غير موجود، سيتم الإكمال بدونه (توافق مؤقت)');
+        const fallbackWithoutProfile = this.db.transaction(() => {
+          const exists = this.db.prepare(`
+            SELECT COUNT(*) as count 
+            FROM reconciliations 
+            WHERE reconciliation_number = ? AND id != ?
+          `).get(reconciliationNumber, reconciliationId);
+
+          if (exists.count > 0) {
+            throw new Error(`الرقم ${reconciliationNumber} مستخدم بالفعل في تصفية أخرى`);
+          }
+
+          this.db.prepare(`
+            UPDATE reconciliations
+            SET system_sales = ?, 
+                total_receipts = ?, 
+                surplus_deficit = ?,
+                formula_settings = COALESCE(?, formula_settings),
+                status = 'completed', 
+                reconciliation_number = ?,
+                updated_at = CURRENT_TIMESTAMP, 
+                last_modified_date = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(
+            systemSales,
+            totalReceipts,
+            surplusDeficit,
+            formulaSettingsJson,
+            reconciliationNumber,
+            reconciliationId
+          );
+        });
+
+        fallbackWithoutProfile();
+        return true;
+      }
+      if (error && String(error.message || '').includes('no such column: formula_settings')) {
+        console.warn('⚠️ [DB] formula_settings غير موجود، سيتم إكمال التصفية بدونه (توافق مؤقت)');
+        const fallbackTransaction = this.db.transaction(() => {
+          const exists = this.db.prepare(`
+            SELECT COUNT(*) as count 
+            FROM reconciliations 
+            WHERE reconciliation_number = ? AND id != ?
+          `).get(reconciliationNumber, reconciliationId);
+
+          if (exists.count > 0) {
+            throw new Error(`الرقم ${reconciliationNumber} مستخدم بالفعل في تصفية أخرى`);
+          }
+
+          this.db.prepare(`
+            UPDATE reconciliations
+            SET system_sales = ?, 
+                total_receipts = ?, 
+                surplus_deficit = ?,
+                status = 'completed', 
+                reconciliation_number = ?,
+                updated_at = CURRENT_TIMESTAMP, 
+                last_modified_date = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(
+            systemSales,
+            totalReceipts,
+            surplusDeficit,
+            reconciliationNumber,
+            reconciliationId
+          );
+        });
+
+        fallbackTransaction();
+        return true;
+      }
+      if (error && String(error.message || '').includes('no such column: cashbox_posting_enabled')) {
+        console.warn('⚠️ [DB] cashbox_posting_enabled غير موجود، سيتم إكمال التصفية بدونه (توافق مؤقت)');
+        const fallbackWithoutCashboxPosting = this.db.transaction(() => {
+          const exists = this.db.prepare(`
+            SELECT COUNT(*) as count 
+            FROM reconciliations 
+            WHERE reconciliation_number = ? AND id != ?
+          `).get(reconciliationNumber, reconciliationId);
+
+          if (exists.count > 0) {
+            throw new Error(`الرقم ${reconciliationNumber} مستخدم بالفعل في تصفية أخرى`);
+          }
+
+          this.db.prepare(`
+            UPDATE reconciliations
+            SET system_sales = ?, 
+                total_receipts = ?, 
+                surplus_deficit = ?,
+                formula_profile_id = COALESCE(?, formula_profile_id),
+                formula_settings = COALESCE(?, formula_settings),
+                status = 'completed', 
+                reconciliation_number = ?,
+                updated_at = CURRENT_TIMESTAMP, 
+                last_modified_date = CURRENT_TIMESTAMP
+            WHERE id = ?
+          `).run(
+            systemSales,
+            totalReceipts,
+            surplusDeficit,
+            formulaProfileId,
+            formulaSettingsJson,
+            reconciliationNumber,
+            reconciliationId
+          );
+        });
+
+        fallbackWithoutCashboxPosting();
+        return true;
+      }
       console.error('❌ [DB] خطأ في إكمال التصفية:', error);
       throw error;
     }

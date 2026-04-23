@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     // Navbar Protection Logic
     const protectedPages = [
         'atm-reports.html',
+        'cashbox-reports.html',
         'customer-ledger.html',
         'users-management.html',
         'cashiers-management.html',
@@ -20,7 +21,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         'request-reconciliation.html'
     ];
 
-    if (user.permissions && Array.isArray(user.permissions)) {
+    const hasExplicitPermissions = Array.isArray(user.permissions) && user.permissions.length > 0;
+    if (user.role !== 'admin' && hasExplicitPermissions) {
         protectedPages.forEach(page => {
             if (!user.permissions.includes(page)) {
                 const el = document.querySelector(`a[href="${page}"]`);
@@ -62,7 +64,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 });
 
-function logout() {
+async function logout() {
+    try {
+        await fetch('/api/logout', { method: 'POST' });
+    } catch (error) {
+        console.warn('Logout request failed:', error);
+    }
+
     localStorage.removeItem('user');
     window.location.href = '/login.html';
 }

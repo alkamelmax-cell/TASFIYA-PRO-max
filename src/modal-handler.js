@@ -8,28 +8,41 @@
  * @param {string} customerName اسم العميل
  */
 function setupStatementModal(customerName) {
+  void customerName;
   const modalEl = document.getElementById('customerStatementModal');
   if (!modalEl) return;
 
-  // التأكد من عدم وجود نسخة سابقة من المودال
+  // Keep modal at document root to avoid stacking-context issues.
+  if (modalEl.parentElement !== document.body) {
+    document.body.appendChild(modalEl);
+  }
+
+  if (!isBootstrapModalAvailable()) {
+    modalEl.classList.add('show');
+    modalEl.style.display = 'block';
+    modalEl.removeAttribute('aria-hidden');
+    modalEl.setAttribute('aria-modal', 'true');
+    modalEl.setAttribute('role', 'dialog');
+    return;
+  }
+
+  // تنظيف أي بقايا من مودال سابق لتجنب حجب الواجهة بدون داع
+  cleanupModalArtifacts();
+
   const existingModal = bootstrap.Modal.getInstance(modalEl);
   if (existingModal) {
     existingModal.dispose();
   }
 
-  // إنشاء مودال جديد
   const modal = new bootstrap.Modal(modalEl, {
-    backdrop: 'static',
-    keyboard: false
+    backdrop: true,
+    keyboard: true,
+    focus: true
   });
 
-  // إزالة المستمعين السابقين
   modalEl.removeEventListener('hidden.bs.modal', handleModalHidden);
-  
-  // إضافة مستمع جديد لحدث الإغلاق
   modalEl.addEventListener('hidden.bs.modal', handleModalHidden);
 
-  // عرض المودال
   modal.show();
 }
 
@@ -37,7 +50,6 @@ function setupStatementModal(customerName) {
  * معالجة إغلاق المودال وتنظيف الحقول
  */
 function handleModalHidden() {
-  // تنظيف الحقول
   const fields = {
     amount: document.getElementById('newTransactionAmount'),
     type: document.getElementById('newTransactionType'),
@@ -50,16 +62,17 @@ function handleModalHidden() {
   if (fields.reason) fields.reason.selectedIndex = 0;
   if (fields.alert) fields.alert.style.display = 'none';
 
-  // تحديث الجداول الرئيسية
-  if (typeof loadCustomerLedger === 'function') {
-    loadCustomerLedger();
+  const refreshLedger = typeof window !== 'undefined' ? window.loadCustomerLedger : null;
+  if (typeof refreshLedger === 'function') {
+    refreshLedger();
   }
 
-  // إزالة المستمع
   const modalEl = document.getElementById('customerStatementModal');
   if (modalEl) {
     modalEl.removeEventListener('hidden.bs.modal', handleModalHidden);
   }
+
+  cleanupModalArtifacts();
 }
 
 /**
@@ -67,12 +80,32 @@ function handleModalHidden() {
  */
 function closeStatementModal() {
   const modalEl = document.getElementById('customerStatementModal');
-  if (modalEl) {
+  if (!modalEl) return;
+
+  if (isBootstrapModalAvailable()) {
     const modal = bootstrap.Modal.getInstance(modalEl);
     if (modal) {
       modal.hide();
+      return;
     }
   }
+
+  modalEl.classList.remove('show');
+  modalEl.style.display = 'none';
+  modalEl.setAttribute('aria-hidden', 'true');
+  cleanupModalArtifacts();
+}
+
+function isBootstrapModalAvailable() {
+  return typeof bootstrap !== 'undefined' && bootstrap && typeof bootstrap.Modal === 'function';
+}
+
+function cleanupModalArtifacts() {
+  if (document.querySelector('.modal.show')) return;
+  document.querySelectorAll('.modal-backdrop').forEach(backdrop => backdrop.remove());
+  document.body.classList.remove('modal-open');
+  document.body.style.removeProperty('padding-right');
+  document.body.style.removeProperty('overflow');
 }
 
 // تصدير الدوال

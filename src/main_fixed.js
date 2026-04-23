@@ -154,10 +154,11 @@ let printManager;
 function createWindow() {
   // Create the browser window with Arabic RTL support
   mainWindow = new BrowserWindow({
-    width: 1400,
-    height: 900,
-    minWidth: 1200,
-    minHeight: 800,
+    width: 1280,
+    height: 820,
+    minWidth: 980,
+    minHeight: 680,
+    resizable: true,
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,

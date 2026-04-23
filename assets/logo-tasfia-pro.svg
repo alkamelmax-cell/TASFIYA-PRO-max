@@ -1,0 +1,60 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <!-- Blue outer circle -->
+  <circle cx="256" cy="256" r="240" fill="#2E9BD6"/>
+  
+  <!-- White inner circle -->
+  <circle cx="256" cy="256" r="220" fill="#FFFFFF"/>
+  
+  <!-- Dotted circle around balance -->
+  <circle cx="256" cy="200" r="130" fill="none" stroke="#2E9BD6" stroke-width="3" stroke-dasharray="8,8"/>
+  
+  <!-- Balance scale -->
+  <!-- Beam -->
+  <line x1="156" y1="180" x2="356" y2="180" stroke="#1a3a5c" stroke-width="4"/>
+  
+  <!-- Center pillar -->
+  <line x1="256" y1="180" x2="256" y2="250" stroke="#1a3a5c" stroke-width="5"/>
+  
+  <!-- Base -->
+  <polygon points="216,250 296,250 306,265 206,265" fill="#1a3a5c"/>
+  
+  <!-- Left pan (money) -->
+  <polygon points="121,180 156,220 121,260 86,220" fill="#1a3a5c"/>
+  <rect x="96" y="205" width="50" height="35" fill="#FFFFFF" stroke="#1a3a5c" stroke-width="2"/>
+  <text x="121" y="228" font-family="Arial" font-size="18" fill="#1a3a5c" text-anchor="middle" font-weight="bold">€</text>
+  
+  <!-- Right pan (chart) -->
+  <polygon points="391,180 426,220 391,260 356,220" fill="#1a3a5c"/>
+  <rect x="366" y="200" width="50" height="45" fill="#FFFFFF" stroke="#1a3a5c" stroke-width="2"/>
+  <!-- Chart bars -->
+  <rect x="372" y="225" width="8" height="15" fill="#2ecc71"/>
+  <rect x="382" y="215" width="8" height="25" fill="#2ecc71"/>
+  <rect x="392" y="220" width="8" height="20" fill="#2ecc71"/>
+  <rect x="402" y="210" width="8" height="30" fill="#2ecc71"/>
+  
+  <!-- Center fulcrum -->
+  <circle cx="256" cy="180" r="8" fill="#2E9BD6"/>
+  
+  <!-- Surrounding icons -->
+  <!-- Smile icons -->
+  <text x="256" y="95" font-family="Arial" font-size="16" fill="#2E9BD6" text-anchor="middle">☺</text>
+  <text x="256" y="315" font-family="Arial" font-size="16" fill="#2E9BD6" text-anchor="middle">☺</text>
+  <text x="186" y="160" font-family="Arial" font-size="16" fill="#2E9BD6" text-anchor="middle">☺</text>
+  <text x="326" y="240" font-family="Arial" font-size="16" fill="#2E9BD6" text-anchor="middle">☺</text>
+  
+  <!-- Envelope icons -->
+  <text x="196" y="105" font-family="Arial" font-size="14" fill="#2E9BD6" text-anchor="middle">✉</text>
+  <text x="341" y="130" font-family="Arial" font-size="14" fill="#2E9BD6" text-anchor="middle">✉</text>
+  
+  <!-- Mobile icon -->
+  <text x="371" y="175" font-family="Arial" font-size="14" fill="#2E9BD6" text-anchor="middle">📱</text>
+  
+  <!-- Phone icon -->
+  <text x="171" y="275" font-family="Arial" font-size="14" fill="#2E9BD6" text-anchor="middle">📞</text>
+  
+  <!-- TASFIA text -->
+  <text x="200" y="380" font-family="Arial" font-weight="bold" font-size="60" fill="#1a3a5c" text-anchor="middle">TASFIA</text>
+  
+  <!-- PRO text -->
+  <text x="380" y="380" font-family="Arial" font-weight="bold" font-size="50" fill="#2E9BD6" text-anchor="middle">PRO</text>
+</svg>

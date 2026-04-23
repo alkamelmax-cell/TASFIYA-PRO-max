@@ -187,6 +187,11 @@ class ReconciliationCore {
             await ipcRenderer.invoke('db-run', 'DELETE FROM customer_receipts WHERE reconciliation_id = ?', [reconciliationId]);
             await ipcRenderer.invoke('db-run', 'DELETE FROM return_invoices WHERE reconciliation_id = ?', [reconciliationId]);
             await ipcRenderer.invoke('db-run', 'DELETE FROM suppliers WHERE reconciliation_id = ?', [reconciliationId]);
+            await ipcRenderer.invoke(
+                'db-run',
+                'DELETE FROM cashbox_vouchers WHERE source_reconciliation_id = ? AND COALESCE(is_auto_generated, 0) = 1',
+                [reconciliationId]
+            );
             await ipcRenderer.invoke('db-run', 'DELETE FROM reconciliations WHERE id = ?', [reconciliationId]);
 
             console.log('✅ [DELETE] تم حذف التصفية بنجاح');

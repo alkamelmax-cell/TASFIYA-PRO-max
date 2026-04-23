@@ -94,7 +94,7 @@
         <!-- Brand Section -->
         <div class="navbar-brand-section">
             <div class="brand-logo">
-                <img src="assets/logo.png" alt="TP"
+                <img src="assets/logo-tasfia-pro.png" alt="TP"
                     style="height: 45px; width: auto; margin-left: 10px; border-radius: 8px;">تصفية برو
             </div>
         </div>
@@ -108,6 +108,10 @@
             <a href="atm-reports.html"
                 class="btn btn-sm btn-primary fw-bold text-white px-3 py-2 rounded-pill shadow-sm">
                 <i class="fas fa-credit-card me-1"></i> تقرير الصراف
+            </a>
+            <a href="cashbox-reports.html"
+                class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
+                <i class="fas fa-vault me-1"></i> تقارير الصناديق
             </a>
             <a href="customer-ledger.html"
                 class="btn btn-sm btn-outline-secondary fw-bold text-white px-3 py-2 rounded-pill border-0 hover-bg-primary">
@@ -303,6 +307,7 @@
         // Navbar Protection Logic
         const protectedPages = [
             'atm-reports.html',
+            'cashbox-reports.html',
             'customer-ledger.html',
             'users-management.html',
             'cashiers-management.html',
@@ -310,7 +315,8 @@
             'request-reconciliation.html'
         ];
 
-        if (user.permissions && Array.isArray(user.permissions)) {
+        const hasExplicitPermissions = Array.isArray(user.permissions) && user.permissions.length > 0;
+        if (user.role !== 'admin' && hasExplicitPermissions) {
             protectedPages.forEach(page => {
                 if (!user.permissions.includes(page)) {
                     const el = document.querySelector(`a[href="${page}"]`);
@@ -331,7 +337,13 @@
             window.location.href = 'index.html';
         }
 
-        function logout() {
+        async function logout() {
+            try {
+                await fetch('/api/logout', { method: 'POST' });
+            } catch (error) {
+                console.warn('Logout request failed:', error);
+            }
+
             localStorage.removeItem('user');
             window.location.href = '/login.html';
         }

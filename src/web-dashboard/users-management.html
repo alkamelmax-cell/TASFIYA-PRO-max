@@ -60,7 +60,7 @@
         <!-- Brand Section -->
         <div class="navbar-brand-section">
             <div class="brand-logo">
-                <img src="assets/logo.png" alt="TP"
+                <img src="assets/logo-tasfia-pro.png" alt="TP"
                     style="height: 45px; width: auto; margin-left: 10px; border-radius: 8px;">تصفية برو
             </div>
         </div>
@@ -293,7 +293,8 @@
             'request-reconciliation.html'
         ];
 
-        if (user.permissions && Array.isArray(user.permissions)) {
+        const hasExplicitPermissions = Array.isArray(user.permissions) && user.permissions.length > 0;
+        if (user.role !== 'admin' && hasExplicitPermissions) {
             protectedPages.forEach(page => {
                 if (!user.permissions.includes(page)) {
                     const el = document.querySelector(`a[href="${page}"]`);
@@ -484,7 +485,7 @@
             const id = document.getElementById('userId').value;
             const name = document.getElementById('userName').value;
             const username = document.getElementById('userLogin').value;
-            const password = document.getElementById('userPassword').value;
+            const password = document.getElementById('userPassword').value.trim();
 
             // Collect Permissions
             const permissions = [];
@@ -501,11 +502,17 @@
                 return;
             }
 
+            if (!id && !password) {
+                alert('كلمة المرور مطلوبة للمستخدم الجديد');
+                return;
+            }
+
             const payload = { id, name, username, password, role, permissions };
 
             try {
                 const res = await fetch(`${API_URL}/users`, {
                     method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
                 });
                 const result = await res.json();
@@ -538,7 +545,13 @@
             }
         }
 
-        function logout() {
+        async function logout() {
+            try {
+                await fetch('/api/logout', { method: 'POST' });
+            } catch (error) {
+                console.warn('Logout request failed:', error);
+            }
+
             localStorage.removeItem('user');
             window.location.href = '/login.html';
         }

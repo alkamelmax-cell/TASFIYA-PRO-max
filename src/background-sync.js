@@ -8,6 +8,10 @@ const REMOTE_URL = 'https://tasfiya-pro-max.onrender.com/api/sync/users'; // Ens
 const SYNC_INTERVAL_MS = 30000; // 30 seconds
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const SEND_RETRY_DELAYS_MS = [700, 1500, 3000];
+const DEFAULT_SYNC_BATCH_SIZE = 100;
+const RECONCILIATION_SYNC_BATCH_SIZE = 50;
+const REQUEST_PULL_TIMEOUT_MS = 15000;
+const SYNC_POST_TIMEOUT_MS = 45000;
 
 class BackgroundSync {
     constructor(dbManager) {
@@ -15,6 +19,7 @@ class BackgroundSync {
         this.interval = null;
         this.isSyncing = false;
         this.enabled = true; // Global flag to control sync
+        this.requestPullPromise = null;
     }
 
     /**
@@ -74,15 +79,15 @@ class BackgroundSync {
         try {
             const db = this.dbManager.db;
             try {
-                await this.pushLocalData(db);
-            } catch (pushError) {
-                console.error('⚠️ [SYNC] Push phase failed:', pushError.message);
+                await this.pullRemoteRequests();
+            } catch (pullError) {
+                console.error('⚠️ [SYNC] Pull phase failed:', pullError.message);
             }
 
             try {
-                await this.fetchRemoteRequests(db);
-            } catch (pullError) {
-                console.error('⚠️ [SYNC] Pull phase failed:', pullError.message);
+                await this.pushLocalData(db);
+            } catch (pushError) {
+                console.error('⚠️ [SYNC] Push phase failed:', pushError.message);
             }
 
         } catch (error) {
@@ -104,6 +109,33 @@ class BackgroundSync {
         return new Promise((resolve) => setTimeout(resolve, ms));
     }
 
+    async fetchWithTimeout(url, options = {}, timeoutMs = SYNC_POST_TIMEOUT_MS, label = 'network request') {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const timeoutHandle = controller
+            ? setTimeout(() => controller.abort(), timeoutMs)
+            : null;
+
+        try {
+            if (!controller) {
+                return await fetch(url, options);
+            }
+
+            return await fetch(url, {
+                ...options,
+                signal: controller.signal
+            });
+        } catch (error) {
+            if (error && (error.name === 'AbortError' || error.type === 'aborted')) {
+                throw new Error(`${label} timed out after ${timeoutMs}ms`);
+            }
+            throw error;
+        } finally {
+            if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+            }
+        }
+    }
+
     parseInteger(value) {
         if (value === null || value === undefined || value === '') return null;
         const numeric = Number(value);
@@ -121,6 +153,59 @@ class BackgroundSync {
         if (value === null || value === undefined) return null;
         const normalized = String(value).trim();
         return normalized.length > 0 ? normalized : null;
+    }
+
+    normalizeRequestDetailsPayload(value) {
+        if (value === null || value === undefined) {
+            return null;
+        }
+
+        if (typeof value === 'string') {
+            const normalized = value.trim();
+            return normalized.length > 0 ? normalized : null;
+        }
+
+        if (typeof value === 'object') {
+            try {
+                return JSON.stringify(value);
+            } catch (_error) {
+                return null;
+            }
+        }
+
+        return null;
+    }
+
+    hasMeaningfulRequestDetailsPayload(value) {
+        const normalized = this.normalizeRequestDetailsPayload(value);
+        return Boolean(normalized) && !['{}', '[]', 'null'].includes(normalized);
+    }
+
+    async pullRemoteRequests() {
+        if (!this.enabled) {
+            console.log('⛔ [SYNC] Remote request pull skipped - sync is disabled');
+            return { success: false, skipped: true, reason: 'disabled' };
+        }
+
+        if (this.requestPullPromise) {
+            return this.requestPullPromise;
+        }
+
+        const db = this.dbManager?.db;
+        if (!db) {
+            throw new Error('Database not initialized');
+        }
+
+        this.requestPullPromise = (async () => {
+            await this.fetchRemoteRequests(db);
+            return { success: true };
+        })();
+
+        try {
+            return await this.requestPullPromise;
+        } finally {
+            this.requestPullPromise = null;
+        }
     }
 
     buildCashboxVoucherSyncKey(voucher, localCashboxToBranchMap = new Map()) {
@@ -233,54 +318,54 @@ class BackgroundSync {
         }
 
         await this.safePushStep('cashbox_vouchers', async () => {
-            await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, 500);
+            await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('cashbox_voucher_audit_log', async () => {
             const cashbox_voucher_audit_log = db.prepare('SELECT * FROM cashbox_voucher_audit_log ORDER BY id DESC').all();
-            await this.sendInBatches('cashbox_voucher_audit_log', cashbox_voucher_audit_log, 500);
+            await this.sendInBatches('cashbox_voucher_audit_log', cashbox_voucher_audit_log, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('reconciliations', async () => {
             const reconciliations = db.prepare('SELECT * FROM reconciliations ORDER BY id DESC').all();
-            await this.sendInBatches('reconciliations', reconciliations, 200);
+            await this.sendInBatches('reconciliations', reconciliations, RECONCILIATION_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('manual_postpaid_sales', async () => {
             const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC').all();
-            await this.sendInBatches('manual_postpaid_sales', manual_postpaid_sales, 500);
+            await this.sendInBatches('manual_postpaid_sales', manual_postpaid_sales, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('manual_customer_receipts', async () => {
             const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC').all();
-            await this.sendInBatches('manual_customer_receipts', manual_customer_receipts, 500);
+            await this.sendInBatches('manual_customer_receipts', manual_customer_receipts, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('postpaid_sales', async () => {
             const postpaid_sales = db.prepare('SELECT * FROM postpaid_sales ORDER BY id DESC').all();
-            await this.sendInBatches('postpaid_sales', postpaid_sales, 500);
+            await this.sendInBatches('postpaid_sales', postpaid_sales, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('customer_receipts', async () => {
             const customer_receipts = db.prepare('SELECT * FROM customer_receipts ORDER BY id DESC').all();
-            await this.sendInBatches('customer_receipts', customer_receipts, 500);
+            await this.sendInBatches('customer_receipts', customer_receipts, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('cash_receipts', async () => {
             const cash_receipts = db.prepare('SELECT * FROM cash_receipts ORDER BY id DESC LIMIT 10000').all();
-            await this.sendInBatches('cash_receipts', cash_receipts, 500);
+            await this.sendInBatches('cash_receipts', cash_receipts, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('bank_receipts', async () => {
             const bank_receipts = db.prepare('SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000').all();
-            await this.sendInBatches('bank_receipts', bank_receipts, 500);
+            await this.sendInBatches('bank_receipts', bank_receipts, DEFAULT_SYNC_BATCH_SIZE);
         });
 
         await this.safePushStep('reconciliation_requests', async () => {
             const reconciliation_requests = db.prepare('SELECT * FROM reconciliation_requests').all();
             if (reconciliation_requests && reconciliation_requests.length > 0) {
                 console.log(`📤 [SYNC] Pushing ${reconciliation_requests.length} reconciliation requests...`);
-                await this.sendPayload({ reconciliation_requests });
+                await this.sendInBatches('reconciliation_requests', reconciliation_requests, DEFAULT_SYNC_BATCH_SIZE);
             }
         });
 
@@ -331,11 +416,11 @@ class BackgroundSync {
 
         for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt++) {
             try {
-                const res = await fetch(REMOTE_URL, {
+                const res = await this.fetchWithTimeout(REMOTE_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(dataToSend)
-                });
+                }, SYNC_POST_TIMEOUT_MS, `sync upload (${payloadKeys})`);
 
                 if (!res.ok) {
                     const isTransient = TRANSIENT_HTTP_STATUSES.has(res.status);
@@ -375,7 +460,7 @@ class BackgroundSync {
     }
 
     // Helper: Split array into chunks and send
-    async sendInBatches(key, items, batchSize = 500) {
+    async sendInBatches(key, items, batchSize = DEFAULT_SYNC_BATCH_SIZE) {
         if (!items || items.length === 0) return;
 
         console.log(`📦 [SYNC] Syncing ${key} (${items.length} items)...`);
@@ -393,10 +478,15 @@ class BackgroundSync {
             // Adjust URL to point to GET /api/reconciliation-requests
             // BASE URL is https://tasfiya-pro-max.onrender.com/api/sync/users
             // We need https://tasfiya-pro-max.onrender.com/api/reconciliation-requests
-            const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests?status=all&include_deleted=1');
+            const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests?status=all&include_deleted=1&include_details=raw');
             console.log(`📥 [SYNC] Pulling requests from: ${reqUrl}`);
 
-            const res = await fetch(reqUrl);
+            const res = await this.fetchWithTimeout(
+                reqUrl,
+                {},
+                REQUEST_PULL_TIMEOUT_MS,
+                'reconciliation requests pull'
+            );
             if (!res.ok) {
                 console.error(`❌ [SYNC] Pull failed: ${res.status} ${res.statusText}`);
                 return;
@@ -428,15 +518,21 @@ class BackgroundSync {
                 const existingIds = new Set(
                     db.prepare('SELECT id FROM reconciliation_requests').all().map((row) => row.id)
                 );
+                const existingDetailsById = new Map(
+                    db.prepare('SELECT id, details_json FROM reconciliation_requests').all().map((row) => [row.id, row.details_json || null])
+                );
 
                 const writeRequests = db.transaction((remoteRequests) => {
                     remoteRequests.forEach((request) => {
-                        let details = '{}';
-                        if (request.details && typeof request.details === 'object') {
-                            details = JSON.stringify(request.details);
-                        } else if (request.details_json) {
-                            details = request.details_json;
-                        }
+                        const incomingDetails = this.normalizeRequestDetailsPayload(
+                            request.details && typeof request.details === 'object'
+                                ? request.details
+                                : request.details_json
+                        );
+                        const existingDetails = existingDetailsById.get(request.id) || null;
+                        const details = this.hasMeaningfulRequestDetailsPayload(incomingDetails)
+                            ? incomingDetails
+                            : (this.normalizeRequestDetailsPayload(existingDetails) || incomingDetails || '{}');
 
                         const requestDate = request.request_date || request.created_at || null;
                         const systemSales = Number(request.system_sales || 0);
@@ -459,6 +555,7 @@ class BackgroundSync {
                                 request.id
                             );
                             updateCount++;
+                            existingDetailsById.set(request.id, details);
                         } else {
                             insertStmt.run(
                                 request.id,
@@ -474,6 +571,7 @@ class BackgroundSync {
                                 updatedAt
                             );
                             newCount++;
+                            existingDetailsById.set(request.id, details);
                         }
                     });
                 });
@@ -494,13 +592,20 @@ class BackgroundSync {
 // Wrapper for backward compatibility (Singleton pattern)
 let syncInstance = null;
 
-function startBackgroundSync(dbManager) {
+function getOrCreateSyncInstance(dbManager) {
     if (!syncInstance) {
-        if (!dbManager) return;
+        if (!dbManager) return null;
         syncInstance = new BackgroundSync(dbManager);
     }
-    if (!syncInstance.isRunning) {
-        syncInstance.start();
+
+    return syncInstance;
+}
+
+function startBackgroundSync(dbManager) {
+    const instance = getOrCreateSyncInstance(dbManager);
+    if (!instance) return;
+    if (!instance.isRunning) {
+        instance.start();
     }
 }
 
@@ -532,6 +637,15 @@ function triggerInstantSync() {
     }
 }
 
+async function pullRemoteRequestsNow(dbManager) {
+    const instance = getOrCreateSyncInstance(dbManager);
+    if (!instance) {
+        throw new Error('Background sync is not initialized');
+    }
+
+    return instance.pullRemoteRequests();
+}
+
 module.exports = {
     BackgroundSync,
     startBackgroundSync,
@@ -539,5 +653,6 @@ module.exports = {
     getSyncStatus,
     getSyncEnabled,
     setSyncEnabled,
-    triggerInstantSync
+    triggerInstantSync,
+    pullRemoteRequestsNow
 };

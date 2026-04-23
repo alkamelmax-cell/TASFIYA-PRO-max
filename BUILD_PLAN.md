@@ -1,8 +1,8 @@
 # 🏗️ خطة البناء الشاملة - تصفية برو
-## Professional Build Plan - Tasfiya Pro v4.0.1
+## Professional Build Plan - Tasfiya Pro v5.0.0
 
 **التاريخ**: 2026-02-02  
-**الإصدار**: 4.0.1  
+**الإصدار**: 5.0.0  
 **المطور**: محمد أمين الكامل
 
 ---
@@ -65,8 +65,8 @@ npx electron-builder --win --x64
 ```
 
 **الناتج المتوقع**:
-- `dist/تصفية برو - Tasfiya Pro-4.0.1-x64.exe` (Installer)
-- `dist/تصفية برو - Tasfiya Pro-4.0.1-portable.exe` (Portable)
+- `dist/تصفية برو - Tasfiya Pro-5.0.0-x64.exe` (Installer)
+- `dist/تصفية برو - Tasfiya Pro-5.0.0-portable.exe` (Portable)
 
 #### الحجم المتوقع
 - Installer: ~150-200 MB
@@ -147,24 +147,24 @@ PORT=10000
 
 1. **إنشاء Tag**
 ```bash
-git tag -a v4.0.1 -m "v4.0.1 - Bank Transfer ATM Separation + Reset Sequence Feature"
-git push origin v4.0.1
+git tag -a v5.0.0 -m "v5.0.0 - Bank Transfer ATM Separation + Reset Sequence Feature"
+git push origin v5.0.0
 ```
 
 2. **إنشاء Release على GitHub**
    - الذهاب إلى: https://github.com/alkamelmax-cell/TASFIYA-PRO-max/releases
    - النقر على "Draft a new release"
-   - اختيار Tag: `v4.0.1`
+   - اختيار Tag: `v5.0.0`
    - كتابة Release Notes
 
 3. **رفع الملفات**
-   - `dist/تصفية برو - Tasfiya Pro-4.0.1-x64.exe`
-   - `dist/تصفية برو - Tasfiya Pro-4.0.1-portable.exe`
+   - `dist/تصفية برو - Tasfiya Pro-5.0.0-x64.exe`
+   - `dist/تصفية برو - Tasfiya Pro-5.0.0-portable.exe`
 
 ### Release Notes Template:
 
 ```markdown
-# 🎉 تصفية برو v4.0.1
+# 🎉 تصفية برو v5.0.0
 
 ## ✨ الميزات الجديدة
 
@@ -183,8 +183,8 @@ git push origin v4.0.1
 - تحسين استعلامات قاعدة البيانات
 
 ## 📥 التحميل
-- **Windows Installer**: تصفية برو - Tasfiya Pro-4.0.1-x64.exe
-- **Windows Portable**: تصفية برو - Tasfiya Pro-4.0.1-portable.exe
+- **Windows Installer**: تصفية برو - Tasfiya Pro-5.0.0-x64.exe
+- **Windows Portable**: تصفية برو - Tasfiya Pro-5.0.0-portable.exe
 
 ## 📚 التوثيق
 - [BANK_TRANSFER_ATM_SEPARATION.md](./BANK_TRANSFER_ATM_SEPARATION.md)

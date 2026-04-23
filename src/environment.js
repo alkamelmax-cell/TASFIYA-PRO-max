@@ -28,87 +28,75 @@ class EnvironmentManager {
      * Detect the current environment
      * كشف البيئة الحالية
      */
+    getElectronRuntime() {
+        if (typeof window !== 'undefined' && window.electronRuntime && window.electronRuntime.isElectron) {
+            return window.electronRuntime;
+        }
+
+        const nodeProcess = typeof process !== 'undefined'
+            ? process
+            : (typeof window !== 'undefined' ? window.process : null);
+
+        if (!nodeProcess || nodeProcess.type !== 'renderer') {
+            return null;
+        }
+
+        const argv = Array.isArray(nodeProcess.argv) ? [...nodeProcess.argv] : [];
+        const env = nodeProcess.env || {};
+
+        return {
+            isElectron: true,
+            processType: nodeProcess.type,
+            defaultApp: Boolean(nodeProcess.defaultApp),
+            argv,
+            env,
+            isPackagedGuess: !nodeProcess.defaultApp
+                && env.NODE_ENV !== 'development'
+                && !argv.includes('--dev')
+        };
+    }
+
     detectEnvironment() {
         try {
-            // Check if we're in Electron renderer process
-            const isElectronRenderer = typeof window !== 'undefined' && 
-                                     window.process && 
-                                     window.process.type === 'renderer';
+            const electronRuntime = this.getElectronRuntime();
+            if (electronRuntime) {
+                if (electronRuntime.argv && electronRuntime.argv.includes('--dev')) {
+                    return 'development';
+                }
 
-            if (isElectronRenderer) {
-                // In Electron renderer process
-                try {
-                    const { remote } = window.require('electron');
-                    if (remote && remote.process) {
-                        const process = remote.process;
-                        
-                        // Check command line arguments
-                        if (process.argv && process.argv.includes('--dev')) {
-                            return 'development';
-                        }
-                        
-                        // Check NODE_ENV
-                        if (process.env && process.env.NODE_ENV === 'development') {
-                            return 'development';
-                        }
-                        
-                        // Check if app is packaged
-                        if (remote.app && remote.app.isPackaged) {
-                            return 'production';
-                        }
-                        
-                        return 'development';
-                    }
-                } catch (electronError) {
-                    // Fallback for newer Electron versions without remote
-                    console.warn('⚠️ Remote module not available, using fallback detection');
-                    
-                    // Check window.process if available
-                    if (window.process && window.process.env) {
-                        if (window.process.env.NODE_ENV === 'production') {
-                            return 'production';
-                        }
-                        if (window.process.env.NODE_ENV === 'development') {
-                            return 'development';
-                        }
-                    }
-                    
-                    // Default for renderer process
+                if (electronRuntime.env && electronRuntime.env.NODE_ENV === 'development') {
+                    return 'development';
+                }
+
+                if (electronRuntime.env && electronRuntime.env.NODE_ENV === 'production') {
                     return 'production';
                 }
-            } else {
-                // In Node.js main process or browser
-                if (typeof process !== 'undefined') {
-                    // Check command line arguments
-                    if (process.argv && process.argv.includes('--dev')) {
+
+                if (electronRuntime.isPackaged === true || electronRuntime.isPackagedGuess) {
+                    return 'production';
+                }
+
+                return 'development';
+            }
+
+            if (typeof process !== 'undefined') {
+                if (Array.isArray(process.argv) && process.argv.includes('--dev')) {
+                    return 'development';
+                }
+
+                if (process.env) {
+                    if (process.env.NODE_ENV === 'production') {
+                        return 'production';
+                    }
+
+                    if (process.env.NODE_ENV === 'development') {
                         return 'development';
                     }
-                    
-                    // Check NODE_ENV
-                    if (process.env) {
-                        if (process.env.NODE_ENV === 'production') {
-                            return 'production';
-                        }
-                        
-                        if (process.env.NODE_ENV === 'development') {
-                            return 'development';
-                        }
-                    }
-                    
-                    // Check if app is packaged (Electron main process)
-                    try {
-                        const { app } = require('electron');
-                        if (app && app.isPackaged) {
-                            return 'production';
-                        }
-                    } catch (error) {
-                        // Not in Electron context
-                    }
                 }
-                
-                // Default to production for safety in unknown environments
-                return 'production';
             }
+
+            // Default to production for safety in unknown environments
+            return 'production';
         } catch (error) {
             console.warn('⚠️ Error detecting environment, defaulting to production for safety:', error.message);
             return 'production';
@@ -127,23 +115,17 @@ class EnvironmentManager {
 
         // Additional safety checks
         try {
+            const electronRuntime = this.getElectronRuntime();
+            const runtimeEnv = electronRuntime && electronRuntime.env ? electronRuntime.env : process?.env;
+
             // Check if explicitly disabled
-            if (typeof process !== 'undefined' && 
-                process.env && 
-                process.env.ENABLE_TEST_SCRIPTS === 'false') {
+            if (runtimeEnv &&
+                runtimeEnv.ENABLE_TEST_SCRIPTS === 'false') {
                 return false;
             }
 
-            // Check if we're in a packaged app (extra safety)
-            if (typeof window !== 'undefined' && window.require) {
-                try {
-                    const { remote } = window.require('electron');
-                    if (remote && remote.app && remote.app.isPackaged) {
-                        return false;
-                    }
-                } catch (electronError) {
-                    // Remote module not available, skip this check
-                }
+            if (electronRuntime && (electronRuntime.isPackaged === true || electronRuntime.isPackagedGuess)) {
+                return false;
             }
 
             return true;

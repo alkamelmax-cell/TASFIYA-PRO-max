@@ -9,7 +9,9 @@
 // Advanced Print Manager for Tasfiya Pro
 // Provides advanced printing capabilities with printer selection and customization
 
+const path = require('path');
 const { BrowserWindow, webContents } = require('electron');
+const { createSecureWebPreferences } = require('./window-security');
 
 // ===================================================================
 // DATE FORMATTING UTILITIES - GREGORIAN CALENDAR ONLY
@@ -197,8 +199,161 @@ class PrintManager {
         return optimizedFontSizes[fontSize] || optimizedFontSizes['normal'];
     }
 
+    getSafeTimeoutMs(value, fallbackMs) {
+        const parsed = Number.parseInt(value, 10);
+        return Number.isFinite(parsed) && parsed > 0 ? parsed : fallbackMs;
+    }
+
+    isPseudoDefaultPrinterName(printerName) {
+        const normalized = String(printerName || '').trim().toLowerCase();
+        return (
+            normalized === 'default'
+            || normalized === 'system default'
+            || normalized === 'default printer'
+            || normalized === 'الطابعة الافتراضية'
+        );
+    }
+
+    async getAvailablePrintersForPrint(targetWebContents) {
+        if (targetWebContents) {
+            try {
+                if (typeof targetWebContents.getPrintersAsync === 'function') {
+                    const printers = await targetWebContents.getPrintersAsync();
+                    if (Array.isArray(printers) && printers.length > 0) {
+                        return printers;
+                    }
+                }
+            } catch (error) {
+                console.warn('Could not get printers with getPrintersAsync:', error.message);
+            }
+
+            try {
+                if (typeof targetWebContents.getPrinters === 'function') {
+                    const printers = targetWebContents.getPrinters();
+                    if (Array.isArray(printers) && printers.length > 0) {
+                        return printers;
+                    }
+                }
+            } catch (error) {
+                console.warn('Could not get printers with getPrinters:', error.message);
+            }
+        }
+
+        if (Array.isArray(this.printers) && this.printers.length > 0) {
+            return this.printers;
+        }
+
+        try {
+            const refreshed = await this.refreshPrinters();
+            if (Array.isArray(refreshed) && refreshed.length > 0) {
+                return refreshed;
+            }
+        } catch (error) {
+            console.warn('Could not refresh printers before direct print:', error.message);
+        }
+
+        return [];
+    }
+
+    async resolveValidDeviceName(targetWebContents, requestedDeviceName) {
+        const requested = String(requestedDeviceName || '').trim();
+        if (!requested || this.isPseudoDefaultPrinterName(requested)) {
+            return '';
+        }
+
+        const availablePrinters = await this.getAvailablePrintersForPrint(targetWebContents);
+        if (!Array.isArray(availablePrinters) || availablePrinters.length === 0) {
+            return '';
+        }
+
+        const exactName = availablePrinters.find((printer) => String(printer.name || '').trim() === requested);
+        if (exactName && !this.isPseudoDefaultPrinterName(exactName.name)) {
+            return String(exactName.name || '').trim();
+        }
+
+        const exactDisplay = availablePrinters.find((printer) => String(printer.displayName || '').trim() === requested);
+        if (exactDisplay && exactDisplay.name) {
+            return String(exactDisplay.name || '').trim();
+        }
+
+        const normalizedRequested = requested.toLowerCase();
+        const caseInsensitiveName = availablePrinters.find((printer) => (
+            String(printer.name || '').trim().toLowerCase() === normalizedRequested
+        ));
+        if (caseInsensitiveName && !this.isPseudoDefaultPrinterName(caseInsensitiveName.name)) {
+            return String(caseInsensitiveName.name || '').trim();
+        }
+
+        const caseInsensitiveDisplay = availablePrinters.find((printer) => (
+            String(printer.displayName || '').trim().toLowerCase() === normalizedRequested
+        ));
+        if (caseInsensitiveDisplay && caseInsensitiveDisplay.name) {
+            return String(caseInsensitiveDisplay.name || '').trim();
+        }
+
+        return '';
+    }
+
+    async loadHtmlIntoPrintWindow(printWindow, htmlContent, timeoutMs = 15000) {
+        let timeoutId = null;
+        const loadUrlPromise = printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
+
+        try {
+            return await Promise.race([
+                loadUrlPromise,
+                new Promise((_, reject) => {
+                    timeoutId = setTimeout(() => {
+                        reject(new Error('انتهت مهلة تحميل محتوى الطباعة'));
+                    }, timeoutMs);
+                })
+            ]);
+        } finally {
+            if (timeoutId) {
+                clearTimeout(timeoutId);
+            }
+        }
+    }
+
+    async printWebContentsWithTimeout(targetWebContents, printOptions, timeoutMs = 30000) {
+        return await new Promise((resolve, reject) => {
+            let settled = false;
+
+            const finish = (value, isError = false) => {
+                if (settled) {
+                    return;
+                }
+                settled = true;
+                clearTimeout(timeoutId);
+                if (isError) {
+                    reject(value);
+                    return;
+                }
+                resolve(value);
+            };
+
+            const timeoutId = setTimeout(() => {
+                finish(new Error('انتهت مهلة تنفيذ أمر الطباعة'), true);
+            }, timeoutMs);
+
+            try {
+                targetWebContents.print(printOptions, (success, failureReason) => {
+                    if (success) {
+                        finish({ success: true });
+                        return;
+                    }
+
+                    finish(new Error(failureReason || 'فشل أمر الطباعة بدون سبب واضح'), true);
+                });
+            } catch (error) {
+                finish(error, true);
+            }
+        });
+    }
+
     // Print HTML content directly
     async printHTML(htmlContent, options = {}) {
+        let printWindow = null;
+
         try {
             // Ensure proper deep merge of print settings
             const settings = {
@@ -209,25 +364,17 @@ class PrintManager {
             };
 
             // Create print window
-            const printWindow = new BrowserWindow({
+            printWindow = new BrowserWindow({
                 show: false,
-                webPreferences: {
-                    nodeIntegration: true,
-                    contextIsolation: false
-                }
+                webPreferences: createSecureWebPreferences(__dirname)
             });
 
-            // Load HTML content
-            await printWindow.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(htmlContent)}`);
-
-            // Wait for content to load
-            await new Promise(resolve => {
-                printWindow.webContents.once('did-finish-load', resolve);
-            });
+            const loadTimeoutMs = this.getSafeTimeoutMs(settings.loadTimeoutMs, 15000);
+            await this.loadHtmlIntoPrintWindow(printWindow, htmlContent, loadTimeoutMs);
 
             // Print options
             const printOptions = {
-                silent: settings.silent || false,
+                silent: settings.silent !== undefined ? Boolean(settings.silent) : true,
                 printBackground: true,
                 color: settings.color || false,
                 margin: {
@@ -247,22 +394,26 @@ class PrintManager {
                 dpi: settings.dpi || { horizontal: 300, vertical: 300 }
             };
 
-            // Add printer name if specified
-            if (settings.printerName) {
-                printOptions.deviceName = settings.printerName;
+            // Attach printer only when it exists in current OS printers list.
+            const resolvedDeviceName = await this.resolveValidDeviceName(printWindow.webContents, settings.printerName);
+            if (resolvedDeviceName) {
+                printOptions.deviceName = resolvedDeviceName;
+            } else if (settings.printerName) {
+                console.warn(`Requested printer "${settings.printerName}" is not available. Falling back to system default printer.`);
             }
 
             // Print the content
-            const result = await printWindow.webContents.print(printOptions);
-            
-            // Close print window
-            printWindow.close();
-            
-            return { success: true, printed: result };
+            const printTimeoutMs = this.getSafeTimeoutMs(settings.printTimeoutMs, 30000);
+            await this.printWebContentsWithTimeout(printWindow.webContents, printOptions, printTimeoutMs);
+            return { success: true, printed: true };
 
         } catch (error) {
             console.error('Print error:', error);
             return { success: false, error: error.message };
+        } finally {
+            if (printWindow && !printWindow.isDestroyed()) {
+                printWindow.close();
+            }
         }
     }
 
@@ -277,10 +428,7 @@ class PrintManager {
                 height: 800,
                 show: true,
                 title: 'معاينة الطباعة - تصفية برو - Tasfiya Pro',
-                webPreferences: {
-                    nodeIntegration: true,
-                    contextIsolation: false
-                }
+                webPreferences: createSecureWebPreferences(__dirname)
             });
 
             // Create preview HTML with print controls
