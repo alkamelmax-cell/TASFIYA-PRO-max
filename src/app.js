@@ -24,6 +24,7 @@ const {
   getFirstAllowedSection,
   applyPermissionsToDocument
 } = require('./app/user-permissions');
+const { createReconciliationCustomTablesManager } = require('./app/reconciliation-custom-tables-manager');
 const {
   createReconciliationStateDeps,
   createPrintRuntimeStateDeps,
@@ -96,6 +97,22 @@ const appModules = composeAppModules({
 });
 
 handlerBootstrap.setAppModules(appModules);
+
+const reconciliationCustomTablesManager = createReconciliationCustomTablesManager({
+  document,
+  ipcRenderer,
+  windowObj: window,
+  getCurrentReconciliation: appState.getCurrentReconciliation,
+  updateSummary: (...args) => appModules?.reconciliationUiHandlers?.updateSummary?.(...args),
+  getDialogUtils: () => DialogUtils,
+  formatCurrency: formatting.formatCurrency,
+  logger: console
+});
+
+window.reconciliationCustomTablesManager = reconciliationCustomTablesManager;
+document.addEventListener('DOMContentLoaded', () => {
+  void reconciliationCustomTablesManager.initialize();
+});
 
 function exposeLegacyGlobalHandlers(windowObj, modules) {
   const logger = console;

@@ -46,6 +46,10 @@ function createAppApi(deps) {
       setCustomerReceipts([]);
       setReturnInvoices([]);
       setSuppliers([]);
+      if (doc.defaultView?.reconciliationCustomTablesManager
+        && typeof doc.defaultView.reconciliationCustomTablesManager.resetEntries === 'function') {
+        doc.defaultView.reconciliationCustomTablesManager.resetEntries();
+      }
 
       updateBankReceiptsTable();
       updateCashReceiptsTable();

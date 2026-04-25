@@ -19,6 +19,10 @@ function createReconciliationSaveResetHelpers(context) {
   const updateSuppliersTable = context.updateSuppliersTable;
   const updateSummary = context.updateSummary;
 
+  function getCustomTablesManager() {
+    return windowObj && windowObj.reconciliationCustomTablesManager;
+  }
+
 function resetCurrentReconciliationInfoPanel() {
   const infoDiv = doc.getElementById('currentReconciliationInfo');
   const detailsSpan = doc.getElementById('currentReconciliationDetails');
@@ -42,6 +46,9 @@ async function clearAllReconciliationData() {
     setCustomerReceipts([]);
     setReturnInvoices([]);
     setSuppliers([]);
+    if (getCustomTablesManager() && typeof getCustomTablesManager().resetEntries === 'function') {
+      getCustomTablesManager().resetEntries();
+    }
 
     try {
       clearAllFormFields();
@@ -97,6 +104,9 @@ async function resetUIOnly() {
     setCustomerReceipts([]);
     setReturnInvoices([]);
     setSuppliers([]);
+    if (getCustomTablesManager() && typeof getCustomTablesManager().resetEntries === 'function') {
+      getCustomTablesManager().resetEntries();
+    }
     clearActiveFormulaSettingsInDocument(doc);
     setCurrentReconciliation(null);
 

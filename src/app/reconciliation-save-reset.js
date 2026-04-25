@@ -492,7 +492,11 @@ async function handleSaveReconciliation() {
           postpaidSales: JSON.parse(JSON.stringify(getPostpaidSales())),
           customerReceipts: JSON.parse(JSON.stringify(getCustomerReceipts())),
           returnInvoices: JSON.parse(JSON.stringify(getReturnInvoices())),
-          suppliers: JSON.parse(JSON.stringify(getSuppliers()))
+          suppliers: JSON.parse(JSON.stringify(getSuppliers())),
+          customTables: windowObj.reconciliationCustomTablesManager
+            && typeof windowObj.reconciliationCustomTablesManager.getSerializableSections === 'function'
+            ? JSON.parse(JSON.stringify(windowObj.reconciliationCustomTablesManager.getSerializableSections()))
+            : []
         }
       };
 

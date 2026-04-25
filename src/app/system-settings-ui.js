@@ -5,6 +5,7 @@ const {
   updateFormulaPreviewInDocument
 } = require('./reconciliation-formula');
 const { createBankFeeSettingsUiHelpers } = require('./bank-fee-settings-ui');
+const { getCustomTableDefinitionsFromDocument } = require('./reconciliation-custom-tables');
 
 function createSystemSettingsUiHelpers(context) {
   const document = context.document;
@@ -226,7 +227,7 @@ function applyReconciliationFormulaSettings(settings) {
     const normalizedSettings = normalizeFormulaSettings({
         ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
         ...settingsMap
-    });
+    }, getCustomTableDefinitionsFromDocument(document));
 
     RECONCILIATION_FORMULA_FIELDS.forEach((field) => {
         const selectEl = document.getElementById(field.fieldId);
@@ -235,7 +236,7 @@ function applyReconciliationFormulaSettings(settings) {
         }
     });
 
-    updateFormulaPreviewInDocument(document, normalizedSettings);
+    updateFormulaPreviewInDocument(document, normalizedSettings, getCustomTableDefinitionsFromDocument(document));
 
     if (window && typeof window.updateSummary === 'function') {
         window.updateSummary();

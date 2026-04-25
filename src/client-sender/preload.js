@@ -52,6 +52,7 @@ contextBridge.exposeInMainWorld('clientSender', {
     adminResendRequest: (payload) => invokeClientSender('client-sender:admin-resend-request', payload),
     fetchCustomers: () => invokeClientSender('client-sender:fetch-customers'),
     fetchAtms: () => invokeClientSender('client-sender:fetch-atms'),
+    fetchRequestConfig: () => invokeClientSender('client-sender:fetch-request-config'),
     fetchCashiersList: (baseUrl) => invokeClientSender('client-sender:fetch-cashiers-list', baseUrl),
     openDataDirectory: () => invokeClientSender('client-sender:open-data-directory')
 });

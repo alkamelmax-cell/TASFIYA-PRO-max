@@ -8,6 +8,82 @@ const {
 function createPrintHtmlGenerator(deps) {
   const logger = deps.logger || console;
 
+  function escapeHtml(value) {
+    return String(value || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function formatEntryValue(entry, fieldKey, isAmount = false) {
+    if (isAmount) {
+      return escapeHtml(String(entry.amount ?? 0));
+    }
+    return escapeHtml(entry.payload?.[fieldKey] || '-');
+  }
+
+  function generateCustomTablesSection(customTables = []) {
+    if (!Array.isArray(customTables) || customTables.length === 0) {
+      return '';
+    }
+
+    const sectionsHtml = customTables.map((section) => {
+      const definition = section?.definition || {};
+      const entries = Array.isArray(section?.entries) ? section.entries : [];
+      const templateKey = String(definition.entry_template || 'amount_only');
+      const fields = (() => {
+        if (templateKey === 'invoice_amount_note') {
+          return [
+            { key: 'reference', label: 'المرجع' },
+            { key: 'amount', label: 'المبلغ', isAmount: true },
+            { key: 'notes', label: 'ملاحظة' }
+          ];
+        }
+        if (templateKey === 'name_amount') {
+          return [
+            { key: 'name', label: 'الاسم' },
+            { key: 'amount', label: 'المبلغ', isAmount: true }
+          ];
+        }
+        return [
+          { key: 'label', label: 'البيان' },
+          { key: 'amount', label: 'المبلغ', isAmount: true }
+        ];
+      })();
+
+      const rowsHtml = entries.map((entry) => `
+        <tr>
+          ${fields.map((field) => `<td>${formatEntryValue(entry, field.key, field.isAmount)}</td>`).join('')}
+        </tr>
+      `).join('');
+      const total = entries.reduce((sum, entry) => sum + (Number(entry.amount) || 0), 0);
+
+      return `
+        <div class="section">
+          <h3>${escapeHtml(definition.table_name || 'جدول إضافي')}</h3>
+          <table class="data-table">
+            <thead>
+              <tr>${fields.map((field) => `<th>${escapeHtml(field.label)}</th>`).join('')}</tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+            <tfoot>
+              <tr>
+                <th colspan="${Math.max(fields.length - 1, 1)}">المجموع</th>
+                <th>${escapeHtml(String(total.toFixed(2)))}</th>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      `;
+    }).join('');
+
+    return sectionsHtml;
+  }
+
   function getEnhancedFontSizeForPrint(fontSize) {
     const optimizedFontSizes = {
       small: '12px',
@@ -35,7 +111,8 @@ function createPrintHtmlGenerator(deps) {
       postpaidSales,
       customerReceipts,
       returnInvoices,
-      suppliers
+      suppliers,
+      customTables
     } = currentPrintReconciliation;
     const { sections, options } = printOptions;
 
@@ -73,6 +150,10 @@ function createPrintHtmlGenerator(deps) {
 
     if (sections.suppliers && suppliers.length > 0) {
       htmlContent += deps.generateSuppliersSection(suppliers);
+    }
+
+    if (sections.customTables && customTables && customTables.length > 0) {
+      htmlContent += generateCustomTablesSection(customTables);
     }
 
     if (sections.summary) {

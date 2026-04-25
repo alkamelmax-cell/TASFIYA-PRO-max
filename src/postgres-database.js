@@ -282,6 +282,32 @@ class PostgresManager {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(category, setting_key)
             )`,
+            `CREATE TABLE IF NOT EXISTS reconciliation_custom_table_definitions (
+                id SERIAL PRIMARY KEY,
+                table_key TEXT NOT NULL UNIQUE,
+                table_name TEXT NOT NULL,
+                entry_template TEXT NOT NULL DEFAULT 'amount_only',
+                default_sign INTEGER DEFAULT 0,
+                display_order INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                config_json TEXT DEFAULT '{}',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )`,
+            `CREATE TABLE IF NOT EXISTS reconciliation_custom_entries (
+                id SERIAL PRIMARY KEY,
+                reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
+                definition_id INTEGER NOT NULL REFERENCES reconciliation_custom_table_definitions(id) ON DELETE RESTRICT,
+                entry_payload_json TEXT NOT NULL,
+                amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+                is_modified INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )`,
+            `CREATE INDEX IF NOT EXISTS idx_reconciliation_custom_definitions_active
+                ON reconciliation_custom_table_definitions(is_active, display_order)`,
+            `CREATE INDEX IF NOT EXISTS idx_reconciliation_custom_entries_reconciliation
+                ON reconciliation_custom_entries(reconciliation_id, definition_id)`,
             `CREATE TABLE IF NOT EXISTS bank_receipts (
                 id SERIAL PRIMARY KEY,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,

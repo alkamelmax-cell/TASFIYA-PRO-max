@@ -412,6 +412,7 @@ function createAppShellAuthHandlers(context) {
     await ipcRenderer.invoke('db-run', 'DELETE FROM customer_receipts WHERE reconciliation_id = ?', [reconciliationId]);
     await ipcRenderer.invoke('db-run', 'DELETE FROM return_invoices WHERE reconciliation_id = ?', [reconciliationId]);
     await ipcRenderer.invoke('db-run', 'DELETE FROM suppliers WHERE reconciliation_id = ?', [reconciliationId]);
+    await ipcRenderer.invoke('db-run', 'DELETE FROM reconciliation_custom_entries WHERE reconciliation_id = ?', [reconciliationId]);
 
     for (const row of (sections.bankReceipts || [])) {
       await ipcRenderer.invoke(
@@ -459,6 +460,37 @@ function createAppShellAuthHandlers(context) {
         'INSERT INTO suppliers (reconciliation_id, supplier_name, invoice_number, amount, notes, created_at) VALUES (?, ?, ?, ?, ?, ?)',
         [reconciliationId, row.supplier_name || '', row.invoice_number || '', row.amount || 0, row.notes || '', timestampOf(row)]
       );
+    }
+
+    for (const section of (sections.customTables || [])) {
+      const definitionId = section?.definition?.id;
+      if (!definitionId) {
+        continue;
+      }
+
+      for (const row of (section.entries || [])) {
+        await ipcRenderer.invoke(
+          'db-run',
+          `INSERT INTO reconciliation_custom_entries (
+             reconciliation_id,
+             definition_id,
+             entry_payload_json,
+             amount,
+             is_modified,
+             created_at,
+             updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+          [
+            reconciliationId,
+            definitionId,
+            JSON.stringify(row.payload || {}),
+            row.amount || 0,
+            Number(row.is_modified) > 0 ? 1 : 0,
+            timestampOf(row),
+            row.updated_at || timestampOf(row)
+          ]
+        );
+      }
     }
 
     return true;
@@ -677,6 +709,10 @@ async function handleLogout() {
   setCustomerReceipts([]);
   setReturnInvoices([]);
   setSuppliers([]);
+  if (windowObj.reconciliationCustomTablesManager
+    && typeof windowObj.reconciliationCustomTablesManager.resetEntries === 'function') {
+    windowObj.reconciliationCustomTablesManager.resetEntries();
+  }
 
   if (typeof resetUIOnly === 'function') {
     try {

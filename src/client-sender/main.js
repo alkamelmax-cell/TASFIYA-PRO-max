@@ -10,6 +10,7 @@ const {
     sendReconciliationRequest,
     fetchCustomers,
     fetchAtms,
+    fetchReconciliationRequestConfig,
     logoutCashier,
     fetchCashiersList
 } = require('./api');
@@ -208,6 +209,25 @@ function createRemoteSuccessResponse(fieldName, values, extra = {}) {
         ...extra,
         bootstrap: getBootstrapPayload()
     };
+}
+
+function getCachedReconciliationRequestConfig() {
+    if (!clientDb) {
+        return null;
+    }
+
+    const cached = clientDb.getJsonSetting('reconciliation_request_config', null);
+    return cached && typeof cached === 'object' ? cached : null;
+}
+
+function saveCachedReconciliationRequestConfig(config) {
+    if (!clientDb || !config || typeof config !== 'object') {
+        return null;
+    }
+
+    clientDb.setSetting('reconciliation_request_config', config);
+    clientDb.setSetting('reconciliation_request_config_synced_at', new Date().toISOString());
+    return config;
 }
 
 async function runAuthenticatedRequest(executor) {
@@ -881,6 +901,67 @@ function registerIpcHandlers() {
                     cachedAtms.length > 0
                         ? 'انتهت جلسة الخادم، وتم الانتقال إلى النسخة المحلية.'
                         : 'انتهت جلسة الخادم، وتم إبقاء التطبيق في وضع أوفلاين حتى دون وجود أجهزة صراف محفوظة.',
+                    { offline: true }
+                );
+            }
+
+            if (authError) {
+                clearSessionState();
+            }
+
+            return {
+                success: false,
+                error: error.message,
+                authExpired: authError,
+                bootstrap: getBootstrapPayload()
+            };
+        }
+    });
+
+    ipcMain.handle('client-sender:fetch-request-config', async () => {
+        if (clientState.offlineMode) {
+            return createCacheSuccessResponse(
+                'config',
+                getCachedReconciliationRequestConfig() || {},
+                'التطبيق يعمل الآن من النسخة المحلية.',
+                { offline: true }
+            );
+        }
+
+        try {
+            const result = await fetchReconciliationRequestConfig(
+                clientState.baseUrl || DEFAULT_BASE_URL,
+                clientState.sessionCookie
+            );
+
+            applySessionCookieUpdate(result.sessionCookie);
+            const config = result.data && result.data.data && typeof result.data.data === 'object'
+                ? result.data.data
+                : {};
+            saveCachedReconciliationRequestConfig(config);
+
+            return createRemoteSuccessResponse('config', config);
+        } catch (error) {
+            applySessionCookieUpdate(error && error.sessionCookie);
+
+            const authError = isAuthError(error);
+            const cachedConfig = getCachedReconciliationRequestConfig();
+            if (!authError && cachedConfig) {
+                return createCacheSuccessResponse(
+                    'config',
+                    cachedConfig,
+                    error.message,
+                    { offline: isNetworkFailure(error) }
+                );
+            }
+
+            if (authError && fallbackToOfflineSession()) {
+                return createCacheSuccessResponse(
+                    'config',
+                    cachedConfig || {},
+                    cachedConfig
+                        ? 'انتهت جلسة الخادم، وتم الانتقال إلى النسخة المحلية.'
+                        : 'انتهت جلسة الخادم، ولا توجد تهيئة جداول محفوظة على هذا الجهاز.',
                     { offline: true }
                 );
             }

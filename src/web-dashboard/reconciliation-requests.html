@@ -136,6 +136,17 @@
 
         let currentRequests = [];
         const requestDetailsCache = new Map();
+        let reconciliationRequestConfig = {
+            formula_settings: {
+                bank_receipts_sign: 1,
+                cash_receipts_sign: 1,
+                postpaid_sales_sign: 1,
+                customer_receipts_sign: -1,
+                return_invoices_sign: 1,
+                suppliers_sign: 0,
+                custom_table_signs: {}
+            }
+        };
 
         function toSafeNumber(value) {
             if (value === null || value === undefined || value === '') return 0;
@@ -145,6 +156,19 @@
 
         function toArray(value) {
             return Array.isArray(value) ? value : [];
+        }
+
+        function normalizeSign(value, fallback = 0) {
+            if (value === null || value === undefined || value === '') return fallback;
+            const normalized = String(value).trim().toLowerCase();
+            if (['+', '+1', '1', 'add', 'plus', 'true'].includes(normalized)) return 1;
+            if (['-', '-1', 'subtract', 'minus'].includes(normalized)) return -1;
+            if (['0', 'ignore', 'none', 'off', 'false'].includes(normalized)) return 0;
+            const numeric = Number(normalized);
+            if (numeric > 0) return 1;
+            if (numeric < 0) return -1;
+            if (numeric === 0) return 0;
+            return fallback;
         }
 
         function formatMoney(value) {
@@ -175,6 +199,21 @@
             } catch (error) {
                 console.warn('Failed to parse request details payload:', error);
                 return {};
+            }
+        }
+
+        async function loadReconciliationRequestConfig() {
+            try {
+                const res = await fetch('/api/reconciliation-request-config', { cache: 'no-store' });
+                const data = await res.json();
+                if (res.ok && data.success) {
+                    reconciliationRequestConfig = {
+                        ...reconciliationRequestConfig,
+                        ...(data.data || {})
+                    };
+                }
+            } catch (error) {
+                console.warn('Failed to load reconciliation request config', error);
             }
         }
 
@@ -239,7 +278,8 @@
                 postpaid: toArray(details.postpaid_items).length ? toArray(details.postpaid_items) : toArray(details.postpaidItems),
                 customerReceipts: toArray(details.customer_receipts).length ? toArray(details.customer_receipts) : toArray(details.custReceiptItems),
                 returns: toArray(details.return_items).length ? toArray(details.return_items) : toArray(details.returnItems),
-                suppliers: toArray(details.supplier_items).length ? toArray(details.supplier_items) : toArray(details.supplierItems)
+                suppliers: toArray(details.supplier_items).length ? toArray(details.supplier_items) : toArray(details.supplierItems),
+                customTables: toArray(details.custom_tables)
             };
         }
 
@@ -280,6 +320,29 @@
             `;
         }
 
+        function buildCustomDetailsSections(customTables = []) {
+            return customTables.map((section, index) => {
+                const definition = section?.definition || {};
+                const title = definition.table_name || `جدول إضافي ${index + 1}`;
+                const entries = toArray(section?.entries);
+                const templateHeaders = entries.length > 0
+                    ? Object.keys(entries[0].payload || {}).filter((key) => key !== 'amount')
+                    : Object.keys(definition?.config || {});
+                const headers = [...templateHeaders, 'المبلغ'];
+                const rows = entries.map((entry) => {
+                    const payload = entry && entry.payload && typeof entry.payload === 'object' ? entry.payload : {};
+                    const payloadCells = templateHeaders.map((key) => `<td>${escapeHtml(payload[key] ?? '-')}</td>`).join('');
+                    return `
+                        <tr>
+                            ${payloadCells}
+                            <td class="font-monospace dir-ltr">${formatMoney(entry?.amount)}</td>
+                        </tr>
+                    `;
+                });
+                return buildDetailsSection(title, headers, rows);
+            }).join('');
+        }
+
         async function showRequestDetails(id) {
             try {
                 let req = currentRequests.find(r => Number(r.id) === Number(id));
@@ -297,9 +360,36 @@
                 const totalPostpaid = d.postpaid.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
                 const totalCustomerReceipts = d.customerReceipts.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
                 const totalReturns = d.returns.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
+                const totalSuppliers = d.suppliers.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
                 const systemSales = toSafeNumber(req?.system_sales);
-                const totalReceipts = totalCash + totalBank + totalPostpaid + totalReturns - totalCustomerReceipts;
+                const totalReceipts =
+                    (totalCash * normalizeSign(reconciliationRequestConfig.formula_settings?.cash_receipts_sign, 1))
+                    + (totalBank * normalizeSign(reconciliationRequestConfig.formula_settings?.bank_receipts_sign, 1))
+                    + (totalPostpaid * normalizeSign(reconciliationRequestConfig.formula_settings?.postpaid_sales_sign, 1))
+                    + (totalCustomerReceipts * normalizeSign(reconciliationRequestConfig.formula_settings?.customer_receipts_sign, -1))
+                    + (totalReturns * normalizeSign(reconciliationRequestConfig.formula_settings?.return_invoices_sign, 1))
+                    + (totalSuppliers * normalizeSign(reconciliationRequestConfig.formula_settings?.suppliers_sign, 0))
+                    + d.customTables.reduce((sum, section) => {
+                        const tableKey = section?.definition?.table_key;
+                        const tableTotal = toArray(section?.entries).reduce((innerSum, entry) => innerSum + toSafeNumber(entry?.amount), 0);
+                        const sign = normalizeSign(
+                            reconciliationRequestConfig.formula_settings?.custom_table_signs?.[tableKey],
+                            normalizeSign(section?.definition?.default_sign, 0)
+                        );
+                        return sum + (tableTotal * sign);
+                    }, 0);
                 const surplusDeficit = totalReceipts - systemSales;
+                const customSummaryCards = d.customTables.map((section) => {
+                    const tableKey = section?.definition?.table_key;
+                    const title = section?.definition?.table_name || 'جدول إضافي';
+                    const tableTotal = toArray(section?.entries).reduce((sum, entry) => sum + toSafeNumber(entry?.amount), 0);
+                    const sign = normalizeSign(
+                        reconciliationRequestConfig.formula_settings?.custom_table_signs?.[tableKey],
+                        normalizeSign(section?.definition?.default_sign, 0)
+                    );
+                    const colorClass = sign > 0 ? 'text-success' : sign < 0 ? 'text-danger' : 'text-muted';
+                    return `<div class="col-6 col-md-4"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">${escapeHtml(title)}</div><div class="fw-bold ${colorClass} font-monospace dir-ltr">${formatMoney(tableTotal)}</div></div></div>`;
+                }).join('');
 
                 const cashRows = d.cash.map(item => `
                 <tr>
@@ -372,6 +462,7 @@
                             <div class="col-6 col-md-4"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">المبيعات الآجلة</div><div class="fw-bold text-warning font-monospace dir-ltr">${formatMoney(totalPostpaid)}</div></div></div>
                             <div class="col-6 col-md-4"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">مقبوضات العملاء</div><div class="fw-bold text-danger font-monospace dir-ltr">${formatMoney(totalCustomerReceipts)}</div></div></div>
                             <div class="col-6 col-md-4"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">المرتجعات</div><div class="fw-bold text-warning font-monospace dir-ltr">${formatMoney(totalReturns)}</div></div></div>
+                            ${customSummaryCards}
                             <div class="col-6 col-md-6"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">إجمالي التحصيل</div><div class="fw-bold text-primary font-monospace dir-ltr">${formatMoney(totalReceipts)}</div></div></div>
                             <div class="col-6 col-md-6"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">العجز/الزيادة</div><div class="fw-bold ${surplusDeficit >= 0 ? 'text-success' : 'text-danger'} font-monospace dir-ltr">${formatMoney(surplusDeficit)}</div></div></div>
                         </div>
@@ -382,6 +473,7 @@
                         ${buildDetailsSection('تفصيل مقبوضات العملاء', ['العميل', 'نوع الدفع', 'المبلغ'], customerRows)}
                         ${buildDetailsSection('تفصيل المرتجعات', ['رقم الفاتورة', 'المبلغ', 'ملاحظات'], returnRows)}
                         ${buildDetailsSection('تفصيل الموردين/المصروفات', ['الجهة', 'رقم الفاتورة', 'المبلغ'], supplierRows)}
+                        ${buildCustomDetailsSections(d.customTables)}
                     </div>
                 `
                 });
@@ -573,7 +665,9 @@
         }
 
         // Load on start
-        loadRequests();
+        loadReconciliationRequestConfig().finally(() => {
+            loadRequests();
+        });
 
         // Auto-refresh every 5 seconds to show real-time updates
         setInterval(() => {

@@ -7,6 +7,7 @@ const {
 } = require('./reconciliation-formula');
 const { createBankFeeSettingsUiHelpers } = require('./bank-fee-settings-ui');
 const { mapDbErrorMessage } = require('./db-error-messages');
+const { getCustomTableDefinitionsFromDocument } = require('./reconciliation-custom-tables');
 
 function createSettingsUiLoader(deps) {
   const document = deps.document;
@@ -40,7 +41,7 @@ function createSettingsUiLoader(deps) {
       return null;
     }
     try {
-      return normalizeFormulaSettings(JSON.parse(settingsJson));
+      return normalizeFormulaSettings(JSON.parse(settingsJson), getCustomTableDefinitionsFromDocument(document));
     } catch (error) {
       return null;
     }
@@ -187,7 +188,10 @@ function createSettingsUiLoader(deps) {
     tableBody.innerHTML = profiles.map((profile) => {
       const profileId = parseFormulaProfileId(profile.id);
       const parsedSettings = parseProfileSettings(profile.settings_json) || DEFAULT_RECONCILIATION_FORMULA_SETTINGS;
-      const operationText = buildFormulaPreviewText(parsedSettings).replace(/^إجمالي المقبوضات\s*=\s*/u, '');
+      const operationText = buildFormulaPreviewText(
+        parsedSettings,
+        getCustomTableDefinitionsFromDocument(document)
+      ).replace(/^إجمالي المقبوضات\s*=\s*/u, '');
       const selectedClass = normalizedSelectedId && normalizedSelectedId === profileId ? 'is-selected' : '';
       const defaultBadge = profile.is_default
         ? '<span class="badge bg-success-subtle text-success-emphasis ms-1">افتراضية</span>'
@@ -555,7 +559,7 @@ function createSettingsUiLoader(deps) {
     const normalizedSettings = normalizeFormulaSettings({
       ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
       ...settings
-    });
+    }, getCustomTableDefinitionsFromDocument(document));
 
     RECONCILIATION_FORMULA_FIELDS.forEach((field) => {
       const selectEl = document.getElementById(field.fieldId);
@@ -564,7 +568,7 @@ function createSettingsUiLoader(deps) {
       }
     });
 
-    updateFormulaPreviewInDocument(document, normalizedSettings);
+    updateFormulaPreviewInDocument(document, normalizedSettings, getCustomTableDefinitionsFromDocument(document));
 
     if (windowObj && typeof windowObj.updateSummary === 'function') {
       windowObj.updateSummary();

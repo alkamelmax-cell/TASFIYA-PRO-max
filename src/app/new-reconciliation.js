@@ -351,6 +351,10 @@ function createNewReconciliationHandlers(deps) {
       deps.setCustomerReceipts([]);
       deps.setReturnInvoices([]);
       deps.setSuppliers([]);
+      if (windowObj.reconciliationCustomTablesManager
+        && typeof windowObj.reconciliationCustomTablesManager.resetEntries === 'function') {
+        windowObj.reconciliationCustomTablesManager.resetEntries();
+      }
 
       deps.updateBankReceiptsTable();
       deps.updateCashReceiptsTable();

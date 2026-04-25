@@ -2350,29 +2350,30 @@
 
                         <div class="summary-metric-list">
                             <div class="summary-metric-row">
-                                <span class="summary-metric-label">إجمالي النقد</span>
+                                <span class="summary-metric-label" id="sumCashLabel">إجمالي النقد</span>
                                 <span class="summary-metric-value is-success" id="sumCash">0.00</span>
                             </div>
                             <div class="summary-metric-row">
-                                <span class="summary-metric-label">إجمالي الشبكة</span>
+                                <span class="summary-metric-label" id="sumBankLabel">إجمالي الشبكة</span>
                                 <span class="summary-metric-value is-info" id="sumBank">0.00</span>
                             </div>
                             <div class="summary-metric-row">
-                                <span class="summary-metric-label">مبيعات آجلة (+)</span>
+                                <span class="summary-metric-label" id="sumPostpaidLabel">مبيعات آجلة (+)</span>
                                 <span class="summary-metric-value is-warning" id="sumPostpaid">0.00</span>
                             </div>
                             <div class="summary-metric-row">
-                                <span class="summary-metric-label">مقبوضات عملاء (-)</span>
+                                <span class="summary-metric-label" id="sumCustomerLabel">مقبوضات عملاء (-)</span>
                                 <span class="summary-metric-value is-danger" id="sumCustomer">0.00</span>
                             </div>
                             <div class="summary-metric-row">
-                                <span class="summary-metric-label">مرتجع (+ يضاف للكاش)</span>
+                                <span class="summary-metric-label" id="sumReturnsLabel">مرتجع (+ يضاف للكاش)</span>
                                 <span class="summary-metric-value is-warning" id="sumReturns">0.00</span>
                             </div>
                             <div class="summary-metric-row">
-                                <span class="summary-metric-label">موردين (للمعاينة فقط)</span>
+                                <span class="summary-metric-label" id="sumSuppliersLabel">موردين (للمعاينة فقط)</span>
                                 <span class="summary-metric-value is-muted" id="sumSuppliers">0.00</span>
                             </div>
+                            <div id="customSummaryRows"></div>
                         </div>
 
                         <div class="summary-total-row">

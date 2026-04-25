@@ -1230,6 +1230,8 @@
                         </div>
                     </div>
 
+                    <div id="customReconciliationTablesContainer"></div>
+
                     <!-- Reconciliation Summary -->
                     <div class="card mb-4">
                         <div class="card-header">
@@ -1258,6 +1260,7 @@
                                         <label class="form-label">إجمالي المرتجعات:</label>
                                         <div class="summary-value text-currency" id="summaryReturnTotal">0.00</div>
                                     </div>
+                                    <div id="customSummaryRows"></div>
                                 </div>
                                 <div class="col-md-6">
                                     <div class="summary-item">
@@ -4383,6 +4386,40 @@
                                                     </div>
                                                 </div>
                                             </div>
+                                            <div class="col-12">
+                                                <div class="card border-secondary-subtle">
+                                                    <div class="card-body">
+                                                        <div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3">
+                                                            <div>
+                                                                <h6 class="mb-1">الجداول الإضافية</h6>
+                                                                <small class="text-muted">أضف جدولًا جديدًا ثم حدد تأثيره داخل معادلة التصفية من نفس النافذة.</small>
+                                                            </div>
+                                                            <button type="button" class="btn btn-outline-primary" id="openCustomTableDefinitionModalBtn">
+                                                                <i class="icon">➕</i> إضافة جدول جديد
+                                                            </button>
+                                                        </div>
+                                                        <div class="table-responsive">
+                                                            <table class="table formula-profiles-table mb-0">
+                                                                <thead>
+                                                                    <tr>
+                                                                        <th style="width: 24%">اسم الجدول</th>
+                                                                        <th style="width: 18%">نوع الإدخال</th>
+                                                                        <th style="width: 14%">التأثير الافتراضي</th>
+                                                                        <th style="width: 12%">الترتيب</th>
+                                                                        <th style="width: 12%">الحالة</th>
+                                                                        <th style="width: 20%">الإجراءات</th>
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody id="customTableDefinitionsTableBody">
+                                                                    <tr>
+                                                                        <td colspan="6" class="text-center text-muted py-3">لا توجد جداول إضافية</td>
+                                                                    </tr>
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
                                         </div>
                                     </div>
 
@@ -4455,6 +4492,7 @@
                                                             </select>
                                                         </div>
                                                     </div>
+                                                    <div class="row g-3 mt-1" id="formulaCustomFieldsContainer"></div>
 
                                                     <div class="card border-primary formula-preview-card mt-3">
                                                         <div class="card-body py-3">
@@ -4468,6 +4506,66 @@
                                                 <div class="modal-footer">
                                                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
                                                     <button type="button" class="btn btn-primary" id="saveFormulaProfileModalBtn">إضافة المعادلة</button>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    </div>
+
+                                    <div class="modal fade" id="customTableDefinitionModal" tabindex="-1"
+                                        aria-labelledby="customTableDefinitionModalLabel" aria-hidden="true">
+                                        <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                                            <div class="modal-content">
+                                                <div class="modal-header">
+                                                    <h5 class="modal-title" id="customTableDefinitionModalLabel">إضافة جدول إضافي</h5>
+                                                    <button type="button" class="btn-close" data-bs-dismiss="modal"
+                                                        aria-label="إغلاق"></button>
+                                                </div>
+                                                <div class="modal-body">
+                                                    <input type="hidden" id="customTableDefinitionModalMode" value="create">
+                                                    <input type="hidden" id="customTableDefinitionModalId" value="">
+                                                    <input type="hidden" id="customTableDefinitionModalKey" value="">
+
+                                                    <div class="row g-3">
+                                                        <div class="col-md-6">
+                                                            <label for="customTableDefinitionName" class="form-label">اسم الجدول</label>
+                                                            <input type="text" class="form-control" id="customTableDefinitionName"
+                                                                placeholder="مثال: رسوم بنكية إضافية">
+                                                        </div>
+                                                        <div class="col-md-6">
+                                                            <label for="customTableDefinitionTemplate" class="form-label">نوع الإدخال</label>
+                                                            <select class="form-select" id="customTableDefinitionTemplate">
+                                                                <option value="amount_only">بيان + مبلغ</option>
+                                                                <option value="name_amount">اسم + مبلغ</option>
+                                                                <option value="invoice_amount_note">مرجع + مبلغ + ملاحظة</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <label for="customTableDefinitionDefaultSign" class="form-label">التأثير الافتراضي</label>
+                                                            <select class="form-select" id="customTableDefinitionDefaultSign">
+                                                                <option value="1">إضافة (+)</option>
+                                                                <option value="-1">طرح (-)</option>
+                                                                <option value="0" selected>تجاهل (0)</option>
+                                                            </select>
+                                                        </div>
+                                                        <div class="col-md-4">
+                                                            <label for="customTableDefinitionDisplayOrder" class="form-label">ترتيب الظهور</label>
+                                                            <input type="number" class="form-control" id="customTableDefinitionDisplayOrder" min="1" step="1" value="1">
+                                                        </div>
+                                                        <div class="col-md-4 d-flex align-items-end">
+                                                            <div class="form-check form-switch">
+                                                                <input class="form-check-input" type="checkbox" role="switch"
+                                                                    id="customTableDefinitionIsActive" checked>
+                                                                <label class="form-check-label" for="customTableDefinitionIsActive">مفعل</label>
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                    <div class="alert alert-light border mt-3 mb-0">
+                                                        تأثير الجدول داخل معادلة التصفية يمكن تعديله لاحقًا لكل معادلة محفوظة من نافذة المعادلة نفسها.
+                                                    </div>
+                                                </div>
+                                                <div class="modal-footer">
+                                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">إلغاء</button>
+                                                    <button type="button" class="btn btn-primary" id="saveCustomTableDefinitionBtn">حفظ الجدول</button>
                                                 </div>
                                             </div>
                                         </div>

@@ -94,6 +94,10 @@ function createReconciliationUiPrintActions(context) {
       const customerReceipts = getCustomerReceipts();
       const returnInvoices = getReturnInvoices();
       const suppliers = getSuppliers();
+      const customTables = document.defaultView?.reconciliationCustomTablesManager
+        && typeof document.defaultView.reconciliationCustomTablesManager.getSerializableSections === 'function'
+        ? document.defaultView.reconciliationCustomTablesManager.getSerializableSections()
+        : [];
 
       logger.log('📊 [PRINT] فحص البيانات للطباعة السريعة:', {
         currentReconciliation: !!currentReconciliation,
@@ -103,7 +107,8 @@ function createReconciliationUiPrintActions(context) {
         postpaidSales: postpaidSales.length,
         customerReceipts: customerReceipts.length,
         returnInvoices: returnInvoices.length,
-        suppliers: suppliers.length
+        suppliers: suppliers.length,
+        customTables: customTables.length
       });
 
       const hasData = bankReceipts.length > 0 ||
@@ -111,7 +116,8 @@ function createReconciliationUiPrintActions(context) {
         postpaidSales.length > 0 ||
         customerReceipts.length > 0 ||
         returnInvoices.length > 0 ||
-        suppliers.length > 0;
+        suppliers.length > 0 ||
+        customTables.some((section) => Array.isArray(section.entries) && section.entries.length > 0);
 
       if (!hasData) {
         logger.warn('⚠️ [PRINT] لا توجد بيانات للطباعة السريعة');
@@ -129,6 +135,7 @@ function createReconciliationUiPrintActions(context) {
           customerReceipts: true,
           returnInvoices: true,
           suppliers: true,
+          customTables: true,
           summary: true
         },
         pageSize: 'A4',

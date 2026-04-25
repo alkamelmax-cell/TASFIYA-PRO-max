@@ -287,6 +287,16 @@ async function fetchAtms(baseUrl, sessionCookie, cashierId) {
     );
 }
 
+async function fetchReconciliationRequestConfig(baseUrl, sessionCookie) {
+    return requestJson(
+        baseUrl,
+        'api/reconciliation-request-config',
+        {
+            sessionCookie
+        }
+    );
+}
+
 async function logoutCashier(baseUrl, sessionCookie) {
     return requestJson(baseUrl, 'api/logout', {
         method: 'POST',
@@ -310,6 +320,7 @@ module.exports = {
     sendReconciliationRequest,
     fetchCustomers,
     fetchAtms,
+    fetchReconciliationRequestConfig,
     logoutCashier,
     fetchCashiersList
 };

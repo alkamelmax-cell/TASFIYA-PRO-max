@@ -19,7 +19,8 @@ const DEFAULT_RECONCILIATION_FORMULA_SETTINGS = Object.freeze({
   postpaid_sales_sign: 1,
   customer_receipts_sign: -1,
   return_invoices_sign: 1,
-  suppliers_sign: 0
+  suppliers_sign: 0,
+  custom_table_signs: Object.freeze({})
 });
 
 let app;
@@ -505,6 +506,38 @@ class DatabaseManager {
         FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE
       )
     `);
+
+    // Reconciliation custom table definitions
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS reconciliation_custom_table_definitions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        table_key TEXT NOT NULL UNIQUE,
+        table_name TEXT NOT NULL,
+        entry_template TEXT NOT NULL DEFAULT 'amount_only',
+        default_sign INTEGER DEFAULT 0,
+        display_order INTEGER DEFAULT 0,
+        is_active INTEGER DEFAULT 1,
+        config_json TEXT DEFAULT '{}',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS reconciliation_custom_entries (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        reconciliation_id INTEGER NOT NULL,
+        definition_id INTEGER NOT NULL,
+        entry_payload_json TEXT NOT NULL,
+        amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+        is_modified INTEGER DEFAULT 0,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE,
+        FOREIGN KEY (definition_id) REFERENCES reconciliation_custom_table_definitions(id) ON DELETE RESTRICT
+      )
+    `);
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_reconciliation_custom_definitions_active ON reconciliation_custom_table_definitions(is_active, display_order)');
+    this.db.exec('CREATE INDEX IF NOT EXISTS idx_reconciliation_custom_entries_reconciliation ON reconciliation_custom_entries(reconciliation_id, definition_id)');
 
     // Reconciliation Requests (Synced from Web)
     this.db.exec(`
@@ -1492,6 +1525,26 @@ class DatabaseManager {
 
   normalizeReconciliationFormulaSettings(rawSettings = {}) {
     const safeRaw = (rawSettings && typeof rawSettings === 'object') ? rawSettings : {};
+    const rawCustomSigns = (() => {
+      if (safeRaw.custom_table_signs && typeof safeRaw.custom_table_signs === 'object') {
+        return safeRaw.custom_table_signs;
+      }
+      if (safeRaw.custom_table_signs_json) {
+        try {
+          const parsed = JSON.parse(safeRaw.custom_table_signs_json);
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (_error) {
+          return {};
+        }
+      }
+      return {};
+    })();
+    const normalizedCustomSigns = {};
+    Object.entries(rawCustomSigns).forEach(([tableKey, value]) => {
+      if (!tableKey) return;
+      normalizedCustomSigns[tableKey] = this.normalizeReconciliationFormulaSign(value, 0);
+    });
+
     return {
       bank_receipts_sign: this.normalizeReconciliationFormulaSign(
         safeRaw.bank_receipts_sign,
@@ -1516,7 +1569,8 @@ class DatabaseManager {
       suppliers_sign: this.normalizeReconciliationFormulaSign(
         safeRaw.suppliers_sign,
         DEFAULT_RECONCILIATION_FORMULA_SETTINGS.suppliers_sign
-      )
+      ),
+      custom_table_signs: normalizedCustomSigns
     };
   }
 
@@ -1534,7 +1588,11 @@ class DatabaseManager {
     const settingsMap = {};
     rows.forEach((row) => {
       if (!row || !row.setting_key) return;
-      settingsMap[row.setting_key] = row.setting_value;
+      if (row.setting_key === 'custom_table_signs_json') {
+        settingsMap.custom_table_signs_json = row.setting_value;
+      } else {
+        settingsMap[row.setting_key] = row.setting_value;
+      }
     });
 
     return this.normalizeReconciliationFormulaSettings({
@@ -1551,8 +1609,17 @@ class DatabaseManager {
     `);
 
     Object.entries(normalizedSettings).forEach(([settingKey, settingValue]) => {
+      if (settingKey === 'custom_table_signs') {
+        return;
+      }
       upsertStmt.run('reconciliation_formula', settingKey, String(settingValue));
     });
+
+    upsertStmt.run(
+      'reconciliation_formula',
+      'custom_table_signs_json',
+      JSON.stringify(normalizedSettings.custom_table_signs || {})
+    );
 
     if (activeProfileId !== null && activeProfileId !== undefined) {
       upsertStmt.run('reconciliation_formula', 'active_profile_id', String(activeProfileId));
@@ -1907,6 +1974,7 @@ class DatabaseManager {
       let customerReceipts = [];
       let returnInvoices = [];
       let suppliers = [];
+      let customTables = [];
 
       try {
         console.log('💳 [DB] تحميل المقبوضات البنكية...');
@@ -1990,6 +2058,72 @@ class DatabaseManager {
         suppliers = [];
       }
 
+      try {
+        console.log('🧩 [DB] تحميل الجداول الإضافية...');
+        const customRows = this.query(`
+          SELECT
+            e.*,
+            d.table_key,
+            d.table_name,
+            d.entry_template,
+            d.default_sign,
+            d.display_order,
+            d.is_active,
+            d.config_json
+          FROM reconciliation_custom_entries e
+          INNER JOIN reconciliation_custom_table_definitions d
+            ON d.id = e.definition_id
+          WHERE e.reconciliation_id = ?
+          ORDER BY d.display_order ASC, e.created_at ASC, e.id ASC
+        `, [numericId]) || [];
+
+        const grouped = new Map();
+        customRows.forEach((row) => {
+          if (!row.table_key) {
+            return;
+          }
+
+          if (!grouped.has(row.table_key)) {
+            grouped.set(row.table_key, {
+              definition: {
+                id: row.definition_id,
+                table_key: row.table_key,
+                table_name: row.table_name,
+                entry_template: row.entry_template,
+                default_sign: row.default_sign,
+                display_order: row.display_order,
+                is_active: row.is_active,
+                config_json: row.config_json
+              },
+              entries: []
+            });
+          }
+
+          let payload = {};
+          try {
+            payload = JSON.parse(row.entry_payload_json || '{}') || {};
+          } catch (_error) {
+            payload = {};
+          }
+
+          grouped.get(row.table_key).entries.push({
+            id: row.id,
+            reconciliation_id: row.reconciliation_id,
+            definition_id: row.definition_id,
+            amount: row.amount || 0,
+            payload,
+            created_at: row.created_at,
+            updated_at: row.updated_at
+          });
+        });
+
+        customTables = Array.from(grouped.values());
+        console.log(`✅ [DB] تم تحميل ${customTables.length} جدول إضافي`);
+      } catch (error) {
+        console.warn('⚠️ [DB] خطأ في تحميل الجداول الإضافية:', error.message);
+        customTables = [];
+      }
+
       // Validate that we have the essential reconciliation data
       if (!reconciliation.cashier_id || !reconciliation.accountant_id) {
         console.warn('⚠️ [DB] بيانات التصفية غير مكتملة - معرفات مفقودة');
@@ -2003,7 +2137,8 @@ class DatabaseManager {
         postpaidSales: Array.isArray(postpaidSales) ? postpaidSales : [],
         customerReceipts: Array.isArray(customerReceipts) ? customerReceipts : [],
         returnInvoices: Array.isArray(returnInvoices) ? returnInvoices : [],
-        suppliers: Array.isArray(suppliers) ? suppliers : []
+        suppliers: Array.isArray(suppliers) ? suppliers : [],
+        customTables: Array.isArray(customTables) ? customTables : []
       };
 
       // Calculate totals for validation
@@ -2019,6 +2154,7 @@ class DatabaseManager {
         customerReceipts: result.customerReceipts.length,
         returnInvoices: result.returnInvoices.length,
         suppliers: result.suppliers.length,
+        customTables: result.customTables.length,
         totalBankReceipts: totalBankReceipts.toFixed(2),
         totalCashReceipts: totalCashReceipts.toFixed(2)
       });

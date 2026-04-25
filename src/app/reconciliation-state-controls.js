@@ -105,13 +105,18 @@ function createReconciliationStateControls(deps) {
     }
 
     const counts = getDataCounts();
+    const customManager = doc.defaultView && doc.defaultView.reconciliationCustomTablesManager;
+    const customEntriesCount = customManager && typeof customManager.getTotalEntriesCount === 'function'
+      ? customManager.getTotalEntriesCount()
+      : 0;
     const hasData =
       counts.bankReceipts > 0 ||
       counts.cashReceipts > 0 ||
       counts.postpaidSales > 0 ||
       counts.customerReceipts > 0 ||
       counts.returnInvoices > 0 ||
-      counts.suppliers > 0;
+      counts.suppliers > 0 ||
+      customEntriesCount > 0;
 
     if (!hasData) {
       errors.push('لا توجد بيانات مقبوضات أو مبيعات للحفظ');

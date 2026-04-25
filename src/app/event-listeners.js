@@ -254,6 +254,18 @@ function createEventListenersSetup(deps) {
     if (saveFormulaProfileModalBtn) {
       saveFormulaProfileModalBtn.addEventListener('click', handlers.handleSaveFormulaProfileModal);
     }
+    const openCustomTableDefinitionModalBtn = doc.getElementById('openCustomTableDefinitionModalBtn');
+    if (openCustomTableDefinitionModalBtn && typeof handlers.handleOpenCreateCustomTableDefinitionModal === 'function') {
+      openCustomTableDefinitionModalBtn.addEventListener('click', handlers.handleOpenCreateCustomTableDefinitionModal);
+    }
+    const saveCustomTableDefinitionBtn = doc.getElementById('saveCustomTableDefinitionBtn');
+    if (saveCustomTableDefinitionBtn && typeof handlers.handleSaveCustomTableDefinition === 'function') {
+      saveCustomTableDefinitionBtn.addEventListener('click', handlers.handleSaveCustomTableDefinition);
+    }
+    const customTableDefinitionsTableBody = doc.getElementById('customTableDefinitionsTableBody');
+    if (customTableDefinitionsTableBody && typeof handlers.handleCustomTableDefinitionsTableClick === 'function') {
+      customTableDefinitionsTableBody.addEventListener('click', handlers.handleCustomTableDefinitionsTableClick);
+    }
     [
       'formulaModalBankReceipts',
       'formulaModalCashReceipts',
@@ -267,6 +279,10 @@ function createEventListenersSetup(deps) {
         selectEl.addEventListener('change', handlers.handleFormulaProfileModalPreview);
       }
     });
+    const formulaCustomFieldsContainer = doc.getElementById('formulaCustomFieldsContainer');
+    if (formulaCustomFieldsContainer && typeof handlers.handleFormulaProfileModalPreview === 'function') {
+      formulaCustomFieldsContainer.addEventListener('change', handlers.handleFormulaProfileModalPreview);
+    }
     const applyAndSaveFormulaPresetBtn = doc.getElementById('applyAndSaveFormulaPresetBtn');
     if (applyAndSaveFormulaPresetBtn) {
       applyAndSaveFormulaPresetBtn.addEventListener('click', handlers.handleApplyAndSaveReconciliationFormulaPreset);

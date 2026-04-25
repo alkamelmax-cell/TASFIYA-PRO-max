@@ -68,7 +68,7 @@ function createReconciliationRecallHandlers(deps) {
   }
 
   async function loadReconciliationSections(reconciliationId) {
-    const [bank, cash, postpaid, customer, returns, supplierList] = await Promise.all([
+    const [bank, cash, postpaid, customer, returns, supplierList, customTables] = await Promise.all([
       ipcRenderer.invoke(
         'db-query',
         `SELECT br.*, a.name as atm_name, a.bank_name
@@ -81,7 +81,11 @@ function createReconciliationRecallHandlers(deps) {
       ipcRenderer.invoke('db-query', 'SELECT * FROM postpaid_sales WHERE reconciliation_id = ?', [reconciliationId]),
       ipcRenderer.invoke('db-query', 'SELECT * FROM customer_receipts WHERE reconciliation_id = ?', [reconciliationId]),
       ipcRenderer.invoke('db-query', 'SELECT * FROM return_invoices WHERE reconciliation_id = ?', [reconciliationId]),
-      ipcRenderer.invoke('db-query', 'SELECT * FROM suppliers WHERE reconciliation_id = ?', [reconciliationId])
+      ipcRenderer.invoke('db-query', 'SELECT * FROM suppliers WHERE reconciliation_id = ?', [reconciliationId]),
+      windowObj.reconciliationCustomTablesManager
+        && typeof windowObj.reconciliationCustomTablesManager.loadEntriesForReconciliation === 'function'
+        ? windowObj.reconciliationCustomTablesManager.loadEntriesForReconciliation(reconciliationId)
+        : Promise.resolve([])
     ]);
 
     return {
@@ -90,7 +94,8 @@ function createReconciliationRecallHandlers(deps) {
       postpaidSales: postpaid,
       customerReceipts: customer,
       returnInvoices: returns,
-      suppliers: supplierList
+      suppliers: supplierList,
+      customTables
     };
   }
 
@@ -180,6 +185,10 @@ function createReconciliationRecallHandlers(deps) {
     setCustomerReceipts(sections.customerReceipts);
     setReturnInvoices(sections.returnInvoices);
     setSuppliers(sections.suppliers);
+    if (windowObj.reconciliationCustomTablesManager
+      && typeof windowObj.reconciliationCustomTablesManager.applyLoadedEntries === 'function') {
+      windowObj.reconciliationCustomTablesManager.applyLoadedEntries(sections.customTables || []);
+    }
 
     // Keep original snapshot to restore on cancel.
     if (windowObj) {

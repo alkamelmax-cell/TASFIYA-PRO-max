@@ -17,6 +17,44 @@ let postpaidItems = [];
 let custReceiptItems = [];
 let returnItems = [];
 let supplierItems = [];
+const CUSTOM_TABLE_TEMPLATES = Object.freeze({
+    amount_only: Object.freeze({
+        label: 'بيان + مبلغ',
+        description: 'جدول يحتوي على بيان ومبلغ فقط',
+        fields: Object.freeze([
+            Object.freeze({ key: 'label', label: 'البيان', type: 'text', required: true, tableLabel: 'البيان' }),
+            Object.freeze({ key: 'amount', label: 'المبلغ', type: 'number', required: true, tableLabel: 'المبلغ', isAmount: true })
+        ])
+    }),
+    name_amount: Object.freeze({
+        label: 'اسم + مبلغ',
+        description: 'جدول يحتوي على اسم ومبلغ',
+        fields: Object.freeze([
+            Object.freeze({ key: 'name', label: 'الاسم', type: 'text', required: true, tableLabel: 'الاسم' }),
+            Object.freeze({ key: 'amount', label: 'المبلغ', type: 'number', required: true, tableLabel: 'المبلغ', isAmount: true })
+        ])
+    }),
+    invoice_amount_note: Object.freeze({
+        label: 'مرجع + مبلغ + ملاحظة',
+        description: 'جدول يحتوي على رقم مرجعي ومبلغ وملاحظة',
+        fields: Object.freeze([
+            Object.freeze({ key: 'reference', label: 'المرجع', type: 'text', required: true, tableLabel: 'المرجع' }),
+            Object.freeze({ key: 'amount', label: 'المبلغ', type: 'number', required: true, tableLabel: 'المبلغ', isAmount: true }),
+            Object.freeze({ key: 'notes', label: 'ملاحظة', type: 'text', required: false, tableLabel: 'ملاحظة' })
+        ])
+    })
+});
+let reconciliationFormulaSettings = {
+    bank_receipts_sign: 1,
+    cash_receipts_sign: 1,
+    postpaid_sales_sign: 1,
+    customer_receipts_sign: -1,
+    return_invoices_sign: 1,
+    suppliers_sign: 0,
+    custom_table_signs: {}
+};
+let customTableDefinitions = [];
+let customTableEntries = {};
 
 const REQUEST_DRAFT_STORAGE_PREFIX = 'tasfiya_client_sender_request_draft_v2';
 const DRAFT_AUTOSAVE_DELAY_MS = 180;
@@ -178,6 +216,38 @@ function formatCurrency(value) {
     return Number(value || 0).toFixed(2);
 }
 
+function toSafeNumber(value) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function escapeHtml(value) {
+    return String(value == null ? '' : value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+}
+
+function normalizeSign(value, fallback = 0) {
+    if (value === null || value === undefined || value === '') {
+        return fallback;
+    }
+
+    const normalized = String(value).trim().toLowerCase();
+    if (['+', '+1', '1', 'add', 'plus', 'true'].includes(normalized)) return 1;
+    if (['-', '-1', 'subtract', 'minus'].includes(normalized)) return -1;
+    if (['0', 'ignore', 'none', 'off', 'false'].includes(normalized)) return 0;
+
+    const numeric = Number(normalized);
+    if (numeric > 0) return 1;
+    if (numeric < 0) return -1;
+    if (numeric === 0) return 0;
+
+    return fallback;
+}
+
 function padDatePart(value) {
     return String(value).padStart(2, '0');
 }
@@ -227,6 +297,352 @@ function formatTimeOnly(value) {
     } catch (_error) {
         return '';
     }
+}
+
+function getCustomTableTemplate(templateKey) {
+    return CUSTOM_TABLE_TEMPLATES[String(templateKey || '').trim().toLowerCase()] || CUSTOM_TABLE_TEMPLATES.amount_only;
+}
+
+function normalizeCustomTableDefinitionClient(definition = {}, index = 0) {
+    const tableName = String(definition.table_name || definition.name || `جدول إضافي ${index + 1}`).trim();
+    const tableKey = String(definition.table_key || `custom_table_${index + 1}`).trim();
+    const templateKey = String(definition.entry_template || definition.template_key || 'amount_only').trim().toLowerCase();
+
+    return {
+        id: Number.isFinite(Number(definition.id)) ? Number(definition.id) : null,
+        table_key: tableKey,
+        table_name: tableName,
+        entry_template: CUSTOM_TABLE_TEMPLATES[templateKey] ? templateKey : 'amount_only',
+        default_sign: normalizeSign(definition.default_sign, 0),
+        display_order: Number.isFinite(Number(definition.display_order)) ? Number(definition.display_order) : (index + 1),
+        is_active: Number(definition.is_active) === 0 ? 0 : 1,
+        config: definition.config && typeof definition.config === 'object' ? definition.config : {}
+    };
+}
+
+function getCustomTabPaneId(tableKey) {
+    return `tab-custom-${tableKey}`;
+}
+
+function getCustomTableInputId(tableKey, fieldKey) {
+    return `customField_${tableKey}_${fieldKey}`;
+}
+
+function getCustomTableBodyId(tableKey) {
+    return `customTableBody_${tableKey}`;
+}
+
+function getCustomTableEntries(tableKey) {
+    if (!Array.isArray(customTableEntries[tableKey])) {
+        customTableEntries[tableKey] = [];
+    }
+
+    return customTableEntries[tableKey];
+}
+
+function getCustomTableTotal(tableKey) {
+    return getCustomTableEntries(tableKey).reduce((sum, entry) => sum + toSafeNumber(entry.amount), 0);
+}
+
+function formatSummarySignLabel(baseLabel, sign, options = {}) {
+    if (sign > 0) return options.positive || `${baseLabel} (+)`;
+    if (sign < 0) return options.negative || `${baseLabel} (-)`;
+    return options.zero || `${baseLabel} (للمعاينة فقط)`;
+}
+
+function applyFormulaSummaryLabels() {
+    const labels = {
+        sumCashLabel: formatSummarySignLabel('إجمالي النقد', reconciliationFormulaSettings.cash_receipts_sign),
+        sumBankLabel: formatSummarySignLabel('إجمالي الشبكة', reconciliationFormulaSettings.bank_receipts_sign),
+        sumPostpaidLabel: formatSummarySignLabel('مبيعات آجلة', reconciliationFormulaSettings.postpaid_sales_sign),
+        sumCustomerLabel: formatSummarySignLabel('مقبوضات العملاء', reconciliationFormulaSettings.customer_receipts_sign),
+        sumReturnsLabel: formatSummarySignLabel('المرتجعات', reconciliationFormulaSettings.return_invoices_sign),
+        sumSuppliersLabel: formatSummarySignLabel('الموردين', reconciliationFormulaSettings.suppliers_sign)
+    };
+
+    Object.entries(labels).forEach(([id, text]) => {
+        const el = document.getElementById(id);
+        if (el) {
+            el.textContent = text;
+        }
+    });
+}
+
+function renderCustomSummaryRows() {
+    const container = document.getElementById('customSummaryRows');
+    if (!container) {
+        return;
+    }
+
+    if (!customTableDefinitions.length) {
+        container.innerHTML = '';
+        return;
+    }
+
+    container.innerHTML = customTableDefinitions.map((definition) => {
+        const sign = normalizeSign(
+            reconciliationFormulaSettings.custom_table_signs?.[definition.table_key],
+            definition.default_sign
+        );
+        const label = formatSummarySignLabel(definition.table_name, sign);
+        const className = sign > 0 ? 'is-success' : sign < 0 ? 'is-danger' : 'is-muted';
+
+        return `
+            <div class="summary-metric-row">
+                <span class="summary-metric-label">${escapeHtml(label)}</span>
+                <span class="summary-metric-value ${className}">${formatCurrency(getCustomTableTotal(definition.table_key))}</span>
+            </div>
+        `;
+    }).join('');
+}
+
+function renderCustomTableRows(definition) {
+    const tbody = document.getElementById(getCustomTableBodyId(definition.table_key));
+    if (!tbody) {
+        return;
+    }
+
+    const template = getCustomTableTemplate(definition.entry_template);
+    const entries = getCustomTableEntries(definition.table_key);
+
+    tbody.innerHTML = entries.map((entry, idx) => {
+        const cells = template.fields.map((field) => {
+            if (field.isAmount) {
+                return `<td>${formatCurrency(entry.amount)}</td>`;
+            }
+
+            return `<td>${escapeHtml(entry.payload?.[field.key] || '-')}</td>`;
+        }).join('');
+
+        return `
+            <tr>
+                ${cells}
+                <td class="table-remove-cell">
+                    <button class="table-remove-btn" type="button" onclick="removeCustomTableItem('${escapeHtml(definition.table_key)}', ${idx})" title="حذف الصف" aria-label="حذف الصف">
+                        <i class="fas fa-trash-can"></i>
+                    </button>
+                </td>
+            </tr>
+        `;
+    }).join('');
+}
+
+function buildCustomTableTab(definition) {
+    const template = getCustomTableTemplate(definition.entry_template);
+    const fieldsMarkup = template.fields.map((field) => `
+        <div class="col-md-${field.isAmount ? '4' : '8'}">
+            <input
+                type="${field.type}"
+                id="${getCustomTableInputId(definition.table_key, field.key)}"
+                class="form-control custom-input"
+                placeholder="${escapeHtml(field.label)}"
+                ${field.isAmount ? 'step="0.01" min="0.01"' : ''}>
+        </div>
+    `).join('');
+    const headMarkup = template.fields.map((field) => `<th>${escapeHtml(field.tableLabel || field.label)}</th>`).join('');
+    const hint = formatSummarySignLabel(definition.table_name, normalizeSign(
+        reconciliationFormulaSettings.custom_table_signs?.[definition.table_key],
+        definition.default_sign
+    ));
+
+    return `
+        <div class="tab-pane fade" id="${getCustomTabPaneId(definition.table_key)}">
+            <h4 class="mb-4 text-secondary"><i class="fas fa-table me-2"></i> ${escapeHtml(definition.table_name)}</h4>
+            <div class="summary-note mb-3">${escapeHtml(hint)}</div>
+            <div class="entry-card mb-4">
+                <div class="row g-3">
+                    ${fieldsMarkup}
+                    <div class="col-md-2">
+                        <button class="btn btn-primary w-100 fw-bold entry-action-btn" type="button" onclick="addCustomTableItem('${escapeHtml(definition.table_key)}')">
+                            <i class="fas fa-plus"></i> إضافة
+                        </button>
+                    </div>
+                </div>
+            </div>
+            <div class="table-container pro-card">
+                <table class="custom-table reconciliation-table text-center">
+                    <thead>
+                        <tr>
+                            ${headMarkup}
+                            <th>حذف</th>
+                        </tr>
+                    </thead>
+                    <tbody id="${getCustomTableBodyId(definition.table_key)}"></tbody>
+                </table>
+            </div>
+        </div>
+    `;
+}
+
+function renderCustomTablesUi() {
+    const navContainer = document.getElementById('pills-tab');
+    const tabContentContainer = document.getElementById('pills-tabContent');
+    if (!navContainer || !tabContentContainer) {
+        return;
+    }
+
+    navContainer.querySelectorAll('[data-custom-table-nav="true"]').forEach((node) => node.remove());
+    tabContentContainer.querySelectorAll('[data-custom-table-pane="true"]').forEach((node) => node.remove());
+
+    customTableDefinitions.forEach((definition) => {
+        const navItem = document.createElement('li');
+        navItem.className = 'nav-item';
+        navItem.dataset.customTableNav = 'true';
+        navItem.innerHTML = `
+            <button class="nav-link" data-bs-toggle="pill" data-bs-target="#${getCustomTabPaneId(definition.table_key)}">
+                <i class="fas fa-table me-2"></i> ${escapeHtml(definition.table_name)}
+            </button>
+        `;
+        navContainer.appendChild(navItem);
+
+        const pane = document.createElement('div');
+        pane.dataset.customTablePane = 'true';
+        pane.innerHTML = buildCustomTableTab(definition);
+        tabContentContainer.appendChild(pane.firstElementChild);
+
+        renderCustomTableRows(definition);
+    });
+
+    document.querySelectorAll('#pills-tab .nav-link').forEach((tabButton) => {
+        tabButton.removeEventListener('shown.bs.tab', scheduleRequestDraftSave);
+        tabButton.addEventListener('shown.bs.tab', scheduleRequestDraftSave);
+    });
+}
+
+async function loadReconciliationRequestConfig() {
+    const result = await window.clientSender.fetchRequestConfig();
+    if (!result || !result.success) {
+        if (result && result.authExpired) {
+            throw createUnauthorizedError(result.error);
+        }
+
+        customTableDefinitions = [];
+        customTableEntries = {};
+        reconciliationFormulaSettings = {
+            bank_receipts_sign: 1,
+            cash_receipts_sign: 1,
+            postpaid_sales_sign: 1,
+            customer_receipts_sign: -1,
+            return_invoices_sign: 1,
+            suppliers_sign: 0,
+            custom_table_signs: {}
+        };
+        renderCustomTablesUi();
+        applyFormulaSummaryLabels();
+        renderCustomSummaryRows();
+        return {
+            success: false,
+            error: result && result.error ? result.error : 'تعذر تحميل تهيئة الجداول الإضافية'
+        };
+    }
+
+    renderBootstrap(result.bootstrap || null);
+    const config = result.config && typeof result.config === 'object' ? result.config : {};
+    customTableDefinitions = Array.isArray(config.custom_table_definitions)
+        ? config.custom_table_definitions.map((definition, index) => normalizeCustomTableDefinitionClient(definition, index))
+        : [];
+    customTableEntries = customTableDefinitions.reduce((acc, definition) => {
+        acc[definition.table_key] = getCustomTableEntries(definition.table_key);
+        return acc;
+    }, {});
+    reconciliationFormulaSettings = {
+        ...reconciliationFormulaSettings,
+        ...(config.formula_settings || {}),
+        custom_table_signs: (config.formula_settings && config.formula_settings.custom_table_signs) || {}
+    };
+
+    renderCustomTablesUi();
+    applyFormulaSummaryLabels();
+    renderCustomSummaryRows();
+
+    if (result.source === 'cache') {
+        updateControlStatus('تم تحميل تهيئة الجداول من النسخة المحلية بسبب انقطاع الاتصال.', '');
+    }
+
+    return result;
+}
+
+function addCustomTableItem(tableKey) {
+    const definition = customTableDefinitions.find((item) => item.table_key === tableKey);
+    if (!definition) {
+        return;
+    }
+
+    const template = getCustomTableTemplate(definition.entry_template);
+    const payload = {};
+    let amount = 0;
+
+    for (const field of template.fields) {
+        const input = document.getElementById(getCustomTableInputId(tableKey, field.key));
+        const value = input ? String(input.value || '').trim() : '';
+
+        if (field.required && !value) {
+            showToast('warning', `الرجاء إدخال ${field.label}`);
+            return;
+        }
+
+        if (field.isAmount) {
+            amount = parseFloat(value);
+            if (!amount || amount <= 0) {
+                showToast('warning', 'الرجاء إدخال مبلغ صحيح');
+                return;
+            }
+
+            payload[field.key] = amount;
+        } else {
+            payload[field.key] = value;
+        }
+    }
+
+    getCustomTableEntries(tableKey).push({
+        amount,
+        payload
+    });
+
+    template.fields.forEach((field) => {
+        const input = document.getElementById(getCustomTableInputId(tableKey, field.key));
+        if (input) {
+            input.value = '';
+        }
+    });
+
+    renderCustomTableRows(definition);
+    updateUI();
+    showToast('success', `تمت إضافة ${definition.table_name}`);
+}
+
+function removeCustomTableItem(tableKey, index) {
+    const definition = customTableDefinitions.find((item) => item.table_key === tableKey);
+    const entries = getCustomTableEntries(tableKey);
+    if (!definition || index < 0 || index >= entries.length) {
+        return;
+    }
+
+    entries.splice(index, 1);
+    renderCustomTableRows(definition);
+    updateUI();
+    showToast('info', 'تم الحذف');
+}
+
+function getSerializableCustomTablesForRequest() {
+    return customTableDefinitions
+        .map((definition) => ({
+            definition: {
+                id: definition.id,
+                table_key: definition.table_key,
+                table_name: definition.table_name,
+                entry_template: definition.entry_template,
+                default_sign: definition.default_sign,
+                display_order: definition.display_order,
+                is_active: definition.is_active,
+                config: definition.config || {}
+            },
+            entries: getCustomTableEntries(definition.table_key).map((entry) => ({
+                amount: toSafeNumber(entry.amount),
+                payload: entry.payload && typeof entry.payload === 'object' ? { ...entry.payload } : {}
+            }))
+        }))
+        .filter((section) => Array.isArray(section.entries) && section.entries.length > 0);
 }
 
 function getRequestStatusMeta(status) {
@@ -826,6 +1242,10 @@ function hasMeaningfulDraft(draft) {
         Array.isArray(lists.returnItems) && lists.returnItems.length > 0
     ) || (
         Array.isArray(lists.supplierItems) && lists.supplierItems.length > 0
+    ) || (
+        lists.customTableEntries
+        && typeof lists.customTableEntries === 'object'
+        && Object.values(lists.customTableEntries).some((entries) => Array.isArray(entries) && entries.length > 0)
     );
 
     if (hasListData) {
@@ -850,13 +1270,28 @@ function hasMeaningfulDraft(draft) {
         'supplierAmount'
     ];
 
-    return meaningfulFieldIds.some((fieldId) => {
+    const hasMeaningfulFixedField = meaningfulFieldIds.some((fieldId) => {
         const value = fields[fieldId];
         return typeof value === 'string' && value.trim() !== '';
     });
+
+    if (hasMeaningfulFixedField) {
+        return true;
+    }
+
+    return Object.entries(fields).some(([fieldId, value]) => (
+        fieldId.startsWith('customField_')
+        && typeof value === 'string'
+        && value.trim() !== ''
+    ));
 }
 
 function createRequestDraftSnapshot() {
+    const customFieldValues = {};
+    document.querySelectorAll('[id^="customField_"]').forEach((input) => {
+        customFieldValues[input.id] = input.value || '';
+    });
+
     return {
         version: 2,
         savedAt: new Date().toISOString(),
@@ -867,7 +1302,8 @@ function createRequestDraftSnapshot() {
             postpaidItems,
             custReceiptItems,
             returnItems,
-            supplierItems
+            supplierItems,
+            customTableEntries
         },
         fields: {
             systemSales: readFieldValue('systemSales'),
@@ -888,7 +1324,8 @@ function createRequestDraftSnapshot() {
             returnNote: readFieldValue('returnNote'),
             supplierName: readFieldValue('supplierName'),
             supplierInv: readFieldValue('supplierInv'),
-            supplierAmount: readFieldValue('supplierAmount')
+            supplierAmount: readFieldValue('supplierAmount'),
+            ...customFieldValues
         }
     };
 }
@@ -1055,6 +1492,7 @@ function renderAllTables() {
     renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
     renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
     renderTable('supplierTableBody', supplierItems, ['supplier_name', 'invoice_number', 'amount']);
+    customTableDefinitions.forEach((definition) => renderCustomTableRows(definition));
 }
 
 function resetFormCollectionsAndFields(options = {}) {
@@ -1075,6 +1513,10 @@ function resetFormCollectionsAndFields(options = {}) {
     custReceiptItems = [];
     returnItems = [];
     supplierItems = [];
+    customTableEntries = customTableDefinitions.reduce((acc, definition) => {
+        acc[definition.table_key] = [];
+        return acc;
+    }, {});
     renderAllTables();
 
     [
@@ -1098,6 +1540,10 @@ function resetFormCollectionsAndFields(options = {}) {
         'supplierInv',
         'supplierAmount'
     ].forEach((fieldId) => writeFieldValue(fieldId, ''));
+
+    document.querySelectorAll('[id^="customField_"]').forEach((field) => {
+        field.value = '';
+    });
 
     const bankOpType = document.getElementById('bankOpType');
     if (bankOpType) {
@@ -1134,6 +1580,14 @@ async function restoreRequestDraft(options = {}) {
         custReceiptItems = Array.isArray(lists.custReceiptItems) ? lists.custReceiptItems : [];
         returnItems = Array.isArray(lists.returnItems) ? lists.returnItems : [];
         supplierItems = Array.isArray(lists.supplierItems) ? lists.supplierItems : [];
+        customTableEntries = {};
+        if (lists.customTableEntries && typeof lists.customTableEntries === 'object') {
+            customTableDefinitions.forEach((definition) => {
+                customTableEntries[definition.table_key] = Array.isArray(lists.customTableEntries[definition.table_key])
+                    ? lists.customTableEntries[definition.table_key]
+                    : [];
+            });
+        }
 
         renderAllTables();
 
@@ -1210,14 +1664,26 @@ function setupRequestDraftAutosave() {
         'supplierAmount'
     ];
 
-    watchedFieldIds.forEach((fieldId) => {
-        const field = document.getElementById(fieldId);
-        if (!field) {
-            return;
-        }
+        watchedFieldIds.forEach((fieldId) => {
+            const field = document.getElementById(fieldId);
+            if (!field) {
+                return;
+            }
 
         field.addEventListener('input', scheduleRequestDraftSave);
         field.addEventListener('change', scheduleRequestDraftSave);
+    });
+
+    document.addEventListener('input', (event) => {
+        if (event.target && event.target.id && event.target.id.startsWith('customField_')) {
+            scheduleRequestDraftSave();
+        }
+    });
+
+    document.addEventListener('change', (event) => {
+        if (event.target && event.target.id && event.target.id.startsWith('customField_')) {
+            scheduleRequestDraftSave();
+        }
     });
 
     document.querySelectorAll('#pills-tab .nav-link').forEach((tabButton) => {
@@ -1384,6 +1850,7 @@ async function activateWorkspace() {
     try {
         const customersResult = await loadCustomers();
         const atmsResult = await loadAtms();
+        const requestConfigResult = await loadReconciliationRequestConfig();
 
         if (String(lastActivatedUserId) !== String(currentUserId)) {
             resetFormCollectionsAndFields();
@@ -1410,6 +1877,7 @@ async function activateWorkspace() {
         } else if (
             (customersResult && customersResult.source === 'cache')
             || (atmsResult && atmsResult.source === 'cache')
+            || (requestConfigResult && requestConfigResult.source === 'cache')
         ) {
             updateControlStatus(
                 `تم فتح التطبيق للكاشير: ${user.name || user.id} باستخدام البيانات المحلية.`,
@@ -1525,8 +1993,21 @@ function updateUI() {
     const sumCust = custReceiptItems.reduce((acc, item) => acc + item.amount, 0);
     const sumReturn = returnItems.reduce((acc, item) => acc + item.amount, 0);
     const sumSupplier = supplierItems.reduce((acc, item) => acc + item.amount, 0);
-
-    const totalFound = totalCash + sumBank + sumPostpaid - sumCust + sumReturn;
+    const customTablesTotal = customTableDefinitions.reduce((sum, definition) => {
+        const sign = normalizeSign(
+            reconciliationFormulaSettings.custom_table_signs?.[definition.table_key],
+            definition.default_sign
+        );
+        return sum + (getCustomTableTotal(definition.table_key) * sign);
+    }, 0);
+    const totalFound =
+        (totalCash * normalizeSign(reconciliationFormulaSettings.cash_receipts_sign, 1)) +
+        (sumBank * normalizeSign(reconciliationFormulaSettings.bank_receipts_sign, 1)) +
+        (sumPostpaid * normalizeSign(reconciliationFormulaSettings.postpaid_sales_sign, 1)) +
+        (sumCust * normalizeSign(reconciliationFormulaSettings.customer_receipts_sign, -1)) +
+        (sumReturn * normalizeSign(reconciliationFormulaSettings.return_invoices_sign, 1)) +
+        (sumSupplier * normalizeSign(reconciliationFormulaSettings.suppliers_sign, 0)) +
+        customTablesTotal;
     const systemSales = parseFloat(document.getElementById('systemSales').value) || 0;
     const diff = totalFound - systemSales;
 
@@ -1536,6 +2017,8 @@ function updateUI() {
     document.getElementById('sumReturns').textContent = sumReturn.toFixed(2);
     document.getElementById('sumSuppliers').textContent = sumSupplier.toFixed(2);
     document.getElementById('totalFound').textContent = totalFound.toFixed(2);
+    applyFormulaSummaryLabels();
+    renderCustomSummaryRows();
 
     const diffEl = document.getElementById('diffValue');
     diffEl.textContent = diff.toFixed(2);
@@ -1785,10 +2268,43 @@ function buildPreviewLines(items, labelBuilder) {
     `;
 }
 
+function buildCustomTablePreviewSections(customTables = []) {
+    if (!Array.isArray(customTables) || !customTables.length) {
+        return '';
+    }
+
+    return customTables.map((section) => {
+        const definition = section && section.definition ? section.definition : {};
+        const template = getCustomTableTemplate(definition.entry_template);
+        const title = definition.table_name || 'جدول إضافي';
+
+        return `
+            <div class="preview-block">
+                <h6>${escapeHtml(title)}</h6>
+                ${buildPreviewLines(section.entries, (entry) => {
+                    const safeEntry = entry || {};
+                    const pieces = template.fields
+                        .filter((field) => !field.isAmount)
+                        .map((field) => safeEntry.payload && safeEntry.payload[field.key]
+                            ? `<span>${escapeHtml(safeEntry.payload[field.key])}</span>`
+                            : '')
+                        .filter(Boolean);
+
+                    return `
+                        ${pieces.join(' <span>|</span> ')}
+                        <strong>${formatCurrency(safeEntry.amount)}</strong>
+                    `;
+                })}
+            </div>
+        `;
+    }).join('');
+}
+
 function buildRequestPreviewHtml(request) {
     const payload = request && request.payload ? request.payload : {};
     const resendMeta = payload && payload.resend_meta ? payload.resend_meta : null;
-    const notes = payload.notes ? String(payload.notes) : 'لا توجد ملاحظات';
+    const notes = escapeHtml(payload.notes ? String(payload.notes) : 'لا توجد ملاحظات');
+    const customTables = Array.isArray(payload.custom_tables) ? payload.custom_tables : [];
     const resendMetaHtml = resendMeta ? `
         <div class="preview-block">
             <h6>اعتماد إعادة الإرسال</h6>
@@ -1875,6 +2391,7 @@ function buildRequestPreviewHtml(request) {
                 <strong>${formatCurrency(item.amount)}</strong>
             `)}
         </div>
+        ${buildCustomTablePreviewSections(customTables)}
     `;
 }
 
@@ -2122,7 +2639,8 @@ async function submitFullRequest() {
             supplier_name: item.supplier_name,
             invoice_number: item.invoice_number,
             amount: item.amount
-        }))
+        })),
+        custom_tables: getSerializableCustomTablesForRequest()
     };
 
     try {
@@ -2474,11 +2992,13 @@ window.addPostpaidItem = addPostpaidItem;
 window.addCustomerReceiptItem = addCustomerReceiptItem;
 window.addReturnItem = addReturnItem;
 window.addSupplierItem = addSupplierItem;
+window.addCustomTableItem = addCustomTableItem;
 window.removeSupplierItem = removeSupplierItem;
 window.removeBankItem = removeBankItem;
 window.removePostpaidItem = removePostpaidItem;
 window.removeCustReceiptItem = removeCustReceiptItem;
 window.removeReturnItem = removeReturnItem;
+window.removeCustomTableItem = removeCustomTableItem;
 window.removeItem = removeItem;
 window.submitFullRequest = submitFullRequest;
 

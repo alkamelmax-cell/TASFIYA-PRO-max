@@ -73,6 +73,7 @@ function normalizeRequestPayload(payload = {}) {
         customer_receipts: normalizeArray(payload.customer_receipts),
         return_items: normalizeArray(payload.return_items),
         supplier_items: normalizeArray(payload.supplier_items),
+        custom_tables: normalizeArray(payload.custom_tables),
         resend_meta: normalizeResendMeta(payload.resend_meta)
     };
 }

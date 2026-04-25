@@ -2,6 +2,7 @@ const {
   getEffectiveFormulaSettingsFromDocument,
   calculateReconciliationSummaryByFormula
 } = require('./reconciliation-formula');
+const { getCustomTableDefinitionsFromDocument } = require('./reconciliation-custom-tables');
 
 function createReconciliationUiSummaryActions(context) {
   const document = context.document;
@@ -23,6 +24,10 @@ function createReconciliationUiSummaryActions(context) {
     const customerTotal = getCustomerReceipts().reduce((sum, receipt) => sum + receipt.amount, 0);
     const returnTotal = getReturnInvoices().reduce((sum, invoice) => sum + invoice.amount, 0);
     const supplierTotal = getSuppliers().reduce((sum, supplier) => sum + (parseFloat(supplier.amount) || 0), 0);
+    const customManager = document.defaultView && document.defaultView.reconciliationCustomTablesManager;
+    const customBuckets = customManager && typeof customManager.getFormulaBuckets === 'function'
+      ? customManager.getFormulaBuckets()
+      : {};
 
     document.getElementById('summaryBankTotal').textContent = formatCurrency(bankTotal);
     document.getElementById('summaryCashTotal').textContent = formatCurrency(cashTotal);
@@ -39,10 +44,12 @@ function createReconciliationUiSummaryActions(context) {
         postpaidTotal,
         customerTotal,
         returnTotal,
-        supplierTotal
+        supplierTotal,
+        ...customBuckets
       },
       systemSales,
-      formulaSettings
+      formulaSettings,
+      getCustomTableDefinitionsFromDocument(document)
     );
 
     document.getElementById('totalReceipts').textContent = formatCurrency(totalReceipts);

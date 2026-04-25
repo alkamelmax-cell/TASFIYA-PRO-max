@@ -6,6 +6,15 @@ const path = require('path');
 const { parse } = require('url');
 const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
 const { WebSessionStore } = require('./security/web-session-store');
+const {
+    normalizeCustomTableDefinition,
+    normalizeCustomTableDefinitions
+} = require('./app/reconciliation-custom-tables');
+const {
+    DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+    normalizeFormulaSettings,
+    calculateReconciliationSummaryByFormula
+} = require('./app/reconciliation-formula');
 
 const SESSION_COOKIE_NAME = 'tasfiya_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -170,6 +179,111 @@ class LocalWebServer {
         return normalizedRow;
     }
 
+    async getActiveReconciliationCustomTableDefinitions(options = {}) {
+        const includeInactive = options && options.includeInactive === true;
+        const sql = includeInactive
+            ? 'SELECT * FROM reconciliation_custom_table_definitions ORDER BY display_order ASC, id ASC'
+            : 'SELECT * FROM reconciliation_custom_table_definitions WHERE is_active = 1 ORDER BY display_order ASC, id ASC';
+
+        const pool = this.dbManager.pool;
+        let rows = [];
+
+        if (pool) {
+            const result = await pool.query(sql);
+            rows = result.rows || [];
+        } else {
+            rows = this.dbManager.db.prepare(sql).all();
+        }
+
+        return normalizeCustomTableDefinitions(rows || []);
+    }
+
+    async getStoredReconciliationFormulaSettings(customDefinitions = []) {
+        const pool = this.dbManager.pool;
+        let rows = [];
+
+        if (pool) {
+            const result = await pool.query(
+                "SELECT setting_key, setting_value FROM system_settings WHERE category = 'reconciliation_formula'"
+            );
+            rows = result.rows || [];
+        } else {
+            rows = this.dbManager.db
+                .prepare("SELECT setting_key, setting_value FROM system_settings WHERE category = 'reconciliation_formula'")
+                .all();
+        }
+
+        const rawSettings = {};
+        (rows || []).forEach((row) => {
+            if (!row || !row.setting_key) {
+                return;
+            }
+            rawSettings[row.setting_key] = row.setting_value;
+        });
+
+        return normalizeFormulaSettings({
+            ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+            ...rawSettings
+        }, customDefinitions);
+    }
+
+    async getReconciliationRequestConfigPayload() {
+        const customDefinitions = await this.getActiveReconciliationCustomTableDefinitions();
+        const formulaSettings = await this.getStoredReconciliationFormulaSettings(customDefinitions);
+
+        return {
+            custom_table_definitions: customDefinitions,
+            formula_settings: formulaSettings
+        };
+    }
+
+    async handleGetReconciliationRequestConfig(res) {
+        try {
+            const config = await this.getReconciliationRequestConfigPayload();
+            this.sendJson(res, { success: true, data: config });
+        } catch (error) {
+            console.error('❌ [API] Error loading reconciliation request config:', error);
+            this.sendJson(res, { success: false, error: error.message }, { statusCode: 500 });
+        }
+    }
+
+    async ensureReconciliationCustomTableDefinition(tx, rawDefinition = {}, fallbackIndex = 0) {
+        const normalizedDefinition = normalizeCustomTableDefinition(rawDefinition, fallbackIndex);
+        const existing = await tx.prepare(
+            'SELECT * FROM reconciliation_custom_table_definitions WHERE table_key = ? LIMIT 1'
+        ).get(normalizedDefinition.table_key);
+
+        if (existing && existing.id) {
+            return normalizeCustomTableDefinition(existing, fallbackIndex);
+        }
+
+        const insertInfo = await tx.prepare(`
+            INSERT INTO reconciliation_custom_table_definitions (
+                table_key,
+                table_name,
+                entry_template,
+                default_sign,
+                display_order,
+                is_active,
+                config_json,
+                updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        `).run(
+            normalizedDefinition.table_key,
+            normalizedDefinition.table_name,
+            normalizedDefinition.entry_template,
+            normalizedDefinition.default_sign,
+            normalizedDefinition.display_order,
+            normalizedDefinition.is_active,
+            normalizedDefinition.config_json
+        );
+
+        return {
+            ...normalizedDefinition,
+            id: insertInfo.lastInsertRowid || normalizedDefinition.id
+        };
+    }
+
     parseCookies(req) {
         const cookieHeader = req && req.headers ? req.headers.cookie : '';
         if (!cookieHeader) {
@@ -246,6 +360,7 @@ class LocalWebServer {
             pathname === '/request-reconciliation.html'
             || (pathname === '/api/customers' && method === 'GET')
             || (pathname === '/api/atms' && method === 'GET')
+            || (pathname === '/api/reconciliation-request-config' && method === 'GET')
             || (pathname === '/api/reconciliation-requests' && method === 'POST')
         ) {
             return 'authenticated';
@@ -531,6 +646,10 @@ class LocalWebServer {
                 }
                 else if (pathname === '/reconciliation-requests.html') {
                     this.serveFile(res, path.join(__dirname, 'web-dashboard', 'reconciliation-requests.html'), 'text/html');
+                    return;
+                }
+                else if (pathname === '/api/reconciliation-request-config' && req.method === 'GET') {
+                    await this.handleGetReconciliationRequestConfig(res);
                     return;
                 }
                 else if (pathname === '/api/reconciliation-requests') {
@@ -1630,6 +1749,28 @@ class LocalWebServer {
                 if (!request) throw new Error('الطلب غير موجود');
 
                 const details = JSON.parse(request.details_json || '{}');
+                const requestCustomSections = Array.isArray(details.custom_tables) ? details.custom_tables : [];
+                const embeddedCustomDefinitions = normalizeCustomTableDefinitions(
+                    requestCustomSections.map((section, index) => (
+                        section && section.definition
+                            ? section.definition
+                            : {
+                                table_key: section?.table_key || `custom_table_${index + 1}`,
+                                table_name: section?.table_name || `جدول إضافي ${index + 1}`,
+                                entry_template: section?.entry_template || 'amount_only',
+                                default_sign: section?.default_sign ?? 0,
+                                display_order: section?.display_order ?? (index + 1),
+                                is_active: 1,
+                                config: section?.config || {}
+                            }
+                    ))
+                );
+                const activeCustomDefinitions = await this.getActiveReconciliationCustomTableDefinitions({ includeInactive: true });
+                const formulaDefinitions = normalizeCustomTableDefinitions([
+                    ...activeCustomDefinitions,
+                    ...embeddedCustomDefinitions
+                ]);
+                const formulaSettings = await this.getStoredReconciliationFormulaSettings(formulaDefinitions);
 
                 // Helper to sanitize amounts (remove commas, handle strings)
                 const safeFloat = (val) => {
@@ -1647,6 +1788,18 @@ class LocalWebServer {
                     const customerReceipts = details.customer_receipts || [];
                     const returns = details.return_items || [];
                     const suppliers = details.supplier_items || [];
+                    const customTables = requestCustomSections.map((section, index) => ({
+                        definition: normalizeCustomTableDefinition(section?.definition || {
+                            table_key: section?.table_key || `custom_table_${index + 1}`,
+                            table_name: section?.table_name || `جدول إضافي ${index + 1}`,
+                            entry_template: section?.entry_template || 'amount_only',
+                            default_sign: section?.default_sign ?? 0,
+                            display_order: section?.display_order ?? (index + 1),
+                            is_active: 1,
+                            config: section?.config || {}
+                        }, index),
+                        entries: Array.isArray(section?.entries) ? section.entries : []
+                    }));
 
                     // Calculate Totals safely
                     const totalCash = safeFloat(request.total_cash);
@@ -1654,11 +1807,28 @@ class LocalWebServer {
                     const totalPostpaid = postpaidSales.reduce((sum, item) => sum + safeFloat(item.amount), 0);
                     const totalReturns = returns.reduce((sum, item) => sum + safeFloat(item.amount), 0);
                     const totalCustomerReceipts = customerReceipts.reduce((sum, item) => sum + safeFloat(item.amount), 0);
+                    const totalSuppliers = suppliers.reduce((sum, item) => sum + safeFloat(item.amount), 0);
                     const systemSales = safeFloat(request.system_sales);
+                    const customBucketTotals = {};
 
-                    const totalCollectedValue = totalCash + totalBank + totalPostpaid - totalCustomerReceipts + totalReturns;
-                    const surplus = totalCollectedValue - systemSales;
-                    const totalReceiptsLog = totalCash + totalBank;
+                    customTables.forEach((section) => {
+                        customBucketTotals[`custom:${section.definition.table_key}`] = (section.entries || []).reduce(
+                            (sum, entry) => sum + safeFloat(entry?.amount),
+                            0
+                        );
+                    });
+
+                    const summary = calculateReconciliationSummaryByFormula({
+                        bankTotal: totalBank,
+                        cashTotal: totalCash,
+                        postpaidTotal: totalPostpaid,
+                        customerTotal: totalCustomerReceipts,
+                        returnTotal: totalReturns,
+                        supplierTotal: totalSuppliers,
+                        ...customBucketTotals
+                    }, systemSales, formulaSettings, formulaDefinitions);
+                    const surplus = summary.surplusDeficit;
+                    const totalReceiptsLog = summary.totalReceipts;
 
                     // Get Next Reconciliation Number
                     const maxRec = await tx.prepare("SELECT MAX(reconciliation_number) as max_num FROM reconciliations").get();
@@ -1686,7 +1856,15 @@ class LocalWebServer {
                     // Insert Details
                     const insertCash = tx.prepare(`INSERT INTO cash_receipts(reconciliation_id, denomination, quantity, total_amount) VALUES(?, ?, ?, ?)`);
                     for (const item of cashBreakdown) {
-                        await insertCash.run(recId, safeFloat(item.value), Number(item.count) || 0, safeFloat(item.total));
+                        const denomination = safeFloat(item.denomination ?? item.value ?? item.val);
+                        const quantity = Number(item.quantity ?? item.count ?? item.qty) || 0;
+                        const totalAmount = safeFloat(
+                            item.total_amount
+                            ?? item.total
+                            ?? item.sub
+                            ?? (denomination * quantity)
+                        );
+                        await insertCash.run(recId, denomination, quantity, totalAmount);
                     }
 
                     // Bank Receipts
@@ -1712,19 +1890,44 @@ class LocalWebServer {
                     // Customer Receipts
                     const insertCustReceipt = tx.prepare(`INSERT INTO customer_receipts(reconciliation_id, customer_name, amount, payment_type, notes) VALUES(?, ?, ?, ?, ?)`);
                     for (const item of customerReceipts) {
-                        await insertCustReceipt.run(recId, item.customer_name, safeFloat(item.amount), item.payment_type || 'cash', item.notes || '');
+                        await insertCustReceipt.run(recId, item.customer_name, safeFloat(item.amount), item.payment_type || item.type || 'cash', item.notes || '');
                     }
 
                     // Returns
                     const insertReturn = tx.prepare(`INSERT INTO return_invoices(reconciliation_id, invoice_number, amount) VALUES(?, ?, ?)`);
                     for (const item of returns) {
-                        await insertReturn.run(recId, item.invoice_number || 'N/A', safeFloat(item.amount));
+                        await insertReturn.run(recId, item.invoice_number || item.num || 'N/A', safeFloat(item.amount));
                     }
 
                     // Suppliers
                     const insertSupplier = tx.prepare(`INSERT INTO suppliers(reconciliation_id, supplier_name, amount) VALUES(?, ?, ?)`);
                     for (const item of suppliers) {
                         await insertSupplier.run(recId, item.supplier_name, safeFloat(item.amount));
+                    }
+
+                    const insertCustomEntry = tx.prepare(`
+                        INSERT INTO reconciliation_custom_entries (
+                            reconciliation_id,
+                            definition_id,
+                            entry_payload_json,
+                            amount,
+                            updated_at
+                        ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    `);
+                    for (let index = 0; index < customTables.length; index += 1) {
+                        const section = customTables[index];
+                        const definition = await this.ensureReconciliationCustomTableDefinition(tx, section.definition, index);
+                        for (const entry of (section.entries || [])) {
+                            const payload = entry && entry.payload && typeof entry.payload === 'object'
+                                ? entry.payload
+                                : {};
+                            await insertCustomEntry.run(
+                                recId,
+                                definition.id,
+                                JSON.stringify(payload),
+                                safeFloat(entry?.amount)
+                            );
+                        }
                     }
 
                     // Archive Request (Update status to approved)
@@ -3181,7 +3384,8 @@ class LocalWebServer {
                     postpaid_items: data.postpaid_items || [],
                     customer_receipts: data.customer_receipts || [],
                     return_items: data.return_items || [],
-                    supplier_items: data.supplier_items || []
+                    supplier_items: data.supplier_items || [],
+                    custom_tables: Array.isArray(data.custom_tables) ? data.custom_tables : []
                 };
 
                 const detailsJson = JSON.stringify(details);

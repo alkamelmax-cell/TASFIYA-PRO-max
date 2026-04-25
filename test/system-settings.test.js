@@ -477,7 +477,7 @@ test('handleSaveReconciliationFormulaSettings persists formula settings and upda
   });
 
   const formulaCalls = dbRunCalls.filter((call) => call.params[0] === 'reconciliation_formula');
-  assert.equal(formulaCalls.length, 6);
+  assert.equal(formulaCalls.length, 7);
   assert.match(elements.reconciliationFormulaPreview.textContent, /إجمالي المقبوضات/);
   assert.equal(updateSummaryCalls.length, 1);
   assert.equal(dialog.success.length, 1);
@@ -587,7 +587,7 @@ test('handleApplyAndSaveReconciliationFormulaPreset saves selected preset immedi
   });
 
   const formulaCalls = dbRunCalls.filter((call) => call.params[0] === 'reconciliation_formula');
-  assert.equal(formulaCalls.length, 6);
+  assert.equal(formulaCalls.length, 7);
   assert.equal(elements.formulaSuppliers.value, '-1');
   assert.equal(updateSummaryCalls.length, 1);
   assert.equal(dialog.success.length, 1);

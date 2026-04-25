@@ -4,6 +4,7 @@ const {
   updateFormulaPreviewInDocument
 } = require('./reconciliation-formula');
 const { createBankFeeSettingsUiHelpers } = require('./bank-fee-settings-ui');
+const { getCustomTableDefinitionsFromDocument } = require('./reconciliation-custom-tables');
 const { mapDbErrorMessage } = require('./db-error-messages');
 
 function createSystemSettingsResetActions(context) {
@@ -209,7 +210,11 @@ async function handleResetReconciliationFormulaSettings() {
             }
         });
 
-        updateFormulaPreviewInDocument(document, DEFAULT_RECONCILIATION_FORMULA_SETTINGS);
+        updateFormulaPreviewInDocument(
+            document,
+            DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+            getCustomTableDefinitionsFromDocument(document)
+        );
 
         if (windowObj && typeof windowObj.updateSummary === 'function') {
             windowObj.updateSummary();

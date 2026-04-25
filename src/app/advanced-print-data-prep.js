@@ -11,6 +11,7 @@ function createAdvancedPrintDataPrepHandlers(context) {
       customerReceipts: true,
       returnInvoices: true,
       suppliers: true,
+      customTables: true,
       summary: true
     };
   }
@@ -25,7 +26,8 @@ function createAdvancedPrintDataPrepHandlers(context) {
       postpaidSales,
       customerReceipts,
       returnInvoices,
-      suppliers
+      suppliers,
+      customTables
     } = reconciliationData;
 
     const defaultSections = getAllSectionsEnabled();
@@ -60,6 +62,11 @@ function createAdvancedPrintDataPrepHandlers(context) {
     if (sectionsToInclude.suppliers && suppliers && suppliers.length > 0) {
       sections.suppliers = suppliers;
       logger.log(`📊 [PRINT] تضمين ${suppliers.length} مورد`);
+    }
+
+    if (sectionsToInclude.customTables && customTables && customTables.length > 0) {
+      sections.customTables = customTables;
+      logger.log(`📊 [PRINT] تضمين ${customTables.length} جدول إضافي`);
     }
 
     const enhancedReconciliation = {

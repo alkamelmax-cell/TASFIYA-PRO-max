@@ -5,10 +5,20 @@ const {
   applyFormulaPresetToDocument,
   getFormulaSettingsFromDocument,
   updateFormulaPreviewInDocument,
-  buildFormulaPreviewText
+  buildFormulaPreviewText,
+  getFormulaFields,
+  getFormulaSignForField
 } = require('./reconciliation-formula');
 const { createBankFeeSettingsUiHelpers } = require('./bank-fee-settings-ui');
 const { mapDbErrorMessage } = require('./db-error-messages');
+const {
+  formatCustomTableTemplateLabel,
+  generateCustomTableKey,
+  normalizeCustomTableDefinition,
+  normalizeCustomTableDefinitions,
+  getCustomTableDefinitionsFromDocument,
+  setCustomTableDefinitionsInDocument
+} = require('./reconciliation-custom-tables');
 
 function createSystemSettingsSaveActions(context) {
   const document = context.document;
@@ -27,6 +37,7 @@ function createSystemSettingsSaveActions(context) {
     return_invoices_sign: 'formulaModalReturnInvoices',
     suppliers_sign: 'formulaModalSuppliers'
   };
+  let loadedCustomTableDefinitions = getCustomTableDefinitionsFromDocument(document);
 
   function parseFormulaProfileId(rawValue) {
     if (rawValue === null || rawValue === undefined || rawValue === '') {
@@ -102,6 +113,73 @@ function createSystemSettingsSaveActions(context) {
     return document.getElementById('saveFormulaProfileModalBtn');
   }
 
+  function getCustomTableDefinitionModalElement() {
+    return document.getElementById('customTableDefinitionModal');
+  }
+
+  function getCustomTableDefinitionModalBootstrapInstance() {
+    const modalEl = getCustomTableDefinitionModalElement();
+    if (!modalEl) {
+      return null;
+    }
+
+    const bootstrapApi = (window && window.bootstrap)
+      || (typeof globalThis !== 'undefined' ? globalThis.bootstrap : null);
+
+    if (bootstrapApi && bootstrapApi.Modal && typeof bootstrapApi.Modal.getOrCreateInstance === 'function') {
+      return bootstrapApi.Modal.getOrCreateInstance(modalEl);
+    }
+
+    return {
+      show() {
+        modalEl.classList.add('show');
+        modalEl.style.display = 'block';
+        modalEl.removeAttribute('aria-hidden');
+      },
+      hide() {
+        modalEl.classList.remove('show');
+        modalEl.style.display = 'none';
+        modalEl.setAttribute('aria-hidden', 'true');
+      }
+    };
+  }
+
+  function showCustomTableDefinitionModal() {
+    const modalInstance = getCustomTableDefinitionModalBootstrapInstance();
+    if (modalInstance && typeof modalInstance.show === 'function') {
+      modalInstance.show();
+    }
+  }
+
+  function hideCustomTableDefinitionModal() {
+    const modalInstance = getCustomTableDefinitionModalBootstrapInstance();
+    if (modalInstance && typeof modalInstance.hide === 'function') {
+      modalInstance.hide();
+    }
+  }
+
+  function getLoadedCustomTableDefinitions() {
+    return normalizeCustomTableDefinitions(loadedCustomTableDefinitions || []);
+  }
+
+  function getActiveCustomTableDefinitions() {
+    return getLoadedCustomTableDefinitions().filter((definition) => definition.is_active !== 0);
+  }
+
+  function broadcastCustomTableDefinitions(definitions) {
+    const normalizedDefinitions = normalizeCustomTableDefinitions(definitions);
+    loadedCustomTableDefinitions = normalizedDefinitions;
+    setCustomTableDefinitionsInDocument(document, normalizedDefinitions.filter((definition) => definition.is_active !== 0));
+
+    if (window && typeof window.dispatchEvent === 'function') {
+      window.dispatchEvent(new window.CustomEvent('reconciliation-custom-table-definitions-changed', {
+        detail: {
+          definitions: normalizedDefinitions.filter((definition) => definition.is_active !== 0)
+        }
+      }));
+    }
+  }
+
   function getFormulaProfileModalBootstrapInstance() {
     const modalEl = getFormulaProfileModalElement();
     if (!modalEl) {
@@ -144,7 +222,7 @@ function createSystemSettingsSaveActions(context) {
     }
 
     try {
-      return normalizeFormulaSettings(JSON.parse(profileRow.settings_json));
+      return normalizeFormulaSettings(JSON.parse(profileRow.settings_json), getActiveCustomTableDefinitions());
     } catch (error) {
       return null;
     }
@@ -159,19 +237,60 @@ function createSystemSettingsSaveActions(context) {
       .replace(/'/g, '&#39;');
   }
 
+  function getCustomFormulaFieldsContainer() {
+    return document.getElementById('formulaCustomFieldsContainer');
+  }
+
+  function renderCustomFormulaFieldsInModal(formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS) {
+    const container = getCustomFormulaFieldsContainer();
+    if (!container) {
+      return;
+    }
+
+    const activeDefinitions = getActiveCustomTableDefinitions();
+    if (activeDefinitions.length === 0) {
+      container.innerHTML = '';
+      return;
+    }
+
+    const normalized = normalizeFormulaSettings({
+      ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+      ...(formulaSettings || {})
+    }, activeDefinitions);
+    const customFields = getFormulaFields(activeDefinitions).filter((field) => field.isCustom);
+
+    container.innerHTML = customFields.map((field) => `
+      <div class="col-md-6 col-xl-4">
+        <label for="${escapeHtml(field.fieldId)}" class="form-label">${escapeHtml(field.label)}</label>
+        <select class="form-select formula-custom-select" id="${escapeHtml(field.fieldId)}" data-table-key="${escapeHtml(field.tableKey)}">
+          <option value="1">إضافة (+)</option>
+          <option value="-1">طرح (-)</option>
+          <option value="0">تجاهل (0)</option>
+        </select>
+      </div>
+    `).join('');
+
+    customFields.forEach((field) => {
+      const selectEl = document.getElementById(field.fieldId);
+      if (selectEl) {
+        selectEl.value = String(getFormulaSignForField(normalized, field));
+      }
+    });
+  }
+
   function buildFormulaSignature(formulaSettings) {
     const normalizedSettings = normalizeFormulaSettings({
       ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
       ...(formulaSettings || {})
-    });
+    }, getActiveCustomTableDefinitions());
 
-    return RECONCILIATION_FORMULA_FIELDS
-      .map((field) => String(normalizedSettings[field.settingKey]))
+    return getFormulaFields(getActiveCustomTableDefinitions())
+      .map((field) => String(getFormulaSignForField(normalizedSettings, field)))
       .join('|');
   }
 
   function buildOperationSummaryText(formulaSettings) {
-    const fullText = buildFormulaPreviewText(formulaSettings);
+    const fullText = buildFormulaPreviewText(formulaSettings, getActiveCustomTableDefinitions());
     return fullText.replace(/^إجمالي المقبوضات\s*=\s*/u, '');
   }
 
@@ -224,7 +343,7 @@ function createSystemSettingsSaveActions(context) {
     const normalized = normalizeFormulaSettings({
       ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
       ...(formulaSettings || {})
-    });
+    }, getActiveCustomTableDefinitions());
 
     RECONCILIATION_FORMULA_FIELDS.forEach((field) => {
       const selectEl = document.getElementById(field.fieldId);
@@ -233,7 +352,7 @@ function createSystemSettingsSaveActions(context) {
       }
     });
 
-    updateFormulaPreviewInDocument(document, normalized);
+    updateFormulaPreviewInDocument(document, normalized, getActiveCustomTableDefinitions());
 
     if (window && typeof window.updateSummary === 'function') {
       window.updateSummary();
@@ -243,7 +362,7 @@ function createSystemSettingsSaveActions(context) {
   }
 
   function getFormulaSettingsFromModalDocument() {
-    const collected = {};
+    const collected = { custom_table_signs: {} };
     RECONCILIATION_FORMULA_FIELDS.forEach((field) => {
       const modalFieldId = FORMULA_MODAL_FIELD_IDS[field.settingKey];
       const selectEl = modalFieldId ? document.getElementById(modalFieldId) : null;
@@ -252,17 +371,26 @@ function createSystemSettingsSaveActions(context) {
       }
     });
 
+    getFormulaFields(getActiveCustomTableDefinitions())
+      .filter((field) => field.isCustom)
+      .forEach((field) => {
+        const selectEl = document.getElementById(field.fieldId);
+        if (selectEl) {
+          collected.custom_table_signs[field.tableKey] = Number.parseInt(selectEl.value, 10);
+        }
+      });
+
     return normalizeFormulaSettings({
       ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
       ...collected
-    });
+    }, getActiveCustomTableDefinitions());
   }
 
   function applyFormulaSettingsToModal(formulaSettings) {
     const normalized = normalizeFormulaSettings({
       ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
       ...(formulaSettings || {})
-    });
+    }, getActiveCustomTableDefinitions());
 
     RECONCILIATION_FORMULA_FIELDS.forEach((field) => {
       const modalFieldId = FORMULA_MODAL_FIELD_IDS[field.settingKey];
@@ -272,9 +400,11 @@ function createSystemSettingsSaveActions(context) {
       }
     });
 
+    renderCustomFormulaFieldsInModal(normalized);
+
     const previewEl = document.getElementById('formulaProfileModalPreview');
     if (previewEl) {
-      previewEl.textContent = buildFormulaPreviewText(normalized);
+      previewEl.textContent = buildFormulaPreviewText(normalized, getActiveCustomTableDefinitions());
     }
 
     return normalized;
@@ -325,7 +455,7 @@ function createSystemSettingsSaveActions(context) {
     const normalized = normalizeFormulaSettings({
       ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
       ...(formulaSettings || {})
-    });
+    }, getActiveCustomTableDefinitions());
 
     const tasks = RECONCILIATION_FORMULA_FIELDS.map((field) => {
       return ipcRenderer.invoke('db-run', `
@@ -333,6 +463,17 @@ function createSystemSettingsSaveActions(context) {
         VALUES (?, ?, ?, CURRENT_TIMESTAMP)
       `, ['reconciliation_formula', field.settingKey, String(normalized[field.settingKey])]);
     });
+
+    tasks.push(
+      ipcRenderer.invoke('db-run', `
+        INSERT OR REPLACE INTO system_settings (category, setting_key, setting_value, updated_at)
+        VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+      `, [
+        'reconciliation_formula',
+        'custom_table_signs_json',
+        JSON.stringify(normalized.custom_table_signs || {})
+      ])
+    );
 
     if (activeProfileId !== null && activeProfileId !== undefined) {
       tasks.push(
@@ -472,6 +613,118 @@ function createSystemSettingsSaveActions(context) {
     }).join('');
   }
 
+  function renderCustomTableDefinitionsTable(definitions) {
+    const tableBody = document.getElementById('customTableDefinitionsTableBody');
+    if (!tableBody) {
+      return;
+    }
+
+    if (!Array.isArray(definitions) || definitions.length === 0) {
+      tableBody.innerHTML = `
+        <tr>
+          <td colspan="6" class="text-center text-muted py-3">لا توجد جداول إضافية</td>
+        </tr>
+      `;
+      return;
+    }
+
+    tableBody.innerHTML = definitions.map((definition) => `
+      <tr data-definition-id="${definition.id}">
+        <td>${escapeHtml(definition.table_name)}</td>
+        <td>${escapeHtml(formatCustomTableTemplateLabel(definition.entry_template))}</td>
+        <td>${definition.default_sign > 0 ? 'إضافة (+)' : definition.default_sign < 0 ? 'طرح (-)' : 'تجاهل (0)'}</td>
+        <td>${escapeHtml(String(definition.display_order || 0))}</td>
+        <td>${definition.is_active !== 0 ? '<span class="badge bg-success-subtle text-success-emphasis">مفعل</span>' : '<span class="badge bg-secondary-subtle text-secondary-emphasis">موقف</span>'}</td>
+        <td class="text-nowrap">
+          <div class="formula-profile-actions">
+            <button type="button" class="btn btn-sm btn-outline-primary" data-action="edit-custom-table" data-definition-id="${definition.id}">تعديل</button>
+            <button type="button" class="btn btn-sm btn-outline-danger" data-action="delete-custom-table" data-definition-id="${definition.id}">حذف</button>
+          </div>
+        </td>
+      </tr>
+    `).join('');
+  }
+
+  async function loadCustomTableDefinitionsFromDatabase(includeInactive = true) {
+    const query = includeInactive
+      ? 'SELECT * FROM reconciliation_custom_table_definitions ORDER BY display_order ASC, id ASC'
+      : 'SELECT * FROM reconciliation_custom_table_definitions WHERE is_active = 1 ORDER BY display_order ASC, id ASC';
+    const rows = await ipcRenderer.invoke('db-query', query);
+    return normalizeCustomTableDefinitions(rows || []);
+  }
+
+  async function refreshCustomTableDefinitionsUi() {
+    const definitions = await loadCustomTableDefinitionsFromDatabase(true);
+    renderCustomTableDefinitionsTable(definitions);
+    broadcastCustomTableDefinitions(definitions);
+    renderCustomFormulaFieldsInModal(getFormulaSettingsFromModalDocument());
+    return definitions;
+  }
+
+  function setCustomTableDefinitionModalState(mode, definition = null) {
+    const modeInput = document.getElementById('customTableDefinitionModalMode');
+    const idInput = document.getElementById('customTableDefinitionModalId');
+    const keyInput = document.getElementById('customTableDefinitionModalKey');
+    const nameInput = document.getElementById('customTableDefinitionName');
+    const templateInput = document.getElementById('customTableDefinitionTemplate');
+    const signInput = document.getElementById('customTableDefinitionDefaultSign');
+    const orderInput = document.getElementById('customTableDefinitionDisplayOrder');
+    const activeInput = document.getElementById('customTableDefinitionIsActive');
+    const titleEl = document.getElementById('customTableDefinitionModalLabel');
+    const saveBtn = document.getElementById('saveCustomTableDefinitionBtn');
+
+    const nextOrder = getLoadedCustomTableDefinitions().length + 1;
+    const normalizedDefinition = definition
+      ? normalizeCustomTableDefinition(definition)
+      : normalizeCustomTableDefinition({
+        table_name: '',
+        entry_template: 'amount_only',
+        default_sign: 0,
+        display_order: nextOrder,
+        is_active: 1
+      }, nextOrder - 1);
+
+    if (modeInput) modeInput.value = mode === 'edit' ? 'edit' : 'create';
+    if (idInput) idInput.value = normalizedDefinition.id ? String(normalizedDefinition.id) : '';
+    if (keyInput) keyInput.value = normalizedDefinition.table_key || generateCustomTableKey('custom_table');
+    if (nameInput) nameInput.value = definition ? normalizedDefinition.table_name : '';
+    if (templateInput) templateInput.value = normalizedDefinition.entry_template;
+    if (signInput) signInput.value = String(normalizedDefinition.default_sign);
+    if (orderInput) orderInput.value = String(normalizedDefinition.display_order || nextOrder);
+    if (activeInput) activeInput.checked = normalizedDefinition.is_active !== 0;
+    if (titleEl) titleEl.textContent = mode === 'edit' ? 'تعديل جدول إضافي' : 'إضافة جدول إضافي';
+    if (saveBtn) saveBtn.textContent = mode === 'edit' ? 'حفظ التعديلات' : 'حفظ الجدول';
+  }
+
+  function collectCustomTableDefinitionFromModal() {
+    const mode = document.getElementById('customTableDefinitionModalMode')?.value === 'edit' ? 'edit' : 'create';
+    const id = Number.parseInt(document.getElementById('customTableDefinitionModalId')?.value, 10);
+    const tableKey = (document.getElementById('customTableDefinitionModalKey')?.value || '').trim()
+      || generateCustomTableKey(document.getElementById('customTableDefinitionName')?.value || 'custom_table');
+    const tableName = (document.getElementById('customTableDefinitionName')?.value || '').trim();
+    const entryTemplate = document.getElementById('customTableDefinitionTemplate')?.value || 'amount_only';
+    const defaultSign = Number.parseInt(document.getElementById('customTableDefinitionDefaultSign')?.value, 10);
+    const displayOrder = Number.parseInt(document.getElementById('customTableDefinitionDisplayOrder')?.value, 10);
+    const isActive = document.getElementById('customTableDefinitionIsActive')?.checked !== false ? 1 : 0;
+
+    if (!tableName) {
+      throw new Error('CUSTOM_TABLE_NAME_REQUIRED');
+    }
+
+    return {
+      mode,
+      definition: normalizeCustomTableDefinition({
+        id: Number.isFinite(id) && id > 0 ? id : null,
+        table_key: tableKey,
+        table_name: tableName,
+        entry_template: entryTemplate,
+        default_sign: Number.isFinite(defaultSign) ? defaultSign : 0,
+        display_order: Number.isFinite(displayOrder) && displayOrder > 0 ? displayOrder : 1,
+        is_active: isActive
+      })
+    };
+  }
+
   async function ensureFormulaProfileIsUnique(profileId, formulaName, formulaSettings) {
     const normalizedProfileId = parseFormulaProfileId(profileId);
     const normalizedName = (formulaName || '').trim();
@@ -505,7 +758,7 @@ function createSystemSettingsSaveActions(context) {
     const normalizedSettings = normalizeFormulaSettings({
       ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
       ...(formulaSettings || {})
-    });
+    }, getActiveCustomTableDefinitions());
     const normalizedName = (formulaName || '').trim();
     const normalizedProfileId = parseFormulaProfileId(profileId);
     const settingsJson = JSON.stringify(normalizedSettings);
@@ -593,6 +846,19 @@ function createSystemSettingsSaveActions(context) {
     applyFormulaSettingsToUi(profileSettings);
 
     return selectedProfile;
+  }
+
+  async function refreshCurrentFormulaPreview() {
+    const selectedProfileId = getSelectedFormulaProfileIdFromDocument();
+    if (selectedProfileId) {
+      const selectedProfile = await getFormulaProfileById(selectedProfileId);
+      if (selectedProfile) {
+        applyFormulaSettingsToUi(parseFormulaProfileSettings(selectedProfile) || DEFAULT_RECONCILIATION_FORMULA_SETTINGS);
+        return;
+      }
+    }
+
+    applyFormulaSettingsToUi(getFormulaSettingsFromDocument(document));
   }
 
   function setSelectedFormulaPresetInDocument(presetKey) {
@@ -953,8 +1219,200 @@ async function applyPrintSettingsRealTime(settings) {
     applyFormulaSettingsToUi(formulaSettings);
   }
 
+  function handleOpenCreateCustomTableDefinitionModal(event) {
+    if (event && typeof event.preventDefault === 'function') {
+      event.preventDefault();
+    }
+
+    setCustomTableDefinitionModalState('create');
+    showCustomTableDefinitionModal();
+  }
+
+  async function handleOpenEditCustomTableDefinitionModal(event, definitionId = null) {
+    if (event && typeof event.preventDefault === 'function') {
+      event.preventDefault();
+    }
+
+    const targetId = Number.parseInt(definitionId, 10);
+    const definition = getLoadedCustomTableDefinitions().find((item) => item.id === targetId);
+    if (!definition) {
+      getDialogUtils().showValidationError('تعذر العثور على الجدول المحدد');
+      return;
+    }
+
+    setCustomTableDefinitionModalState('edit', definition);
+    showCustomTableDefinitionModal();
+  }
+
+  async function handleSaveCustomTableDefinition(event) {
+    if (event && typeof event.preventDefault === 'function') {
+      event.preventDefault();
+    }
+
+    try {
+      const { mode, definition } = collectCustomTableDefinitionFromModal();
+      const duplicateName = getLoadedCustomTableDefinitions().find((item) => (
+        item.table_name === definition.table_name
+        && item.id !== definition.id
+      ));
+      if (duplicateName) {
+        throw new Error('CUSTOM_TABLE_NAME_DUPLICATE');
+      }
+
+      getDialogUtils().showLoading(
+        mode === 'edit' ? 'جاري تحديث الجدول...' : 'جاري إضافة الجدول...',
+        'يرجى الانتظار'
+      );
+
+      if (mode === 'edit' && definition.id) {
+        await ipcRenderer.invoke(
+          'db-run',
+          `UPDATE reconciliation_custom_table_definitions
+           SET table_name = ?,
+               entry_template = ?,
+               default_sign = ?,
+               display_order = ?,
+               is_active = ?,
+               config_json = ?,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [
+            definition.table_name,
+            definition.entry_template,
+            definition.default_sign,
+            definition.display_order,
+            definition.is_active,
+            definition.config_json,
+            definition.id
+          ]
+        );
+      } else {
+        await ipcRenderer.invoke(
+          'db-run',
+          `INSERT INTO reconciliation_custom_table_definitions (
+             table_key,
+             table_name,
+             entry_template,
+             default_sign,
+             display_order,
+             is_active,
+             config_json,
+             updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
+          [
+            definition.table_key,
+            definition.table_name,
+            definition.entry_template,
+            definition.default_sign,
+            definition.display_order,
+            definition.is_active,
+            definition.config_json
+          ]
+        );
+      }
+
+      await refreshCustomTableDefinitionsUi();
+      await loadAndSelectFormulaProfile(getSelectedFormulaProfileIdFromDocument());
+      await refreshCurrentFormulaPreview();
+      hideCustomTableDefinitionModal();
+      getDialogUtils().close();
+      getDialogUtils().showSuccessToast(mode === 'edit' ? 'تم تحديث الجدول بنجاح' : 'تم إضافة الجدول بنجاح');
+    } catch (error) {
+      getDialogUtils().close();
+      const rawMessage = String(error && error.message ? error.message : '');
+      if (rawMessage === 'CUSTOM_TABLE_NAME_REQUIRED') {
+        getDialogUtils().showValidationError('يرجى إدخال اسم الجدول');
+        return;
+      }
+      if (rawMessage === 'CUSTOM_TABLE_NAME_DUPLICATE' || rawMessage.includes('UNIQUE constraint failed')) {
+        getDialogUtils().showError('اسم الجدول موجود مسبقًا. اختر اسمًا آخر.', 'اسم مكرر');
+        return;
+      }
+      const friendly = mapDbErrorMessage(error, {
+        fallback: 'حدث خطأ أثناء حفظ الجدول الإضافي.'
+      });
+      getDialogUtils().showError(`حدث خطأ أثناء حفظ الجدول: ${friendly}`, 'خطأ');
+    }
+  }
+
+  async function handleDeleteCustomTableDefinition(event, definitionId = null) {
+    if (event && typeof event.preventDefault === 'function') {
+      event.preventDefault();
+    }
+
+    const targetId = Number.parseInt(definitionId, 10);
+    const definition = getLoadedCustomTableDefinitions().find((item) => item.id === targetId);
+    if (!definition) {
+      getDialogUtils().showValidationError('تعذر العثور على الجدول المحدد');
+      return;
+    }
+
+    const usageRow = await ipcRenderer.invoke(
+      'db-get',
+      'SELECT COUNT(*) AS count FROM reconciliation_custom_entries WHERE definition_id = ?',
+      [definition.id]
+    );
+    const usageCount = Number.parseInt(usageRow && usageRow.count, 10) || 0;
+    if (usageCount > 0) {
+      getDialogUtils().showError('لا يمكن حذف الجدول لأنه يحتوي على بيانات مرتبطة بتصفيات محفوظة.', 'حذف غير مسموح');
+      return;
+    }
+
+    const confirmed = await getDialogUtils().showConfirm(
+      `هل تريد حذف الجدول "${definition.table_name}" نهائيًا؟`,
+      'تأكيد حذف الجدول'
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    try {
+      getDialogUtils().showLoading('جاري حذف الجدول...', 'يرجى الانتظار');
+      await ipcRenderer.invoke(
+        'db-run',
+        'DELETE FROM reconciliation_custom_table_definitions WHERE id = ?',
+        [definition.id]
+      );
+      await refreshCustomTableDefinitionsUi();
+      await loadAndSelectFormulaProfile(getSelectedFormulaProfileIdFromDocument());
+      await refreshCurrentFormulaPreview();
+      getDialogUtils().close();
+      getDialogUtils().showSuccessToast('تم حذف الجدول بنجاح');
+    } catch (error) {
+      getDialogUtils().close();
+      const friendly = mapDbErrorMessage(error, {
+        fallback: 'حدث خطأ أثناء حذف الجدول.'
+      });
+      getDialogUtils().showError(`حدث خطأ أثناء حذف الجدول: ${friendly}`, 'خطأ');
+    }
+  }
+
+  async function handleCustomTableDefinitionsTableClick(event) {
+    const target = event?.target?.closest?.('[data-action][data-definition-id]');
+    if (!target) {
+      return;
+    }
+
+    const definitionId = Number.parseInt(target.getAttribute('data-definition-id'), 10);
+    const action = target.getAttribute('data-action');
+
+    if (!Number.isFinite(definitionId) || definitionId <= 0) {
+      return;
+    }
+
+    if (action === 'edit-custom-table') {
+      await handleOpenEditCustomTableDefinitionModal({ preventDefault() {} }, definitionId);
+      return;
+    }
+
+    if (action === 'delete-custom-table') {
+      await handleDeleteCustomTableDefinition({ preventDefault() {} }, definitionId);
+    }
+  }
+
   async function handleLoadReconciliationFormulaProfiles() {
     try {
+      await refreshCustomTableDefinitionsUi();
       let preferredProfileId = getSelectedFormulaProfileIdFromDocument();
       if (!preferredProfileId) {
         const activeProfileRow = await ipcRenderer.invoke(
@@ -1016,7 +1474,7 @@ async function applyPrintSettingsRealTime(settings) {
     const baseSettings = normalizeFormulaSettings({
       ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
       ...getFormulaSettingsFromDocument(document)
-    });
+    }, getActiveCustomTableDefinitions());
     setFormulaProfileModalState('create', null, '', baseSettings);
     showFormulaProfileModal();
   }
@@ -1184,7 +1642,7 @@ async function applyPrintSettingsRealTime(settings) {
       const formulaSettings = normalizeFormulaSettings({
         ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
         ...getFormulaSettingsFromDocument(document)
-      });
+      }, getActiveCustomTableDefinitions());
 
       const createdProfileId = await persistFormulaProfile(null, formulaName, formulaSettings);
       if (!createdProfileId) {
@@ -1246,7 +1704,7 @@ async function applyPrintSettingsRealTime(settings) {
         || normalizeFormulaSettings({
           ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
           ...getFormulaSettingsFromDocument(document)
-        });
+        }, getActiveCustomTableDefinitions());
 
       await persistReconciliationFormulaSettings(formulaSettings, selectedProfileId);
       await ipcRenderer.invoke(
@@ -1312,7 +1770,10 @@ async function applyPrintSettingsRealTime(settings) {
 
       const profilesAfterDelete = await getFormulaProfilesFromDatabase();
       if (profilesAfterDelete.length === 0) {
-        const fallbackSettings = normalizeFormulaSettings(DEFAULT_RECONCILIATION_FORMULA_SETTINGS);
+        const fallbackSettings = normalizeFormulaSettings(
+          DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+          getActiveCustomTableDefinitions()
+        );
         applyFormulaSettingsToUi(fallbackSettings);
         setSelectedFormulaProfileIdInDocument(null);
         const profileNameInput = document.getElementById('formulaProfileName');
@@ -1423,7 +1884,7 @@ async function applyPrintSettingsRealTime(settings) {
     const formulaSettings = normalizeFormulaSettings({
       ...DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
       ...getFormulaSettingsFromDocument(document)
-    });
+    }, getActiveCustomTableDefinitions());
 
     if (!hasFormulaProfileManagementUi()) {
       try {
@@ -1509,7 +1970,12 @@ async function applyPrintSettingsRealTime(settings) {
     handleSaveReconciliationFormulaSettings,
     handleApplyAndSaveReconciliationFormulaPreset,
     handleApplyReconciliationFormulaPreset,
-    handleReconciliationFormulaSettingsPreview
+    handleReconciliationFormulaSettingsPreview,
+    handleOpenCreateCustomTableDefinitionModal,
+    handleOpenEditCustomTableDefinitionModal,
+    handleSaveCustomTableDefinition,
+    handleDeleteCustomTableDefinition,
+    handleCustomTableDefinitionsTableClick
   };
 }
 

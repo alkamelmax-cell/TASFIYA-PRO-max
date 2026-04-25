@@ -437,34 +437,35 @@
 
                     <div class="d-flex justify-content-between align-items-center py-2 px-3 mb-2 rounded border border-dark"
                         style="background: rgba(0,0,0,0.3);">
-                        <span class="text-secondary">اجمالي النقد</span>
+                        <span class="text-secondary" id="sumCashLabel">اجمالي النقد</span>
                         <span class="fw-bold text-success font-monospace" id="sumCash">0.00</span>
                     </div>
                     <div class="d-flex justify-content-between align-items-center py-2 px-3 mb-2 rounded border border-dark"
                         style="background: rgba(0,0,0,0.3);">
-                        <span class="text-secondary">اجمالي الشبكة</span>
+                        <span class="text-secondary" id="sumBankLabel">اجمالي الشبكة</span>
                         <span class="fw-bold text-info font-monospace" id="sumBank">0.00</span>
                     </div>
                     <div class="d-flex justify-content-between align-items-center py-2 px-3 mb-2 rounded border border-dark"
                         style="background: rgba(0,0,0,0.3);">
-                        <span class="text-secondary">مبيعات آجلة (+)</span>
+                        <span class="text-secondary" id="sumPostpaidLabel">مبيعات آجلة (+)</span>
                         <span class="fw-bold text-warning font-monospace" id="sumPostpaid">0.00</span>
                     </div>
                     <div class="d-flex justify-content-between align-items-center py-2 px-3 mb-2 rounded border border-dark"
                         style="background: rgba(0,0,0,0.3);">
-                        <span class="text-secondary">مقبوضات عملاء (-)</span>
+                        <span class="text-secondary" id="sumCustomerLabel">مقبوضات عملاء (-)</span>
                         <span class="fw-bold text-danger font-monospace" id="sumCustomer">-0.00</span>
                     </div>
                     <div class="d-flex justify-content-between align-items-center py-2 px-3 mb-2 rounded border border-dark"
                         style="background: rgba(0,0,0,0.3);">
-                        <span class="text-secondary">مرتجع (+ يضاف للكاش)</span>
+                        <span class="text-secondary" id="sumReturnsLabel">مرتجع (+ يضاف للكاش)</span>
                         <span class="fw-bold text-warning font-monospace" id="sumReturns">0.00</span>
                     </div>
                     <div class="d-flex justify-content-between align-items-center py-2 px-3 mb-3 rounded border border-dark"
                         style="background: rgba(0,0,0,0.2);">
-                        <span class="text-secondary small">موردين (للمعاينة فقط)</span>
+                        <span class="text-secondary small" id="sumSuppliersLabel">موردين (للمعاينة فقط)</span>
                         <span class="fw-bold text-muted font-monospace small" id="sumSuppliers">0.00</span>
                     </div>
+                    <div id="customSummaryRows"></div>
 
                     <hr class="border-secondary my-3">
 
@@ -681,6 +682,44 @@
         let custReceiptItems = [];
         let returnItems = [];
         let supplierItems = [];
+        const CUSTOM_TABLE_TEMPLATES = Object.freeze({
+            amount_only: Object.freeze({
+                label: 'بيان + مبلغ',
+                description: 'جدول يحتوي على بيان ومبلغ فقط',
+                fields: Object.freeze([
+                    Object.freeze({ key: 'label', label: 'البيان', type: 'text', required: true, tableLabel: 'البيان' }),
+                    Object.freeze({ key: 'amount', label: 'المبلغ', type: 'number', required: true, tableLabel: 'المبلغ', isAmount: true })
+                ])
+            }),
+            name_amount: Object.freeze({
+                label: 'اسم + مبلغ',
+                description: 'جدول يحتوي على اسم ومبلغ',
+                fields: Object.freeze([
+                    Object.freeze({ key: 'name', label: 'الاسم', type: 'text', required: true, tableLabel: 'الاسم' }),
+                    Object.freeze({ key: 'amount', label: 'المبلغ', type: 'number', required: true, tableLabel: 'المبلغ', isAmount: true })
+                ])
+            }),
+            invoice_amount_note: Object.freeze({
+                label: 'مرجع + مبلغ + ملاحظة',
+                description: 'جدول يحتوي على رقم مرجعي ومبلغ وملاحظة',
+                fields: Object.freeze([
+                    Object.freeze({ key: 'reference', label: 'المرجع', type: 'text', required: true, tableLabel: 'المرجع' }),
+                    Object.freeze({ key: 'amount', label: 'المبلغ', type: 'number', required: true, tableLabel: 'المبلغ', isAmount: true }),
+                    Object.freeze({ key: 'notes', label: 'ملاحظة', type: 'text', required: false, tableLabel: 'ملاحظة' })
+                ])
+            })
+        });
+        let reconciliationFormulaSettings = {
+            bank_receipts_sign: 1,
+            cash_receipts_sign: 1,
+            postpaid_sales_sign: 1,
+            customer_receipts_sign: -1,
+            return_invoices_sign: 1,
+            suppliers_sign: 0,
+            custom_table_signs: {}
+        };
+        let customTableDefinitions = [];
+        let customTableEntries = {};
         const REQUEST_DRAFT_STORAGE_PREFIX = 'tasfiya_reconciliation_request_draft_v1';
         const DRAFT_AUTOSAVE_DELAY_MS = 450;
         let draftAutosaveTimer = null;
@@ -714,6 +753,337 @@
             return activeTab ? (activeTab.getAttribute('data-bs-target') || '#tab-cash') : '#tab-cash';
         }
 
+        function normalizeSign(value, fallback = 0) {
+            if (value === null || value === undefined || value === '') return fallback;
+            const normalized = String(value).trim().toLowerCase();
+            if (['+', '+1', '1', 'add', 'plus', 'true'].includes(normalized)) return 1;
+            if (['-', '-1', 'subtract', 'minus'].includes(normalized)) return -1;
+            if (['0', 'ignore', 'none', 'off', 'false'].includes(normalized)) return 0;
+            const numeric = Number(normalized);
+            if (numeric > 0) return 1;
+            if (numeric < 0) return -1;
+            if (numeric === 0) return 0;
+            return fallback;
+        }
+
+        function getCustomTableTemplate(templateKey) {
+            return CUSTOM_TABLE_TEMPLATES[String(templateKey || '').trim().toLowerCase()] || CUSTOM_TABLE_TEMPLATES.amount_only;
+        }
+
+        function normalizeCustomTableDefinitionClient(definition = {}, index = 0) {
+            const tableName = String(definition.table_name || definition.name || `جدول إضافي ${index + 1}`).trim();
+            const tableKey = String(definition.table_key || `custom_table_${index + 1}`).trim();
+            const templateKey = String(definition.entry_template || definition.template_key || 'amount_only').trim().toLowerCase();
+
+            return {
+                id: Number.isFinite(Number(definition.id)) ? Number(definition.id) : null,
+                table_key: tableKey,
+                table_name: tableName,
+                entry_template: CUSTOM_TABLE_TEMPLATES[templateKey] ? templateKey : 'amount_only',
+                default_sign: normalizeSign(definition.default_sign, 0),
+                display_order: Number.isFinite(Number(definition.display_order)) ? Number(definition.display_order) : (index + 1),
+                is_active: Number(definition.is_active) === 0 ? 0 : 1,
+                config: definition.config && typeof definition.config === 'object' ? definition.config : {}
+            };
+        }
+
+        function getCustomTabPaneId(tableKey) {
+            return `tab-custom-${tableKey}`;
+        }
+
+        function getCustomTableInputId(tableKey, fieldKey) {
+            return `customField_${tableKey}_${fieldKey}`;
+        }
+
+        function getCustomTableBodyId(tableKey) {
+            return `customTableBody_${tableKey}`;
+        }
+
+        function getCustomTableEntries(tableKey) {
+            if (!Array.isArray(customTableEntries[tableKey])) {
+                customTableEntries[tableKey] = [];
+            }
+            return customTableEntries[tableKey];
+        }
+
+        function getCustomTableTotal(tableKey) {
+            return getCustomTableEntries(tableKey).reduce((sum, entry) => sum + toSafeNumber(entry.amount), 0);
+        }
+
+        function formatSummarySignLabel(baseLabel, sign, options = {}) {
+            if (sign > 0) return options.positive || `${baseLabel} (+)`;
+            if (sign < 0) return options.negative || `${baseLabel} (-)`;
+            return options.zero || `${baseLabel} (للمعاينة فقط)`;
+        }
+
+        function applyFormulaSummaryLabels() {
+            const labels = {
+                sumCashLabel: formatSummarySignLabel('اجمالي النقد', reconciliationFormulaSettings.cash_receipts_sign),
+                sumBankLabel: formatSummarySignLabel('اجمالي الشبكة', reconciliationFormulaSettings.bank_receipts_sign),
+                sumPostpaidLabel: formatSummarySignLabel('مبيعات آجلة', reconciliationFormulaSettings.postpaid_sales_sign),
+                sumCustomerLabel: formatSummarySignLabel('مقبوضات العملاء', reconciliationFormulaSettings.customer_receipts_sign),
+                sumReturnsLabel: formatSummarySignLabel('المرتجعات', reconciliationFormulaSettings.return_invoices_sign),
+                sumSuppliersLabel: formatSummarySignLabel('الموردين', reconciliationFormulaSettings.suppliers_sign)
+            };
+
+            Object.entries(labels).forEach(([id, text]) => {
+                const el = document.getElementById(id);
+                if (el) {
+                    el.textContent = text;
+                }
+            });
+        }
+
+        function renderCustomSummaryRows() {
+            const container = document.getElementById('customSummaryRows');
+            if (!container) {
+                return;
+            }
+
+            if (!customTableDefinitions.length) {
+                container.innerHTML = '';
+                return;
+            }
+
+            container.innerHTML = customTableDefinitions.map((definition) => {
+                const sign = normalizeSign(
+                    reconciliationFormulaSettings.custom_table_signs?.[definition.table_key],
+                    definition.default_sign
+                );
+                const colorClass = sign > 0 ? 'text-success' : sign < 0 ? 'text-danger' : 'text-muted';
+                const label = formatSummarySignLabel(definition.table_name, sign);
+
+                return `
+                    <div class="d-flex justify-content-between align-items-center py-2 px-3 mb-2 rounded border border-dark"
+                        style="background: rgba(0,0,0,0.2);">
+                        <span class="text-secondary small">${escapeHtml(label)}</span>
+                        <span class="fw-bold font-monospace small ${colorClass}">${formatMoney(getCustomTableTotal(definition.table_key))}</span>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        function renderCustomTableRows(definition) {
+            const tbody = document.getElementById(getCustomTableBodyId(definition.table_key));
+            if (!tbody) {
+                return;
+            }
+
+            const template = getCustomTableTemplate(definition.entry_template);
+            const entries = getCustomTableEntries(definition.table_key);
+
+            tbody.innerHTML = entries.map((entry, idx) => {
+                const cells = template.fields.map((field) => {
+                    if (field.isAmount) {
+                        return `<td class="text-ltr">${formatMoney(entry.amount)}</td>`;
+                    }
+                    return `<td>${escapeHtml(entry.payload?.[field.key] || '-')}</td>`;
+                }).join('');
+
+                return `
+                    <tr>
+                        ${cells}
+                        <td>
+                            <button class="btn btn-sm btn-outline-danger border-0" onclick="removeCustomTableItem('${definition.table_key}', ${idx})">
+                                <i class="fas fa-trash"></i>
+                            </button>
+                        </td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function buildCustomTableTab(definition) {
+            const template = getCustomTableTemplate(definition.entry_template);
+            const fieldsMarkup = template.fields.map((field) => `
+                <div class="col-md-${field.isAmount ? '4' : '8'}">
+                    <input
+                        type="${field.type}"
+                        id="${getCustomTableInputId(definition.table_key, field.key)}"
+                        class="form-control custom-input"
+                        placeholder="${escapeHtml(field.label)}"
+                        ${field.isAmount ? 'step="0.01" min="0.01"' : ''}>
+                </div>
+            `).join('');
+            const headMarkup = template.fields.map((field) => `<th>${escapeHtml(field.tableLabel || field.label)}</th>`).join('');
+            const hint = formatSummarySignLabel(definition.table_name, normalizeSign(
+                reconciliationFormulaSettings.custom_table_signs?.[definition.table_key],
+                definition.default_sign
+            ));
+
+            return `
+                <div class="tab-pane fade" id="${getCustomTabPaneId(definition.table_key)}">
+                    <h4 class="mb-4 text-secondary"><i class="fas fa-table me-2"></i> ${escapeHtml(definition.table_name)}</h4>
+                    <div class="text-secondary small mb-3">${escapeHtml(hint)}</div>
+                    <div class="row g-3 mb-4">
+                        ${fieldsMarkup}
+                        <div class="col-md-2">
+                            <button class="btn btn-primary w-100 fw-bold" onclick="addCustomTableItem('${definition.table_key}')">
+                                <i class="fas fa-plus"></i> إضافة
+                            </button>
+                        </div>
+                    </div>
+                    <div class="table-container pro-card">
+                        <table class="custom-table reconciliation-table text-center">
+                            <thead>
+                                <tr>
+                                    ${headMarkup}
+                                    <th>حذف</th>
+                                </tr>
+                            </thead>
+                            <tbody id="${getCustomTableBodyId(definition.table_key)}"></tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderCustomTablesUi() {
+            const navContainer = document.getElementById('pills-tab');
+            const tabContentContainer = document.getElementById('pills-tabContent');
+            if (!navContainer || !tabContentContainer) {
+                return;
+            }
+
+            navContainer.querySelectorAll('[data-custom-table-nav="true"]').forEach((node) => node.remove());
+            tabContentContainer.querySelectorAll('[data-custom-table-pane="true"]').forEach((node) => node.remove());
+
+            customTableDefinitions.forEach((definition) => {
+                const navItem = document.createElement('li');
+                navItem.className = 'nav-item';
+                navItem.dataset.customTableNav = 'true';
+                navItem.innerHTML = `
+                    <button class="nav-link" data-bs-toggle="pill" data-bs-target="#${getCustomTabPaneId(definition.table_key)}">
+                        <i class="fas fa-table me-2"></i> ${escapeHtml(definition.table_name)}
+                    </button>
+                `;
+                navContainer.appendChild(navItem);
+
+                const pane = document.createElement('div');
+                pane.dataset.customTablePane = 'true';
+                pane.innerHTML = buildCustomTableTab(definition);
+                tabContentContainer.appendChild(pane.firstElementChild);
+
+                renderCustomTableRows(definition);
+            });
+        }
+
+        async function loadReconciliationRequestConfig() {
+            try {
+                const res = await fetchWithSessionGuard('/api/reconciliation-request-config');
+                const data = await res.json();
+                if (!res.ok || !data.success) {
+                    throw new Error(data.error || `HTTP ${res.status}`);
+                }
+
+                const config = data.data || {};
+                customTableDefinitions = Array.isArray(config.custom_table_definitions)
+                    ? config.custom_table_definitions.map((definition, index) => normalizeCustomTableDefinitionClient(definition, index))
+                    : [];
+                customTableEntries = customTableDefinitions.reduce((acc, definition) => {
+                    acc[definition.table_key] = getCustomTableEntries(definition.table_key);
+                    return acc;
+                }, {});
+                reconciliationFormulaSettings = {
+                    ...reconciliationFormulaSettings,
+                    ...(config.formula_settings || {}),
+                    custom_table_signs: (config.formula_settings && config.formula_settings.custom_table_signs) || {}
+                };
+
+                renderCustomTablesUi();
+                applyFormulaSummaryLabels();
+                renderCustomSummaryRows();
+                updateUI();
+            } catch (error) {
+                console.warn('Failed to load reconciliation request config', error);
+            }
+        }
+
+        function addCustomTableItem(tableKey) {
+            const definition = customTableDefinitions.find((item) => item.table_key === tableKey);
+            if (!definition) {
+                return;
+            }
+
+            const template = getCustomTableTemplate(definition.entry_template);
+            const payload = {};
+            let amount = 0;
+
+            for (const field of template.fields) {
+                const input = document.getElementById(getCustomTableInputId(tableKey, field.key));
+                const value = input ? String(input.value || '').trim() : '';
+
+                if (field.required && !value) {
+                    showToast('warning', `الرجاء إدخال ${field.label}`);
+                    return;
+                }
+
+                if (field.isAmount) {
+                    amount = parseFloat(value);
+                    if (!amount || amount <= 0) {
+                        showToast('warning', 'الرجاء إدخال مبلغ صحيح');
+                        return;
+                    }
+                    payload[field.key] = amount;
+                } else {
+                    payload[field.key] = value;
+                }
+            }
+
+            getCustomTableEntries(tableKey).push({
+                amount,
+                payload
+            });
+
+            template.fields.forEach((field) => {
+                const input = document.getElementById(getCustomTableInputId(tableKey, field.key));
+                if (input) {
+                    input.value = '';
+                }
+            });
+
+            renderCustomTableRows(definition);
+            updateUI();
+            showToast('success', `تمت إضافة ${definition.table_name}`);
+        }
+
+        function removeCustomTableItem(tableKey, index) {
+            const definition = customTableDefinitions.find((item) => item.table_key === tableKey);
+            const entries = getCustomTableEntries(tableKey);
+            if (!definition || index < 0 || index >= entries.length) {
+                return;
+            }
+
+            entries.splice(index, 1);
+            renderCustomTableRows(definition);
+            updateUI();
+            showToast('info', 'تم الحذف');
+        }
+
+        window.addCustomTableItem = addCustomTableItem;
+        window.removeCustomTableItem = removeCustomTableItem;
+
+        function getSerializableCustomTablesForRequest() {
+            return customTableDefinitions
+                .map((definition) => ({
+                    definition: {
+                        id: definition.id,
+                        table_key: definition.table_key,
+                        table_name: definition.table_name,
+                        entry_template: definition.entry_template,
+                        default_sign: definition.default_sign,
+                        display_order: definition.display_order,
+                        is_active: definition.is_active,
+                        config: definition.config || {}
+                    },
+                    entries: getCustomTableEntries(definition.table_key).map((entry) => ({
+                        amount: toSafeNumber(entry.amount),
+                        payload: entry.payload && typeof entry.payload === 'object' ? { ...entry.payload } : {}
+                    }))
+                }))
+                .filter((section) => Array.isArray(section.entries) && section.entries.length > 0);
+        }
+
         function hasMeaningfulDraft(draft) {
             if (!draft || typeof draft !== 'object') {
                 return false;
@@ -732,6 +1102,10 @@
                 Array.isArray(lists.returnItems) && lists.returnItems.length > 0
             ) || (
                 Array.isArray(lists.supplierItems) && lists.supplierItems.length > 0
+            ) || (
+                lists.customTableEntries
+                && typeof lists.customTableEntries === 'object'
+                && Object.values(lists.customTableEntries).some((entries) => Array.isArray(entries) && entries.length > 0)
             );
 
             if (hasListData) {
@@ -756,13 +1130,28 @@
                 'supplierAmount'
             ];
 
-            return meaningfulFieldIds.some((fieldId) => {
+            const hasStandardMeaningfulFields = meaningfulFieldIds.some((fieldId) => {
                 const value = fields[fieldId];
                 return typeof value === 'string' && value.trim() !== '';
             });
+
+            if (hasStandardMeaningfulFields) {
+                return true;
+            }
+
+            return Object.entries(fields).some(([fieldId, value]) => (
+                fieldId.startsWith('customField_')
+                && typeof value === 'string'
+                && value.trim() !== ''
+            ));
         }
 
         function createRequestDraftSnapshot() {
+            const dynamicCustomFieldValues = {};
+            document.querySelectorAll('[id^="customField_"]').forEach((field) => {
+                dynamicCustomFieldValues[field.id] = field.value || '';
+            });
+
             return {
                 version: 1,
                 savedAt: new Date().toISOString(),
@@ -773,7 +1162,8 @@
                     postpaidItems,
                     custReceiptItems,
                     returnItems,
-                    supplierItems
+                    supplierItems,
+                    customTableEntries
                 },
                 fields: {
                     systemSales: readFieldValue('systemSales'),
@@ -794,7 +1184,8 @@
                     returnNote: readFieldValue('returnNote'),
                     supplierName: readFieldValue('supplierName'),
                     supplierInv: readFieldValue('supplierInv'),
-                    supplierAmount: readFieldValue('supplierAmount')
+                    supplierAmount: readFieldValue('supplierAmount'),
+                    ...dynamicCustomFieldValues
                 }
             };
         }
@@ -856,6 +1247,14 @@
                 custReceiptItems = Array.isArray(lists.custReceiptItems) ? lists.custReceiptItems : [];
                 returnItems = Array.isArray(lists.returnItems) ? lists.returnItems : [];
                 supplierItems = Array.isArray(lists.supplierItems) ? lists.supplierItems : [];
+                customTableEntries = {};
+                if (lists.customTableEntries && typeof lists.customTableEntries === 'object') {
+                    customTableDefinitions.forEach((definition) => {
+                        customTableEntries[definition.table_key] = Array.isArray(lists.customTableEntries[definition.table_key])
+                            ? lists.customTableEntries[definition.table_key]
+                            : [];
+                    });
+                }
 
                 renderTable('cashTableBody', cashItems, ['val', 'qty', 'sub']);
                 renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
@@ -863,6 +1262,7 @@
                 renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
                 renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
                 renderTable('supplierTableBody', supplierItems, ['supplier_name', 'invoice_number', 'amount']);
+                customTableDefinitions.forEach((definition) => renderCustomTableRows(definition));
 
                 const fields = draft.fields || {};
                 Object.keys(fields).forEach((fieldId) => {
@@ -941,6 +1341,11 @@
                 field.addEventListener('change', scheduleRequestDraftSave);
             });
 
+            document.querySelectorAll('[id^="customField_"]').forEach((field) => {
+                field.addEventListener('input', scheduleRequestDraftSave);
+                field.addEventListener('change', scheduleRequestDraftSave);
+            });
+
             document.querySelectorAll('#pills-tab .nav-link').forEach((tabButton) => {
                 tabButton.addEventListener('shown.bs.tab', scheduleRequestDraftSave);
             });
@@ -992,6 +1397,7 @@
             document.getElementById('userNameDisplay').textContent = user.name || '...';
             await loadCustomers();
             await loadAtms();
+            await loadReconciliationRequestConfig();
             restoreRequestDraft();
             setupRequestDraftAutosave();
             draftAutosaveReady = true;
@@ -1013,29 +1419,19 @@
             const sumCust = custReceiptItems.reduce((a, b) => a + b.amount, 0);
             const sumReturn = returnItems.reduce((a, b) => a + b.amount, 0);
             const sumSupplier = supplierItems.reduce((a, b) => a + b.amount, 0);
-
-            // Note: In typical reconciliation:
-            // Actual Found = Cash + Bank + Postpaid (Paper) - Customer Receipts (Money received not sales) 
-            // - Returns (Paid out but sales reduced) - Expenses (Paid out)
-            // Wait, logic depends on store policy. 
-            // Usually: 
-            // System Sales (Expected) vs Actual (Cash + Bank + Postpaid)
-            // If expense is paid from cash, cash decreases.
-            // Let's stick to simple "Found Assets" vs "System Sales".
-
-            // Total Found = Cash + Bank + Postpaid
-            // Note: Expenses, Returns are usually deducted from Cash in hand before counting?
-            // If I counted cash AFTER expenses, then Cash is net.
-            // Let's assume standard logic:
-            // Total Revenue = Cash + Bank + PostpaidSales
-            // But we need to account for non-sales cash (Customer Debt Payment)
-            // And cash paid out (Returns, Expenses).
-
-            // Let's keep it simple: MATCH THE DESKTOP LOGIC if possible.
-            // Desktop logic usually: Total = Cash + Bank + Postpaid.
-
-            // Equation: Cash + Bank + Postpaid - Customer Receipts + Returns
-            const totalFound = totalCash + sumBank + sumPostpaid - sumCust + sumReturn;
+            const totalFound =
+                (totalCash * normalizeSign(reconciliationFormulaSettings.cash_receipts_sign, 1))
+                + (sumBank * normalizeSign(reconciliationFormulaSettings.bank_receipts_sign, 1))
+                + (sumPostpaid * normalizeSign(reconciliationFormulaSettings.postpaid_sales_sign, 1))
+                + (sumCust * normalizeSign(reconciliationFormulaSettings.customer_receipts_sign, -1))
+                + (sumReturn * normalizeSign(reconciliationFormulaSettings.return_invoices_sign, 1))
+                + (sumSupplier * normalizeSign(reconciliationFormulaSettings.suppliers_sign, 0))
+                + customTableDefinitions.reduce((sum, definition) => (
+                    sum + (
+                        getCustomTableTotal(definition.table_key)
+                        * normalizeSign(reconciliationFormulaSettings.custom_table_signs?.[definition.table_key], definition.default_sign)
+                    )
+                ), 0);
 
             const systemSales = parseFloat(document.getElementById('systemSales').value) || 0;
             const diff = totalFound - systemSales;
@@ -1047,6 +1443,7 @@
             // New separate updates
             document.getElementById('sumReturns').textContent = sumReturn.toFixed(2);
             document.getElementById('sumSuppliers').textContent = sumSupplier.toFixed(2);
+            renderCustomSummaryRows();
 
             document.getElementById('totalFound').textContent = totalFound.toFixed(2);
 
@@ -1367,7 +1764,8 @@
                     supplier_name: i.supplier_name,
                     invoice_number: i.invoice_number,
                     amount: i.amount
-                }))
+                })),
+                custom_tables: getSerializableCustomTablesForRequest()
             };
 
             try {

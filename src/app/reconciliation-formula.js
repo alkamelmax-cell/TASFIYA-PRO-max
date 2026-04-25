@@ -1,3 +1,8 @@
+const {
+  buildCustomFormulaFields,
+  getCustomTableDefinitionsFromDocument
+} = require('./reconciliation-custom-tables');
+
 const RECONCILIATION_FORMULA_FIELDS = Object.freeze([
   {
     settingKey: 'bank_receipts_sign',
@@ -44,10 +49,13 @@ const RECONCILIATION_FORMULA_FIELDS = Object.freeze([
 ]);
 
 const DEFAULT_RECONCILIATION_FORMULA_SETTINGS = Object.freeze(
-  RECONCILIATION_FORMULA_FIELDS.reduce((acc, field) => {
-    acc[field.settingKey] = field.defaultSign;
-    return acc;
-  }, {})
+  Object.freeze({
+    ...RECONCILIATION_FORMULA_FIELDS.reduce((acc, field) => {
+      acc[field.settingKey] = field.defaultSign;
+      return acc;
+    }, {}),
+    custom_table_signs: Object.freeze({})
+  })
 );
 
 const RECONCILIATION_FORMULA_PRESETS = Object.freeze({
@@ -97,15 +105,70 @@ function normalizeFormulaSign(value, fallback = 0) {
   return fallback;
 }
 
-function normalizeFormulaSettings(rawSettings = {}) {
-  return RECONCILIATION_FORMULA_FIELDS.reduce((acc, field) => {
+function getFormulaFields(customDefinitions = []) {
+  return [
+    ...RECONCILIATION_FORMULA_FIELDS,
+    ...buildCustomFormulaFields(customDefinitions)
+  ];
+}
+
+function getRawCustomFormulaSigns(rawSettings = {}) {
+  if (!rawSettings || typeof rawSettings !== 'object') {
+    return {};
+  }
+
+  if (rawSettings.custom_table_signs && typeof rawSettings.custom_table_signs === 'object') {
+    return rawSettings.custom_table_signs;
+  }
+
+  if (rawSettings.custom_table_signs_json) {
+    try {
+      const parsed = JSON.parse(rawSettings.custom_table_signs_json);
+      if (parsed && typeof parsed === 'object') {
+        return parsed;
+      }
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  return {};
+}
+
+function getFormulaSignForField(formulaSettings, field) {
+  if (!field || !formulaSettings || typeof formulaSettings !== 'object') {
+    return 0;
+  }
+
+  if (field.isCustom) {
+    return normalizeFormulaSign(
+      formulaSettings.custom_table_signs?.[field.tableKey],
+      field.defaultSign
+    );
+  }
+
+  return normalizeFormulaSign(formulaSettings[field.settingKey], field.defaultSign);
+}
+
+function normalizeFormulaSettings(rawSettings = {}, customDefinitions = []) {
+  const normalized = RECONCILIATION_FORMULA_FIELDS.reduce((acc, field) => {
     const rawValue = rawSettings[field.settingKey];
     acc[field.settingKey] = normalizeFormulaSign(rawValue, field.defaultSign);
     return acc;
   }, {});
+
+  const rawCustomSigns = getRawCustomFormulaSigns(rawSettings);
+  normalized.custom_table_signs = {};
+
+  buildCustomFormulaFields(customDefinitions).forEach((field) => {
+    const rawValue = rawCustomSigns[field.tableKey] ?? rawSettings[field.settingKey];
+    normalized.custom_table_signs[field.tableKey] = normalizeFormulaSign(rawValue, field.defaultSign);
+  });
+
+  return normalized;
 }
 
-function parseStoredFormulaSettings(rawSettings) {
+function parseStoredFormulaSettings(rawSettings, customDefinitions = []) {
   if (rawSettings === null || rawSettings === undefined || rawSettings === '') {
     return null;
   }
@@ -113,37 +176,46 @@ function parseStoredFormulaSettings(rawSettings) {
   if (typeof rawSettings === 'string') {
     try {
       const parsed = JSON.parse(rawSettings);
-      return normalizeFormulaSettings(parsed);
+      return normalizeFormulaSettings(parsed, customDefinitions);
     } catch (error) {
       return null;
     }
   }
 
   if (typeof rawSettings === 'object') {
-    return normalizeFormulaSettings(rawSettings);
+    return normalizeFormulaSettings(rawSettings, customDefinitions);
   }
 
   return null;
 }
 
-function getFormulaPresetSettings(presetKey = 'default') {
+function getFormulaPresetSettings(presetKey = 'default', customDefinitions = []) {
   const key = typeof presetKey === 'string' ? presetKey.trim() : 'default';
   const preset = RECONCILIATION_FORMULA_PRESETS[key] || RECONCILIATION_FORMULA_PRESETS.default;
-  return normalizeFormulaSettings(preset);
+  return normalizeFormulaSettings(preset, customDefinitions);
 }
 
-function getFormulaSettingsFromDocument(documentObj) {
+function resolveDocumentCustomDefinitions(documentObj) {
+  return getCustomTableDefinitionsFromDocument(documentObj);
+}
+
+function getFormulaSettingsFromDocument(documentObj, customDefinitions = resolveDocumentCustomDefinitions(documentObj)) {
   if (!documentObj || typeof documentObj.getElementById !== 'function') {
-    return normalizeFormulaSettings(DEFAULT_RECONCILIATION_FORMULA_SETTINGS);
+    return normalizeFormulaSettings(DEFAULT_RECONCILIATION_FORMULA_SETTINGS, customDefinitions);
   }
 
-  const rawSettings = {};
-  RECONCILIATION_FORMULA_FIELDS.forEach((field) => {
+  const rawSettings = { custom_table_signs: {} };
+  getFormulaFields(customDefinitions).forEach((field) => {
     const element = documentObj.getElementById(field.fieldId);
+    if (field.isCustom) {
+      rawSettings.custom_table_signs[field.tableKey] = element ? element.value : field.defaultSign;
+      return;
+    }
+
     rawSettings[field.settingKey] = element ? element.value : field.defaultSign;
   });
 
-  return normalizeFormulaSettings(rawSettings);
+  return normalizeFormulaSettings(rawSettings, customDefinitions);
 }
 
 function getActiveFormulaSettingsFromDocument(documentObj) {
@@ -151,7 +223,8 @@ function getActiveFormulaSettingsFromDocument(documentObj) {
     return null;
   }
 
-  const inMemory = parseStoredFormulaSettings(documentObj.__activeReconciliationFormulaSettings);
+  const customDefinitions = resolveDocumentCustomDefinitions(documentObj);
+  const inMemory = parseStoredFormulaSettings(documentObj.__activeReconciliationFormulaSettings, customDefinitions);
   if (inMemory) {
     return inMemory;
   }
@@ -160,7 +233,7 @@ function getActiveFormulaSettingsFromDocument(documentObj) {
     && documentObj.body.dataset
     ? documentObj.body.dataset[ACTIVE_RECONCILIATION_FORMULA_DATASET_KEY]
     : null;
-  const parsedFromDataset = parseStoredFormulaSettings(datasetValue);
+  const parsedFromDataset = parseStoredFormulaSettings(datasetValue, customDefinitions);
   if (parsedFromDataset) {
     documentObj.__activeReconciliationFormulaSettings = parsedFromDataset;
     return parsedFromDataset;
@@ -174,7 +247,7 @@ function setActiveFormulaSettingsInDocument(documentObj, formulaSettings) {
     return null;
   }
 
-  const parsed = parseStoredFormulaSettings(formulaSettings);
+  const parsed = parseStoredFormulaSettings(formulaSettings, resolveDocumentCustomDefinitions(documentObj));
   if (!parsed) {
     clearActiveFormulaSettingsInDocument(documentObj);
     return null;
@@ -213,25 +286,34 @@ function getEffectiveFormulaSettingsFromDocument(documentObj) {
   return getFormulaSettingsFromDocument(documentObj);
 }
 
-function applyFormulaPresetToDocument(documentObj, presetKey = 'default') {
-  const presetSettings = getFormulaPresetSettings(presetKey);
+function applyFormulaPresetToDocument(
+  documentObj,
+  presetKey = 'default',
+  customDefinitions = resolveDocumentCustomDefinitions(documentObj)
+) {
+  const presetSettings = getFormulaPresetSettings(presetKey, customDefinitions);
 
   if (!documentObj || typeof documentObj.getElementById !== 'function') {
     return presetSettings;
   }
 
-  RECONCILIATION_FORMULA_FIELDS.forEach((field) => {
+  getFormulaFields(customDefinitions).forEach((field) => {
     const element = documentObj.getElementById(field.fieldId);
     if (element) {
-      element.value = String(presetSettings[field.settingKey]);
+      element.value = String(getFormulaSignForField(presetSettings, field));
     }
   });
 
   return presetSettings;
 }
 
-function calculateTotalReceiptsByFormula(buckets = {}, formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS) {
-  const normalizedFormula = normalizeFormulaSettings(formulaSettings);
+function calculateTotalReceiptsByFormula(
+  buckets = {},
+  formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+  customDefinitions = []
+) {
+  const fields = getFormulaFields(customDefinitions);
+  const normalizedFormula = normalizeFormulaSettings(formulaSettings, customDefinitions);
   const normalizedBuckets = {
     bankTotal: Number(buckets.bankTotal) || 0,
     cashTotal: Number(buckets.cashTotal) || 0,
@@ -241,12 +323,20 @@ function calculateTotalReceiptsByFormula(buckets = {}, formulaSettings = DEFAULT
     supplierTotal: Number(buckets.supplierTotal) || 0
   };
 
+  buildCustomFormulaFields(customDefinitions).forEach((field) => {
+    normalizedBuckets[field.bucketKey] = Number(
+      buckets[field.bucketKey]
+      ?? buckets.custom_table_totals?.[field.tableKey]
+      ?? buckets.customTableTotals?.[field.tableKey]
+    ) || 0;
+  });
+
   let totalReceipts = 0;
   const contributions = {};
 
-  RECONCILIATION_FORMULA_FIELDS.forEach((field) => {
+  fields.forEach((field) => {
     const amount = normalizedBuckets[field.bucketKey] || 0;
-    const sign = normalizedFormula[field.settingKey];
+    const sign = getFormulaSignForField(normalizedFormula, field);
     const contribution = amount * sign;
 
     contributions[field.bucketKey] = {
@@ -269,9 +359,10 @@ function calculateTotalReceiptsByFormula(buckets = {}, formulaSettings = DEFAULT
 function calculateReconciliationSummaryByFormula(
   buckets = {},
   systemSalesValue = 0,
-  formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS
+  formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+  customDefinitions = []
 ) {
-  const formulaResult = calculateTotalReceiptsByFormula(buckets, formulaSettings);
+  const formulaResult = calculateTotalReceiptsByFormula(buckets, formulaSettings, customDefinitions);
   const systemSales = Number(systemSalesValue) || 0;
   const surplusDeficit = formulaResult.totalReceipts - systemSales;
 
@@ -282,13 +373,16 @@ function calculateReconciliationSummaryByFormula(
   };
 }
 
-function buildFormulaPreviewText(formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS) {
-  const normalized = normalizeFormulaSettings(formulaSettings);
+function buildFormulaPreviewText(
+  formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+  customDefinitions = []
+) {
+  const normalized = normalizeFormulaSettings(formulaSettings, customDefinitions);
   const terms = [];
   const ignored = [];
 
-  RECONCILIATION_FORMULA_FIELDS.forEach((field) => {
-    const sign = normalized[field.settingKey];
+  getFormulaFields(customDefinitions).forEach((field) => {
+    const sign = getFormulaSignForField(normalized, field);
     if (sign === 0) {
       ignored.push(field.label);
       return;
@@ -317,21 +411,22 @@ function getFormulaSignMeta(sign) {
 
 function updateFormulaTokenIndicatorsInDocument(
   documentObj,
-  formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS
+  formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+  customDefinitions = resolveDocumentCustomDefinitions(documentObj)
 ) {
   if (!documentObj || typeof documentObj.querySelector !== 'function') {
     return;
   }
 
-  const normalized = normalizeFormulaSettings(formulaSettings);
+  const normalized = normalizeFormulaSettings(formulaSettings, customDefinitions);
 
-  RECONCILIATION_FORMULA_FIELDS.forEach((field) => {
+  getFormulaFields(customDefinitions).forEach((field) => {
     const indicator = documentObj.querySelector(`[data-formula-token-for="${field.fieldId}"]`);
     if (!indicator) {
       return;
     }
 
-    const meta = getFormulaSignMeta(normalized[field.settingKey]);
+    const meta = getFormulaSignMeta(getFormulaSignForField(normalized, field));
     indicator.textContent = meta.symbol;
 
     if (indicator.classList && typeof indicator.classList.remove === 'function') {
@@ -341,13 +436,17 @@ function updateFormulaTokenIndicatorsInDocument(
   });
 }
 
-function updateFormulaPreviewInDocument(documentObj, formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS) {
+function updateFormulaPreviewInDocument(
+  documentObj,
+  formulaSettings = DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
+  customDefinitions = resolveDocumentCustomDefinitions(documentObj)
+) {
   if (!documentObj) {
     return;
   }
 
-  const normalized = normalizeFormulaSettings(formulaSettings);
-  updateFormulaTokenIndicatorsInDocument(documentObj, normalized);
+  const normalized = normalizeFormulaSettings(formulaSettings, customDefinitions);
+  updateFormulaTokenIndicatorsInDocument(documentObj, normalized, customDefinitions);
 
   if (typeof documentObj.getElementById !== 'function') {
     return;
@@ -358,7 +457,7 @@ function updateFormulaPreviewInDocument(documentObj, formulaSettings = DEFAULT_R
     return;
   }
 
-  previewEl.textContent = buildFormulaPreviewText(normalized);
+  previewEl.textContent = buildFormulaPreviewText(normalized, customDefinitions);
 }
 
 module.exports = {
@@ -366,6 +465,7 @@ module.exports = {
   DEFAULT_RECONCILIATION_FORMULA_SETTINGS,
   RECONCILIATION_FORMULA_PRESETS,
   ACTIVE_RECONCILIATION_FORMULA_DATASET_KEY,
+  getFormulaFields,
   normalizeFormulaSign,
   normalizeFormulaSettings,
   parseStoredFormulaSettings,
@@ -379,6 +479,7 @@ module.exports = {
   calculateTotalReceiptsByFormula,
   calculateReconciliationSummaryByFormula,
   buildFormulaPreviewText,
+  getFormulaSignForField,
   updateFormulaTokenIndicatorsInDocument,
   updateFormulaPreviewInDocument
 };

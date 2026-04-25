@@ -4,6 +4,7 @@ const {
   parseStoredFormulaSettings,
   DEFAULT_RECONCILIATION_FORMULA_SETTINGS
 } = require('./reconciliation-formula');
+const { getCustomTableDefinitionsFromDocument } = require('./reconciliation-custom-tables');
 
 function createReconciliationOperationsDataHandlers(context) {
   const doc = context.document;
@@ -24,7 +25,11 @@ function createReconciliationOperationsDataHandlers(context) {
       postpaidSales: getPostpaidSales(),
       customerReceipts: getCustomerReceipts(),
       returnInvoices: getReturnInvoices(),
-      suppliers: getSuppliers()
+      suppliers: getSuppliers(),
+      customTables: doc.defaultView?.reconciliationCustomTablesManager
+        && typeof doc.defaultView.reconciliationCustomTablesManager.getSerializableSections === 'function'
+        ? doc.defaultView.reconciliationCustomTablesManager.getSerializableSections()
+        : []
     };
   }
 
@@ -37,7 +42,8 @@ function createReconciliationOperationsDataHandlers(context) {
         postpaidSales,
         customerReceipts,
         returnInvoices,
-        suppliers
+        suppliers,
+        customTables
       } = getCollections();
 
       const cashier = await ipc.invoke('db-get', 'SELECT name, cashier_number FROM cashiers WHERE id = ?', [currentReconciliation.cashier_id]);
@@ -49,6 +55,15 @@ function createReconciliationOperationsDataHandlers(context) {
       const customerTotal = customerReceipts.reduce((sum, receipt) => sum + receipt.amount, 0);
       const returnTotal = returnInvoices.reduce((sum, invoice) => sum + invoice.amount, 0);
       const supplierTotal = suppliers.reduce((sum, supplier) => sum + supplier.amount, 0);
+      const customBucketTotals = {};
+      customTables.forEach((section) => {
+        const tableKey = section?.definition?.table_key;
+        if (!tableKey) return;
+        customBucketTotals[`custom:${tableKey}`] = (section.entries || []).reduce(
+          (sum, entry) => sum + (parseFloat(entry.amount) || 0),
+          0
+        );
+      });
       const systemSales = parseFloat(doc.getElementById('systemSales').value) || 0;
       const formulaSettings = getEffectiveFormulaSettingsFromDocument(doc);
       const formulaResult = calculateReconciliationSummaryByFormula(
@@ -58,10 +73,12 @@ function createReconciliationOperationsDataHandlers(context) {
           postpaidTotal,
           customerTotal,
           returnTotal,
-          supplierTotal
+          supplierTotal,
+          ...customBucketTotals
         },
         systemSales,
-        formulaSettings
+        formulaSettings,
+        getCustomTableDefinitionsFromDocument(doc)
       );
       const totalReceipts = formulaResult.totalReceipts;
       const surplusDeficit = formulaResult.surplusDeficit;
@@ -96,6 +113,7 @@ function createReconciliationOperationsDataHandlers(context) {
         customerReceipts,
         returnInvoices,
         suppliers,
+        customTables,
         reconciliationId: currentReconciliation.id,
         reconciliation_number: reconciliationNumber,
         cashierName: cashier.name,
@@ -114,6 +132,7 @@ function createReconciliationOperationsDataHandlers(context) {
           customerTotal,
           returnTotal,
           supplierTotal,
+          customTableTotals: customBucketTotals,
           totalReceipts,
           systemSales,
           surplusDeficit,
@@ -151,14 +170,88 @@ function createReconciliationOperationsDataHandlers(context) {
     const customerReceipts = await ipc.invoke('db-query', 'SELECT * FROM customer_receipts WHERE reconciliation_id = ?', [id]);
     const returnInvoices = await ipc.invoke('db-query', 'SELECT * FROM return_invoices WHERE reconciliation_id = ?', [id]);
     const suppliers = await ipc.invoke('db-query', 'SELECT * FROM suppliers WHERE reconciliation_id = ?', [id]);
+    const customEntryRows = await ipc.invoke(
+      'db-query',
+      `SELECT
+         e.*,
+         d.table_key,
+         d.table_name,
+         d.entry_template,
+         d.default_sign,
+         d.display_order,
+         d.is_active,
+         d.config_json
+       FROM reconciliation_custom_entries e
+       INNER JOIN reconciliation_custom_table_definitions d
+         ON d.id = e.definition_id
+       WHERE e.reconciliation_id = ?
+       ORDER BY d.display_order ASC, e.id ASC`,
+      [id]
+    );
 
     const bankTotal = bankReceipts.reduce((sum, receipt) => sum + receipt.amount, 0);
     const cashTotal = cashReceipts.reduce((sum, receipt) => sum + receipt.total_amount, 0);
     const postpaidTotal = postpaidSales.reduce((sum, sale) => sum + sale.amount, 0);
     const customerTotal = customerReceipts.reduce((sum, receipt) => sum + receipt.amount, 0);
     const returnTotal = returnInvoices.reduce((sum, invoice) => sum + invoice.amount, 0);
-    const formulaSettings = parseStoredFormulaSettings(reconciliation.formula_settings)
-      || DEFAULT_RECONCILIATION_FORMULA_SETTINGS;
+    const customTables = [];
+    const customTableTotals = {};
+    const sectionMap = new Map();
+
+    (customEntryRows || []).forEach((row) => {
+      const tableKey = row.table_key;
+      if (!tableKey) {
+        return;
+      }
+
+      if (!sectionMap.has(tableKey)) {
+        sectionMap.set(tableKey, {
+          definition: {
+            id: row.definition_id,
+            table_key: row.table_key,
+            table_name: row.table_name,
+            entry_template: row.entry_template,
+            default_sign: row.default_sign,
+            display_order: row.display_order,
+            is_active: row.is_active,
+            config_json: row.config_json
+          },
+          entries: []
+        });
+      }
+
+      const payload = (() => {
+        try {
+          const parsed = JSON.parse(row.entry_payload_json || '{}');
+          return parsed && typeof parsed === 'object' ? parsed : {};
+        } catch (_error) {
+          return {};
+        }
+      })();
+
+      sectionMap.get(tableKey).entries.push({
+        id: row.id,
+        reconciliation_id: row.reconciliation_id,
+        definition_id: row.definition_id,
+        amount: parseFloat(row.amount) || 0,
+        payload,
+        created_at: row.created_at || null,
+        updated_at: row.updated_at || null
+      });
+    });
+
+    sectionMap.forEach((section, tableKey) => {
+      customTables.push(section);
+      customTableTotals[`custom:${tableKey}`] = (section.entries || []).reduce(
+        (sum, entry) => sum + (parseFloat(entry.amount) || 0),
+        0
+      );
+    });
+
+    const formulaSettings = parseStoredFormulaSettings(
+      reconciliation.formula_settings,
+      customTables.map((section) => section.definition)
+    ) || DEFAULT_RECONCILIATION_FORMULA_SETTINGS;
 
     return {
       reconciliation: {
@@ -190,6 +283,7 @@ function createReconciliationOperationsDataHandlers(context) {
       customerReceipts,
       returnInvoices,
       suppliers,
+      customTables,
       formulaSettings,
       summary: {
         bankTotal,
@@ -197,6 +291,7 @@ function createReconciliationOperationsDataHandlers(context) {
         postpaidTotal,
         customerTotal,
         returnTotal,
+        customTableTotals,
         totalReceipts: reconciliation.total_receipts,
         systemSales: reconciliation.system_sales,
         surplusDeficit: reconciliation.surplus_deficit,

@@ -59,7 +59,8 @@ function createReconciliationOperationsViewHandlers(context) {
           postpaidSales: detailedData.postpaidSales?.length || 0,
           customerReceipts: detailedData.customerReceipts?.length || 0,
           returnInvoices: detailedData.returnInvoices?.length || 0,
-          suppliers: detailedData.suppliers?.length || 0
+          suppliers: detailedData.suppliers?.length || 0,
+          customTables: detailedData.customTables?.length || 0
         };
 
         additionalInfo = `
@@ -70,7 +71,8 @@ function createReconciliationOperationsViewHandlers(context) {
 • المبيعات الآجلة: ${counts.postpaidSales} عنصر
 • مقبوضات العملاء: ${counts.customerReceipts} عنصر
 • فواتير المرتجع: ${counts.returnInvoices} عنصر
-• الموردين: ${counts.suppliers} عنصر`;
+• الموردين: ${counts.suppliers} عنصر
+• الجداول الإضافية: ${counts.customTables} جدول`;
       }
 
       const summary = `
