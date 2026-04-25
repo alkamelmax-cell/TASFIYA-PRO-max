@@ -2191,7 +2191,7 @@ class LocalWebServer {
                         )`,
                         `CREATE TABLE IF NOT EXISTS cashbox_vouchers (
                             id SERIAL PRIMARY KEY,
-                            voucher_number INTEGER NOT NULL UNIQUE,
+                            voucher_number INTEGER NOT NULL,
                             voucher_sequence_number INTEGER,
                             sync_key TEXT UNIQUE,
                             voucher_type TEXT NOT NULL,
@@ -2225,6 +2225,9 @@ class LocalWebServer {
                             payload_json TEXT,
                             notes TEXT
                         )`,
+                        'ALTER TABLE cashbox_vouchers DROP CONSTRAINT IF EXISTS cashbox_vouchers_voucher_number_key',
+                        'DROP INDEX IF EXISTS cashbox_vouchers_voucher_number_key',
+                        'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_voucher_number ON cashbox_vouchers(voucher_number)',
                         'CREATE INDEX IF NOT EXISTS idx_branch_cashboxes_branch_id ON branch_cashboxes(branch_id)',
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_branch_date ON cashbox_vouchers(branch_id, voucher_date)',
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_cashbox_date ON cashbox_vouchers(cashbox_id, voucher_date)',
@@ -2708,6 +2711,52 @@ class LocalWebServer {
                     console.log(`✅ [SYNC] ${table}: Processed ${successCount} items.${errorCount > 0 ? ` Failed ${errorCount} items.` : ''}`);
                 };
 
+                const filterRowsByExistingForeignKey = async (rows, options = {}) => {
+                    if (!Array.isArray(rows) || rows.length === 0) {
+                        return [];
+                    }
+
+                    const {
+                        tableName = 'rows',
+                        fieldName = 'reconciliation_id',
+                        parentTable = 'reconciliations'
+                    } = options;
+
+                    const ids = Array.from(new Set(
+                        rows
+                            .map((row) => parseInteger(row?.[fieldName]))
+                            .filter((id) => id !== null)
+                    ));
+
+                    if (ids.length === 0) {
+                        console.warn(`⚠️ [SYNC] ${tableName}: skipped ${rows.length} rows بسبب غياب ${fieldName}.`);
+                        return [];
+                    }
+
+                    const placeholders = ids.map((_, index) => `$${index + 1}`).join(', ');
+                    const existingResult = await pool.query(
+                        `SELECT id FROM ${parentTable} WHERE id IN (${placeholders})`,
+                        ids
+                    );
+                    const existingIds = new Set(
+                        (existingResult.rows || [])
+                            .map((row) => parseInteger(row?.id))
+                            .filter((id) => id !== null)
+                    );
+
+                    const filteredRows = rows.filter((row) => {
+                        const id = parseInteger(row?.[fieldName]);
+                        return id !== null && existingIds.has(id);
+                    });
+
+                    const skippedCount = rows.length - filteredRows.length;
+                    if (skippedCount > 0) {
+                        console.warn(`⚠️ [SYNC] ${tableName}: skipped ${skippedCount} rows بسبب مراجع مفقودة في ${parentTable}.${fieldName}.`);
+                    }
+
+                    return filteredRows;
+                };
+
                 // Sync all tables in dependency order
                 if (data.branches) {
                     await syncTable('branches', data.branches, [
@@ -2996,14 +3045,24 @@ class LocalWebServer {
                 }
 
                 if (data.cash_receipts) {
-                    await syncTable('cash_receipts', data.cash_receipts, [
+                    const validCashReceipts = await filterRowsByExistingForeignKey(data.cash_receipts, {
+                        tableName: 'cash_receipts',
+                        fieldName: 'reconciliation_id',
+                        parentTable: 'reconciliations'
+                    });
+                    await syncTable('cash_receipts', validCashReceipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'denomination' },
                         { name: 'quantity' }, { name: 'total_amount' }
                     ]);
                 }
 
                 if (data.bank_receipts) {
-                    await syncTable('bank_receipts', data.bank_receipts, [
+                    const validBankReceipts = await filterRowsByExistingForeignKey(data.bank_receipts, {
+                        tableName: 'bank_receipts',
+                        fieldName: 'reconciliation_id',
+                        parentTable: 'reconciliations'
+                    });
+                    await syncTable('bank_receipts', validBankReceipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'operation_type' },
                         { name: 'atm_id' }, { name: 'amount' }
                     ]);
@@ -3027,14 +3086,24 @@ class LocalWebServer {
                 }
 
                 if (data.postpaid_sales) {
-                    await syncTable('postpaid_sales', data.postpaid_sales, [
+                    const validPostpaidSales = await filterRowsByExistingForeignKey(data.postpaid_sales, {
+                        tableName: 'postpaid_sales',
+                        fieldName: 'reconciliation_id',
+                        parentTable: 'reconciliations'
+                    });
+                    await syncTable('postpaid_sales', validPostpaidSales, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_name' },
                         { name: 'amount' } //, {name: 'notes'}
                     ]);
                 }
 
                 if (data.customer_receipts) {
-                    await syncTable('customer_receipts', data.customer_receipts, [
+                    const validCustomerReceipts = await filterRowsByExistingForeignKey(data.customer_receipts, {
+                        tableName: 'customer_receipts',
+                        fieldName: 'reconciliation_id',
+                        parentTable: 'reconciliations'
+                    });
+                    await syncTable('customer_receipts', validCustomerReceipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_name' },
                         { name: 'amount' }, { name: 'payment_type' } //, {name: 'notes'}
                     ]);

@@ -326,7 +326,7 @@ class PostgresManager {
             )`,
             `CREATE TABLE IF NOT EXISTS cashbox_vouchers (
                 id SERIAL PRIMARY KEY,
-                voucher_number INTEGER NOT NULL UNIQUE,
+                voucher_number INTEGER NOT NULL,
                 voucher_sequence_number INTEGER,
                 sync_key TEXT UNIQUE,
                 voucher_type TEXT NOT NULL,
@@ -418,6 +418,7 @@ class PostgresManager {
         }
 
         const indexQueries = [
+            'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_voucher_number ON cashbox_vouchers(voucher_number)',
             'CREATE INDEX IF NOT EXISTS idx_branch_cashboxes_branch_id ON branch_cashboxes(branch_id)',
             'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_branch_date ON cashbox_vouchers(branch_id, voucher_date)',
             'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_cashbox_date ON cashbox_vouchers(cashbox_id, voucher_date)',
@@ -503,6 +504,9 @@ class PostgresManager {
             await client.query('BEGIN');
 
             await client.query('ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT');
+            await client.query('ALTER TABLE cashbox_vouchers DROP CONSTRAINT IF EXISTS cashbox_vouchers_voucher_number_key');
+            await client.query('DROP INDEX IF EXISTS cashbox_vouchers_voucher_number_key');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_voucher_number ON cashbox_vouchers(voucher_number)');
             await client.query('DROP INDEX IF EXISTS idx_cashbox_vouchers_sync_key_unique');
             await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)');
 
