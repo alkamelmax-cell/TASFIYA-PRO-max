@@ -7376,7 +7376,9 @@
                   'manual_customer_receipts',
                   'branch_cashboxes',
                   'cashbox_vouchers',
-                  'cashbox_voucher_audit_log'
+                  'cashbox_voucher_audit_log',
+                  'reconciliation_custom_table_definitions',
+                  'reconciliation_custom_entries'
               ];
       
               for (const table of tables) {
@@ -7857,6 +7859,40 @@
                               FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL
                           )
                       `
+                  },
+                  {
+                      name: 'reconciliation_custom_table_definitions',
+                      createSQL: `
+                          CREATE TABLE IF NOT EXISTS reconciliation_custom_table_definitions (
+                              id INTEGER PRIMARY KEY AUTOINCREMENT,
+                              table_key TEXT NOT NULL UNIQUE,
+                              table_name TEXT NOT NULL,
+                              entry_template TEXT NOT NULL DEFAULT 'amount_only',
+                              default_sign INTEGER DEFAULT 0,
+                              display_order INTEGER DEFAULT 0,
+                              is_active INTEGER DEFAULT 1,
+                              config_json TEXT DEFAULT '{}',
+                              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                          )
+                      `
+                  },
+                  {
+                      name: 'reconciliation_custom_entries',
+                      createSQL: `
+                          CREATE TABLE IF NOT EXISTS reconciliation_custom_entries (
+                              id INTEGER PRIMARY KEY AUTOINCREMENT,
+                              reconciliation_id INTEGER NOT NULL,
+                              definition_id INTEGER NOT NULL,
+                              entry_payload_json TEXT NOT NULL,
+                              amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+                              is_modified INTEGER DEFAULT 0,
+                              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                              FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE,
+                              FOREIGN KEY (definition_id) REFERENCES reconciliation_custom_table_definitions(id) ON DELETE RESTRICT
+                          )
+                      `
                   }
               ];
       
@@ -7982,6 +8018,21 @@
                   console.warn('⚠️ [RESTORE] تعذر إكمال ترحيل بنية سندات الصندوق:', cashboxSchemaError);
               }
       
+              try {
+                  await ipcRenderer.invoke(
+                      'db-run',
+                      'CREATE INDEX IF NOT EXISTS idx_reconciliation_custom_definitions_active ON reconciliation_custom_table_definitions(is_active, display_order)',
+                      []
+                  );
+                  await ipcRenderer.invoke(
+                      'db-run',
+                      'CREATE INDEX IF NOT EXISTS idx_reconciliation_custom_entries_reconciliation ON reconciliation_custom_entries(reconciliation_id, definition_id)',
+                      []
+                  );
+              } catch (customTablesSchemaError) {
+                  console.warn('⚠️ [RESTORE] تعذر إكمال فهرسة الجداول الإضافية:', customTablesSchemaError);
+              }
+      
               console.log('✅ [RESTORE] تم فحص وإنشاء جميع الجداول المطلوبة');
       
           } catch (error) {
@@ -8010,6 +8061,7 @@
                   'cashiers',         // References: branches(id)
                   'accountants',      // No dependencies
                   'atms',            // No dependencies
+                  'reconciliation_custom_table_definitions', // No dependencies
                   'reconciliations',  // References: cashiers(id), accountants(id)
                   'bank_receipts',    // References: reconciliations(id), atms(id)
                   'cash_receipts',    // References: reconciliations(id)
@@ -8017,6 +8069,7 @@
                   'customer_receipts', // References: reconciliations(id)
                   'return_invoices',  // References: reconciliations(id)
                   'suppliers',        // References: reconciliations(id)
+                  'reconciliation_custom_entries', // References: reconciliations(id), definitions(id)
                   'system_settings',  // No dependencies
                   'settings',          // No dependencies
                   'reconciliation_requests', // References: cashiers(id)
@@ -8484,6 +8537,8 @@
             const branchCashboxes = ensureArrayTable(safeData, 'branch_cashboxes');
             const cashboxVouchers = ensureArrayTable(safeData, 'cashbox_vouchers');
             const cashboxVoucherAuditLog = ensureArrayTable(safeData, 'cashbox_voucher_audit_log');
+            const customDefinitions = ensureArrayTable(safeData, 'reconciliation_custom_table_definitions');
+            const customEntries = ensureArrayTable(safeData, 'reconciliation_custom_entries');
       
             const branchById = buildEntityMap(branches);
             const cashierById = buildEntityMap(cashiers);
@@ -8491,6 +8546,7 @@
             const atmById = buildEntityMap(atms);
             const reconciliationById = buildEntityMap(reconciliations);
             const cashboxById = buildEntityMap(branchCashboxes);
+            const customDefinitionById = buildEntityMap(customDefinitions);
       
             const cashierNumbers = new Set(
               cashiers
@@ -8516,7 +8572,10 @@
               repairedBranchCashboxes: 0,
               repairedReconciliationParents: 0,
               repairedReceiptReconciliations: 0,
-              repairedBankReceiptAtms: 0
+              repairedBankReceiptAtms: 0,
+              placeholderCustomDefinitions: 0,
+              repairedCustomEntryReconciliations: 0,
+              repairedCustomEntryDefinitions: 0
             };
       
             const getDefaultBranchId = () => {
@@ -8714,6 +8773,35 @@
               return normalizedId;
             };
       
+            const ensureCustomDefinition = (id) => {
+              const normalizedId = normalizeId(id);
+              if (normalizedId === null) {
+                return null;
+              }
+      
+              if (customDefinitionById.has(normalizedId)) {
+                return normalizedId;
+              }
+      
+              const definition = {
+                id: normalizedId,
+                table_key: `restore_custom_${normalizedId}`,
+                table_name: `جدول مستعاد #${normalizedId}`,
+                entry_template: 'amount_only',
+                default_sign: 0,
+                display_order: normalizedId,
+                is_active: 1,
+                config_json: '{}',
+                created_at: now,
+                updated_at: now
+              };
+      
+              customDefinitions.push(definition);
+              customDefinitionById.set(normalizedId, definition);
+              summary.placeholderCustomDefinitions += 1;
+              return normalizedId;
+            };
+      
             cashiers.forEach((cashier) => {
               const branchId = normalizeId(cashier && cashier.branch_id);
               if (branchId !== null && !branchById.has(branchId)) {
@@ -8842,6 +8930,27 @@
               }
             });
       
+            customEntries.forEach((entry) => {
+              const reconciliationId = normalizeId(entry && entry.reconciliation_id);
+              if (reconciliationId === null || !reconciliationById.has(reconciliationId)) {
+                entry.reconciliation_id = ensureReconciliation(
+                  reconciliationId !== null ? reconciliationId : entry && entry.id,
+                  {
+                    reconciliationDate: entry && entry.created_at ? String(entry.created_at).slice(0, 10) : today
+                  }
+                );
+                summary.repairedCustomEntryReconciliations += 1;
+              }
+      
+              const definitionId = normalizeId(entry && entry.definition_id);
+              if (definitionId === null || !customDefinitionById.has(definitionId)) {
+                entry.definition_id = ensureCustomDefinition(
+                  definitionId !== null ? definitionId : entry && entry.id
+                );
+                summary.repairedCustomEntryDefinitions += 1;
+              }
+            });
+      
             const touchedCounts = Object.values(summary).reduce((sum, value) => sum + value, 0);
             if (touchedCounts > 0) {
               console.log('🔧 [RESTORE] تم إصلاح مراجع النسخة الاحتياطية تلقائيًا:', summary);
@@ -8887,6 +8996,8 @@
             const branchCashboxes = ensureArrayTable(data, 'branch_cashboxes');
             const cashboxVouchers = ensureArrayTable(data, 'cashbox_vouchers');
             const cashboxVoucherAuditLog = ensureArrayTable(data, 'cashbox_voucher_audit_log');
+            const customDefinitions = ensureArrayTable(data, 'reconciliation_custom_table_definitions');
+            const customEntries = ensureArrayTable(data, 'reconciliation_custom_entries');
       
             const branchIds = new Set(Array.from(buildEntityMap(branches).keys()));
             const cashierIds = new Set(Array.from(buildEntityMap(cashiers).keys()));
@@ -8894,6 +9005,7 @@
             const atmIds = new Set(Array.from(buildEntityMap(atms).keys()));
             const reconciliationIds = new Set(Array.from(buildEntityMap(reconciliations).keys()));
             const cashboxIds = new Set(Array.from(buildEntityMap(branchCashboxes).keys()));
+            const customDefinitionIds = new Set(Array.from(buildEntityMap(customDefinitions).keys()));
       
             const issues = [];
       
@@ -9022,6 +9134,26 @@
             );
             if (invalidAuditBranches > 0) {
               issues.push(`سجل تدقيق الصندوق يشير إلى فروع غير موجودة: ${invalidAuditBranches}`);
+            }
+      
+            const invalidCustomEntryReconciliations = countMissingReferences(
+              customEntries,
+              'reconciliation_id',
+              reconciliationIds,
+              { allowNull: false }
+            );
+            if (invalidCustomEntryReconciliations > 0) {
+              issues.push(`الجداول الإضافية تشير إلى تصفيات غير موجودة: ${invalidCustomEntryReconciliations}`);
+            }
+      
+            const invalidCustomEntryDefinitions = countMissingReferences(
+              customEntries,
+              'definition_id',
+              customDefinitionIds,
+              { allowNull: false }
+            );
+            if (invalidCustomEntryDefinitions > 0) {
+              issues.push(`الجداول الإضافية تشير إلى تعريفات غير موجودة: ${invalidCustomEntryDefinitions}`);
             }
       
             if (issues.length === 0) {
