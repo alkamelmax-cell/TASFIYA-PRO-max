@@ -255,6 +255,31 @@ class BackgroundSync {
         const atms = db.prepare('SELECT * FROM atms').all();
         const branch_cashboxes = db.prepare('SELECT * FROM branch_cashboxes').all();
         const cashbox_vouchers = db.prepare('SELECT * FROM cashbox_vouchers ORDER BY id DESC').all();
+        const reconciliation_custom_table_definitions = db.prepare(`
+            SELECT
+                table_key,
+                table_name,
+                entry_template,
+                default_sign,
+                display_order,
+                is_active,
+                config_json,
+                created_at,
+                updated_at
+            FROM reconciliation_custom_table_definitions
+            ORDER BY display_order ASC, id ASC
+        `).all();
+        const reconciliation_formula_settings = db.prepare(`
+            SELECT
+                category,
+                setting_key,
+                setting_value,
+                created_at,
+                updated_at
+            FROM system_settings
+            WHERE category = 'reconciliation_formula'
+            ORDER BY setting_key ASC
+        `).all();
 
         console.log(`🔍 [SYNC] Local counts: admins=${admins.length}, branches=${branches.length}, cashiers=${cashiers.length}, accountants=${accountants.length}, atms=${atms.length}, branch_cashboxes=${branch_cashboxes.length}`);
 
@@ -312,10 +337,32 @@ class BackgroundSync {
         );
         hasIds = true;
 
+        allIdsPayload.active_reconciliation_custom_table_keys = reconciliation_custom_table_definitions
+            .filter((row) => this.parseInteger(row?.is_active) !== 0)
+            .map((row) => this.toOptionalText(row?.table_key))
+            .filter((tableKey) => typeof tableKey === 'string' && tableKey.length > 0);
+        hasIds = true;
+
         if (hasIds) {
             console.log('🧹 [SYNC] Sending ID lists for mirror cleanup...');
             await this.sendPayload(allIdsPayload, { preserveEmptyArrays: true });
         }
+
+        await this.safePushStep('reconciliation_custom_table_definitions', async () => {
+            await this.sendInBatches(
+                'reconciliation_custom_table_definitions',
+                reconciliation_custom_table_definitions,
+                DEFAULT_SYNC_BATCH_SIZE
+            );
+        });
+
+        await this.safePushStep('reconciliation_formula_settings', async () => {
+            await this.sendInBatches(
+                'reconciliation_formula_settings',
+                reconciliation_formula_settings,
+                DEFAULT_SYNC_BATCH_SIZE
+            );
+        });
 
         await this.safePushStep('cashbox_vouchers', async () => {
             await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, DEFAULT_SYNC_BATCH_SIZE);

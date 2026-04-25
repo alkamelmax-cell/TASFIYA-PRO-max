@@ -118,6 +118,8 @@ function createBackupRestoreRestoreValidationHandlers(context) {
       const branchCashboxes = ensureArrayTable(safeData, 'branch_cashboxes');
       const cashboxVouchers = ensureArrayTable(safeData, 'cashbox_vouchers');
       const cashboxVoucherAuditLog = ensureArrayTable(safeData, 'cashbox_voucher_audit_log');
+      const customDefinitions = ensureArrayTable(safeData, 'reconciliation_custom_table_definitions');
+      const customEntries = ensureArrayTable(safeData, 'reconciliation_custom_entries');
 
       const branchById = buildEntityMap(branches);
       const cashierById = buildEntityMap(cashiers);
@@ -125,6 +127,7 @@ function createBackupRestoreRestoreValidationHandlers(context) {
       const atmById = buildEntityMap(atms);
       const reconciliationById = buildEntityMap(reconciliations);
       const cashboxById = buildEntityMap(branchCashboxes);
+      const customDefinitionById = buildEntityMap(customDefinitions);
 
       const cashierNumbers = new Set(
         cashiers
@@ -150,7 +153,10 @@ function createBackupRestoreRestoreValidationHandlers(context) {
         repairedBranchCashboxes: 0,
         repairedReconciliationParents: 0,
         repairedReceiptReconciliations: 0,
-        repairedBankReceiptAtms: 0
+        repairedBankReceiptAtms: 0,
+        placeholderCustomDefinitions: 0,
+        repairedCustomEntryReconciliations: 0,
+        repairedCustomEntryDefinitions: 0
       };
 
       const getDefaultBranchId = () => {
@@ -348,6 +354,35 @@ function createBackupRestoreRestoreValidationHandlers(context) {
         return normalizedId;
       };
 
+      const ensureCustomDefinition = (id) => {
+        const normalizedId = normalizeId(id);
+        if (normalizedId === null) {
+          return null;
+        }
+
+        if (customDefinitionById.has(normalizedId)) {
+          return normalizedId;
+        }
+
+        const definition = {
+          id: normalizedId,
+          table_key: `restore_custom_${normalizedId}`,
+          table_name: `جدول مستعاد #${normalizedId}`,
+          entry_template: 'amount_only',
+          default_sign: 0,
+          display_order: normalizedId,
+          is_active: 1,
+          config_json: '{}',
+          created_at: now,
+          updated_at: now
+        };
+
+        customDefinitions.push(definition);
+        customDefinitionById.set(normalizedId, definition);
+        summary.placeholderCustomDefinitions += 1;
+        return normalizedId;
+      };
+
       cashiers.forEach((cashier) => {
         const branchId = normalizeId(cashier && cashier.branch_id);
         if (branchId !== null && !branchById.has(branchId)) {
@@ -476,6 +511,27 @@ function createBackupRestoreRestoreValidationHandlers(context) {
         }
       });
 
+      customEntries.forEach((entry) => {
+        const reconciliationId = normalizeId(entry && entry.reconciliation_id);
+        if (reconciliationId === null || !reconciliationById.has(reconciliationId)) {
+          entry.reconciliation_id = ensureReconciliation(
+            reconciliationId !== null ? reconciliationId : entry && entry.id,
+            {
+              reconciliationDate: entry && entry.created_at ? String(entry.created_at).slice(0, 10) : today
+            }
+          );
+          summary.repairedCustomEntryReconciliations += 1;
+        }
+
+        const definitionId = normalizeId(entry && entry.definition_id);
+        if (definitionId === null || !customDefinitionById.has(definitionId)) {
+          entry.definition_id = ensureCustomDefinition(
+            definitionId !== null ? definitionId : entry && entry.id
+          );
+          summary.repairedCustomEntryDefinitions += 1;
+        }
+      });
+
       const touchedCounts = Object.values(summary).reduce((sum, value) => sum + value, 0);
       if (touchedCounts > 0) {
         console.log('🔧 [RESTORE] تم إصلاح مراجع النسخة الاحتياطية تلقائيًا:', summary);
@@ -521,6 +577,8 @@ function createBackupRestoreRestoreValidationHandlers(context) {
       const branchCashboxes = ensureArrayTable(data, 'branch_cashboxes');
       const cashboxVouchers = ensureArrayTable(data, 'cashbox_vouchers');
       const cashboxVoucherAuditLog = ensureArrayTable(data, 'cashbox_voucher_audit_log');
+      const customDefinitions = ensureArrayTable(data, 'reconciliation_custom_table_definitions');
+      const customEntries = ensureArrayTable(data, 'reconciliation_custom_entries');
 
       const branchIds = new Set(Array.from(buildEntityMap(branches).keys()));
       const cashierIds = new Set(Array.from(buildEntityMap(cashiers).keys()));
@@ -528,6 +586,7 @@ function createBackupRestoreRestoreValidationHandlers(context) {
       const atmIds = new Set(Array.from(buildEntityMap(atms).keys()));
       const reconciliationIds = new Set(Array.from(buildEntityMap(reconciliations).keys()));
       const cashboxIds = new Set(Array.from(buildEntityMap(branchCashboxes).keys()));
+      const customDefinitionIds = new Set(Array.from(buildEntityMap(customDefinitions).keys()));
 
       const issues = [];
 
@@ -656,6 +715,26 @@ function createBackupRestoreRestoreValidationHandlers(context) {
       );
       if (invalidAuditBranches > 0) {
         issues.push(`سجل تدقيق الصندوق يشير إلى فروع غير موجودة: ${invalidAuditBranches}`);
+      }
+
+      const invalidCustomEntryReconciliations = countMissingReferences(
+        customEntries,
+        'reconciliation_id',
+        reconciliationIds,
+        { allowNull: false }
+      );
+      if (invalidCustomEntryReconciliations > 0) {
+        issues.push(`الجداول الإضافية تشير إلى تصفيات غير موجودة: ${invalidCustomEntryReconciliations}`);
+      }
+
+      const invalidCustomEntryDefinitions = countMissingReferences(
+        customEntries,
+        'definition_id',
+        customDefinitionIds,
+        { allowNull: false }
+      );
+      if (invalidCustomEntryDefinitions > 0) {
+        issues.push(`الجداول الإضافية تشير إلى تعريفات غير موجودة: ${invalidCustomEntryDefinitions}`);
       }
 
       if (issues.length === 0) {

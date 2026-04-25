@@ -103,7 +103,9 @@ async function collectDatabaseData() {
             'manual_customer_receipts',
             'branch_cashboxes',
             'cashbox_vouchers',
-            'cashbox_voucher_audit_log'
+            'cashbox_voucher_audit_log',
+            'reconciliation_custom_table_definitions',
+            'reconciliation_custom_entries'
         ];
 
         for (const table of tables) {

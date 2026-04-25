@@ -2747,6 +2747,20 @@ class LocalWebServer {
                     console.log('ℹ️ [SYNC] Ignoring legacy active_branch_cashboxes_ids for branch_cashboxes cleanup on PostgreSQL; waiting for branch_id-based payload.');
                 }
 
+                if (Array.isArray(data.active_reconciliation_custom_table_keys)) {
+                    await pool.query(
+                        `
+                            UPDATE reconciliation_custom_table_definitions
+                            SET is_active = CASE
+                                WHEN table_key = ANY($1::text[]) THEN 1
+                                ELSE 0
+                            END,
+                            updated_at = CURRENT_TIMESTAMP
+                        `,
+                        [data.active_reconciliation_custom_table_keys]
+                    );
+                }
+
 
                 if (data.admins) {
                     // For admins, use username as conflict key to handle duplicate usernames
@@ -2769,6 +2783,30 @@ class LocalWebServer {
                         { name: 'id' }, { name: 'name' }, { name: 'bank_name' },
                         { name: 'location' }, { name: 'branch_id' }, { name: 'active' }
                     ]);
+                }
+
+                if (data.reconciliation_custom_table_definitions) {
+                    await syncTable('reconciliation_custom_table_definitions', data.reconciliation_custom_table_definitions, [
+                        { name: 'table_key' },
+                        { name: 'table_name' },
+                        { name: 'entry_template' },
+                        { name: 'default_sign' },
+                        { name: 'display_order' },
+                        { name: 'is_active' },
+                        { name: 'config_json' },
+                        { name: 'created_at' },
+                        { name: 'updated_at' }
+                    ], 'table_key');
+                }
+
+                if (data.reconciliation_formula_settings) {
+                    await syncTable('system_settings', data.reconciliation_formula_settings, [
+                        { name: 'category' },
+                        { name: 'setting_key' },
+                        { name: 'setting_value' },
+                        { name: 'created_at' },
+                        { name: 'updated_at' }
+                    ], 'category, setting_key');
                 }
 
                 let canonicalCashboxByBranchId = new Map();

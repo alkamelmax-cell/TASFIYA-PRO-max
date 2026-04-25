@@ -303,6 +303,40 @@ async function ensureRequiredTablesExist() {
                         FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL
                     )
                 `
+            },
+            {
+                name: 'reconciliation_custom_table_definitions',
+                createSQL: `
+                    CREATE TABLE IF NOT EXISTS reconciliation_custom_table_definitions (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        table_key TEXT NOT NULL UNIQUE,
+                        table_name TEXT NOT NULL,
+                        entry_template TEXT NOT NULL DEFAULT 'amount_only',
+                        default_sign INTEGER DEFAULT 0,
+                        display_order INTEGER DEFAULT 0,
+                        is_active INTEGER DEFAULT 1,
+                        config_json TEXT DEFAULT '{}',
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    )
+                `
+            },
+            {
+                name: 'reconciliation_custom_entries',
+                createSQL: `
+                    CREATE TABLE IF NOT EXISTS reconciliation_custom_entries (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        reconciliation_id INTEGER NOT NULL,
+                        definition_id INTEGER NOT NULL,
+                        entry_payload_json TEXT NOT NULL,
+                        amount DECIMAL(10,2) NOT NULL DEFAULT 0,
+                        is_modified INTEGER DEFAULT 0,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (reconciliation_id) REFERENCES reconciliations(id) ON DELETE CASCADE,
+                        FOREIGN KEY (definition_id) REFERENCES reconciliation_custom_table_definitions(id) ON DELETE RESTRICT
+                    )
+                `
             }
         ];
 
@@ -428,6 +462,21 @@ async function ensureRequiredTablesExist() {
             console.warn('⚠️ [RESTORE] تعذر إكمال ترحيل بنية سندات الصندوق:', cashboxSchemaError);
         }
 
+        try {
+            await ipcRenderer.invoke(
+                'db-run',
+                'CREATE INDEX IF NOT EXISTS idx_reconciliation_custom_definitions_active ON reconciliation_custom_table_definitions(is_active, display_order)',
+                []
+            );
+            await ipcRenderer.invoke(
+                'db-run',
+                'CREATE INDEX IF NOT EXISTS idx_reconciliation_custom_entries_reconciliation ON reconciliation_custom_entries(reconciliation_id, definition_id)',
+                []
+            );
+        } catch (customTablesSchemaError) {
+            console.warn('⚠️ [RESTORE] تعذر إكمال فهرسة الجداول الإضافية:', customTablesSchemaError);
+        }
+
         console.log('✅ [RESTORE] تم فحص وإنشاء جميع الجداول المطلوبة');
 
     } catch (error) {
@@ -456,6 +505,7 @@ async function restoreDatabaseData(backupData) {
             'cashiers',         // References: branches(id)
             'accountants',      // No dependencies
             'atms',            // No dependencies
+            'reconciliation_custom_table_definitions', // No dependencies
             'reconciliations',  // References: cashiers(id), accountants(id)
             'bank_receipts',    // References: reconciliations(id), atms(id)
             'cash_receipts',    // References: reconciliations(id)
@@ -463,6 +513,7 @@ async function restoreDatabaseData(backupData) {
             'customer_receipts', // References: reconciliations(id)
             'return_invoices',  // References: reconciliations(id)
             'suppliers',        // References: reconciliations(id)
+            'reconciliation_custom_entries', // References: reconciliations(id), definitions(id)
             'system_settings',  // No dependencies
             'settings',          // No dependencies
             'reconciliation_requests', // References: cashiers(id)

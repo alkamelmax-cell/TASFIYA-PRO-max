@@ -2310,7 +2310,19 @@ app.whenReady().then(() => {
                 'branch_cashboxes',
                 'cashbox_vouchers',
                 'cashbox_voucher_audit_log',
-                'system_settings'
+                'system_settings',
+                'settings',
+                'reconciliation_requests',
+                'archived_years',
+                'archived_reconciliations',
+                'archived_bank_receipts',
+                'archived_cash_receipts',
+                'archived_postpaid_sales',
+                'archived_customer_receipts',
+                'archived_return_invoices',
+                'archived_suppliers',
+                'reconciliation_custom_table_definitions',
+                'reconciliation_custom_entries'
             ];
 
             // Get data for each table
