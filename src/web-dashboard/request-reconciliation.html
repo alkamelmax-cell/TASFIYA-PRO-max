@@ -720,6 +720,8 @@
         };
         let customTableDefinitions = [];
         let customTableEntries = {};
+        let lastRequestConfigSignature = '';
+        let requestConfigRefreshTimer = null;
         const REQUEST_DRAFT_STORAGE_PREFIX = 'tasfiya_reconciliation_request_draft_v1';
         const DRAFT_AUTOSAVE_DELAY_MS = 450;
         let draftAutosaveTimer = null;
@@ -966,9 +968,92 @@
 
                 renderCustomTableRows(definition);
             });
+
+            document.querySelectorAll('#pills-tab .nav-link').forEach((tabButton) => {
+                tabButton.removeEventListener('shown.bs.tab', scheduleRequestDraftSave);
+                tabButton.addEventListener('shown.bs.tab', scheduleRequestDraftSave);
+            });
         }
 
-        async function loadReconciliationRequestConfig() {
+        function captureDynamicCustomFieldValues() {
+            const values = {};
+            document.querySelectorAll('[id^="customField_"]').forEach((field) => {
+                values[field.id] = field.value || '';
+            });
+            return values;
+        }
+
+        function restoreDynamicCustomFieldValues(values = {}) {
+            Object.entries(values || {}).forEach(([fieldId, value]) => {
+                writeFieldValue(fieldId, value);
+            });
+        }
+
+        function buildRequestConfigSignature(config = {}) {
+            const definitions = Array.isArray(config.custom_table_definitions)
+                ? config.custom_table_definitions.map((definition, index) => normalizeCustomTableDefinitionClient(definition, index))
+                : [];
+            return JSON.stringify({
+                custom_table_definitions: definitions.map((definition) => ({
+                    table_key: definition.table_key,
+                    table_name: definition.table_name,
+                    entry_template: definition.entry_template,
+                    default_sign: definition.default_sign,
+                    display_order: definition.display_order,
+                    is_active: definition.is_active
+                })),
+                formula_settings: config.formula_settings || {}
+            });
+        }
+
+        function applyReconciliationRequestConfig(config = {}, options = {}) {
+            const {
+                notifyOnChange = false,
+                preserveDynamicFieldValues = true
+            } = options;
+            const previousSignature = lastRequestConfigSignature;
+            const nextSignature = buildRequestConfigSignature(config);
+            const activeTabTarget = getActiveTabTarget();
+            const dynamicFieldValues = preserveDynamicFieldValues ? captureDynamicCustomFieldValues() : {};
+
+            customTableDefinitions = Array.isArray(config.custom_table_definitions)
+                ? config.custom_table_definitions.map((definition, index) => normalizeCustomTableDefinitionClient(definition, index))
+                : [];
+            customTableEntries = customTableDefinitions.reduce((acc, definition) => {
+                acc[definition.table_key] = getCustomTableEntries(definition.table_key);
+                return acc;
+            }, {});
+            reconciliationFormulaSettings = {
+                ...reconciliationFormulaSettings,
+                ...(config.formula_settings || {}),
+                custom_table_signs: (config.formula_settings && config.formula_settings.custom_table_signs) || {}
+            };
+
+            renderCustomTablesUi();
+            restoreDynamicCustomFieldValues(dynamicFieldValues);
+
+            if (activeTabTarget) {
+                const tabButton = document.querySelector(`#pills-tab .nav-link[data-bs-target="${activeTabTarget}"]`);
+                if (tabButton) {
+                    bootstrap.Tab.getOrCreateInstance(tabButton).show();
+                }
+            }
+
+            applyFormulaSummaryLabels();
+            renderCustomSummaryRows();
+            updateUI();
+
+            lastRequestConfigSignature = nextSignature;
+            if (notifyOnChange && previousSignature && previousSignature !== nextSignature) {
+                showToast('info', 'تم تحديث الجداول الإضافية في الصفحة.');
+            }
+        }
+
+        async function loadReconciliationRequestConfig(options = {}) {
+            const {
+                silent = false,
+                notifyOnChange = false
+            } = options;
             try {
                 const res = await fetchWithSessionGuard('/api/reconciliation-request-config');
                 const data = await res.json();
@@ -976,27 +1061,41 @@
                     throw new Error(data.error || `HTTP ${res.status}`);
                 }
 
-                const config = data.data || {};
-                customTableDefinitions = Array.isArray(config.custom_table_definitions)
-                    ? config.custom_table_definitions.map((definition, index) => normalizeCustomTableDefinitionClient(definition, index))
-                    : [];
-                customTableEntries = customTableDefinitions.reduce((acc, definition) => {
-                    acc[definition.table_key] = getCustomTableEntries(definition.table_key);
-                    return acc;
-                }, {});
-                reconciliationFormulaSettings = {
-                    ...reconciliationFormulaSettings,
-                    ...(config.formula_settings || {}),
-                    custom_table_signs: (config.formula_settings && config.formula_settings.custom_table_signs) || {}
-                };
-
-                renderCustomTablesUi();
-                applyFormulaSummaryLabels();
-                renderCustomSummaryRows();
-                updateUI();
+                applyReconciliationRequestConfig(data.data || {}, { notifyOnChange });
+                return true;
             } catch (error) {
                 console.warn('Failed to load reconciliation request config', error);
+                if (!silent && (!error || error.code !== 401)) {
+                    showToast('warning', 'تعذر تحميل تهيئة الجداول الإضافية. جرّب تحديث الصفحة.');
+                }
+                return false;
             }
+        }
+
+        function setupRequestConfigAutoRefresh() {
+            if (setupRequestConfigAutoRefresh.initialized) {
+                return;
+            }
+            setupRequestConfigAutoRefresh.initialized = true;
+
+            const refreshConfigSilently = () => {
+                loadReconciliationRequestConfig({ silent: true, notifyOnChange: true }).catch((error) => {
+                    console.warn('Background request-config refresh failed', error);
+                });
+            };
+
+            window.addEventListener('focus', refreshConfigSilently);
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState === 'visible') {
+                    refreshConfigSilently();
+                }
+            });
+
+            requestConfigRefreshTimer = window.setInterval(() => {
+                if (document.visibilityState === 'visible') {
+                    refreshConfigSilently();
+                }
+            }, 30000);
         }
 
         function addCustomTableItem(tableKey) {
@@ -1400,6 +1499,7 @@
             await loadReconciliationRequestConfig();
             restoreRequestDraft();
             setupRequestDraftAutosave();
+            setupRequestConfigAutoRefresh();
             draftAutosaveReady = true;
             scheduleRequestDraftSave();
             applyCashierUiAdjustments();
