@@ -855,15 +855,22 @@
             };
         }
 
-        function clearSavedRequestDraft() {
-            localStorage.removeItem(getDraftStorageKey());
-        }
-
-        function resetRequestFormForNewRequest() {
+        function cancelRequestDraftAutosaveTimer() {
             if (draftAutosaveTimer) {
                 clearTimeout(draftAutosaveTimer);
                 draftAutosaveTimer = null;
             }
+        }
+
+        function clearSavedRequestDraft() {
+            cancelRequestDraftAutosaveTimer();
+            localStorage.removeItem(getDraftStorageKey());
+        }
+
+        function resetRequestFormForNewRequest() {
+            const previousDraftAutosaveReady = draftAutosaveReady;
+            draftAutosaveReady = false;
+            cancelRequestDraftAutosaveTimer();
 
             cashItems = [];
             bankItems = [];
@@ -927,6 +934,7 @@
 
             updateUI();
             clearSavedRequestDraft();
+            draftAutosaveReady = previousDraftAutosaveReady;
 
             const firstTabButton = document.querySelector('#pills-tab .nav-link[data-bs-target="#tab-cash"]');
             if (firstTabButton) {
@@ -960,9 +968,7 @@
                 return;
             }
 
-            if (draftAutosaveTimer) {
-                clearTimeout(draftAutosaveTimer);
-            }
+            cancelRequestDraftAutosaveTimer();
 
             draftAutosaveTimer = setTimeout(() => {
                 draftAutosaveTimer = null;
