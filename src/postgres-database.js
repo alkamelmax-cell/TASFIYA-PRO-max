@@ -500,6 +500,38 @@ class PostgresManager {
             await this.pool.query(q);
         }
 
+        const preIndexSchemaQueries = [
+            "ALTER TABLE branches ADD COLUMN IF NOT EXISTS customer_code_prefix TEXT DEFAULT ''",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT DEFAULT ''",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
+            'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+            "ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+            "ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+            "ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+            "ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            `WITH ordered_branches AS (
+                SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS branch_order
+                FROM branches
+            )
+            UPDATE branches b
+            SET customer_code_prefix = 'C' || ordered_branches.branch_order,
+                updated_at = CURRENT_TIMESTAMP
+            FROM ordered_branches
+            WHERE b.id = ordered_branches.id
+              AND TRIM(COALESCE(b.customer_code_prefix, '')) = ''`
+        ];
+
+        for (const query of preIndexSchemaQueries) {
+            await this.pool.query(query);
+        }
+
         const indexQueries = [
             'CREATE INDEX IF NOT EXISTS idx_customers_name_branch ON customers(customer_name, branch_id)',
             'CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code)',
