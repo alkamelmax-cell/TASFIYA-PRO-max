@@ -2722,12 +2722,12 @@ class LocalWebServer {
                         FROM ordered_branches
                         WHERE b.id = ordered_branches.id
                           AND TRIM(COALESCE(b.customer_code_prefix, '')) = ''`,
-                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_branches_customer_code_prefix_unique
+                        `CREATE INDEX IF NOT EXISTS idx_branches_customer_code_prefix_lookup
                          ON branches(UPPER(TRIM(customer_code_prefix)))
                          WHERE TRIM(COALESCE(customer_code_prefix, '')) <> ''`,
                         'CREATE INDEX IF NOT EXISTS idx_customers_name_branch ON customers(customer_name, branch_id)',
                         'CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code)',
-                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_customer_code_unique
+                        `CREATE INDEX IF NOT EXISTS idx_customers_customer_code_lookup
                          ON customers(UPPER(TRIM(customer_code)))
                          WHERE TRIM(COALESCE(customer_code, '')) <> ''`,
                         'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_id ON postpaid_sales(customer_id)',
