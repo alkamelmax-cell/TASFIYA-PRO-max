@@ -646,9 +646,21 @@
                 const url = cashierId ? `/api/customers?cashierId=${cashierId}` : '/api/customers';
                 const res = await fetchWithSessionGuard(url);
                 const data = await res.json();
-                if (data.success && data.customers) {
+                if (data.success && (data.customer_records || data.customers)) {
+                    const rawCustomers = Array.isArray(data.customer_records)
+                        ? data.customer_records
+                        : (Array.isArray(data.customers) ? data.customers : []);
+                    customerRecords = rawCustomers
+                        .map(normalizeCustomerRecord)
+                        .filter(Boolean);
                     const list = document.getElementById('customersList');
-                    list.innerHTML = data.customers.map(name => `<option value="${name}">`).join('');
+                    list.innerHTML = customerRecords
+                        .map((customer) => {
+                            const value = getCustomerDisplayValue(customer);
+                            const label = customer.customer_code || customer.customer_name;
+                            return `<option value="${escapeHtml(value)}" label="${escapeHtml(label)}">`;
+                        })
+                        .join('');
                 }
             } catch (e) {
                 if (e && e.code === 401) {
@@ -737,10 +749,119 @@
         let custReceiptItems = [];
         let returnItems = [];
         let supplierItems = [];
+        let customerRecords = [];
         const REQUEST_DRAFT_STORAGE_PREFIX = 'tasfiya_reconciliation_request_draft_v1';
         const DRAFT_AUTOSAVE_DELAY_MS = 450;
         let draftAutosaveTimer = null;
         let draftAutosaveReady = false;
+
+        function escapeHtml(value) {
+            return String(value == null ? '' : value)
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#039;');
+        }
+
+        function normalizeCustomerCode(value) {
+            const code = String(value == null ? '' : value).trim().toUpperCase();
+            return ['', '-', '–', '—'].includes(code) ? '' : code;
+        }
+
+        function normalizeCustomerRecord(row) {
+            if (typeof row === 'string') {
+                const name = row.trim();
+                return name ? { customer_name: name, customer_code: '', customer_id: null, branch_id: null } : null;
+            }
+
+            if (!row || typeof row !== 'object') {
+                return null;
+            }
+
+            const customerName = String(row.customer_name || row.name || '').trim();
+            if (!customerName) {
+                return null;
+            }
+
+            const customerId = Number(row.customer_id || row.id || 0);
+            const branchId = Number(row.branch_id || 0);
+            return {
+                customer_id: Number.isFinite(customerId) && customerId > 0 ? customerId : null,
+                customer_name: customerName,
+                customer_code: normalizeCustomerCode(row.customer_code || row.code),
+                branch_id: Number.isFinite(branchId) && branchId > 0 ? branchId : null
+            };
+        }
+
+        function getCustomerDisplayValue(record) {
+            if (!record || !record.customer_name) {
+                return '';
+            }
+
+            return record.customer_code
+                ? `${record.customer_name} - ${record.customer_code}`
+                : record.customer_name;
+        }
+
+        function formatCustomerLineLabel(item) {
+            const name = String(item && item.customer_name ? item.customer_name : '').trim();
+            const code = normalizeCustomerCode(item && item.customer_code ? item.customer_code : '');
+            return code ? `${name} - ${code}` : name;
+        }
+
+        function normalizeCustomerLineItem(item) {
+            const normalized = normalizeCustomerRecord(item);
+            if (!normalized) {
+                return {
+                    ...item,
+                    customer_display: formatCustomerLineLabel(item)
+                };
+            }
+
+            return {
+                ...item,
+                customer_id: normalized.customer_id,
+                customer_name: normalized.customer_name,
+                customer_code: normalized.customer_code,
+                branch_id: normalized.branch_id,
+                customer_display: getCustomerDisplayValue(normalized)
+            };
+        }
+
+        function resolveCustomerInput(inputValue) {
+            const normalizedInput = String(inputValue || '').trim();
+            if (!normalizedInput) {
+                return null;
+            }
+
+            const exactDisplay = customerRecords.find((record) => getCustomerDisplayValue(record) === normalizedInput);
+            if (exactDisplay) {
+                return exactDisplay;
+            }
+
+            const exactNameMatches = customerRecords.filter((record) => record.customer_name === normalizedInput);
+            if (exactNameMatches.length === 1) {
+                return exactNameMatches[0];
+            }
+
+            const displayMatch = normalizedInput.match(/^(.*)\s+-\s+([A-Z0-9]+-\d{1,})$/i);
+            if (displayMatch && displayMatch[1].trim()) {
+                return {
+                    customer_id: null,
+                    customer_name: displayMatch[1].trim(),
+                    customer_code: normalizeCustomerCode(displayMatch[2]),
+                    branch_id: null
+                };
+            }
+
+            return {
+                customer_id: null,
+                customer_name: normalizedInput,
+                customer_code: '',
+                branch_id: null
+            };
+        }
 
         function getDraftStorageKey() {
             const userIdentifier = user && user.id ? String(user.id) : 'anonymous';
@@ -927,8 +1048,8 @@
 
             renderTable('cashTableBody', cashItems, ['val', 'qty', 'sub']);
             renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
-            renderTable('postpaidTableBody', postpaidItems, ['customer_name', 'amount']);
-            renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
+            renderTable('postpaidTableBody', postpaidItems, ['customer_display', 'amount']);
+            renderTable('custReceiptTableBody', custReceiptItems, ['customer_display', 'type', 'amount']);
             renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
             renderTable('supplierTableBody', supplierItems, ['supplier_name', 'invoice_number', 'amount']);
 
@@ -992,15 +1113,19 @@
                 const lists = draft.lists || {};
                 cashItems = Array.isArray(lists.cashItems) ? lists.cashItems : [];
                 bankItems = Array.isArray(lists.bankItems) ? lists.bankItems : [];
-                postpaidItems = Array.isArray(lists.postpaidItems) ? lists.postpaidItems : [];
-                custReceiptItems = Array.isArray(lists.custReceiptItems) ? lists.custReceiptItems : [];
+                postpaidItems = Array.isArray(lists.postpaidItems)
+                    ? lists.postpaidItems.map(normalizeCustomerLineItem)
+                    : [];
+                custReceiptItems = Array.isArray(lists.custReceiptItems)
+                    ? lists.custReceiptItems.map(normalizeCustomerLineItem)
+                    : [];
                 returnItems = Array.isArray(lists.returnItems) ? lists.returnItems : [];
                 supplierItems = Array.isArray(lists.supplierItems) ? lists.supplierItems : [];
 
                 renderTable('cashTableBody', cashItems, ['val', 'qty', 'sub']);
                 renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
-                renderTable('postpaidTableBody', postpaidItems, ['customer_name', 'amount']);
-                renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
+                renderTable('postpaidTableBody', postpaidItems, ['customer_display', 'amount']);
+                renderTable('custReceiptTableBody', custReceiptItems, ['customer_display', 'type', 'amount']);
                 renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
                 renderTable('supplierTableBody', supplierItems, ['supplier_name', 'invoice_number', 'amount']);
 
@@ -1283,7 +1408,9 @@
         }
 
         function addPostpaidItem() {
-            const customer_name = document.getElementById('postpaidName').value;
+            const inputValue = document.getElementById('postpaidName').value.trim();
+            const selectedCustomer = resolveCustomerInput(inputValue);
+            const customer_name = selectedCustomer ? selectedCustomer.customer_name : inputValue;
             const amt = parseFloat(document.getElementById('postpaidAmount').value);
 
             if (!customer_name) {
@@ -1295,8 +1422,14 @@
                 return;
             }
 
-            postpaidItems.push({ customer_name, amount: amt });
-            renderTable('postpaidTableBody', postpaidItems, ['customer_name', 'amount']);
+            postpaidItems.push(normalizeCustomerLineItem({
+                customer_id: selectedCustomer ? selectedCustomer.customer_id : null,
+                customer_name,
+                customer_code: selectedCustomer ? selectedCustomer.customer_code : '',
+                branch_id: selectedCustomer ? selectedCustomer.branch_id : null,
+                amount: amt
+            }));
+            renderTable('postpaidTableBody', postpaidItems, ['customer_display', 'amount']);
             document.getElementById('postpaidName').value = ''; document.getElementById('postpaidAmount').value = '';
             document.getElementById('postpaidName').focus();
             updateUI();
@@ -1304,7 +1437,9 @@
         }
 
         function addCustomerReceiptItem() {
-            const customer_name = document.getElementById('custReceiptName').value;
+            const inputValue = document.getElementById('custReceiptName').value.trim();
+            const selectedCustomer = resolveCustomerInput(inputValue);
+            const customer_name = selectedCustomer ? selectedCustomer.customer_name : inputValue;
             const type = document.getElementById('custReceiptType').value;
             const amt = parseFloat(document.getElementById('custReceiptAmount').value);
 
@@ -1317,8 +1452,15 @@
                 return;
             }
 
-            custReceiptItems.push({ customer_name, type, amount: amt });
-            renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
+            custReceiptItems.push(normalizeCustomerLineItem({
+                customer_id: selectedCustomer ? selectedCustomer.customer_id : null,
+                customer_name,
+                customer_code: selectedCustomer ? selectedCustomer.customer_code : '',
+                branch_id: selectedCustomer ? selectedCustomer.branch_id : null,
+                type,
+                amount: amt
+            }));
+            renderTable('custReceiptTableBody', custReceiptItems, ['customer_display', 'type', 'amount']);
             document.getElementById('custReceiptName').value = ''; document.getElementById('custReceiptAmount').value = '';
             document.getElementById('custReceiptName').focus();
             updateUI();
@@ -1387,14 +1529,14 @@
 
         function removePostpaidItem(idx) {
             postpaidItems.splice(idx, 1);
-            renderTable('postpaidTableBody', postpaidItems, ['customer_name', 'amount']);
+            renderTable('postpaidTableBody', postpaidItems, ['customer_display', 'amount']);
             updateUI();
             showToast('info', 'تم الحذف');
         }
 
         function removeCustReceiptItem(idx) {
             custReceiptItems.splice(idx, 1);
-            renderTable('custReceiptTableBody', custReceiptItems, ['customer_name', 'type', 'amount']);
+            renderTable('custReceiptTableBody', custReceiptItems, ['customer_display', 'type', 'amount']);
             updateUI();
             showToast('info', 'تم الحذف');
         }
@@ -1416,7 +1558,7 @@
                 cols.forEach(c => {
                     const val = item[c];
                     if (val === undefined) console.error(`Missing prop ${c} in table ${id}`, item);
-                    html += `<td>${val !== undefined ? val : '-'}</td>`;
+                    html += `<td>${escapeHtml(val !== undefined ? val : '-')}</td>`;
                 });
                 // Use specific remove functions
                 let removeFn = '';
@@ -1490,11 +1632,17 @@
                     amount: i.amount
                 })),
                 postpaid_items: postpaidItems.map(i => ({
+                    customer_id: i.customer_id || null,
                     customer_name: i.customer_name,
+                    customer_code: i.customer_code || '',
+                    branch_id: i.branch_id || null,
                     amount: i.amount
                 })),
                 customer_receipts: custReceiptItems.map(i => ({
+                    customer_id: i.customer_id || null,
                     customer_name: i.customer_name,
+                    customer_code: i.customer_code || '',
+                    branch_id: i.branch_id || null,
                     payment_type: i.type,
                     amount: i.amount
                 })),

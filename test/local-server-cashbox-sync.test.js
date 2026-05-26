@@ -22,7 +22,14 @@ function createSyncPool(initialState = {}) {
         normalized.startsWith('CREATE TABLE IF NOT EXISTS')
         || normalized.startsWith('CREATE INDEX IF NOT EXISTS')
         || normalized.startsWith('CREATE UNIQUE INDEX IF NOT EXISTS')
+        || normalized.startsWith('ALTER TABLE branches ADD COLUMN IF NOT EXISTS customer_code_prefix')
+        || normalized.startsWith('ALTER TABLE customers ADD COLUMN IF NOT EXISTS')
+        || normalized.startsWith('ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS')
+        || normalized.startsWith('ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS')
+        || normalized.startsWith('ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS')
+        || normalized.startsWith('ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS')
         || normalized.startsWith('ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key')
+        || normalized.startsWith('WITH ordered_branches AS')
       ) {
         return { rowCount: 0, rows: [] };
       }
@@ -321,7 +328,7 @@ test('cashbox vouchers are remapped to the canonical server cashbox id by branch
   assert.equal(pool.state.cashboxVouchers.length, 1);
   assert.equal(pool.state.cashboxVouchers[0].cashbox_id, pool.state.branchCashboxes[0].id);
   assert.notEqual(pool.state.cashboxVouchers[0].cashbox_id, 1);
-  assert.equal(pool.state.cashboxVouchers[0].sync_key, 'manual:2026-04-10%2010:00:00:44');
+  assert.equal(pool.state.cashboxVouchers[0].sync_key, 'seq:7:receipt:88');
 });
 
 test('legacy active_cashbox_vouchers_ids payload does not delete canonical Render vouchers', async () => {
@@ -481,8 +488,8 @@ test('cashbox vouchers with colliding local numbers still sync as distinct canon
   assert.deepEqual(
     pool.state.cashboxVouchers.map((voucher) => voucher.sync_key).sort(),
     [
-      'manual:2026-04-11%2009:00:00:1',
-      'manual:2026-04-11%2009:00:01:1'
+      'seq:7:receipt:1',
+      'seq:8:receipt:1'
     ]
   );
 });

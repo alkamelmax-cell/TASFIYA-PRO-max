@@ -73,6 +73,61 @@ class PostgresManager {
               ALTER TABLE cashbox_vouchers
               ADD COLUMN IF NOT EXISTS sync_key TEXT
             `);
+            await client.query("ALTER TABLE branches ADD COLUMN IF NOT EXISTS customer_code_prefix TEXT DEFAULT ''");
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS customers (
+                    id SERIAL PRIMARY KEY,
+                    customer_code TEXT DEFAULT '',
+                    customer_name TEXT NOT NULL,
+                    branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+                    phone TEXT DEFAULT '',
+                    address TEXT DEFAULT '',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+            await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''");
+            await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL");
+            await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''");
+            await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT DEFAULT ''");
+            await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
+            await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
+            await client.query('ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER');
+            await client.query("ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''");
+            await client.query('ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER');
+            await client.query("ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''");
+            await client.query('ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER');
+            await client.query("ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''");
+            await client.query('ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER');
+            await client.query("ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''");
+            await client.query(`
+                WITH ordered_branches AS (
+                    SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS branch_order
+                    FROM branches
+                )
+                UPDATE branches b
+                SET customer_code_prefix = 'C' || ordered_branches.branch_order,
+                    updated_at = CURRENT_TIMESTAMP
+                FROM ordered_branches
+                WHERE b.id = ordered_branches.id
+                  AND TRIM(COALESCE(b.customer_code_prefix, '')) = ''
+            `);
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_branches_customer_code_prefix_unique
+                ON branches(UPPER(TRIM(customer_code_prefix)))
+                WHERE TRIM(COALESCE(customer_code_prefix, '')) <> ''
+            `);
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customers_name_branch ON customers(customer_name, branch_id)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code)');
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_customer_code_unique
+                ON customers(UPPER(TRIM(customer_code)))
+                WHERE TRIM(COALESCE(customer_code, '')) <> ''
+            `);
+            await client.query('CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_id ON postpaid_sales(customer_id)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code ON postpaid_sales(customer_code)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_id ON customer_receipts(customer_id)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code ON customer_receipts(customer_code)');
             await client.query(`
               CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique
               ON cashbox_vouchers(sync_key)
@@ -204,14 +259,18 @@ class PostgresManager {
         const queries = [
             `CREATE TABLE IF NOT EXISTS manual_postpaid_sales (
                 id SERIAL PRIMARY KEY,
+                customer_id INTEGER,
                 customer_name TEXT NOT NULL,
+                customer_code TEXT DEFAULT '',
                 amount DECIMAL(10,2) NOT NULL,
                 reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS manual_customer_receipts (
                 id SERIAL PRIMARY KEY,
+                customer_id INTEGER,
                 customer_name TEXT NOT NULL,
+                customer_code TEXT DEFAULT '',
                 amount DECIMAL(10,2) NOT NULL,
                 reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -230,9 +289,20 @@ class PostgresManager {
             `CREATE TABLE IF NOT EXISTS branches (
                 id SERIAL PRIMARY KEY,
                 branch_name TEXT NOT NULL,
+                customer_code_prefix TEXT DEFAULT '',
                 branch_address TEXT,
                 branch_phone TEXT,
                 is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )`,
+            `CREATE TABLE IF NOT EXISTS customers (
+                id SERIAL PRIMARY KEY,
+                customer_code TEXT DEFAULT '',
+                customer_name TEXT NOT NULL,
+                branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+                phone TEXT DEFAULT '',
+                address TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
@@ -367,7 +437,9 @@ class PostgresManager {
             `CREATE TABLE IF NOT EXISTS postpaid_sales (
                 id SERIAL PRIMARY KEY,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
+                customer_id INTEGER,
                 customer_name TEXT NOT NULL,
+                customer_code TEXT DEFAULT '',
                 amount DECIMAL(10,2) NOT NULL,
                 notes TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -375,7 +447,9 @@ class PostgresManager {
             `CREATE TABLE IF NOT EXISTS customer_receipts (
                 id SERIAL PRIMARY KEY,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
+                customer_id INTEGER,
                 customer_name TEXT NOT NULL,
+                customer_code TEXT DEFAULT '',
                 amount DECIMAL(10,2) NOT NULL,
                 payment_type TEXT NOT NULL,
                 notes TEXT DEFAULT '',
@@ -383,14 +457,18 @@ class PostgresManager {
             )`,
             `CREATE TABLE IF NOT EXISTS manual_postpaid_sales (
                 id SERIAL PRIMARY KEY,
+                customer_id INTEGER,
                 customer_name TEXT NOT NULL,
+                customer_code TEXT DEFAULT '',
                 amount DECIMAL(10,2) NOT NULL,
                 reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS manual_customer_receipts (
                 id SERIAL PRIMARY KEY,
+                customer_id INTEGER,
                 customer_name TEXT NOT NULL,
+                customer_code TEXT DEFAULT '',
                 amount DECIMAL(10,2) NOT NULL,
                 reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -423,6 +501,18 @@ class PostgresManager {
         }
 
         const indexQueries = [
+            'CREATE INDEX IF NOT EXISTS idx_customers_name_branch ON customers(customer_name, branch_id)',
+            'CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code)',
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_customer_code_unique
+             ON customers(UPPER(TRIM(customer_code)))
+             WHERE TRIM(COALESCE(customer_code, '')) <> ''`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_branches_customer_code_prefix_unique
+             ON branches(UPPER(TRIM(customer_code_prefix)))
+             WHERE TRIM(COALESCE(customer_code_prefix, '')) <> ''`,
+            'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_id ON postpaid_sales(customer_id)',
+            'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code ON postpaid_sales(customer_code)',
+            'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_id ON customer_receipts(customer_id)',
+            'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code ON customer_receipts(customer_code)',
             'CREATE INDEX IF NOT EXISTS idx_branch_cashboxes_branch_id ON branch_cashboxes(branch_id)',
             'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_branch_date ON cashbox_vouchers(branch_id, voucher_date)',
             'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_cashbox_date ON cashbox_vouchers(cashbox_id, voucher_date)',
@@ -461,8 +551,8 @@ class PostgresManager {
             // Insert default branch
             const branchCount = await this.prepare('SELECT COUNT(*) as count FROM branches').get();
             if (branchCount.count == 0) {
-                await this.prepare(`INSERT INTO branches (branch_name, branch_address, branch_phone, is_active) VALUES (?, ?, ?, ?)`)
-                    .run('الفرع الرئيسي', 'الرياض - حي الملك فهد', '011-1234567', 1);
+                await this.prepare(`INSERT INTO branches (branch_name, customer_code_prefix, branch_address, branch_phone, is_active) VALUES (?, ?, ?, ?, ?)`)
+                    .run('الفرع الرئيسي', 'C1', 'الرياض - حي الملك فهد', '011-1234567', 1);
                 console.log('✅ Default branch created');
             }
 

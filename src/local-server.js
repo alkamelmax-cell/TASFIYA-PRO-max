@@ -52,6 +52,79 @@ function normalizeDetailsJsonPayload(value) {
     return null;
 }
 
+function normalizeCustomerNameValue(value) {
+    return String(value == null ? '' : value).replace(/\uFFFD/g, '').replaceAll('\u0000', '').trim();
+}
+
+function normalizeCustomerCodeValue(value) {
+    const normalized = String(value == null ? '' : value).trim().toUpperCase();
+    return ['', '-', '–', '—'].includes(normalized) ? '' : normalized;
+}
+
+function normalizePositiveInteger(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : null;
+}
+
+function normalizeCustomerRow(row) {
+    if (!row) {
+        return null;
+    }
+
+    const id = normalizePositiveInteger(row.id || row.customer_id);
+    const customerName = normalizeCustomerNameValue(row.customer_name || row.name);
+    const customerCode = normalizeCustomerCodeValue(row.customer_code);
+    const branchId = normalizePositiveInteger(row.branch_id);
+
+    if (!id && !customerName && !customerCode) {
+        return null;
+    }
+
+    return {
+        id,
+        customer_id: id,
+        customer_name: customerName,
+        customer_code: customerCode,
+        branch_id: branchId
+    };
+}
+
+function isSameCustomerName(a, b) {
+    const left = normalizeCustomerNameValue(a);
+    const right = normalizeCustomerNameValue(b);
+    return Boolean(left && right && left === right);
+}
+
+function isSameOrOpenBranch(rowBranchId, branchId) {
+    const normalizedRowBranchId = normalizePositiveInteger(rowBranchId);
+    const normalizedBranchId = normalizePositiveInteger(branchId);
+    return !normalizedBranchId || !normalizedRowBranchId || normalizedRowBranchId === normalizedBranchId;
+}
+
+function uniqueCustomerRows(rows = []) {
+    const seen = new Set();
+    const result = [];
+
+    rows.forEach((row) => {
+        const normalized = normalizeCustomerRow(row);
+        if (!normalized || !normalized.customer_name) {
+            return;
+        }
+
+        const key = normalized.id
+            ? `id:${normalized.id}`
+            : `${normalized.customer_name}|${normalized.customer_code}|${normalized.branch_id || ''}`;
+        if (seen.has(key)) {
+            return;
+        }
+
+        seen.add(key);
+        result.push(normalized);
+    });
+
+    return result;
+}
+
 class LocalWebServer {
     constructor(dbManager, port = 4000, options = {}) {
         const normalizedPort = Number(port);
@@ -1824,7 +1897,8 @@ class LocalWebServer {
 
                 if (!request) throw new Error('الطلب غير موجود');
 
-                const details = JSON.parse(request.details_json || '{}');
+                let details = JSON.parse(request.details_json || '{}');
+                details = await this.enrichCustomerRequestDetails(details, request.cashier_id);
 
                 // Helper to sanitize amounts (remove commas, handle strings)
                 const safeFloat = (val) => {
@@ -1917,15 +1991,30 @@ class LocalWebServer {
                     }
 
                     // Postpaid
-                    const insertPostpaid = tx.prepare(`INSERT INTO postpaid_sales(reconciliation_id, customer_name, amount, notes) VALUES(?, ?, ?, ?)`);
+                    const insertPostpaid = tx.prepare(`INSERT INTO postpaid_sales(reconciliation_id, customer_id, customer_name, customer_code, amount, notes) VALUES(?, ?, ?, ?, ?, ?)`);
                     for (const item of postpaidSales) {
-                        await insertPostpaid.run(recId, item.customer_name, safeFloat(item.amount), item.notes || '');
+                        await insertPostpaid.run(
+                            recId,
+                            item.customer_id || null,
+                            item.customer_name,
+                            item.customer_code || '',
+                            safeFloat(item.amount),
+                            item.notes || ''
+                        );
                     }
 
                     // Customer Receipts
-                    const insertCustReceipt = tx.prepare(`INSERT INTO customer_receipts(reconciliation_id, customer_name, amount, payment_type, notes) VALUES(?, ?, ?, ?, ?)`);
+                    const insertCustReceipt = tx.prepare(`INSERT INTO customer_receipts(reconciliation_id, customer_id, customer_name, customer_code, amount, payment_type, notes) VALUES(?, ?, ?, ?, ?, ?, ?)`);
                     for (const item of customerReceipts) {
-                        await insertCustReceipt.run(recId, item.customer_name, safeFloat(item.amount), item.payment_type || 'cash', item.notes || '');
+                        await insertCustReceipt.run(
+                            recId,
+                            item.customer_id || null,
+                            item.customer_name,
+                            item.customer_code || '',
+                            safeFloat(item.amount),
+                            item.payment_type || 'cash',
+                            item.notes || ''
+                        );
                     }
 
                     // Returns
@@ -2100,65 +2189,480 @@ class LocalWebServer {
         }
     }
 
+    getPostgresPool() {
+        return this.dbManager?.pool || this.dbManager?.db?.pool || null;
+    }
+
+    async getCashierBranchId(cashierId) {
+        const normalizedCashierId = normalizePositiveInteger(cashierId);
+        if (!normalizedCashierId) {
+            return null;
+        }
+
+        const pool = this.getPostgresPool();
+        if (pool) {
+            const result = await pool.query(
+                'SELECT branch_id FROM cashiers WHERE id = $1 LIMIT 1',
+                [normalizedCashierId]
+            );
+            return normalizePositiveInteger(result.rows?.[0]?.branch_id);
+        }
+
+        const row = this.dbManager.db
+            .prepare('SELECT branch_id FROM cashiers WHERE id = ? LIMIT 1')
+            .get(normalizedCashierId);
+        return normalizePositiveInteger(row?.branch_id);
+    }
+
+    async listCustomerRowsForBranch(branchId = null) {
+        const normalizedBranchId = normalizePositiveInteger(branchId);
+        const pool = this.getPostgresPool();
+
+        if (pool) {
+            const whereBranch = normalizedBranchId ? 'AND COALESCE(branch_id, 0) = $1' : '';
+            const params = normalizedBranchId ? [normalizedBranchId] : [];
+            const result = await pool.query(
+                `
+                    SELECT id, customer_name, customer_code, branch_id
+                    FROM customers
+                    WHERE BTRIM(COALESCE(customer_name, '')) <> ''
+                    ${whereBranch}
+                    ORDER BY customer_name ASC, customer_code ASC, id ASC
+                `,
+                params
+            );
+            return uniqueCustomerRows(result.rows || []);
+        }
+
+        const whereBranch = normalizedBranchId ? 'AND COALESCE(branch_id, 0) = ?' : '';
+        const params = normalizedBranchId ? [normalizedBranchId] : [];
+        const rows = this.dbManager.db.prepare(
+            `
+                SELECT id, customer_name, customer_code, branch_id
+                FROM customers
+                WHERE TRIM(COALESCE(customer_name, '')) <> ''
+                ${whereBranch}
+                ORDER BY customer_name COLLATE NOCASE ASC, customer_code ASC, id ASC
+            `
+        ).all(...params);
+        return uniqueCustomerRows(rows);
+    }
+
+    async listTransactionCustomerRowsForBranch(branchId = null) {
+        const normalizedBranchId = normalizePositiveInteger(branchId);
+        const pool = this.getPostgresPool();
+
+        if (pool) {
+            const branchFilter = normalizedBranchId ? 'WHERE branch_id = $1' : '';
+            const params = normalizedBranchId ? [normalizedBranchId] : [];
+            const result = await pool.query(
+                `
+                    SELECT DISTINCT customer_id AS id, customer_name, customer_code, branch_id
+                    FROM (
+                        SELECT ps.customer_id, ps.customer_name, ps.customer_code, c.branch_id
+                        FROM postpaid_sales ps
+                        LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
+                        LEFT JOIN cashiers c ON r.cashier_id = c.id
+                        WHERE ps.customer_name IS NOT NULL
+
+                        UNION
+
+                        SELECT cr.customer_id, cr.customer_name, cr.customer_code, c.branch_id
+                        FROM customer_receipts cr
+                        LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
+                        LEFT JOIN cashiers c ON r.cashier_id = c.id
+                        WHERE cr.customer_name IS NOT NULL
+                    ) tx_customers
+                    ${branchFilter}
+                    ORDER BY customer_name ASC
+                `,
+                params
+            );
+            return uniqueCustomerRows(result.rows || []);
+        }
+
+        const branchFilter = normalizedBranchId ? 'WHERE branch_id = ?' : '';
+        const params = normalizedBranchId ? [normalizedBranchId] : [];
+        const rows = this.dbManager.db.prepare(
+            `
+                SELECT DISTINCT customer_id AS id, customer_name, customer_code, branch_id
+                FROM (
+                    SELECT ps.customer_id, ps.customer_name, ps.customer_code, c.branch_id
+                    FROM postpaid_sales ps
+                    LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    WHERE ps.customer_name IS NOT NULL
+
+                    UNION
+
+                    SELECT cr.customer_id, cr.customer_name, cr.customer_code, c.branch_id
+                    FROM customer_receipts cr
+                    LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    WHERE cr.customer_name IS NOT NULL
+                ) tx_customers
+                ${branchFilter}
+                ORDER BY customer_name COLLATE NOCASE ASC
+            `
+        ).all(...params);
+        return uniqueCustomerRows(rows);
+    }
+
+    async findCustomerById(customerId) {
+        const normalizedCustomerId = normalizePositiveInteger(customerId);
+        if (!normalizedCustomerId) {
+            return null;
+        }
+
+        const pool = this.getPostgresPool();
+        if (pool) {
+            const result = await pool.query(
+                'SELECT id, customer_name, customer_code, branch_id FROM customers WHERE id = $1 LIMIT 1',
+                [normalizedCustomerId]
+            );
+            return normalizeCustomerRow(result.rows?.[0]);
+        }
+
+        return normalizeCustomerRow(
+            this.dbManager.db.prepare(
+                'SELECT id, customer_name, customer_code, branch_id FROM customers WHERE id = ? LIMIT 1'
+            ).get(normalizedCustomerId)
+        );
+    }
+
+    async findCustomerByCode(customerCode) {
+        const normalizedCode = normalizeCustomerCodeValue(customerCode);
+        if (!normalizedCode) {
+            return null;
+        }
+
+        const pool = this.getPostgresPool();
+        if (pool) {
+            const result = await pool.query(
+                `
+                    SELECT id, customer_name, customer_code, branch_id
+                    FROM customers
+                    WHERE UPPER(BTRIM(COALESCE(customer_code, ''))) = $1
+                    ORDER BY id ASC
+                    LIMIT 1
+                `,
+                [normalizedCode]
+            );
+            return normalizeCustomerRow(result.rows?.[0]);
+        }
+
+        return normalizeCustomerRow(
+            this.dbManager.db.prepare(
+                `
+                    SELECT id, customer_name, customer_code, branch_id
+                    FROM customers
+                    WHERE UPPER(TRIM(COALESCE(customer_code, ''))) = ?
+                    ORDER BY id ASC
+                    LIMIT 1
+                `
+            ).get(normalizedCode)
+        );
+    }
+
+    async findCustomersByName(customerName, branchId = null) {
+        const normalizedName = normalizeCustomerNameValue(customerName);
+        if (!normalizedName) {
+            return [];
+        }
+
+        const normalizedBranchId = normalizePositiveInteger(branchId);
+        const pool = this.getPostgresPool();
+        if (pool) {
+            const branchFilter = normalizedBranchId ? 'AND COALESCE(branch_id, 0) = $2' : '';
+            const params = normalizedBranchId ? [normalizedName, normalizedBranchId] : [normalizedName];
+            const result = await pool.query(
+                `
+                    SELECT id, customer_name, customer_code, branch_id
+                    FROM customers
+                    WHERE BTRIM(COALESCE(customer_name, '')) = $1
+                    ${branchFilter}
+                    ORDER BY id ASC
+                `,
+                params
+            );
+            return uniqueCustomerRows(result.rows || []);
+        }
+
+        const branchFilter = normalizedBranchId ? 'AND COALESCE(branch_id, 0) = ?' : '';
+        const params = normalizedBranchId ? [normalizedName, normalizedBranchId] : [normalizedName];
+        const rows = this.dbManager.db.prepare(
+            `
+                SELECT id, customer_name, customer_code, branch_id
+                FROM customers
+                WHERE TRIM(COALESCE(customer_name, '')) = ?
+                ${branchFilter}
+                ORDER BY id ASC
+            `
+        ).all(...params);
+        return uniqueCustomerRows(rows);
+    }
+
+    async resolveBranchCustomerCodePrefix(branchId = null) {
+        const normalizedBranchId = normalizePositiveInteger(branchId);
+        if (!normalizedBranchId) {
+            return 'C0';
+        }
+
+        const pool = this.getPostgresPool();
+        if (pool) {
+            const result = await pool.query(
+                'SELECT customer_code_prefix FROM branches WHERE id = $1 LIMIT 1',
+                [normalizedBranchId]
+            );
+            return normalizeCustomerCodeValue(result.rows?.[0]?.customer_code_prefix) || `C${normalizedBranchId}`;
+        }
+
+        const row = this.dbManager.db.prepare(
+            'SELECT customer_code_prefix FROM branches WHERE id = ? LIMIT 1'
+        ).get(normalizedBranchId);
+        return normalizeCustomerCodeValue(row?.customer_code_prefix) || `C${normalizedBranchId}`;
+    }
+
+    async generateUniqueCustomerCode(branchId = null) {
+        const normalizedBranchId = normalizePositiveInteger(branchId);
+        const branchPrefix = await this.resolveBranchCustomerCodePrefix(normalizedBranchId);
+        const pool = this.getPostgresPool();
+        const codeRows = pool
+            ? (await pool.query(
+                `
+                    SELECT customer_code
+                    FROM customers
+                    WHERE UPPER(BTRIM(COALESCE(customer_code, ''))) LIKE $1
+                `,
+                [`${branchPrefix}-%`]
+            )).rows
+            : this.dbManager.db.prepare(
+                `
+                    SELECT customer_code
+                    FROM customers
+                    WHERE UPPER(TRIM(COALESCE(customer_code, ''))) LIKE ?
+                `
+            ).all(`${branchPrefix}-%`);
+
+        const escapedPrefix = branchPrefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const sequencePattern = new RegExp(`^${escapedPrefix}-(\\d{6})$`, 'i');
+        const maxSequence = (codeRows || []).reduce((max, row) => {
+            const match = normalizeCustomerCodeValue(row.customer_code).match(sequencePattern);
+            const sequence = match ? Number(match[1]) : 0;
+            return Number.isFinite(sequence) && sequence > max ? sequence : max;
+        }, 0);
+
+        for (let offset = 1; offset <= 100; offset += 1) {
+            const candidate = `${branchPrefix}-${String(maxSequence + offset).padStart(6, '0')}`;
+            const existing = await this.findCustomerByCode(candidate);
+            if (!existing) {
+                return candidate;
+            }
+        }
+
+        throw new Error('customer_code_generation_failed');
+    }
+
+    async createOrUpdateServerCustomer({ customerName, customerCode = '', branchId = null }) {
+        const normalizedName = normalizeCustomerNameValue(customerName);
+        if (!normalizedName) {
+            return null;
+        }
+
+        const normalizedBranchId = normalizePositiveInteger(branchId);
+        let normalizedCode = normalizeCustomerCodeValue(customerCode);
+        if (normalizedCode && normalizedBranchId) {
+            const branchPrefix = await this.resolveBranchCustomerCodePrefix(normalizedBranchId);
+            if (!normalizedCode.startsWith(`${branchPrefix}-`)) {
+                normalizedCode = '';
+            }
+        }
+
+        if (normalizedCode) {
+            const byCode = await this.findCustomerByCode(normalizedCode);
+            if (
+                byCode
+                && isSameCustomerName(byCode.customer_name, normalizedName)
+                && isSameOrOpenBranch(byCode.branch_id, normalizedBranchId)
+            ) {
+                return byCode;
+            }
+
+            if (byCode) {
+                normalizedCode = '';
+            }
+        }
+
+        const byName = await this.findCustomersByName(normalizedName, normalizedBranchId);
+        if (byName.length > 1 && !normalizedCode) {
+            throw new Error(`customer_code_required_for_duplicate_name:${normalizedName}`);
+        }
+
+        if (byName.length > 0) {
+            const existing = byName[0];
+            const nextCode = existing.customer_code || normalizedCode || await this.generateUniqueCustomerCode(normalizedBranchId);
+            const nextBranchId = normalizedBranchId || existing.branch_id || null;
+            const pool = this.getPostgresPool();
+
+            if (pool) {
+                await pool.query(
+                    `
+                        UPDATE customers
+                        SET customer_name = $1,
+                            customer_code = $2,
+                            branch_id = $3,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = $4
+                    `,
+                    [normalizedName, nextCode, nextBranchId, existing.id]
+                );
+            } else {
+                this.dbManager.db.prepare(
+                    `
+                        UPDATE customers
+                        SET customer_name = ?,
+                            customer_code = ?,
+                            branch_id = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    `
+                ).run(normalizedName, nextCode, nextBranchId, existing.id);
+            }
+
+            return {
+                ...existing,
+                customer_name: normalizedName,
+                customer_code: nextCode,
+                branch_id: nextBranchId
+            };
+        }
+
+        const effectiveCode = normalizedCode || await this.generateUniqueCustomerCode(normalizedBranchId);
+        const pool = this.getPostgresPool();
+        if (pool) {
+            const result = await pool.query(
+                `
+                    INSERT INTO customers (customer_code, customer_name, branch_id, created_at, updated_at)
+                    VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    RETURNING id, customer_name, customer_code, branch_id
+                `,
+                [effectiveCode, normalizedName, normalizedBranchId]
+            );
+            return normalizeCustomerRow(result.rows?.[0]);
+        }
+
+        const insertResult = this.dbManager.db.prepare(
+            `
+                INSERT INTO customers (customer_code, customer_name, branch_id, created_at, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            `
+        ).run(effectiveCode, normalizedName, normalizedBranchId);
+        return {
+            id: insertResult.lastInsertRowid,
+            customer_id: insertResult.lastInsertRowid,
+            customer_name: normalizedName,
+            customer_code: effectiveCode,
+            branch_id: normalizedBranchId
+        };
+    }
+
+    async resolveRequestCustomerIdentity(item, branchId = null) {
+        const source = item && typeof item === 'object' ? item : {};
+        const normalizedBranchId = normalizePositiveInteger(source.branch_id) || normalizePositiveInteger(branchId);
+        const inputName = normalizeCustomerNameValue(source.customer_name || source.name);
+        const inputCode = normalizeCustomerCodeValue(source.customer_code || source.code);
+        const inputId = normalizePositiveInteger(source.customer_id || source.id);
+
+        let resolved = null;
+        if (inputId) {
+            const byId = await this.findCustomerById(inputId);
+            if (
+                byId
+                && (!inputName || isSameCustomerName(byId.customer_name, inputName))
+                && (!inputCode || normalizeCustomerCodeValue(byId.customer_code) === inputCode)
+                && isSameOrOpenBranch(byId.branch_id, normalizedBranchId)
+            ) {
+                resolved = byId;
+            }
+        }
+
+        if (!resolved && inputCode) {
+            const byCode = await this.findCustomerByCode(inputCode);
+            if (
+                byCode
+                && (!inputName || isSameCustomerName(byCode.customer_name, inputName))
+                && isSameOrOpenBranch(byCode.branch_id, normalizedBranchId)
+            ) {
+                resolved = byCode;
+            }
+        }
+
+        if (!resolved && inputName) {
+            resolved = await this.createOrUpdateServerCustomer({
+                customerName: inputName,
+                customerCode: inputCode,
+                branchId: normalizedBranchId
+            });
+        }
+
+        const finalName = resolved?.customer_name || inputName;
+        if (!finalName) {
+            return { ...source };
+        }
+
+        return {
+            ...source,
+            customer_id: resolved?.id || resolved?.customer_id || inputId || null,
+            customer_code: resolved?.customer_code || inputCode || '',
+            customer_name: finalName,
+            branch_id: resolved?.branch_id || normalizedBranchId || null
+        };
+    }
+
+    async enrichCustomerRequestDetails(details = {}, cashierId = null) {
+        const branchId = await this.getCashierBranchId(cashierId);
+        const normalizeItems = async (items = []) => {
+            if (!Array.isArray(items)) {
+                return [];
+            }
+
+            const enriched = [];
+            for (const item of items) {
+                enriched.push(await this.resolveRequestCustomerIdentity(item, branchId));
+            }
+            return enriched;
+        };
+
+        return {
+            ...details,
+            postpaid_items: await normalizeItems(details.postpaid_items),
+            customer_receipts: await normalizeItems(details.customer_receipts)
+        };
+    }
+
     async handleGetCustomerList(req, res, queryParams = {}) {
         try {
             console.log('🔍 [Customers API] Params:', queryParams);
-            let customers = [];
             const authUser = req && req.authUser ? req.authUser : null;
             const effectiveCashierId = authUser && authUser.role === 'cashier'
                 ? authUser.id
                 : (queryParams && queryParams.cashierId ? queryParams.cashierId : null);
+            const branchId = await this.getCashierBranchId(effectiveCashierId);
+            let customerRows = await this.listCustomerRowsForBranch(branchId);
 
-            // Check if we should filter by cashier's branch
-            if (effectiveCashierId) {
-                const cashier = await this.dbManager.db.prepare('SELECT branch_id FROM cashiers WHERE id = ?').get(effectiveCashierId);
-
-                if (cashier && cashier.branch_id) {
-                    const branchId = cashier.branch_id;
-
-                    // Get customers who have transactions in this branch
-                    const query = `
-                        SELECT DISTINCT customer_name
-            FROM(
-                SELECT ps.customer_name, c.branch_id
-                            FROM postpaid_sales ps
-                            LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
-                            LEFT JOIN cashiers c ON r.cashier_id = c.id
-                            WHERE ps.customer_name IS NOT NULL
-                            
-                            UNION
-                            
-                            SELECT cr.customer_name, c.branch_id
-                            FROM customer_receipts cr
-                            LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
-                            LEFT JOIN cashiers c ON r.cashier_id = c.id
-                            WHERE cr.customer_name IS NOT NULL
-            )
-                        WHERE branch_id = ?
-                ORDER BY customer_name
-                    `;
-
-                    const rows = await this.dbManager.db.prepare(query).all(branchId);
-                    customers = rows.map(r => r.customer_name).filter(n => n && n.trim().length > 0);
-                }
+            if (customerRows.length === 0) {
+                customerRows = await this.listTransactionCustomerRowsForBranch(branchId);
             }
 
-            // If no filter applied or no results, return all customers
-            if (customers.length === 0) {
-                const query = `
-                    SELECT DISTINCT customer_name FROM postpaid_sales WHERE customer_name IS NOT NULL
-            UNION 
-                    SELECT DISTINCT customer_name FROM customer_receipts WHERE customer_name IS NOT NULL
-                    ORDER BY customer_name
-                `;
-                const rows = await this.dbManager.db.prepare(query).all();
-                customers = rows.map(r => r.customer_name).filter(n => n && n.trim().length > 0);
-            }
-
-
-            console.log(`✅[Customers API] Returning ${customers.length} customers`);
+            const customers = customerRows.map((row) => row.customer_name).filter(Boolean);
+            console.log(`✅[Customers API] Returning ${customerRows.length} customers`);
             console.log('🚀 [Customers API] About to call sendJson...');
-            this.sendJson(res, { success: true, customers });
+            this.sendJson(res, {
+                success: true,
+                customers,
+                customer_records: customerRows,
+                branch_id: branchId
+            });
         } catch (error) {
             console.error('Error fetching customers:', error);
             this.sendJson(res, { success: false, error: error.message });
@@ -2183,6 +2687,53 @@ class LocalWebServer {
 
                 const ensureCashboxSyncSchema = async () => {
                     const statements = [
+                        "ALTER TABLE branches ADD COLUMN IF NOT EXISTS customer_code_prefix TEXT DEFAULT ''",
+                        `CREATE TABLE IF NOT EXISTS customers (
+                            id SERIAL PRIMARY KEY,
+                            customer_code TEXT DEFAULT '',
+                            customer_name TEXT NOT NULL,
+                            branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+                            phone TEXT DEFAULT '',
+                            address TEXT DEFAULT '',
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )`,
+                        "ALTER TABLE customers ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+                        'ALTER TABLE customers ADD COLUMN IF NOT EXISTS branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL',
+                        "ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''",
+                        "ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT DEFAULT ''",
+                        'ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+                        'ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+                        'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+                        "ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+                        'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+                        "ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+                        'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+                        "ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+                        'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+                        "ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+                        `WITH ordered_branches AS (
+                            SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS branch_order
+                            FROM branches
+                        )
+                        UPDATE branches b
+                        SET customer_code_prefix = 'C' || ordered_branches.branch_order,
+                            updated_at = CURRENT_TIMESTAMP
+                        FROM ordered_branches
+                        WHERE b.id = ordered_branches.id
+                          AND TRIM(COALESCE(b.customer_code_prefix, '')) = ''`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_branches_customer_code_prefix_unique
+                         ON branches(UPPER(TRIM(customer_code_prefix)))
+                         WHERE TRIM(COALESCE(customer_code_prefix, '')) <> ''`,
+                        'CREATE INDEX IF NOT EXISTS idx_customers_name_branch ON customers(customer_name, branch_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code)',
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_customer_code_unique
+                         ON customers(UPPER(TRIM(customer_code)))
+                         WHERE TRIM(COALESCE(customer_code, '')) <> ''`,
+                        'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_id ON postpaid_sales(customer_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code ON postpaid_sales(customer_code)',
+                        'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_id ON customer_receipts(customer_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code ON customer_receipts(customer_code)',
                         `CREATE TABLE IF NOT EXISTS branch_cashboxes (
                             id SERIAL PRIMARY KEY,
                             branch_id INTEGER NOT NULL UNIQUE REFERENCES branches(id) ON DELETE CASCADE,
@@ -2261,8 +2812,16 @@ class LocalWebServer {
                     || data.active_cashbox_vouchers_ids
                     || data.active_cashbox_voucher_audit_log_ids
                 );
+                const hasCustomerPayload = Boolean(
+                    data.branches
+                    || data.customers
+                    || data.postpaid_sales
+                    || data.customer_receipts
+                    || data.manual_postpaid_sales
+                    || data.manual_customer_receipts
+                );
 
-                if (hasCashboxPayload) {
+                if (hasCashboxPayload || hasCustomerPayload) {
                     await ensureCashboxSyncSchema();
                 }
 
@@ -2797,9 +3356,21 @@ class LocalWebServer {
                 // Sync all tables in dependency order
                 if (data.branches) {
                     await syncTable('branches', data.branches, [
-                        { name: 'id' }, { name: 'branch_name' }, { name: 'branch_address' },
+                        { name: 'id' }, { name: 'branch_name' }, { name: 'customer_code_prefix', preserveIfNull: true }, { name: 'branch_address' },
                         { name: 'branch_phone' }, { name: 'is_active' }
                     ]);
+                    await pool.query(`
+                        WITH ordered_branches AS (
+                            SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS branch_order
+                            FROM branches
+                        )
+                        UPDATE branches b
+                        SET customer_code_prefix = 'C' || ordered_branches.branch_order,
+                            updated_at = CURRENT_TIMESTAMP
+                        FROM ordered_branches
+                        WHERE b.id = ordered_branches.id
+                          AND TRIM(COALESCE(b.customer_code_prefix, '')) = ''
+                    `);
                 }
 
                 if (data.accountants) {
@@ -2938,6 +3509,14 @@ class LocalWebServer {
                             console.error('❌ [SYNC] Deletion Error:', delErr.message);
                         }
                     }
+                }
+
+                if (data.customers) {
+                    await syncTable('customers', data.customers, [
+                        { name: 'id' }, { name: 'customer_code' }, { name: 'customer_name' },
+                        { name: 'branch_id' }, { name: 'phone' }, { name: 'address' },
+                        { name: 'created_at' }, { name: 'updated_at' }
+                    ]);
                 }
 
                 if (data.reconciliations) {
@@ -3091,29 +3670,33 @@ class LocalWebServer {
 
                 if (data.postpaid_sales) {
                     await syncTable('postpaid_sales', data.postpaid_sales, [
-                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_name' },
-                        { name: 'amount' } //, {name: 'notes'}
+                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_id' },
+                        { name: 'customer_name' }, { name: 'customer_code' }, { name: 'amount' },
+                        { name: 'notes' }
                     ]);
                 }
 
                 if (data.customer_receipts) {
                     await syncTable('customer_receipts', data.customer_receipts, [
-                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_name' },
-                        { name: 'amount' }, { name: 'payment_type' } //, {name: 'notes'}
+                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_id' },
+                        { name: 'customer_name' }, { name: 'customer_code' }, { name: 'amount' },
+                        { name: 'payment_type' }, { name: 'notes' }
                     ]);
                 }
 
                 if (data.manual_postpaid_sales) {
                     await syncTable('manual_postpaid_sales', data.manual_postpaid_sales, [
-                        { name: 'id' }, { name: 'customer_name' }, { name: 'amount' },
-                        { name: 'reason' }, { name: 'created_at' }
+                        { name: 'id' }, { name: 'customer_id' }, { name: 'customer_name' },
+                        { name: 'customer_code' }, { name: 'amount' }, { name: 'reason' },
+                        { name: 'created_at' }
                     ]);
                 }
 
                 if (data.manual_customer_receipts) {
                     await syncTable('manual_customer_receipts', data.manual_customer_receipts, [
-                        { name: 'id' }, { name: 'customer_name' }, { name: 'amount' },
-                        { name: 'reason' }, { name: 'created_at' }
+                        { name: 'id' }, { name: 'customer_id' }, { name: 'customer_name' },
+                        { name: 'customer_code' }, { name: 'amount' }, { name: 'reason' },
+                        { name: 'created_at' }
                     ]);
                 }
                 // Sync reconciliation requests (especially status updates)
@@ -3488,14 +4071,14 @@ class LocalWebServer {
                 const totalBank = parseFloat(data.total_bank) || 0;
 
                 // Prepare details JSON for all other lists
-                const details = {
+                const details = await this.enrichCustomerRequestDetails({
                     cash_breakdown: data.cash_breakdown || [],
                     bank_receipts: data.bank_receipts || [],
                     postpaid_items: data.postpaid_items || [],
                     customer_receipts: data.customer_receipts || [],
                     return_items: data.return_items || [],
                     supplier_items: data.supplier_items || []
-                };
+                }, data.cashier_id);
 
                 const detailsJson = JSON.stringify(details);
                 const notes = data.notes || '';
