@@ -644,7 +644,7 @@
                 // Send cashier ID to filter by branch
                 const cashierId = user && user.id ? user.id : null;
                 const url = cashierId ? `/api/customers?cashierId=${cashierId}` : '/api/customers';
-                const res = await fetchWithSessionGuard(url);
+                const res = await fetchWithSessionGuard(url, { cache: 'no-cache' });
                 const data = await res.json();
                 if (data.success && (data.customer_records || data.customers)) {
                     const rawCustomers = Array.isArray(data.customer_records)
@@ -683,7 +683,7 @@
                 // and let server filter if that user is a cashier with a branch.
 
                 const url = cashierId ? `/api/atms?cashierId=${cashierId}` : '/api/atms';
-                const res = await fetchWithSessionGuard(url);
+                const res = await fetchWithSessionGuard(url, { cache: 'no-cache' });
                 const data = await res.json();
                 if (data.success && data.atms) {
                     atmsData = data.atms;

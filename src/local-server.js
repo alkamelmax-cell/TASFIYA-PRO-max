@@ -3,6 +3,8 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
+const zlib = require('zlib');
 const { parse } = require('url');
 const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
 const { WebSessionStore } = require('./security/web-session-store');
@@ -13,9 +15,28 @@ const SESSION_COOKIE_NAME = 'tasfiya_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 512 * 1024;
 const LARGE_JSON_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
+const JSON_COMPRESSION_MIN_BYTES = 1024;
 
 function isTruthyQueryValue(value) {
     return value === true || value === '1' || value === 'true';
+}
+
+function createPayloadEtag(payload) {
+    return `"${crypto.createHash('sha1').update(payload).digest('base64url')}"`;
+}
+
+function requestAcceptsGzip(req) {
+    const acceptEncoding = String(req && req.headers ? req.headers['accept-encoding'] || '' : '');
+    return /\bgzip\b/i.test(acceptEncoding);
+}
+
+function requestMatchesEtag(req, etag) {
+    const ifNoneMatch = String(req && req.headers ? req.headers['if-none-match'] || '' : '').trim();
+    if (!ifNoneMatch || !etag) {
+        return false;
+    }
+
+    return ifNoneMatch.split(',').map((value) => value.trim()).includes(etag);
 }
 
 function parseNumericDbValue(value, fallback = 0) {
@@ -585,10 +606,12 @@ class LocalWebServer {
         }
 
         this.server = http.createServer(async (req, res) => {
+            res._tasfiyaRequest = req;
             // Enable CORS
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+            res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, If-None-Match');
+            res.setHeader('Access-Control-Expose-Headers', 'ETag');
 
             if (req.method === 'OPTIONS') {
                 res.writeHead(200);
@@ -2182,7 +2205,10 @@ class LocalWebServer {
                 atms = await this.dbManager.db.prepare("SELECT * FROM atms ORDER BY name").all();
             }
 
-            this.sendJson(res, { success: true, atms });
+            this.sendJson(res, { success: true, atms }, {
+                req,
+                cacheable: true
+            });
         } catch (error) {
             console.error('Error fetching ATMs:', error);
             this.sendJson(res, { success: false, error: error.message });
@@ -2649,19 +2675,28 @@ class LocalWebServer {
                 : (queryParams && queryParams.cashierId ? queryParams.cashierId : null);
             const branchId = await this.getCashierBranchId(effectiveCashierId);
             let customerRows = await this.listCustomerRowsForBranch(branchId);
+            const compactResponse = isTruthyQueryValue(queryParams && queryParams.compact);
 
             if (customerRows.length === 0) {
                 customerRows = await this.listTransactionCustomerRowsForBranch(branchId);
             }
 
             const customers = customerRows.map((row) => row.customer_name).filter(Boolean);
-            console.log(`✅[Customers API] Returning ${customerRows.length} customers`);
-            console.log('🚀 [Customers API] About to call sendJson...');
-            this.sendJson(res, {
+            const payload = {
                 success: true,
-                customers,
                 customer_records: customerRows,
                 branch_id: branchId
+            };
+
+            if (!compactResponse) {
+                payload.customers = customers;
+            }
+
+            console.log(`✅[Customers API] Returning ${customerRows.length} customers`);
+            console.log('🚀 [Customers API] About to call sendJson...');
+            this.sendJson(res, payload, {
+                req,
+                cacheable: true
             });
         } catch (error) {
             console.error('Error fetching customers:', error);
@@ -4029,14 +4064,49 @@ class LocalWebServer {
     sendJson(res, data, options = {}) {
         console.log('📤 [sendJson] Sending:', Object.keys(data), res.headersSent ? '⚠️ Headers already sent!' : '✅ OK');
         if (!res.headersSent) {
-            res.writeHead(options.statusCode || 200, {
-                'Content-Type': 'application/json',
-                'Cache-Control': 'no-cache, no-store, must-revalidate',
-                'Pragma': 'no-cache',
-                'Expires': '0',
+            const statusCode = options.statusCode || 200;
+            const req = options.req || res._tasfiyaRequest || null;
+            const payload = JSON.stringify(data);
+            const payloadBuffer = Buffer.from(payload, 'utf8');
+            const headers = {
+                'Content-Type': 'application/json; charset=utf-8',
                 ...(options.headers || {})
-            });
-            res.end(JSON.stringify(data));
+            };
+
+            if (options.cacheable && statusCode === 200) {
+                const etag = options.etag || createPayloadEtag(payload);
+                headers.ETag = etag;
+                headers['Cache-Control'] = options.cacheControl || 'private, max-age=0, must-revalidate';
+                headers.Vary = 'Accept-Encoding';
+
+                if (requestMatchesEtag(req, etag)) {
+                    res.writeHead(304, headers);
+                    res.end();
+                    return;
+                }
+            } else {
+                headers['Cache-Control'] = 'no-cache, no-store, must-revalidate';
+                headers.Pragma = 'no-cache';
+                headers.Expires = '0';
+            }
+
+            let responseBody = payloadBuffer;
+            if (
+                statusCode === 200
+                && payloadBuffer.length >= JSON_COMPRESSION_MIN_BYTES
+                && requestAcceptsGzip(req)
+                && !headers['Content-Encoding']
+            ) {
+                responseBody = zlib.gzipSync(payloadBuffer);
+                headers['Content-Encoding'] = 'gzip';
+                headers.Vary = headers.Vary
+                    ? (headers.Vary.includes('Accept-Encoding') ? headers.Vary : `${headers.Vary}, Accept-Encoding`)
+                    : 'Accept-Encoding';
+            }
+
+            headers['Content-Length'] = responseBody.length;
+            res.writeHead(statusCode, headers);
+            res.end(responseBody);
         } else {
             console.error('❌ [sendJson] Cannot send - headers already sent!');
         }

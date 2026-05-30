@@ -8,6 +8,7 @@
 
 const Database = require('better-sqlite3');
 const path = require('path');
+const fs = require('fs');
 
 let app;
 try {
@@ -26,19 +27,28 @@ class DatabaseManager {
   initialize() {
     try {
       let dbPath;
-      if (app) {
+      const configuredDbPath = process.env.TASFIYA_DB_PATH || process.env.CASHER_DB_PATH || '';
+
+      if (configuredDbPath) {
+        dbPath = path.resolve(configuredDbPath);
+        const configuredDbDir = path.dirname(dbPath);
+        if (!fs.existsSync(configuredDbDir)) {
+          fs.mkdirSync(configuredDbDir, { recursive: true });
+        }
+      } else if (app) {
         dbPath = path.join(app.getPath('userData'), 'casher.db');
       } else {
         // In server mode, store db in a 'data' folder
         const dataDir = path.join(process.cwd(), 'data');
-        const fs = require('fs');
         if (!fs.existsSync(dataDir)) {
-          fs.mkdirSync(dataDir);
+          fs.mkdirSync(dataDir, { recursive: true });
         }
         dbPath = path.join(dataDir, 'casher.db');
       }
 
       this.db = new Database(dbPath);
+      this.db.pragma('journal_mode = WAL');
+      this.db.pragma('busy_timeout = 5000');
       this.db.pragma('foreign_keys = ON');
 
 
