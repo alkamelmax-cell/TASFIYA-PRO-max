@@ -4,6 +4,7 @@ const { hashSecret, isHashedSecret } = require('./security/auth-service');
 
 class PostgresManager {
     constructor(connectionString) {
+        this.lastInitializationError = null;
         this.pool = new Pool({
             connectionString: connectionString,
             ssl: {
@@ -38,8 +39,10 @@ class PostgresManager {
                 console.error('⚠️ [DB] Cashbox sync repair failed during startup:', repairError);
             }
             await this.migrateSensitiveCredentials();
+            this.lastInitializationError = null;
             return true;
         } catch (error) {
+            this.lastInitializationError = error;
             console.error('❌ [DB] Connection to Neon failed:', error);
             return false;
         }

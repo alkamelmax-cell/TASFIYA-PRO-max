@@ -56,7 +56,9 @@ async function initializeDatabaseWithRetry(options) {
 
             const initialized = await dbManager.initialize();
             if (!initialized) {
-                throw new Error(`Failed to initialize ${databaseMode} database`);
+                throw dbManager.lastInitializationError instanceof Error
+                    ? dbManager.lastInitializationError
+                    : new Error(`Failed to initialize ${databaseMode} database`);
             }
 
             webServer.setDatabaseReady({ status: 'ready' });
@@ -91,10 +93,10 @@ async function bootstrapWebServer(options = {}) {
     const { dbManager, databaseMode } = createDbManager(env);
     const port = normalizePort(env.PORT, 4000);
     const host = env.HOST || '0.0.0.0';
+    const retryInBackground = shouldRetryDatabaseInitialization({ databaseMode, env });
     const retryDelayMs = options.retryDelayMs !== undefined
         ? options.retryDelayMs
-        : normalizeRetryDelay(env.DB_INIT_RETRY_MS, 5000);
-    const retryInBackground = shouldRetryDatabaseInitialization({ databaseMode, env });
+        : normalizeRetryDelay(env.DB_INIT_RETRY_MS, retryInBackground ? 60000 : 5000);
     const maxAttempts = options.maxAttempts !== undefined
         ? options.maxAttempts
         : (retryInBackground ? Number.POSITIVE_INFINITY : 1);

@@ -46,6 +46,43 @@ test('initializeDatabaseWithRetry retries until the database becomes ready', asy
   assert.ok(events.some((event) => event.type === 'indexes'));
 });
 
+test('initializeDatabaseWithRetry reports the original database initialization error', async () => {
+  const quotaError = new Error('database quota exceeded');
+  const events = [];
+
+  const dbManager = {
+    lastInitializationError: quotaError,
+    async initialize() {
+      return false;
+    }
+  };
+
+  const webServer = {
+    setDatabaseReady() { },
+    setDatabaseUnavailable(error, status) {
+      events.push({ status, message: error && error.message });
+    },
+    async ensureIndexes() { }
+  };
+
+  await assert.rejects(
+    () => initializeDatabaseWithRetry({
+      dbManager,
+      webServer,
+      databaseMode: 'postgres',
+      retryDelayMs: 0,
+      maxAttempts: 1,
+      logger: {
+        log() { },
+        error() { }
+      }
+    }),
+    /database quota exceeded/
+  );
+
+  assert.deepEqual(events, [{ status: 'failed', message: 'database quota exceeded' }]);
+});
+
 test('bootstrapWebServer starts listening before postgres initialization finishes', async () => {
   let initializeCalls = 0;
   let started = false;
