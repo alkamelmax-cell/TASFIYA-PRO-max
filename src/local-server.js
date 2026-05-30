@@ -16,9 +16,16 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 512 * 1024;
 const LARGE_JSON_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
 const JSON_COMPRESSION_MIN_BYTES = 1024;
+const DEFAULT_LOOKUP_CACHE_TTL_MS = 10 * 60 * 1000;
+const DEFAULT_LOOKUP_CACHE_MAX_STALE_MS = 60 * 60 * 1000;
 
 function isTruthyQueryValue(value) {
     return value === true || value === '1' || value === 'true';
+}
+
+function parsePositiveIntegerSetting(value, fallback) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : fallback;
 }
 
 function createPayloadEtag(payload) {
@@ -168,6 +175,19 @@ class LocalWebServer {
         this.startedAt = null;
         this.indexesReady = false;
         this.ensureIndexesInFlight = null;
+        this.lookupCacheTtlMs = parsePositiveIntegerSetting(
+            options.lookupCacheTtlMs || process.env.TASFIYA_LOOKUP_CACHE_TTL_MS,
+            DEFAULT_LOOKUP_CACHE_TTL_MS
+        );
+        this.lookupCacheMaxStaleMs = Math.max(
+            this.lookupCacheTtlMs,
+            parsePositiveIntegerSetting(
+                options.lookupCacheMaxStaleMs || process.env.TASFIYA_LOOKUP_CACHE_MAX_STALE_MS,
+                DEFAULT_LOOKUP_CACHE_MAX_STALE_MS
+            )
+        );
+        this.lookupCache = new Map();
+        this.cashierBranchCache = new Map();
     }
 
     async readJsonBody(req, options = {}) {
@@ -667,7 +687,7 @@ class LocalWebServer {
                 }
 
                 if (pathname === '/api/cashiers-list' && req.method === 'GET') {
-                    await this.handleGetCashiersList(res);
+                    await this.handleGetCashiersList(req, res);
                     return;
                 }
 
@@ -1095,6 +1115,7 @@ class LocalWebServer {
                     SET pin_code = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                 `).run(hashSecret(normalizedPin), cashierId);
+                this.clearLookupCache('cashier pin updated');
                 this.sendJson(res, { success: true });
             } catch (error) {
                 this.sendJson(res, { success: false, error: error.message });
@@ -1102,8 +1123,15 @@ class LocalWebServer {
         });
     }
 
-    async handleGetCashiersList(res) {
+    async handleGetCashiersList(req, res) {
+        const cacheKey = this.getLookupCacheKey('cashiers', null, 'list');
         try {
+            const cached = this.getLookupCacheEntry(cacheKey);
+            if (cached) {
+                this.sendLookupCacheEntry(req, res, cached, cached.stale ? 'stale' : 'hit');
+                return;
+            }
+
             const cashiers = await this.dbManager.db.prepare(`
                 SELECT c.id, c.name, c.cashier_number, c.active, c.pin_code, b.branch_name 
                 FROM cashiers c 
@@ -1118,8 +1146,19 @@ class LocalWebServer {
                 pin_code: undefined // Do not send actual PIN
             }));
 
-            this.sendJson(res, { success: true, data: safeCashiers });
+            const payload = { success: true, data: safeCashiers };
+            const cacheEntry = this.setLookupCacheEntry(cacheKey, payload);
+            this.sendJson(res, payload, {
+                req,
+                cacheable: true,
+                etag: cacheEntry.etag
+            });
         } catch (error) {
+            const stale = this.getLookupCacheEntry(cacheKey, { allowStale: true });
+            if (stale) {
+                this.sendLookupCacheEntry(req, res, stale, 'stale');
+                return;
+            }
             this.sendJson(res, { success: false, error: error.message });
         }
     }
@@ -2180,37 +2219,43 @@ class LocalWebServer {
 
 
     async handleGetAtms(req, res, query) {
+        let cacheKey = null;
         try {
             let atms;
             const authUser = req && req.authUser ? req.authUser : null;
             const effectiveCashierId = authUser && authUser.role === 'cashier'
                 ? authUser.id
                 : (query && query.cashierId ? query.cashierId : null);
+            const branchId = await this.resolveLookupBranchId(authUser, effectiveCashierId);
+            cacheKey = this.getLookupCacheKey('atms', branchId);
+            const cached = this.getLookupCacheEntry(cacheKey);
+            if (cached) {
+                this.sendLookupCacheEntry(req, res, cached, cached.stale ? 'stale' : 'hit');
+                return;
+            }
 
             // If cashierId is provided, filter by their branch
-            if (effectiveCashierId) {
-                // 1. Get Cashier Branch
-                const cashier = await this.dbManager.db.prepare("SELECT branch_id FROM cashiers WHERE id = ?").get(effectiveCashierId);
-
-                if (cashier && cashier.branch_id) {
-                    // 2. Get ATMs for this branch
-                    atms = await this.dbManager.db.prepare("SELECT * FROM atms WHERE branch_id = ? ORDER BY name").all(cashier.branch_id);
-                } else {
-                    // Cashier has no branch? Fallback to all or empty? Let's fallback to all for safety, or empty. 
-                    // Better to fallback to all if branch logic isn't strictly enforced everywhere yet.
-                    atms = await this.dbManager.db.prepare("SELECT * FROM atms ORDER BY name").all();
-                }
+            if (branchId) {
+                atms = await this.dbManager.db.prepare("SELECT * FROM atms WHERE branch_id = ? ORDER BY name").all(branchId);
             } else {
                 // Admin or no cashier specified -> Get All
                 atms = await this.dbManager.db.prepare("SELECT * FROM atms ORDER BY name").all();
             }
 
-            this.sendJson(res, { success: true, atms }, {
+            const payload = { success: true, atms };
+            const cacheEntry = this.setLookupCacheEntry(cacheKey, payload);
+            this.sendJson(res, payload, {
                 req,
-                cacheable: true
+                cacheable: true,
+                etag: cacheEntry.etag
             });
         } catch (error) {
             console.error('Error fetching ATMs:', error);
+            const stale = cacheKey ? this.getLookupCacheEntry(cacheKey, { allowStale: true }) : null;
+            if (stale) {
+                this.sendLookupCacheEntry(req, res, stale, 'stale');
+                return;
+            }
             this.sendJson(res, { success: false, error: error.message });
         }
     }
@@ -2219,10 +2264,109 @@ class LocalWebServer {
         return this.dbManager?.pool || this.dbManager?.db?.pool || null;
     }
 
+    getLookupCacheKey(kind, branchId = null, variant = 'default') {
+        return `${kind}:${normalizePositiveInteger(branchId) || 'all'}:${variant}`;
+    }
+
+    getLookupCacheEntry(cacheKey, options = {}) {
+        const entry = this.lookupCache.get(cacheKey);
+        if (!entry) {
+            return null;
+        }
+
+        const ageMs = Date.now() - entry.createdAt;
+        const maxAgeMs = options.allowStale ? this.lookupCacheMaxStaleMs : this.lookupCacheTtlMs;
+        if (ageMs <= maxAgeMs) {
+            return {
+                ...entry,
+                stale: ageMs > this.lookupCacheTtlMs
+            };
+        }
+
+        this.lookupCache.delete(cacheKey);
+        return null;
+    }
+
+    setLookupCacheEntry(cacheKey, payload) {
+        const entry = {
+            payload,
+            etag: createPayloadEtag(JSON.stringify(payload)),
+            createdAt: Date.now()
+        };
+        this.lookupCache.set(cacheKey, entry);
+        return entry;
+    }
+
+    sendLookupCacheEntry(req, res, entry, state = 'hit') {
+        this.sendJson(res, entry.payload, {
+            req,
+            cacheable: true,
+            etag: entry.etag,
+            headers: { 'X-Tasfiya-Cache': state }
+        });
+    }
+
+    clearLookupCache(reason = '') {
+        const lookupCount = this.lookupCache.size;
+        const branchCount = this.cashierBranchCache.size;
+        this.lookupCache.clear();
+        this.cashierBranchCache.clear();
+        if (lookupCount > 0 || branchCount > 0) {
+            console.log(`🧹 [LOOKUP-CACHE] Cleared ${lookupCount} lookup entries and ${branchCount} branch entries${reason ? ` (${reason})` : ''}`);
+        }
+    }
+
+    getCachedCashierBranchId(cashierId) {
+        const normalizedCashierId = normalizePositiveInteger(cashierId);
+        if (!normalizedCashierId) {
+            return undefined;
+        }
+
+        const entry = this.cashierBranchCache.get(normalizedCashierId);
+        if (!entry) {
+            return undefined;
+        }
+
+        if (Date.now() - entry.createdAt > this.lookupCacheTtlMs) {
+            this.cashierBranchCache.delete(normalizedCashierId);
+            return undefined;
+        }
+
+        return entry.branchId;
+    }
+
+    setCachedCashierBranchId(cashierId, branchId) {
+        const normalizedCashierId = normalizePositiveInteger(cashierId);
+        if (!normalizedCashierId) {
+            return;
+        }
+
+        this.cashierBranchCache.set(normalizedCashierId, {
+            branchId: normalizePositiveInteger(branchId),
+            createdAt: Date.now()
+        });
+    }
+
+    async resolveLookupBranchId(authUser, cashierId = null) {
+        if (authUser && authUser.role === 'cashier') {
+            const sessionBranchId = normalizePositiveInteger(authUser.branch_id);
+            if (sessionBranchId) {
+                return sessionBranchId;
+            }
+        }
+
+        return this.getCashierBranchId(cashierId);
+    }
+
     async getCashierBranchId(cashierId) {
         const normalizedCashierId = normalizePositiveInteger(cashierId);
         if (!normalizedCashierId) {
             return null;
+        }
+
+        const cachedBranchId = this.getCachedCashierBranchId(normalizedCashierId);
+        if (cachedBranchId !== undefined) {
+            return cachedBranchId;
         }
 
         const pool = this.getPostgresPool();
@@ -2231,13 +2375,17 @@ class LocalWebServer {
                 'SELECT branch_id FROM cashiers WHERE id = $1 LIMIT 1',
                 [normalizedCashierId]
             );
-            return normalizePositiveInteger(result.rows?.[0]?.branch_id);
+            const branchId = normalizePositiveInteger(result.rows?.[0]?.branch_id);
+            this.setCachedCashierBranchId(normalizedCashierId, branchId);
+            return branchId;
         }
 
         const row = this.dbManager.db
             .prepare('SELECT branch_id FROM cashiers WHERE id = ? LIMIT 1')
             .get(normalizedCashierId);
-        return normalizePositiveInteger(row?.branch_id);
+        const branchId = normalizePositiveInteger(row?.branch_id);
+        this.setCachedCashierBranchId(normalizedCashierId, branchId);
+        return branchId;
     }
 
     async listCustomerRowsForBranch(branchId = null) {
@@ -2555,6 +2703,7 @@ class LocalWebServer {
                 ).run(normalizedName, nextCode, nextBranchId, existing.id);
             }
 
+            this.clearLookupCache('customer updated');
             return {
                 ...existing,
                 customer_name: normalizedName,
@@ -2574,6 +2723,7 @@ class LocalWebServer {
                 `,
                 [effectiveCode, normalizedName, normalizedBranchId]
             );
+            this.clearLookupCache('customer created');
             return normalizeCustomerRow(result.rows?.[0]);
         }
 
@@ -2583,6 +2733,7 @@ class LocalWebServer {
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             `
         ).run(effectiveCode, normalizedName, normalizedBranchId);
+        this.clearLookupCache('customer created');
         return {
             id: insertResult.lastInsertRowid,
             customer_id: insertResult.lastInsertRowid,
@@ -2667,15 +2818,23 @@ class LocalWebServer {
     }
 
     async handleGetCustomerList(req, res, queryParams = {}) {
+        let cacheKey = null;
         try {
             console.log('🔍 [Customers API] Params:', queryParams);
             const authUser = req && req.authUser ? req.authUser : null;
             const effectiveCashierId = authUser && authUser.role === 'cashier'
                 ? authUser.id
                 : (queryParams && queryParams.cashierId ? queryParams.cashierId : null);
-            const branchId = await this.getCashierBranchId(effectiveCashierId);
-            let customerRows = await this.listCustomerRowsForBranch(branchId);
+            const branchId = await this.resolveLookupBranchId(authUser, effectiveCashierId);
             const compactResponse = isTruthyQueryValue(queryParams && queryParams.compact);
+            cacheKey = this.getLookupCacheKey('customers', branchId, compactResponse ? 'compact' : 'full');
+            const cached = this.getLookupCacheEntry(cacheKey);
+            if (cached) {
+                this.sendLookupCacheEntry(req, res, cached, cached.stale ? 'stale' : 'hit');
+                return;
+            }
+
+            let customerRows = await this.listCustomerRowsForBranch(branchId);
 
             if (customerRows.length === 0) {
                 customerRows = await this.listTransactionCustomerRowsForBranch(branchId);
@@ -2694,12 +2853,19 @@ class LocalWebServer {
 
             console.log(`✅[Customers API] Returning ${customerRows.length} customers`);
             console.log('🚀 [Customers API] About to call sendJson...');
+            const cacheEntry = this.setLookupCacheEntry(cacheKey, payload);
             this.sendJson(res, payload, {
                 req,
-                cacheable: true
+                cacheable: true,
+                etag: cacheEntry.etag
             });
         } catch (error) {
             console.error('Error fetching customers:', error);
+            const stale = cacheKey ? this.getLookupCacheEntry(cacheKey, { allowStale: true }) : null;
+            if (stale) {
+                this.sendLookupCacheEntry(req, res, stale, 'stale');
+                return;
+            }
             this.sendJson(res, { success: false, error: error.message });
         }
     }
@@ -2855,6 +3021,7 @@ class LocalWebServer {
                     || data.manual_postpaid_sales
                     || data.manual_customer_receipts
                 );
+                const hasLookupPayload = Boolean(hasCustomerPayload || data.cashiers || data.atms);
 
                 if (hasCashboxPayload || hasCustomerPayload) {
                     await ensureCashboxSyncSchema();
@@ -3763,6 +3930,10 @@ class LocalWebServer {
                         { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
                         { name: 'created_at' }, { name: 'updated_at' }
                     ]);
+                }
+
+                if (hasLookupPayload) {
+                    this.clearLookupCache('sync payload');
                 }
 
                 if (syncFailures.length > 0) {
