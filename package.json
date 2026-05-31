@@ -3,8 +3,8 @@
   "_copyright": "🧾 تطبيق: تصفية برو | 🛠️ المطور: محمد أمين الكامل | 🗓️ سنة: 2025 | 📌 جميع الحقوق محفوظة | يمنع الاستخدام أو التعديل دون إذن كتابي",
   "_comment2": "===================================================",
   "name": "casher",
-  "version": "5.0.1",
-  "description": "تصفية برو - Professional Reconciliation System with Time Range Filter & Notes Support v5.0.1",
+  "version": "6.0.0",
+  "description": "تصفية برو - Professional Reconciliation System with Delta Sync & Reduced Transfer v6.0.0",
   "main": "src/main.js",
   "scripts": {
     "build:renderer": "node scripts/prepare-renderer-bundles.js",

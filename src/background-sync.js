@@ -1,15 +1,109 @@
 const { app } = require('electron');
 
 const { ipcMain } = require('electron');
+const crypto = require('crypto');
 const fetch = require('node-fetch');
 
 // Configuration
 const REMOTE_URL = 'https://tasfiya-pro-max.onrender.com/api/sync/users'; // Ensure this matches your Render URL
 const SYNC_INTERVAL_MS = 30000; // 30 seconds
+const FULL_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // Weekly safety refresh
+const MIRROR_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // Daily deletion audit
+const REQUEST_FULL_PULL_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const REQUEST_PULL_OVERLAP_MS = 2 * 60 * 1000;
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const SEND_RETRY_DELAYS_MS = [700, 1500, 3000];
 const DEFAULT_SYNC_BATCH_SIZE = 100;
 const RECONCILIATION_SYNC_BATCH_SIZE = 50;
+const REQUEST_PULL_TIMEOUT_MS = 15000;
+const SYNC_POST_TIMEOUT_MS = 45000;
+
+const SYNC_META_KEYS = {
+    lastFullRefreshAt: 'background-sync:last-full-refresh-at',
+    lastMirrorCleanupAt: 'background-sync:last-mirror-cleanup-at',
+    lastRequestPullAt: 'background-sync:requests:last-pull-at',
+    lastRequestFullPullAt: 'background-sync:requests:last-full-pull-at'
+};
+
+const MIRROR_ID_TABLES = [
+    'reconciliations',
+    'postpaid_sales',
+    'customer_receipts',
+    'manual_postpaid_sales',
+    'manual_customer_receipts',
+    'cash_receipts',
+    'bank_receipts',
+    'branch_cashboxes',
+    'cashbox_vouchers',
+    'cashbox_voucher_audit_log'
+];
+
+function stableSerialize(value) {
+    if (value instanceof Date) {
+        return JSON.stringify(value.toISOString());
+    }
+
+    if (Array.isArray(value)) {
+        return `[${value.map(stableSerialize).join(',')}]`;
+    }
+
+    if (value && typeof value === 'object') {
+        const keys = Object.keys(value)
+            .filter((key) => value[key] !== undefined)
+            .sort();
+        return `{${keys.map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`).join(',')}}`;
+    }
+
+    return JSON.stringify(value === undefined ? null : value);
+}
+
+function hashRow(row) {
+    return crypto.createHash('sha256').update(stableSerialize(row || {})).digest('hex');
+}
+
+function subtractIsoDate(value, offsetMs) {
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) {
+        return null;
+    }
+    return new Date(Math.max(0, timestamp - offsetMs)).toISOString();
+}
+
+function normalizeRequestStatus(status) {
+    const normalized = String(status || '').trim().toLowerCase();
+    if (!normalized) {
+        return 'pending';
+    }
+
+    if (['completed', 'approved', 'مكتملة', 'معتمدة'].includes(normalized)) {
+        return 'completed';
+    }
+
+    if (['deleted', 'محذوف', 'محذوفة'].includes(normalized)) {
+        return 'deleted';
+    }
+
+    if (['pending', 'معلقة', 'قيد الانتظار'].includes(normalized)) {
+        return 'pending';
+    }
+
+    return normalized;
+}
+
+function resolvePulledRequestStatus(localStatus, remoteStatus) {
+    const local = normalizeRequestStatus(localStatus);
+    const remote = normalizeRequestStatus(remoteStatus);
+
+    if (local === 'deleted' || remote === 'deleted') {
+        return 'deleted';
+    }
+
+    if (local === 'completed' && remote === 'pending') {
+        return 'completed';
+    }
+
+    return remote || local || 'pending';
+}
 
 class BackgroundSync {
     constructor(dbManager) {
@@ -17,6 +111,184 @@ class BackgroundSync {
         this.interval = null;
         this.isSyncing = false;
         this.enabled = true; // Global flag to control sync
+        this.requestPullPromise = null;
+        this.syncStateWarningShown = false;
+    }
+
+    getNowIso() {
+        return new Date().toISOString();
+    }
+
+    ensureSyncStateSchema(db) {
+        if (!db || typeof db.exec !== 'function') {
+            return false;
+        }
+
+        try {
+            db.exec(`
+                CREATE TABLE IF NOT EXISTS sync_row_state (
+                    table_name TEXT NOT NULL,
+                    row_key TEXT NOT NULL,
+                    row_hash TEXT NOT NULL,
+                    synced_at DATETIME NOT NULL,
+                    PRIMARY KEY (table_name, row_key)
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_metadata (
+                    key TEXT PRIMARY KEY,
+                    value TEXT,
+                    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+            `);
+            return true;
+        } catch (error) {
+            if (!this.syncStateWarningShown) {
+                console.warn('⚠️ [SYNC] Delta sync state unavailable; falling back to full push:', error.message);
+                this.syncStateWarningShown = true;
+            }
+            return false;
+        }
+    }
+
+    readSyncMeta(db, key) {
+        try {
+            const row = db.prepare('SELECT value FROM sync_metadata WHERE key = ?').get(key);
+            return row && row.value ? String(row.value) : null;
+        } catch (_error) {
+            return null;
+        }
+    }
+
+    writeSyncMeta(db, key, value) {
+        try {
+            db.prepare(`
+                INSERT INTO sync_metadata (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET
+                    value = excluded.value,
+                    updated_at = CURRENT_TIMESTAMP
+            `).run(key, String(value));
+        } catch (error) {
+            console.warn(`⚠️ [SYNC] Failed to write sync metadata ${key}:`, error.message);
+        }
+    }
+
+    isIntervalDue(db, key, intervalMs) {
+        const lastValue = this.readSyncMeta(db, key);
+        const lastTime = lastValue ? Date.parse(lastValue) : NaN;
+        if (!Number.isFinite(lastTime)) {
+            return true;
+        }
+        return Date.now() - lastTime >= intervalMs;
+    }
+
+    loadRowStateMap(db, tableName) {
+        try {
+            const rows = db.prepare('SELECT row_key, row_hash FROM sync_row_state WHERE table_name = ?').all(tableName);
+            return new Map(rows.map((row) => [String(row.row_key), String(row.row_hash)]));
+        } catch (_error) {
+            return new Map();
+        }
+    }
+
+    getRowKey(tableName, row, context = {}) {
+        if (!row || typeof row !== 'object') {
+            return null;
+        }
+
+        if (tableName === 'cashbox_vouchers') {
+            const syncKey = this.buildCashboxVoucherSyncKey(row, context.localCashboxToBranchMap || new Map());
+            if (syncKey) {
+                return `sync:${syncKey}`;
+            }
+        }
+
+        if (tableName === 'branch_cashboxes' && row.branch_id !== null && row.branch_id !== undefined) {
+            return `branch:${row.branch_id}`;
+        }
+
+        if (row.id === null || row.id === undefined || row.id === '') {
+            return null;
+        }
+
+        return String(row.id);
+    }
+
+    getTableDelta(db, tableName, rows, context = {}) {
+        const existingState = this.loadRowStateMap(db, tableName);
+        const currentKeys = new Set();
+        const changedRows = [];
+
+        for (const row of rows) {
+            const rowKey = this.getRowKey(tableName, row, context);
+            if (!rowKey) {
+                changedRows.push(row);
+                continue;
+            }
+
+            currentKeys.add(rowKey);
+            const rowHash = hashRow(row);
+            if (existingState.get(rowKey) !== rowHash) {
+                changedRows.push(row);
+            }
+        }
+
+        const deletedKeys = Array.from(existingState.keys())
+            .filter((rowKey) => !currentKeys.has(rowKey));
+
+        return { changedRows, deletedKeys };
+    }
+
+    markRowsSynced(db, tableName, rows, context = {}) {
+        if (!Array.isArray(rows) || rows.length === 0) {
+            return;
+        }
+
+        const syncedAt = this.getNowIso();
+        const stmt = db.prepare(`
+            INSERT INTO sync_row_state (table_name, row_key, row_hash, synced_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(table_name, row_key) DO UPDATE SET
+                row_hash = excluded.row_hash,
+                synced_at = excluded.synced_at
+        `);
+
+        const writeRows = (items) => {
+            for (const row of items) {
+                const rowKey = this.getRowKey(tableName, row, context);
+                if (!rowKey) {
+                    continue;
+                }
+                stmt.run(tableName, rowKey, hashRow(row), syncedAt);
+            }
+        };
+
+        if (typeof db.transaction === 'function') {
+            db.transaction(writeRows)(rows);
+        } else {
+            writeRows(rows);
+        }
+    }
+
+    clearDeletedRowStates(db, tableName, rowKeys) {
+        if (!Array.isArray(rowKeys) || rowKeys.length === 0) {
+            return;
+        }
+
+        try {
+            const stmt = db.prepare('DELETE FROM sync_row_state WHERE table_name = ? AND row_key = ?');
+            const deleteRows = (keys) => {
+                keys.forEach((rowKey) => stmt.run(tableName, rowKey));
+            };
+
+            if (typeof db.transaction === 'function') {
+                db.transaction(deleteRows)(rowKeys);
+            } else {
+                deleteRows(rowKeys);
+            }
+        } catch (error) {
+            console.warn(`⚠️ [SYNC] Failed to clear deleted row state for ${tableName}:`, error.message);
+        }
     }
 
     /**
@@ -76,16 +348,17 @@ class BackgroundSync {
         try {
             const db = this.dbManager.db;
             try {
+                await this.pullRemoteRequests();
+            } catch (pullError) {
+                console.error('⚠️ [SYNC] Pull phase failed:', pullError.message);
+            }
+
+            try {
                 await this.pushLocalData(db);
             } catch (pushError) {
                 console.error('⚠️ [SYNC] Push phase failed:', pushError.message);
             }
 
-            try {
-                await this.fetchRemoteRequests(db);
-            } catch (pullError) {
-                console.error('⚠️ [SYNC] Pull phase failed:', pullError.message);
-            }
         } catch (error) {
             console.error('⚠️ [SYNC] Error:', error.message);
         } finally {
@@ -95,14 +368,42 @@ class BackgroundSync {
 
     async safePushStep(label, fn) {
         try {
-            await fn();
+            return await fn();
         } catch (error) {
             console.error(`⚠️ [SYNC] ${label} step failed:`, error.message);
+            return { sentCount: 0, deletedKeys: [], failed: true };
         }
     }
 
     async delay(ms) {
         return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+
+    async fetchWithTimeout(url, options = {}, timeoutMs = SYNC_POST_TIMEOUT_MS, label = 'network request') {
+        const controller = typeof AbortController === 'function' ? new AbortController() : null;
+        const timeoutHandle = controller
+            ? setTimeout(() => controller.abort(), timeoutMs)
+            : null;
+
+        try {
+            if (!controller) {
+                return await fetch(url, options);
+            }
+
+            return await fetch(url, {
+                ...options,
+                signal: controller.signal
+            });
+        } catch (error) {
+            if (error && (error.name === 'AbortError' || error.type === 'aborted')) {
+                throw new Error(`${label} timed out after ${timeoutMs}ms`);
+            }
+            throw error;
+        } finally {
+            if (timeoutHandle) {
+                clearTimeout(timeoutHandle);
+            }
+        }
     }
 
     parseInteger(value) {
@@ -150,6 +451,33 @@ class BackgroundSync {
         return Boolean(normalized) && !['{}', '[]', 'null'].includes(normalized);
     }
 
+    async pullRemoteRequests() {
+        if (!this.enabled) {
+            console.log('⛔ [SYNC] Remote request pull skipped - sync is disabled');
+            return { success: false, skipped: true, reason: 'disabled' };
+        }
+
+        if (this.requestPullPromise) {
+            return this.requestPullPromise;
+        }
+
+        const db = this.dbManager?.db;
+        if (!db) {
+            throw new Error('Database not initialized');
+        }
+
+        this.requestPullPromise = (async () => {
+            await this.fetchRemoteRequests(db);
+            return { success: true };
+        })();
+
+        try {
+            return await this.requestPullPromise;
+        } finally {
+            this.requestPullPromise = null;
+        }
+    }
+
     buildCashboxVoucherSyncKey(voucher, localCashboxToBranchMap = new Map()) {
         const localCashboxId = this.parseInteger(voucher?.cashbox_id);
         let branchId = this.parseInteger(voucher?.branch_id);
@@ -189,139 +517,200 @@ class BackgroundSync {
         return `fallback:${branchId}:${voucherType}:${voucherDate}:${amount}:${counterpartyType}:${counterpartyName}:${createdAt}:${localId}`;
     }
 
-    async pushLocalData(db) {
-        // --- PUSH: Upload Local Data ---
+    readTableRows(db, sql, label) {
+        try {
+            return db.prepare(sql).all();
+        } catch (error) {
+            console.warn(`⚠️ [SYNC] Failed reading ${label}:`, error.message);
+            return [];
+        }
+    }
 
-        // 1. Fetch Lookups (Small data, send all at once)
-        const admins = db.prepare('SELECT * FROM admins').all();
-        const branches = db.prepare('SELECT * FROM branches').all();
-        const cashiers = db.prepare('SELECT * FROM cashiers').all();
-        const accountants = db.prepare('SELECT * FROM accountants').all();
-        const atms = db.prepare('SELECT * FROM atms').all();
-        const branch_cashboxes = db.prepare('SELECT * FROM branch_cashboxes').all();
-        const cashbox_vouchers = db.prepare('SELECT * FROM cashbox_vouchers ORDER BY id DESC').all();
-
-        console.log(`🔍 [SYNC] Local counts: admins=${admins.length}, branches=${branches.length}, cashiers=${cashiers.length}, accountants=${accountants.length}, atms=${atms.length}, branch_cashboxes=${branch_cashboxes.length}`);
-
-        await this.sendPayload({ admins, branches, cashiers, accountants, atms, branch_cashboxes });
-
+    buildLocalCashboxToBranchMap(branchCashboxes = []) {
         const localCashboxToBranchMap = new Map();
-        branch_cashboxes.forEach((row) => {
+        branchCashboxes.forEach((row) => {
             const localCashboxId = this.parseInteger(row?.id);
             const branchId = this.parseInteger(row?.branch_id);
             if (localCashboxId !== null && branchId !== null) {
                 localCashboxToBranchMap.set(localCashboxId, branchId);
             }
         });
+        return localCashboxToBranchMap;
+    }
 
-        // 2. Mirror Sync: Send ALL active IDs first to allow server to clean up deleted records
-        // This is the robust way to handle deletions without risking data loss during chunked upload
-        const idTables = [
-            'reconciliations',
-            'postpaid_sales',
-            'customer_receipts',
-            'manual_postpaid_sales',
-            'manual_customer_receipts',
-            'cash_receipts',
-            'bank_receipts',
-            'branch_cashboxes',
-            'cashbox_vouchers',
-            'cashbox_voucher_audit_log'
+    buildActiveIdsForTable(db, table) {
+        try {
+            return db.prepare(`SELECT id FROM ${table}`).all().map((row) => row.id);
+        } catch (error) {
+            console.error(`Error fetching IDs for ${table}:`, error.message);
+            return [];
+        }
+    }
+
+    buildMirrorCleanupPayload(db, cleanupTables, cachedRows = {}, context = {}) {
+        const payload = {};
+        const shouldIncludeAll = cleanupTables.has('*');
+
+        for (const table of MIRROR_ID_TABLES) {
+            if (!shouldIncludeAll && !cleanupTables.has(table)) {
+                continue;
+            }
+
+            payload[`active_${table}_ids`] = this.buildActiveIdsForTable(db, table);
+        }
+
+        if (shouldIncludeAll || cleanupTables.has('branch_cashboxes')) {
+            const branchCashboxes = cachedRows.branch_cashboxes || this.readTableRows(db, 'SELECT * FROM branch_cashboxes', 'branch_cashboxes');
+            payload.active_branch_cashboxes_branch_ids = branchCashboxes
+                .map((row) => row && row.branch_id)
+                .filter((branchId) => Number.isFinite(Number(branchId)))
+                .map((branchId) => Number(branchId));
+        }
+
+        if (shouldIncludeAll || cleanupTables.has('cashbox_vouchers')) {
+            const cashboxVouchers = cachedRows.cashbox_vouchers || this.readTableRows(db, 'SELECT * FROM cashbox_vouchers ORDER BY id DESC', 'cashbox_vouchers');
+            const localCashboxToBranchMap = context.localCashboxToBranchMap || new Map();
+            payload.active_cashbox_voucher_sync_keys = Array.from(
+                new Set(
+                    cashboxVouchers
+                        .map((voucher) => this.buildCashboxVoucherSyncKey(voucher, localCashboxToBranchMap))
+                        .filter((syncKey) => typeof syncKey === 'string' && syncKey.length > 0)
+                )
+            );
+        }
+
+        return payload;
+    }
+
+    async sendMirrorCleanup(db, cleanupTables, cachedRows = {}, context = {}) {
+        if (!cleanupTables || cleanupTables.size === 0) {
+            return false;
+        }
+
+        const payload = this.buildMirrorCleanupPayload(db, cleanupTables, cachedRows, context);
+        if (Object.keys(payload).length === 0) {
+            return false;
+        }
+
+        console.log(`🧹 [SYNC] Sending mirror cleanup for: ${Array.from(cleanupTables).join(', ')}`);
+        await this.sendPayload(payload, { preserveEmptyArrays: true });
+        return true;
+    }
+
+    async sendTableDelta(db, spec, rows, options = {}) {
+        const stateAvailable = Boolean(options.stateAvailable);
+        const fullRefresh = Boolean(options.fullRefresh);
+        const context = options.context || {};
+
+        if (!stateAvailable || fullRefresh) {
+            await this.sendInBatches(spec.key, rows, spec.batchSize || DEFAULT_SYNC_BATCH_SIZE);
+            if (stateAvailable) {
+                this.markRowsSynced(db, spec.key, rows, context);
+            }
+            return { sentCount: rows.length, deletedKeys: [] };
+        }
+
+        const { changedRows, deletedKeys } = this.getTableDelta(db, spec.key, rows, context);
+        if (changedRows.length === 0 && deletedKeys.length === 0) {
+            return { sentCount: 0, deletedKeys: [] };
+        }
+
+        if (changedRows.length > 0) {
+            console.log(`📦 [SYNC] ${spec.key}: ${changedRows.length}/${rows.length} changed rows`);
+            await this.sendInBatches(spec.key, changedRows, spec.batchSize || DEFAULT_SYNC_BATCH_SIZE);
+            this.markRowsSynced(db, spec.key, changedRows, context);
+        }
+
+        return { sentCount: changedRows.length, deletedKeys };
+    }
+
+    async pushLocalData(db) {
+        const stateAvailable = this.ensureSyncStateSchema(db);
+        const fullRefresh = !stateAvailable
+            || this.isIntervalDue(db, SYNC_META_KEYS.lastFullRefreshAt, FULL_REFRESH_INTERVAL_MS);
+        const cleanupDue = !stateAvailable
+            || fullRefresh
+            || this.isIntervalDue(db, SYNC_META_KEYS.lastMirrorCleanupAt, MIRROR_CLEANUP_INTERVAL_MS);
+
+        const tableSpecs = [
+            { key: 'admins', query: 'SELECT * FROM admins', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'branches', query: 'SELECT * FROM branches', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'cashiers', query: 'SELECT * FROM cashiers', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'accountants', query: 'SELECT * FROM accountants', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'atms', query: 'SELECT * FROM atms', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'branch_cashboxes', query: 'SELECT * FROM branch_cashboxes', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'customers', query: 'SELECT * FROM customers ORDER BY id ASC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'cashbox_vouchers', query: 'SELECT * FROM cashbox_vouchers ORDER BY id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'cashbox_voucher_audit_log', query: 'SELECT * FROM cashbox_voucher_audit_log ORDER BY id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'reconciliations', query: 'SELECT * FROM reconciliations ORDER BY id DESC', batchSize: RECONCILIATION_SYNC_BATCH_SIZE },
+            { key: 'manual_postpaid_sales', query: 'SELECT * FROM manual_postpaid_sales ORDER BY id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'manual_customer_receipts', query: 'SELECT * FROM manual_customer_receipts ORDER BY id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'postpaid_sales', query: 'SELECT * FROM postpaid_sales ORDER BY id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'customer_receipts', query: 'SELECT * FROM customer_receipts ORDER BY id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'cash_receipts', query: 'SELECT * FROM cash_receipts ORDER BY id DESC LIMIT 10000', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'bank_receipts', query: 'SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'reconciliation_requests', query: 'SELECT * FROM reconciliation_requests', batchSize: DEFAULT_SYNC_BATCH_SIZE }
         ];
 
-        const allIdsPayload = {};
-        let hasIds = false;
-
-        for (const table of idTables) {
-            try {
-                const ids = db.prepare(`SELECT id FROM ${table}`).all().map(r => r.id);
-                if (ids.length > 0) {
-                    allIdsPayload[`active_${table}_ids`] = ids;
-                    hasIds = true;
-                }
-            } catch (e) { console.error(`Error fetching IDs for ${table}:`, e.message); }
+        const cachedRows = {};
+        for (const spec of tableSpecs) {
+            cachedRows[spec.key] = this.readTableRows(db, spec.query, spec.key);
         }
 
-        // Cashbox cleanup on Render should be keyed by branch_id, not local SQLite id.
-        const activeBranchCashboxBranchIds = branch_cashboxes
-            .map(row => row && row.branch_id)
-            .filter(branchId => Number.isFinite(Number(branchId)))
-            .map(branchId => Number(branchId));
-        allIdsPayload.active_branch_cashboxes_branch_ids = activeBranchCashboxBranchIds;
-        hasIds = true;
+        const localCashboxToBranchMap = this.buildLocalCashboxToBranchMap(cachedRows.branch_cashboxes);
+        const context = { localCashboxToBranchMap };
+        const cleanupTables = new Set(cleanupDue ? ['*'] : []);
+        const deletedStateByTable = new Map();
+        let totalSent = 0;
+        let cleanupFailed = false;
 
-        const activeCashboxVoucherSyncKeys = Array.from(
-            new Set(
-                cashbox_vouchers
-                    .map((voucher) => this.buildCashboxVoucherSyncKey(voucher, localCashboxToBranchMap))
-                    .filter((value) => typeof value === 'string' && value.length > 0)
-            )
+        console.log(
+            `🔍 [SYNC] Local counts: ${tableSpecs.map((spec) => `${spec.key}=${cachedRows[spec.key].length}`).join(', ')}`
         );
-        allIdsPayload.active_cashbox_voucher_sync_keys = activeCashboxVoucherSyncKeys;
-        hasIds = true;
+        console.log(`🔄 [SYNC] Push mode: ${fullRefresh ? 'full safety refresh' : 'delta changes only'}`);
 
-        if (hasIds) {
-            console.log('🧹 [SYNC] Sending ID lists for mirror cleanup...');
-            // We send this as a separate payload type so the server knows it's an ID list, not full data
-            await this.sendPayload(allIdsPayload, { preserveEmptyArrays: true });
+        for (const spec of tableSpecs) {
+            const result = await this.safePushStep(spec.key, async () => this.sendTableDelta(db, spec, cachedRows[spec.key], {
+                stateAvailable,
+                fullRefresh,
+                context
+            }));
+
+            totalSent += result?.sentCount || 0;
+            if (result?.failed) {
+                continue;
+            }
+
+            if (Array.isArray(result?.deletedKeys) && result.deletedKeys.length > 0) {
+                cleanupTables.add(spec.key);
+                deletedStateByTable.set(spec.key, result.deletedKeys);
+            }
         }
 
-        // 3. High-priority cashbox mirror first (faster web consistency under heavy sync load)
-        await this.safePushStep('cashbox_vouchers', async () => {
-            await this.sendInBatches('cashbox_vouchers', cashbox_vouchers, DEFAULT_SYNC_BATCH_SIZE);
-        });
-
-        await this.safePushStep('cashbox_voucher_audit_log', async () => {
-            const cashbox_voucher_audit_log = db.prepare('SELECT * FROM cashbox_voucher_audit_log ORDER BY id DESC').all();
-            await this.sendInBatches('cashbox_voucher_audit_log', cashbox_voucher_audit_log, DEFAULT_SYNC_BATCH_SIZE);
-        });
-
-        // 4. Fetch & send the rest of history
-        await this.safePushStep('reconciliations', async () => {
-            const reconciliations = db.prepare('SELECT * FROM reconciliations ORDER BY id DESC').all();
-            await this.sendInBatches('reconciliations', reconciliations, RECONCILIATION_SYNC_BATCH_SIZE);
-        });
-
-        await this.safePushStep('manual_postpaid_sales', async () => {
-            const manual_postpaid_sales = db.prepare('SELECT * FROM manual_postpaid_sales ORDER BY id DESC').all();
-            await this.sendInBatches('manual_postpaid_sales', manual_postpaid_sales, DEFAULT_SYNC_BATCH_SIZE);
-        });
-
-        await this.safePushStep('manual_customer_receipts', async () => {
-            const manual_customer_receipts = db.prepare('SELECT * FROM manual_customer_receipts ORDER BY id DESC').all();
-            await this.sendInBatches('manual_customer_receipts', manual_customer_receipts, DEFAULT_SYNC_BATCH_SIZE);
-        });
-
-        await this.safePushStep('postpaid_sales', async () => {
-            const postpaid_sales = db.prepare('SELECT * FROM postpaid_sales ORDER BY id DESC').all();
-            await this.sendInBatches('postpaid_sales', postpaid_sales, DEFAULT_SYNC_BATCH_SIZE);
-        });
-
-        await this.safePushStep('customer_receipts', async () => {
-            const customer_receipts = db.prepare('SELECT * FROM customer_receipts ORDER BY id DESC').all();
-            await this.sendInBatches('customer_receipts', customer_receipts, DEFAULT_SYNC_BATCH_SIZE);
-        });
-
-        await this.safePushStep('cash_receipts', async () => {
-            const cash_receipts = db.prepare('SELECT * FROM cash_receipts ORDER BY id DESC LIMIT 10000').all();
-            await this.sendInBatches('cash_receipts', cash_receipts, DEFAULT_SYNC_BATCH_SIZE);
-        });
-
-        await this.safePushStep('bank_receipts', async () => {
-            const bank_receipts = db.prepare('SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000').all();
-            await this.sendInBatches('bank_receipts', bank_receipts, DEFAULT_SYNC_BATCH_SIZE);
-        });
-
-        // 5. Push Reconciliation Requests Status Updates
-        await this.safePushStep('reconciliation_requests', async () => {
-            const reconciliation_requests = db.prepare('SELECT * FROM reconciliation_requests').all();
-            if (reconciliation_requests && reconciliation_requests.length > 0) {
-                console.log(`📤 [SYNC] Pushing ${reconciliation_requests.length} reconciliation requests...`);
-                await this.sendInBatches('reconciliation_requests', reconciliation_requests, DEFAULT_SYNC_BATCH_SIZE);
+        let cleanupSent = false;
+        try {
+            cleanupSent = await this.sendMirrorCleanup(db, cleanupTables, cachedRows, context);
+            if (cleanupSent) {
+                for (const [tableName, rowKeys] of deletedStateByTable.entries()) {
+                    this.clearDeletedRowStates(db, tableName, rowKeys);
+                }
             }
-        });
+        } catch (cleanupError) {
+            cleanupFailed = true;
+            console.error('⚠️ [SYNC] Mirror cleanup failed:', cleanupError.message);
+        }
 
-        console.log('✅ [SYNC] Push completed successfully');
+        if (stateAvailable) {
+            const nowIso = this.getNowIso();
+            if (fullRefresh) {
+                this.writeSyncMeta(db, SYNC_META_KEYS.lastFullRefreshAt, nowIso);
+            }
+            if ((cleanupSent || cleanupDue) && !cleanupFailed) {
+                this.writeSyncMeta(db, SYNC_META_KEYS.lastMirrorCleanupAt, nowIso);
+            }
+        }
+
+        console.log(`✅ [SYNC] Push completed: ${totalSent} changed rows sent${cleanupSent ? ' + cleanup audit' : ''}`);
     }
 
     // Helper: Send a specific payload
@@ -368,11 +757,11 @@ class BackgroundSync {
 
         for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt++) {
             try {
-                const res = await fetch(REMOTE_URL, {
+                const res = await this.fetchWithTimeout(REMOTE_URL, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(dataToSend)
-                });
+                }, SYNC_POST_TIMEOUT_MS, `sync upload (${payloadKeys})`);
 
                 if (!res.ok) {
                     const isTransient = TRANSIENT_HTTP_STATUSES.has(res.status);
@@ -395,11 +784,11 @@ class BackgroundSync {
 
                 console.log(`✅ [SYNC] Server accepted: ${payloadKeys}`);
                 return;
-            } catch (e) {
-                lastError = e;
+            } catch (error) {
+                lastError = error;
                 if (attempt < SEND_RETRY_DELAYS_MS.length) {
                     const waitMs = SEND_RETRY_DELAYS_MS[attempt];
-                    console.warn(`⚠️ [SYNC] Send attempt ${attempt + 1} failed for ${payloadKeys}: ${e.message}. Retrying in ${waitMs}ms...`);
+                    console.warn(`⚠️ [SYNC] Send attempt ${attempt + 1} failed for ${payloadKeys}: ${error.message}. Retrying in ${waitMs}ms...`);
                     await this.delay(waitMs);
                     continue;
                 }
@@ -427,13 +816,32 @@ class BackgroundSync {
     // Helper: Pull Requests from Web
     async fetchRemoteRequests(db) {
         try {
-            // Adjust URL to point to GET /api/reconciliation-requests
-            // BASE URL is https://tasfiya-pro-max.onrender.com/api/sync/users
-            // We need https://tasfiya-pro-max.onrender.com/api/reconciliation-requests
-            const reqUrl = REMOTE_URL.replace('/sync/users', '/reconciliation-requests?status=all&include_deleted=1&include_details=raw');
+            const stateAvailable = this.ensureSyncStateSchema(db);
+            const fullPull = !stateAvailable
+                || this.isIntervalDue(db, SYNC_META_KEYS.lastRequestFullPullAt, REQUEST_FULL_PULL_INTERVAL_MS);
+            const lastPullAt = stateAvailable && !fullPull
+                ? this.readSyncMeta(db, SYNC_META_KEYS.lastRequestPullAt)
+                : null;
+            const updatedAfter = lastPullAt ? subtractIsoDate(lastPullAt, REQUEST_PULL_OVERLAP_MS) : null;
+            const query = new URLSearchParams({
+                status: 'all',
+                include_deleted: '1',
+                include_details: 'raw'
+            });
+
+            if (updatedAfter) {
+                query.set('updated_after', updatedAfter);
+            }
+
+            const reqUrl = REMOTE_URL.replace('/sync/users', `/reconciliation-requests?${query.toString()}`);
             console.log(`📥 [SYNC] Pulling requests from: ${reqUrl}`);
 
-            const res = await fetch(reqUrl);
+            const res = await this.fetchWithTimeout(
+                reqUrl,
+                {},
+                REQUEST_PULL_TIMEOUT_MS,
+                'reconciliation requests pull'
+            );
             if (!res.ok) {
                 console.error(`❌ [SYNC] Pull failed: ${res.status} ${res.statusText}`);
                 return;
@@ -463,10 +871,13 @@ class BackgroundSync {
                 let newCount = 0;
                 let updateCount = 0;
                 const existingIds = new Set(
-                    db.prepare('SELECT id FROM reconciliation_requests').all().map(r => r.id)
+                    db.prepare('SELECT id FROM reconciliation_requests').all().map((row) => row.id)
                 );
-                const existingDetailsById = new Map(
-                    db.prepare('SELECT id, details_json FROM reconciliation_requests').all().map((row) => [row.id, row.details_json || null])
+                const existingRequestStateById = new Map(
+                    db.prepare('SELECT id, details_json, status FROM reconciliation_requests').all().map((row) => [row.id, {
+                        details_json: row.details_json || null,
+                        status: row.status || null
+                    }])
                 );
 
                 const writeRequests = db.transaction((remoteRequests) => {
@@ -476,10 +887,12 @@ class BackgroundSync {
                                 ? request.details
                                 : request.details_json
                         );
-                        const existingDetails = existingDetailsById.get(request.id) || null;
+                        const existingState = existingRequestStateById.get(request.id) || {};
+                        const existingDetails = existingState.details_json || null;
                         const details = this.hasMeaningfulRequestDetailsPayload(incomingDetails)
                             ? incomingDetails
                             : (this.normalizeRequestDetailsPayload(existingDetails) || incomingDetails || '{}');
+                        const resolvedStatus = resolvePulledRequestStatus(existingState.status, request.status);
 
                         const requestDate = request.request_date || request.created_at || null;
                         const systemSales = Number(request.system_sales || 0);
@@ -494,7 +907,7 @@ class BackgroundSync {
                                 systemSales,
                                 totalCash,
                                 totalBank,
-                                request.status,
+                                resolvedStatus,
                                 details,
                                 request.notes || '',
                                 request.created_at || null,
@@ -502,25 +915,30 @@ class BackgroundSync {
                                 request.id
                             );
                             updateCount++;
-                            existingDetailsById.set(request.id, details);
-                            return;
+                            existingRequestStateById.set(request.id, {
+                                details_json: details,
+                                status: resolvedStatus
+                            });
+                        } else {
+                            insertStmt.run(
+                                request.id,
+                                request.cashier_id,
+                                requestDate,
+                                systemSales,
+                                totalCash,
+                                totalBank,
+                                resolvedStatus,
+                                details,
+                                request.notes || '',
+                                request.created_at || null,
+                                updatedAt
+                            );
+                            newCount++;
+                            existingRequestStateById.set(request.id, {
+                                details_json: details,
+                                status: resolvedStatus
+                            });
                         }
-
-                        insertStmt.run(
-                            request.id,
-                            request.cashier_id,
-                            requestDate,
-                            systemSales,
-                            totalCash,
-                            totalBank,
-                            request.status,
-                            details,
-                            request.notes || '',
-                            request.created_at || null,
-                            updatedAt
-                        );
-                        newCount++;
-                        existingDetailsById.set(request.id, details);
                     });
                 });
 
@@ -530,6 +948,21 @@ class BackgroundSync {
                     console.log(`✅ [SYNC] Pulled requests: ${newCount} new, ${updateCount} updated.`);
                 }
 
+                if (stateAvailable) {
+                    const maxRemoteTimestamp = requests
+                        .map((request) => request.updated_at || request.created_at || null)
+                        .map((value) => (value ? Date.parse(value) : NaN))
+                        .filter((timestamp) => Number.isFinite(timestamp))
+                        .reduce((maxValue, timestamp) => Math.max(maxValue, timestamp), 0);
+                    const watermark = maxRemoteTimestamp > 0
+                        ? new Date(maxRemoteTimestamp).toISOString()
+                        : this.getNowIso();
+
+                    this.writeSyncMeta(db, SYNC_META_KEYS.lastRequestPullAt, watermark);
+                    if (fullPull) {
+                        this.writeSyncMeta(db, SYNC_META_KEYS.lastRequestFullPullAt, this.getNowIso());
+                    }
+                }
             }
         } catch (e) {
             console.error('⚠️ [SYNC] Failed to fetch requests:', e.message);
@@ -540,13 +973,20 @@ class BackgroundSync {
 // Wrapper for backward compatibility (Singleton pattern)
 let syncInstance = null;
 
-function startBackgroundSync(dbManager) {
+function getOrCreateSyncInstance(dbManager) {
     if (!syncInstance) {
-        if (!dbManager) return;
+        if (!dbManager) return null;
         syncInstance = new BackgroundSync(dbManager);
     }
-    if (!syncInstance.isRunning) {
-        syncInstance.start();
+
+    return syncInstance;
+}
+
+function startBackgroundSync(dbManager) {
+    const instance = getOrCreateSyncInstance(dbManager);
+    if (!instance) return;
+    if (!instance.isRunning) {
+        instance.start();
     }
 }
 
@@ -578,6 +1018,15 @@ function triggerInstantSync() {
     }
 }
 
+async function pullRemoteRequestsNow(dbManager) {
+    const instance = getOrCreateSyncInstance(dbManager);
+    if (!instance) {
+        throw new Error('Background sync is not initialized');
+    }
+
+    return instance.pullRemoteRequests();
+}
+
 module.exports = {
     BackgroundSync,
     startBackgroundSync,
@@ -585,5 +1034,6 @@ module.exports = {
     getSyncStatus,
     getSyncEnabled,
     setSyncEnabled,
-    triggerInstantSync
+    triggerInstantSync,
+    pullRemoteRequestsNow
 };

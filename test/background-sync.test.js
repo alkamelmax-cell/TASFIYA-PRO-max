@@ -46,6 +46,18 @@ function createRequestsDb(initialRows = []) {
         };
       }
 
+      if (sql.includes('SELECT id, details_json, status FROM reconciliation_requests')) {
+        return {
+          all() {
+            return rows.map((row) => ({
+              id: row.id,
+              details_json: row.details_json ?? null,
+              status: row.status ?? null
+            }));
+          }
+        };
+      }
+
       if (sql.includes('SELECT id FROM reconciliation_requests')) {
         return {
           all() {
@@ -98,6 +110,113 @@ function createRequestsDb(initialRows = []) {
     },
     transaction(fn) {
       return (...args) => fn(...args);
+    }
+  };
+}
+
+function createDeltaSyncDb(initialTables = {}) {
+  const tableNames = [
+    'admins',
+    'branches',
+    'cashiers',
+    'accountants',
+    'atms',
+    'branch_cashboxes',
+    'customers',
+    'cashbox_vouchers',
+    'cashbox_voucher_audit_log',
+    'reconciliations',
+    'manual_postpaid_sales',
+    'manual_customer_receipts',
+    'postpaid_sales',
+    'customer_receipts',
+    'cash_receipts',
+    'bank_receipts',
+    'reconciliation_requests'
+  ];
+  const tables = Object.fromEntries(tableNames.map((name) => [name, (initialTables[name] || []).map((row) => ({ ...row }))]));
+  const metadata = new Map();
+  const rowState = new Map();
+
+  const getStateKey = (tableName, rowKey) => `${tableName}\u0000${rowKey}`;
+
+  return {
+    tables,
+    metadata,
+    rowState,
+    exec() {},
+    transaction(fn) {
+      return (...args) => fn(...args);
+    },
+    prepare(sql) {
+      const normalizedSql = String(sql).replace(/\s+/g, ' ').trim();
+
+      if (normalizedSql === 'SELECT value FROM sync_metadata WHERE key = ?') {
+        return {
+          get(key) {
+            return metadata.has(key) ? { value: metadata.get(key) } : undefined;
+          }
+        };
+      }
+
+      if (normalizedSql.startsWith('INSERT INTO sync_metadata')) {
+        return {
+          run(key, value) {
+            metadata.set(key, value);
+          }
+        };
+      }
+
+      if (normalizedSql === 'SELECT row_key, row_hash FROM sync_row_state WHERE table_name = ?') {
+        return {
+          all(tableName) {
+            return Array.from(rowState.entries())
+              .filter(([key]) => key.startsWith(`${tableName}\u0000`))
+              .map(([key, rowHash]) => ({
+                row_key: key.slice(tableName.length + 1),
+                row_hash: rowHash
+              }));
+          }
+        };
+      }
+
+      if (normalizedSql.startsWith('INSERT INTO sync_row_state')) {
+        return {
+          run(tableName, rowKey, rowHash) {
+            rowState.set(getStateKey(tableName, rowKey), rowHash);
+          }
+        };
+      }
+
+      if (normalizedSql === 'DELETE FROM sync_row_state WHERE table_name = ? AND row_key = ?') {
+        return {
+          run(tableName, rowKey) {
+            rowState.delete(getStateKey(tableName, rowKey));
+          }
+        };
+      }
+
+      const selectAllMatch = normalizedSql.match(/^SELECT \* FROM ([a-z_]+)/i);
+      if (selectAllMatch) {
+        const tableName = selectAllMatch[1];
+        return {
+          all() {
+            return (tables[tableName] || []).map((row) => ({ ...row }));
+          }
+        };
+      }
+
+      const selectIdMatch = normalizedSql.match(/^SELECT id FROM ([a-z_]+)/i);
+      if (selectIdMatch) {
+        const tableName = selectIdMatch[1];
+        return {
+          all() {
+            return (tables[tableName] || []).map((row) => ({ id: row.id }));
+          }
+        };
+      }
+
+      throw new Error(`Unexpected SQL in delta test double: ${sql}`);
     }
   };
 }
@@ -363,4 +482,149 @@ test('pushLocalData sends active cashbox voucher sync keys for mirror-safe delet
       'num:7:payment:44'
     ].sort()
   );
+});
+
+test('pushLocalData sends only changed rows after the first delta baseline', async () => {
+  const sentPayloads = [];
+  const { BackgroundSync } = loadBackgroundSyncWithMocks(async (_url, options = {}) => {
+    sentPayloads.push(options.body ? JSON.parse(options.body) : {});
+    return {
+      ok: true,
+      async json() {
+        return { success: true };
+      }
+    };
+  });
+
+  const db = createDeltaSyncDb({
+    customers: [
+      {
+        id: 1,
+        customer_code: 'C1-000001',
+        customer_name: 'عميل أول',
+        branch_id: 1,
+        phone: '',
+        address: '',
+        created_at: '2026-05-01T00:00:00.000Z',
+        updated_at: '2026-05-01T00:00:00.000Z'
+      },
+      {
+        id: 2,
+        customer_code: 'C1-000002',
+        customer_name: 'عميل ثاني',
+        branch_id: 1,
+        phone: '',
+        address: '',
+        created_at: '2026-05-01T00:00:00.000Z',
+        updated_at: '2026-05-01T00:00:00.000Z'
+      }
+    ]
+  });
+
+  const sync = new BackgroundSync({ db });
+  await sync.pushLocalData(db);
+
+  sentPayloads.length = 0;
+  await sync.pushLocalData(db);
+  assert.equal(sentPayloads.length, 0, 'unchanged second sync should not send payloads');
+
+  db.tables.customers[1].customer_name = 'عميل ثاني معدل';
+  db.tables.customers[1].updated_at = '2026-05-02T00:00:00.000Z';
+
+  await sync.pushLocalData(db);
+
+  const customerPayloads = sentPayloads.filter((payload) => Object.prototype.hasOwnProperty.call(payload, 'customers'));
+  assert.equal(customerPayloads.length, 1);
+  assert.equal(customerPayloads[0].customers.length, 1);
+  assert.equal(customerPayloads[0].customers[0].id, 2);
+  assert.equal(customerPayloads[0].customers[0].customer_name, 'عميل ثاني معدل');
+});
+
+test('pushLocalData sends mirror cleanup when a previously synced row is deleted', async () => {
+  const sentPayloads = [];
+  const { BackgroundSync } = loadBackgroundSyncWithMocks(async (_url, options = {}) => {
+    sentPayloads.push(options.body ? JSON.parse(options.body) : {});
+    return {
+      ok: true,
+      async json() {
+        return { success: true };
+      }
+    };
+  });
+
+  const db = createDeltaSyncDb({
+    postpaid_sales: [
+      { id: 10, reconciliation_id: 1, customer_name: 'عميل', customer_code: 'C1-000010', amount: 25, notes: '' }
+    ]
+  });
+
+  const sync = new BackgroundSync({ db });
+  await sync.pushLocalData(db);
+
+  sentPayloads.length = 0;
+  db.tables.postpaid_sales = [];
+  await sync.pushLocalData(db);
+
+  const cleanupPayload = sentPayloads.find((payload) =>
+    Object.prototype.hasOwnProperty.call(payload, 'active_postpaid_sales_ids')
+  );
+
+  assert.ok(cleanupPayload, 'expected cleanup payload for deleted postpaid row');
+  assert.deepEqual(cleanupPayload.active_postpaid_sales_ids, []);
+  assert.equal(
+    sentPayloads.some((payload) => Object.prototype.hasOwnProperty.call(payload, 'postpaid_sales')),
+    false,
+    'deleted row should not be resent as table data'
+  );
+});
+
+test('fetchRemoteRequests uses updated_after after an incremental pull watermark', async () => {
+  let requestedUrl = '';
+  const { BackgroundSync } = loadBackgroundSyncWithMocks(async (url) => {
+    requestedUrl = String(url || '');
+    return {
+      ok: true,
+      async json() {
+        return { success: true, data: [] };
+      }
+    };
+  });
+
+  const db = createRequestsDb([]);
+  const metadata = new Map([
+    ['background-sync:requests:last-full-pull-at', new Date().toISOString()],
+    ['background-sync:requests:last-pull-at', '2026-05-31T07:10:00.000Z']
+  ]);
+  const originalPrepare = db.prepare.bind(db);
+
+  db.exec = () => {};
+  db.prepare = (sql) => {
+    const normalizedSql = String(sql).replace(/\s+/g, ' ').trim();
+    if (normalizedSql === 'SELECT value FROM sync_metadata WHERE key = ?') {
+      return {
+        get(key) {
+          return metadata.has(key) ? { value: metadata.get(key) } : undefined;
+        }
+      };
+    }
+
+    if (normalizedSql.startsWith('INSERT INTO sync_metadata')) {
+      return {
+        run(key, value) {
+          metadata.set(key, value);
+        }
+      };
+    }
+
+    return originalPrepare(sql);
+  };
+
+  const sync = new BackgroundSync({ db });
+  await sync.fetchRemoteRequests(db);
+
+  const parsedUrl = new URL(requestedUrl);
+  assert.equal(parsedUrl.searchParams.get('status'), 'all');
+  assert.equal(parsedUrl.searchParams.get('include_deleted'), '1');
+  assert.equal(parsedUrl.searchParams.get('include_details'), 'raw');
+  assert.equal(parsedUrl.searchParams.get('updated_after'), '2026-05-31T07:08:00.000Z');
 });

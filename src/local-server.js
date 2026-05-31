@@ -4406,6 +4406,51 @@ class LocalWebServer {
                 ? 'raw'
                 : (query && isTruthyQueryValue(query.include_details) ? 'parsed' : 'none');
             const selectColumns = this.getReconciliationRequestSelectColumns(includeDetailsMode);
+            const updatedAfter = query && query.updated_after
+                ? String(query.updated_after).trim()
+                : '';
+            const buildPostgresFilters = () => {
+                const params = [];
+                const clauses = [];
+
+                if (statusFilter !== 'all') {
+                    params.push(statusFilter);
+                    clauses.push(`r.status = $${params.length}`);
+                } else if (!includeDeleted) {
+                    clauses.push("COALESCE(r.status, 'pending') <> 'deleted'");
+                }
+
+                if (updatedAfter) {
+                    params.push(updatedAfter);
+                    clauses.push(`COALESCE(r.updated_at, r.created_at) > $${params.length}`);
+                }
+
+                return {
+                    params,
+                    whereSql: clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : ''
+                };
+            };
+            const buildSqliteFilters = () => {
+                const params = [];
+                const clauses = [];
+
+                if (statusFilter !== 'all') {
+                    params.push(statusFilter);
+                    clauses.push('r.status = ?');
+                } else if (!includeDeleted) {
+                    clauses.push("COALESCE(r.status, 'pending') <> 'deleted'");
+                }
+
+                if (updatedAfter) {
+                    params.push(updatedAfter);
+                    clauses.push('datetime(COALESCE(r.updated_at, r.created_at)) > datetime(?)');
+                }
+
+                return {
+                    params,
+                    whereSql: clauses.length > 0 ? ` WHERE ${clauses.join(' AND ')}` : ''
+                };
+            };
 
             const pool = this.dbManager.pool;
             let requests = [];
@@ -4419,14 +4464,9 @@ class LocalWebServer {
                         FROM reconciliation_requests r
                         LEFT JOIN cashiers c ON r.cashier_id = c.id
                     `;
-                    const params = [];
-                    if (statusFilter !== 'all') {
-                        sql += ' WHERE r.status = $1';
-                        params.push(statusFilter);
-                    } else if (!includeDeleted) {
-                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
-                    }
-                    sql += ' ORDER BY r.created_at DESC';
+                    const { whereSql, params } = buildPostgresFilters();
+                    sql += whereSql;
+                    sql += ' ORDER BY COALESCE(r.updated_at, r.created_at) DESC, r.created_at DESC';
 
                     const result = await pool.query(sql, params);
                     requests = result.rows;
@@ -4437,14 +4477,9 @@ class LocalWebServer {
                         FROM reconciliation_requests r
                         LEFT JOIN cashiers c ON r.cashier_id = c.id
                     `;
-                    const params = [];
-                    if (statusFilter !== 'all') {
-                        sql += ' WHERE r.status = ?';
-                        params.push(statusFilter);
-                    } else if (!includeDeleted) {
-                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
-                    }
-                    sql += ' ORDER BY r.created_at DESC';
+                    const { whereSql, params } = buildSqliteFilters();
+                    sql += whereSql;
+                    sql += ' ORDER BY COALESCE(r.updated_at, r.created_at) DESC, r.created_at DESC';
 
                     requests = this.dbManager.db.prepare(sql).all(params);
                 }
@@ -4454,27 +4489,17 @@ class LocalWebServer {
                 // Fallback: Fetch without cashier info
                 if (pool) {
                     let sql = `SELECT ${selectColumns} FROM reconciliation_requests r`;
-                    const params = [];
-                    if (statusFilter !== 'all') {
-                        sql += ' WHERE r.status = $1';
-                        params.push(statusFilter);
-                    } else if (!includeDeleted) {
-                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
-                    }
-                    sql += ' ORDER BY r.created_at DESC';
+                    const { whereSql, params } = buildPostgresFilters();
+                    sql += whereSql;
+                    sql += ' ORDER BY COALESCE(r.updated_at, r.created_at) DESC, r.created_at DESC';
 
                     const result = await pool.query(sql, params);
                     requests = result.rows;
                 } else {
                     let sql = `SELECT ${selectColumns} FROM reconciliation_requests r`;
-                    const params = [];
-                    if (statusFilter !== 'all') {
-                        sql += ' WHERE r.status = ?';
-                        params.push(statusFilter);
-                    } else if (!includeDeleted) {
-                        sql += " WHERE COALESCE(r.status, 'pending') <> 'deleted'";
-                    }
-                    sql += ' ORDER BY r.created_at DESC';
+                    const { whereSql, params } = buildSqliteFilters();
+                    sql += whereSql;
+                    sql += ' ORDER BY COALESCE(r.updated_at, r.created_at) DESC, r.created_at DESC';
 
                     requests = this.dbManager.db.prepare(sql).all(params);
                 }
