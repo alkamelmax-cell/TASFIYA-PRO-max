@@ -2637,6 +2637,38 @@ class LocalWebServer {
         throw new Error('customer_code_generation_failed');
     }
 
+    isPostgresPrimaryKeySequenceError(error, tableName) {
+        const expectedConstraint = `${tableName}_pkey`;
+        const constraint = String(error?.constraint || '');
+        const message = String(error?.message || '');
+        return String(error?.code || '') === '23505'
+            && (constraint === expectedConstraint || message.includes(`"${expectedConstraint}"`));
+    }
+
+    async refreshPostgresSerialSequence(tableName, columnName = 'id') {
+        const pool = this.getPostgresPool();
+        if (!pool) {
+            return false;
+        }
+
+        const safeIdentifier = /^[A-Za-z_][A-Za-z0-9_]*$/;
+        if (!safeIdentifier.test(tableName) || !safeIdentifier.test(columnName)) {
+            throw new Error('invalid_sequence_identifier');
+        }
+
+        await pool.query(
+            `
+                SELECT setval(
+                    pg_get_serial_sequence($1, $2),
+                    GREATEST((SELECT COALESCE(MAX(${columnName}), 0) + 1 FROM ${tableName}), 1),
+                    false
+                )
+            `,
+            [tableName, columnName]
+        );
+        return true;
+    }
+
     async createOrUpdateServerCustomer({ customerName, customerCode = '', branchId = null }) {
         const normalizedName = normalizeCustomerNameValue(customerName);
         if (!normalizedName) {
@@ -2715,16 +2747,33 @@ class LocalWebServer {
         const effectiveCode = normalizedCode || await this.generateUniqueCustomerCode(normalizedBranchId);
         const pool = this.getPostgresPool();
         if (pool) {
-            const result = await pool.query(
-                `
-                    INSERT INTO customers (customer_code, customer_name, branch_id, created_at, updated_at)
-                    VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    RETURNING id, customer_name, customer_code, branch_id
-                `,
-                [effectiveCode, normalizedName, normalizedBranchId]
-            );
-            this.clearLookupCache('customer created');
-            return normalizeCustomerRow(result.rows?.[0]);
+            const insertCustomer = async () => {
+                const result = await pool.query(
+                    `
+                        INSERT INTO customers (customer_code, customer_name, branch_id, created_at, updated_at)
+                        VALUES ($1, $2, $3, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        RETURNING id, customer_name, customer_code, branch_id
+                    `,
+                    [effectiveCode, normalizedName, normalizedBranchId]
+                );
+                return normalizeCustomerRow(result.rows?.[0]);
+            };
+
+            try {
+                const inserted = await insertCustomer();
+                this.clearLookupCache('customer created');
+                return inserted;
+            } catch (error) {
+                if (!this.isPostgresPrimaryKeySequenceError(error, 'customers')) {
+                    throw error;
+                }
+
+                console.warn('[Customers] customers.id sequence was behind; refreshing sequence and retrying insert.');
+                await this.refreshPostgresSerialSequence('customers');
+                const inserted = await insertCustomer();
+                this.clearLookupCache('customer created');
+                return inserted;
+            }
         }
 
         const insertResult = this.dbManager.db.prepare(
