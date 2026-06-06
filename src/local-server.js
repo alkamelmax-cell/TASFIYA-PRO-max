@@ -188,6 +188,8 @@ class LocalWebServer {
         );
         this.lookupCache = new Map();
         this.cashierBranchCache = new Map();
+        this.serialSequencesReady = false;
+        this.ensureSerialSequencesInFlight = null;
     }
 
     async readJsonBody(req, options = {}) {
@@ -313,7 +315,7 @@ class LocalWebServer {
         this.lastDatabaseError = null;
 
         if (this.server && this.server.listening) {
-            void this.ensureIndexes();
+            void this.runDatabaseStartupMaintenance();
         }
     }
 
@@ -323,6 +325,8 @@ class LocalWebServer {
         this.databaseReadyAt = null;
         this.indexesReady = false;
         this.ensureIndexesInFlight = null;
+        this.serialSequencesReady = false;
+        this.ensureSerialSequencesInFlight = null;
         this.lastDatabaseError = error
             ? {
                 message: error.message || String(error),
@@ -620,6 +624,65 @@ class LocalWebServer {
         return this.ensureIndexesInFlight;
     }
 
+    async ensurePostgresSerialSequences() {
+        if (this.serialSequencesReady) {
+            return true;
+        }
+
+        if (this.ensureSerialSequencesInFlight) {
+            return this.ensureSerialSequencesInFlight;
+        }
+
+        const pool = this.getPostgresPool();
+        if (!pool) {
+            return true;
+        }
+
+        this.ensureSerialSequencesInFlight = (async () => {
+            const serialTables = [
+                'customers',
+                'reconciliation_requests',
+                'reconciliations',
+                'cash_receipts',
+                'bank_receipts',
+                'postpaid_sales',
+                'customer_receipts',
+                'return_invoices',
+                'suppliers',
+                'branch_cashboxes',
+                'cashbox_vouchers',
+                'cashbox_voucher_audit_log',
+                'customer_fiscal_opening_balances'
+            ];
+
+            console.log('[PERF] Checking PostgreSQL serial sequences...');
+            for (const tableName of serialTables) {
+                try {
+                    await this.refreshPostgresSerialSequence(tableName, 'id');
+                } catch (error) {
+                    console.warn(`[PERF] Failed to refresh ${tableName}.id sequence:`, error && error.message ? error.message : error);
+                }
+            }
+
+            this.serialSequencesReady = true;
+            console.log('[PERF] PostgreSQL serial sequences verified');
+            return true;
+        })().finally(() => {
+            this.ensureSerialSequencesInFlight = null;
+        });
+
+        return this.ensureSerialSequencesInFlight;
+    }
+
+    async runDatabaseStartupMaintenance() {
+        const indexesOk = await this.ensureIndexes();
+        if (indexesOk) {
+            await this.ensurePostgresSerialSequences();
+        }
+
+        return indexesOk;
+    }
+
     async start() {
         if (this.server && this.server.listening) {
             return this;
@@ -912,7 +975,7 @@ class LocalWebServer {
                     console.log(`🌐 [WEB APP] Server running at http://${this.host}:${this.port}`);
 
                     if (this.databaseReady) {
-                        void this.ensureIndexes();
+                        void this.runDatabaseStartupMaintenance();
                     }
 
                     resolve(this);
@@ -2759,21 +2822,27 @@ class LocalWebServer {
                 return normalizeCustomerRow(result.rows?.[0]);
             };
 
-            try {
-                const inserted = await insertCustomer();
-                this.clearLookupCache('customer created');
-                return inserted;
-            } catch (error) {
-                if (!this.isPostgresPrimaryKeySequenceError(error, 'customers')) {
-                    throw error;
-                }
+            const maxInsertAttempts = 3;
+            for (let attempt = 1; attempt <= maxInsertAttempts; attempt += 1) {
+                try {
+                    const inserted = await insertCustomer();
+                    this.clearLookupCache('customer created');
+                    return inserted;
+                } catch (error) {
+                    const canRetrySequence = this.isPostgresPrimaryKeySequenceError(error, 'customers')
+                        && attempt < maxInsertAttempts;
+                    if (!canRetrySequence) {
+                        throw error;
+                    }
 
-                console.warn('[Customers] customers.id sequence was behind; refreshing sequence and retrying insert.');
-                await this.refreshPostgresSerialSequence('customers');
-                const inserted = await insertCustomer();
-                this.clearLookupCache('customer created');
-                return inserted;
+                    console.warn(
+                        `[Customers] customers.id sequence was behind; refreshing sequence and retrying insert (${attempt}/${maxInsertAttempts}).`
+                    );
+                    await this.refreshPostgresSerialSequence('customers');
+                }
             }
+
+            throw new Error('customers_sequence_repair_failed');
         }
 
         const insertResult = this.dbManager.db.prepare(
