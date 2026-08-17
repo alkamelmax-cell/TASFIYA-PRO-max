@@ -3111,14 +3111,33 @@ class LocalWebServer {
                         'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT',
                         'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence_unique ON cashbox_vouchers(voucher_type, voucher_sequence_number)',
                         'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_unique ON cashbox_vouchers(source_reconciliation_id, source_entry_key)',
-                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique
-                         ON cashbox_vouchers(sync_key)
-                         WHERE sync_key IS NOT NULL AND BTRIM(sync_key) != ''`
                     ];
 
                     for (const statement of statements) {
                         await pool.query(statement);
                     }
+
+                    const duplicateResult = await pool.query(`
+                        SELECT sync_key, COUNT(*)::int AS count
+                        FROM cashbox_vouchers
+                        WHERE sync_key IS NOT NULL AND BTRIM(sync_key) <> ''
+                        GROUP BY sync_key
+                        HAVING COUNT(*) > 1
+                        LIMIT 20
+                    `);
+                    if (duplicateResult.rowCount > 0) {
+                        const error = new Error(`CASHBOX_SYNC_KEY_DUPLICATES: ${duplicateResult.rowCount} groups. Sync paused; no records were changed.`);
+                        error.statusCode = 409;
+                        throw error;
+                    }
+                    const currentIndex = await pool.query(`
+                        SELECT indexdef FROM pg_indexes
+                        WHERE schemaname = 'public' AND indexname = 'idx_cashbox_vouchers_sync_key_unique'
+                    `);
+                    if ((currentIndex.rows?.[0]?.indexdef || '').toUpperCase().includes(' WHERE ')) {
+                        await pool.query('DROP INDEX idx_cashbox_vouchers_sync_key_unique');
+                    }
+                    await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)');
                 };
 
                 const hasCashboxPayload = Boolean(
@@ -3664,7 +3683,10 @@ class LocalWebServer {
                                         id: voucher.sync_key,
                                         error: rowError.message
                                     });
-                                    console.error('❌ [SYNC] Row insert failed for cashbox_vouchers:', rowError.message, 'Data:', voucher);
+                                    console.error('❌ [SYNC] Row insert failed:', {
+                                        table: 'cashbox_vouchers', sync_key: voucher.sync_key || null,
+                                        record_id: voucher.id || null, code: rowError.code || null, message: rowError.message
+                                    });
                                 }
                             }
                         }

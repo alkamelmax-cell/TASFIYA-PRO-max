@@ -131,12 +131,6 @@ class PostgresManager {
             await client.query('CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code ON postpaid_sales(customer_code)');
             await client.query('CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_id ON customer_receipts(customer_id)');
             await client.query('CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code ON customer_receipts(customer_code)');
-            await client.query(`
-              CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique
-              ON cashbox_vouchers(sync_key)
-              WHERE sync_key IS NOT NULL AND BTRIM(sync_key) != ''
-            `);
-
             // Ensure username is UNIQUE for admins (Critical for Sync ON CONFLICT logic)
             try {
                 // First, remove any duplicate usernames (keep the one with highest ID = latest)
@@ -707,11 +701,27 @@ class PostgresManager {
                 FROM updated
             `);
 
-            await client.query(`
-                CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique
-                ON cashbox_vouchers(sync_key)
-                WHERE sync_key IS NOT NULL AND BTRIM(sync_key) != ''
+            const duplicateSyncKeys = await client.query(`
+                SELECT sync_key, COUNT(*)::int AS count
+                FROM cashbox_vouchers
+                WHERE sync_key IS NOT NULL AND BTRIM(sync_key) <> ''
+                GROUP BY sync_key
+                HAVING COUNT(*) > 1
+                ORDER BY count DESC, sync_key
+                LIMIT 20
             `);
+            if (duplicateSyncKeys.rowCount > 0) {
+                throw new Error(`CASHBOX_SYNC_KEY_DUPLICATES: ${duplicateSyncKeys.rowCount} groups. No records were deleted.`);
+            }
+
+            const currentIndex = await client.query(`
+                SELECT indexdef FROM pg_indexes
+                WHERE schemaname = 'public' AND indexname = 'idx_cashbox_vouchers_sync_key_unique'
+            `);
+            if ((currentIndex.rows?.[0]?.indexdef || '').toUpperCase().includes(' WHERE ')) {
+                await client.query('DROP INDEX idx_cashbox_vouchers_sync_key_unique');
+            }
+            await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)');
 
             await client.query('COMMIT');
 

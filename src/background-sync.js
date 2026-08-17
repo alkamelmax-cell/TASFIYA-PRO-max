@@ -13,6 +13,7 @@ const REQUEST_FULL_PULL_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const REQUEST_PULL_OVERLAP_MS = 2 * 60 * 1000;
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
 const SEND_RETRY_DELAYS_MS = [700, 1500, 3000];
+const NON_RETRYABLE_PAYLOAD_COOLDOWN_MS = 15 * 60 * 1000;
 const DEFAULT_SYNC_BATCH_SIZE = 100;
 const RECONCILIATION_SYNC_BATCH_SIZE = 50;
 const REQUEST_PULL_TIMEOUT_MS = 15000;
@@ -112,6 +113,7 @@ class BackgroundSync {
         this.isSyncing = false;
         this.enabled = true; // Global flag to control sync
         this.requestPullPromise = null;
+        this.nonRetryablePayloads = new Map();
         this.syncStateWarningShown = false;
     }
 
@@ -753,6 +755,12 @@ class BackgroundSync {
         }
 
         const payloadKeys = Object.keys(dataToSend).join(', ');
+        const blockedUntil = this.nonRetryablePayloads.get(payloadKeys) || 0;
+        if (blockedUntil > Date.now()) {
+            const error = new Error(`Non-retryable sync failure cooldown active for ${payloadKeys}`);
+            error.suppressLog = true;
+            throw error;
+        }
         let lastError = null;
 
         for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt++) {
@@ -771,7 +779,10 @@ class BackgroundSync {
                         await this.delay(waitMs);
                         continue;
                     }
-                    throw new Error(`HTTP Error: ${res.status} ${res.statusText}`);
+                    const body = await res.json().catch(() => null);
+                    const error = new Error(body?.error || `HTTP Error: ${res.status} ${res.statusText}`);
+                    error.nonRetryable = true;
+                    throw error;
                 }
 
                 const responseJson = await res.json().catch(() => null);
@@ -779,13 +790,20 @@ class BackgroundSync {
                     const failureSummary = Array.isArray(responseJson.failures) && responseJson.failures.length > 0
                         ? ` | Failures: ${responseJson.failures.map(item => `${item.table}#${item.id ?? '?'}`).join(', ')}`
                         : '';
-                    throw new Error(`${responseJson.error || 'SYNC_FAILED'}${failureSummary}`);
+                    const error = new Error(`${responseJson.error || 'SYNC_FAILED'}${failureSummary}`);
+                    error.nonRetryable = true;
+                    throw error;
                 }
 
                 console.log(`✅ [SYNC] Server accepted: ${payloadKeys}`);
                 return;
             } catch (error) {
                 lastError = error;
+                if (error && error.nonRetryable) {
+                    this.nonRetryablePayloads.set(payloadKeys, Date.now() + NON_RETRYABLE_PAYLOAD_COOLDOWN_MS);
+                    console.error(`❌ [SYNC] Non-retryable error sending ${payloadKeys}:`, error.message);
+                    break;
+                }
                 if (attempt < SEND_RETRY_DELAYS_MS.length) {
                     const waitMs = SEND_RETRY_DELAYS_MS[attempt];
                     console.warn(`⚠️ [SYNC] Send attempt ${attempt + 1} failed for ${payloadKeys}: ${error.message}. Retrying in ${waitMs}ms...`);
