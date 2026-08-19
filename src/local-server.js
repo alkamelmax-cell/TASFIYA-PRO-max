@@ -3315,7 +3315,67 @@ class LocalWebServer {
                 const syncTable = async (table, items, columns, conflictCol = 'id') => {
                     if (!items || items.length === 0) return;
 
-                    console.log(`🔄 [SYNC] Syncing ${table} (${items.length} items) in batches...`);
+                    const reconciliationChildTables = new Set([
+                        'cash_receipts',
+                        'bank_receipts',
+                        'postpaid_sales',
+                        'customer_receipts',
+                        'return_invoices',
+                        'suppliers'
+                    ]);
+                    let syncItems = items;
+
+                    if (reconciliationChildTables.has(table)) {
+                        const referencedParentIds = Array.from(new Set(
+                            items
+                                .map((item) => Number(item && item.reconciliation_id))
+                                .filter((id) => Number.isInteger(id) && id > 0)
+                        ));
+
+                        if (referencedParentIds.length > 0) {
+                            const parentResult = await pool.query(
+                                'SELECT id FROM reconciliations WHERE id = ANY($1::int[])',
+                                [referencedParentIds]
+                            );
+                            const existingParentIds = new Set(
+                                (parentResult.rows || []).map((row) => Number(row.id))
+                            );
+                            const missingParentRows = items.filter((item) => (
+                                !existingParentIds.has(Number(item && item.reconciliation_id))
+                            ));
+
+                            if (missingParentRows.length > 0) {
+                                missingParentRows.forEach((item) => {
+                                    syncFailures.push({
+                                        table,
+                                        id: item && item.id != null ? item.id : null,
+                                        reconciliation_id: item && item.reconciliation_id != null
+                                            ? item.reconciliation_id
+                                            : null,
+                                        code: 'MISSING_RECONCILIATION_PARENT',
+                                        error: 'MISSING_RECONCILIATION_PARENT'
+                                    });
+                                });
+                                console.error('❌ [SYNC] Missing reconciliation parents:', {
+                                    table,
+                                    rows: missingParentRows.length,
+                                    reconciliation_ids: Array.from(new Set(
+                                        missingParentRows.map((item) => item && item.reconciliation_id)
+                                    )).slice(0, 20)
+                                });
+                            }
+
+                            syncItems = items.filter((item) => (
+                                existingParentIds.has(Number(item && item.reconciliation_id))
+                            ));
+                            if (syncItems.length === 0) {
+                                console.log(`✅ [SYNC] ${table}: Processed 0 items. Failed ${missingParentRows.length} items.`);
+                                return;
+                            }
+                        }
+                    }
+
+                    console.log(`🔄 [SYNC] Syncing ${table} (${syncItems.length} items) in batches...`);
                     const cols = columns.map(c => c.name);
                     const updateSets = columns.map(col => {
                         if (col.preserveIfNull) {
@@ -3329,9 +3389,10 @@ class LocalWebServer {
                     const BATCH_SIZE = 200;
                     let successCount = 0;
                     let errorCount = 0;
+                    let rowErrorLogCount = 0;
 
-                    for (let i = 0; i < items.length; i += BATCH_SIZE) {
-                        const batch = items.slice(i, i + BATCH_SIZE);
+                    for (let i = 0; i < syncItems.length; i += BATCH_SIZE) {
+                        const batch = syncItems.slice(i, i + BATCH_SIZE);
                         const placeholders = [];
                         const values = [];
                         let paramCounter = 1;
@@ -3390,10 +3451,24 @@ class LocalWebServer {
                                     const failure = {
                                         table,
                                         id: failedItemId,
+                                        code: e.code || null,
                                         error: e.message
                                     };
                                     syncFailures.push(failure);
-                                    console.error(`❌ [SYNC] Row insert failed for ${table}:`, e.message, 'Data:', item);
+                                    if (rowErrorLogCount < 5) {
+                                        console.error('❌ [SYNC] Row insert failed:', {
+                                            table,
+                                            id: failedItemId,
+                                            reconciliation_id: item && item.reconciliation_id != null
+                                                ? item.reconciliation_id
+                                                : null,
+                                            error_code: e.code || null,
+                                            error: e.message
+                                        });
+                                    } else if (rowErrorLogCount === 5) {
+                                        console.error(`❌ [SYNC] Additional ${table} row errors suppressed for this batch.`);
+                                    }
+                                    rowErrorLogCount += 1;
                                 }
                             }
                         }

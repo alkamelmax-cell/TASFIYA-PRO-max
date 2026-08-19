@@ -8,6 +8,8 @@ function createSyncPool(initialState = {}) {
     branches: (initialState.branches || []).map((branch) => ({ ...branch })),
     branchCashboxes: (initialState.branchCashboxes || []).map((cashbox) => ({ ...cashbox })),
     cashboxVouchers: (initialState.cashboxVouchers || []).map((voucher) => ({ ...voucher })),
+    reconciliations: (initialState.reconciliations || []).map((row) => ({ ...row })),
+    cashReceiptInsertAttempts: 0,
     cleanupCalls: []
   };
   let nextCashboxId = initialState.nextCashboxId || 200;
@@ -42,6 +44,19 @@ function createSyncPool(initialState = {}) {
             branch_id: cashbox.branch_id
           }))
         };
+      }
+
+      if (normalized === 'SELECT id FROM reconciliations WHERE id = ANY($1::int[])') {
+        const requestedIds = new Set((params[0] || []).map((value) => Number(value)));
+        const rows = state.reconciliations
+          .filter((row) => requestedIds.has(Number(row.id)))
+          .map((row) => ({ id: row.id }));
+        return { rowCount: rows.length, rows };
+      }
+
+      if (normalized.startsWith('INSERT INTO cash_receipts (')) {
+        state.cashReceiptInsertAttempts += 1;
+        return { rowCount: 1, rows: [] };
       }
 
       if (normalized === 'SELECT id, branch_id FROM branch_cashboxes WHERE branch_id = ANY($1::int[])') {
@@ -252,6 +267,25 @@ async function sendSync(server, payload) {
 
   return responsePromise;
 }
+
+test('cash receipt rows with missing reconciliation parents are rejected once without insert attempts', async () => {
+  const pool = createSyncPool({ reconciliations: [] });
+  const server = new LocalWebServer({ pool }, 0);
+
+  const response = await sendSync(server, {
+    cash_receipts: [
+      { id: 18661, reconciliation_id: 3920, denomination: 1, quantity: 297, total_amount: 297 },
+      { id: 18660, reconciliation_id: 3920, denomination: 1, quantity: 260, total_amount: 260 }
+    ]
+  });
+
+  assert.equal(response.success, false);
+  assert.equal(response.error, 'SYNC_PARTIAL_FAILURE');
+  assert.equal(response.failuresCount, 2);
+  assert.equal(response.failures[0].code, 'MISSING_RECONCILIATION_PARENT');
+  assert.equal(response.failures[0].reconciliation_id, 3920);
+  assert.equal(pool.state.cashReceiptInsertAttempts, 0);
+});
 
 test('legacy active_branch_cashboxes_ids payload does not delete canonical Render cashboxes', async () => {
   const pool = createSyncPool({
