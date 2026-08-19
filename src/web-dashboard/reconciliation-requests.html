@@ -124,7 +124,12 @@
         }
 
         function bootstrapNativeNotifications() {
-            return window.TasfiyaOneSignal.initNativeUser(user, {
+            const notifications = window.TasfiyaOneSignal;
+            if (!notifications || typeof notifications.initNativeUser !== 'function') {
+                return false;
+            }
+
+            return notifications.initNativeUser(user, {
                 role: "admin"
             });
         }
@@ -138,29 +143,33 @@
 
         // 2. Initialize Logic
         if (user.role === 'admin' || !user.role) {
-            const isMedianApp = window.TasfiyaOneSignal.isNativeEnvironment();
+            try {
+                const notifications = window.TasfiyaOneSignal;
+                if (!notifications || typeof notifications.isNativeEnvironment !== 'function') {
+                    console.warn('OneSignal helper is unavailable; continuing without notifications.');
+                } else {
+                    const isMedianApp = notifications.isNativeEnvironment();
 
-            if (isMedianApp) {
-                console.log("📱 Running in App Mode");
-                bootstrapNativeNotifications();
-
-                window.addEventListener('focus', bootstrapNativeNotifications);
-                document.addEventListener('visibilitychange', () => {
-                    if (document.visibilityState === 'visible') {
+                    if (isMedianApp) {
+                        console.log("📱 Running in App Mode");
                         bootstrapNativeNotifications();
+
+                        window.addEventListener('focus', bootstrapNativeNotifications);
+                        document.addEventListener('visibilitychange', () => {
+                            if (document.visibilityState === 'visible') {
+                                bootstrapNativeNotifications();
+                            }
+                        });
+                    } else if (typeof notifications.initBrowserUser === 'function') {
+                        notifications.initBrowserUser(user, {
+                            role: "admin",
+                            requestPermission: true
+                        });
                     }
-                });
-            }
-            else {
-                // BROWSER MODE
-                try {
-                    window.TasfiyaOneSignal.initBrowserUser(user, {
-                        role: "admin",
-                        requestPermission: true
-                    });
-                } catch (error) {
-                    console.error("OneSignal Web Error:", error);
                 }
+            } catch (error) {
+                // Notifications are optional and must never block reconciliation requests.
+                console.error("OneSignal Web Error:", error);
             }
         }
 
