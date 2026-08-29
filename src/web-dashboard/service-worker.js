@@ -1,5 +1,5 @@
 // Service Worker for Tasfiya Pro PWA
-// Version: 2.7 - Network-first for protected HTML pages
+// Version: 2.8 - Refresh branded PWA assets after the official logo update
 try {
     // Import local SDK instead of CDN
     importScripts('/OneSignalSDKWorker.js');
@@ -7,14 +7,14 @@ try {
     console.warn('⚠️ [SW] Local OneSignal SDK failed to load.', e);
 }
 
-const CACHE_NAME = 'tasfiya-pro-v2.7';
+const CACHE_NAME = 'tasfiya-pro-v2.8-logo';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
-    '/assets/logo-tasfia-pro.png',
-    '/assets/favicon.png',
-    '/assets/icon-192.png',
-    '/assets/icon-512.png'
+    '/assets/logo-tasfia-pro.png?v=logo-20260829',
+    '/assets/favicon.png?v=logo-20260829',
+    '/assets/icon-192.png?v=logo-20260829',
+    '/assets/icon-512.png?v=logo-20260829'
 ];
 
 function isHtmlNavigationRequest(request) {
@@ -154,7 +154,7 @@ async function fetchApiWithFallback(eventRequest) {
 
 // Install event - cache only static assets
 self.addEventListener('install', (event) => {
-    console.log('🔧 [SW] Installing Service Worker v2.7');
+    console.log('🔧 [SW] Installing Service Worker v2.8');
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => {
@@ -170,7 +170,7 @@ self.addEventListener('install', (event) => {
 
 // Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
-    console.log('🔄 [SW] Activating Service Worker v2.7');
+    console.log('🔄 [SW] Activating Service Worker v2.8');
     event.waitUntil(
         caches.keys().then((cacheNames) => {
             return Promise.all(
