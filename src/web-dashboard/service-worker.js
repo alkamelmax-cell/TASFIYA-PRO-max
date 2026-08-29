@@ -1,5 +1,5 @@
 // Service Worker for Tasfiya Pro PWA
-// Version: 3.0 - Dedicated standard and maskable mobile app icons
+// Version: 3.1 - Network-first runtime scripts to prevent stale login/push code
 try {
     // Import local SDK instead of CDN
     importScripts('/OneSignalSDKWorker.js');
@@ -7,7 +7,7 @@ try {
     console.warn('⚠️ [SW] Local OneSignal SDK failed to load.', e);
 }
 
-const CACHE_NAME = 'tasfiya-pro-v3.0-appicon';
+const CACHE_NAME = 'tasfiya-pro-v3.1-runtime-fresh';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
@@ -51,6 +51,45 @@ function isCacheableStaticRequest(request) {
     }
 
     return !isHtmlNavigationRequest(request);
+}
+
+// These files control authentication, push registration and the installed PWA.
+// Serving an old cached copy can leave clients calling removed API routes or
+// running an outdated OneSignal integration after a server deployment.
+const NETWORK_FIRST_RUNTIME_PATHS = new Set([
+    '/js/session-bootstrap.js',
+    '/js/onesignal-bootstrap.js',
+    '/manifest.json',
+    '/OneSignalSDKWorker.js'
+]);
+
+function isNetworkFirstRuntimeRequest(request) {
+    if (!request || String(request.method || 'GET').toUpperCase() !== 'GET') {
+        return false;
+    }
+
+    const requestUrl = new URL(request.url);
+    return requestUrl.origin === self.location.origin
+        && NETWORK_FIRST_RUNTIME_PATHS.has(requestUrl.pathname);
+}
+
+async function fetchRuntimeNetworkFirst(request) {
+    try {
+        const response = await fetch(request);
+
+        if (response && response.status === 200 && response.type === 'basic') {
+            const responseToCache = response.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(request, responseToCache));
+        }
+
+        return response;
+    } catch (networkError) {
+        const cachedResponse = await caches.match(request);
+        if (cachedResponse) {
+            return cachedResponse;
+        }
+        throw networkError;
+    }
 }
 
 async function fetchHtmlNetworkFirst(request) {
@@ -157,7 +196,7 @@ async function fetchApiWithFallback(eventRequest) {
 
 // Install event - cache only static assets
 self.addEventListener('install', (event) => {
-    console.log('🔧 [SW] Installing Service Worker v3.0');
+    console.log('🔧 [SW] Installing Service Worker v3.1');
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => {
@@ -173,7 +212,7 @@ self.addEventListener('install', (event) => {
 
 // Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
-    console.log('🔄 [SW] Activating Service Worker v3.0');
+    console.log('🔄 [SW] Activating Service Worker v3.1');
     event.waitUntil(
         caches.keys().then((cacheNames) => {
             return Promise.all(
@@ -215,6 +254,15 @@ self.addEventListener('fetch', (event) => {
             fetchHtmlNetworkFirst(event.request)
                 .catch(() => caches.match('/login.html'))
         );
+        return;
+    }
+
+    // Authentication and push bootstrap files must not become stale after a
+    // deployment. Network first still keeps the latest successful copy as an
+    // offline fallback without allowing it to override a live server response.
+    if (isNetworkFirstRuntimeRequest(event.request)) {
+        console.log('🌐 [SW] Runtime request - Network First:', url.pathname);
+        event.respondWith(fetchRuntimeNetworkFirst(event.request));
         return;
     }
 
