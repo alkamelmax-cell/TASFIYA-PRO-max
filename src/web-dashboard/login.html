@@ -73,18 +73,49 @@
             margin-bottom: 26px;
         }
 
+        .logo-stage {
+            width: 210px;
+            height: 128px;
+            margin: 0 auto 12px;
+            display: grid;
+            place-items: center;
+            position: relative;
+            isolation: isolate;
+        }
+
+        .logo-stage::before {
+            content: '';
+            position: absolute;
+            inset: -15px -34px -12px;
+            z-index: 0;
+            border-radius: 50%;
+            background:
+                radial-gradient(ellipse at 28% 58%, rgba(8, 197, 163, 0.3) 0%, rgba(8, 197, 163, 0.12) 34%, transparent 68%),
+                radial-gradient(ellipse at 72% 38%, rgba(37, 99, 235, 0.42) 0%, rgba(37, 99, 235, 0.15) 40%, transparent 72%);
+            filter: blur(16px);
+            opacity: 0.96;
+            pointer-events: none;
+        }
+
         .logo-img {
             width: 112px;
             height: 112px;
             object-fit: contain;
-            margin-bottom: 12px;
+            margin: 0;
+            position: relative;
+            z-index: 1;
             filter:
-                drop-shadow(0 0 6px rgba(20, 204, 168, 0.32))
-                drop-shadow(0 0 17px rgba(37, 99, 235, 0.28))
+                drop-shadow(0 0 9px rgba(20, 204, 168, 0.42))
+                drop-shadow(0 0 24px rgba(37, 99, 235, 0.38))
                 drop-shadow(0 9px 15px rgba(3, 20, 49, 0.42));
         }
 
         @media (max-width: 480px) {
+            .logo-stage {
+                width: 190px;
+                height: 118px;
+            }
+
             .logo-img {
                 width: 102px;
                 height: 102px;
@@ -210,7 +241,9 @@
 
             <!-- Header -->
             <div class="logo-container">
-                <img src="assets/logo-tasfia-pro.png?v=brandmark-20260829-v2" alt="شعار تصفية برو" class="logo-img">
+                <div class="logo-stage">
+                    <img src="assets/logo-tasfia-pro.png?v=brandmark-20260829-v2" alt="شعار تصفية برو" class="logo-img">
+                </div>
                 <div class="app-title">تصفية برو</div>
             </div>
 
