@@ -1,0 +1,4 @@
+node_modules/
+_update-backups/
+*.log
+server-source.zip

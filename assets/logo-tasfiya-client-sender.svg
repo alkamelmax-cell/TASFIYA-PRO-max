@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="outerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#17392f"/>
+      <stop offset="55%" stop-color="#214f43"/>
+      <stop offset="100%" stop-color="#2e6a5b"/>
+    </linearGradient>
+    <linearGradient id="innerGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#fffaf2"/>
+      <stop offset="100%" stop-color="#f2e7d3"/>
+    </linearGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#e7b56c"/>
+      <stop offset="100%" stop-color="#d48443"/>
+    </linearGradient>
+  </defs>
+
+  <circle cx="256" cy="256" r="240" fill="url(#outerGrad)"/>
+  <circle cx="256" cy="256" r="220" fill="url(#innerGrad)"/>
+  <circle cx="256" cy="190" r="128" fill="none" stroke="#d7a159" stroke-width="4" stroke-dasharray="10,10"/>
+
+  <rect x="164" y="104" width="184" height="214" rx="30" fill="#fffdf8" stroke="#214f43" stroke-width="8"/>
+  <rect x="194" y="138" width="94" height="14" rx="7" fill="#ead8ba"/>
+  <rect x="194" y="168" width="120" height="12" rx="6" fill="#dce8e2"/>
+  <rect x="194" y="194" width="84" height="12" rx="6" fill="#dce8e2"/>
+
+  <path d="M182 253 L329 190 C337 186 344 194 340 202 L304 263 C300 270 291 271 286 265 L250 223 L206 260 C197 268 184 260 186 248 Z" fill="#214f43"/>
+  <path d="M248 223 L288 264" fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round"/>
+  <path d="M250 223 L318 201" fill="none" stroke="#ffffff" stroke-width="8" stroke-linecap="round"/>
+
+  <circle cx="344" cy="157" r="44" fill="url(#accentGrad)"/>
+  <path d="M324 160 L356 145 C360 143 364 147 362 151 L352 173 C350 177 345 178 342 175 L334 166 L325 170 C321 172 318 167 320 163 Z" fill="#fffdf9"/>
+
+  <path d="M184 302 C217 324 295 324 328 302" fill="none" stroke="#6d8e84" stroke-width="10" stroke-linecap="round"/>
+  <circle cx="182" cy="302" r="10" fill="#214f43"/>
+  <circle cx="330" cy="302" r="10" fill="#d48a49"/>
+
+  <text x="256" y="386" font-family="Arial" font-size="58" font-weight="700" text-anchor="middle" fill="#214f43">TASFIA</text>
+  <text x="256" y="430" font-family="Arial" font-size="34" font-weight="700" text-anchor="middle" fill="#d48a49" letter-spacing="4">SENDER</text>
+</svg>

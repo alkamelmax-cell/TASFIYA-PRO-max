@@ -1,0 +1,1525 @@
+/* Premium Dark Glass Theme */
+@import url('https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;600;700;800&family=IBM+Plex+Sans+Arabic:wght@300;400;600;700&display=swap');
+
+:root {
+    /* Backgrounds */
+    --bg-main: #212E40;
+    /* Custom dark blue */
+    --bg-deeper: #1a2332;
+    /* Darker shade of #212E40 */
+
+    /* Glass Components */
+    /* Dark Blue Glass backgrounds */
+    --bg-card: rgba(33, 46, 64, 0.78);
+    /* #212E40 with transparency */
+    --bg-card-hover: rgba(33, 46, 64, 0.95);
+    --glass-border: rgba(255, 255, 255, 0.08);
+    --glass-shine: rgba(255, 255, 255, 0.03);
+
+    /* Text */
+    --text-primary: #f8fafc;
+    /* Slate 50 */
+    --text-secondary: #94a3b8;
+    /* Slate 400 */
+    --text-muted: #64748b;
+    /* Slate 500 */
+
+    /* Brand Colors - Teal/Blue to Match Logo */
+    --primary: #1e40af;
+    /* Blue 800 */
+    --primary-dark: #1e3a8a;
+    --primary-glow: rgba(30, 64, 175, 0.5);
+
+    /* Brighter Success/Danger */
+    --success: #10b981;
+    /* Green 500 */
+    --success-glow: rgba(16, 185, 129, 0.55);
+
+    --danger: #ef4444;
+    --warning: #f59e0b;
+    /* Amber 500 */
+
+    /* Design Tokens */
+    --radius: 20px;
+    --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+    --shadow-glow: 0 0 20px var(--primary-glow);
+
+    --transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+    --border-color: rgba(255, 255, 255, 0.08);
+    --bg-dark: var(--bg-deeper);
+    --primary-hover: #5153e8;
+    /* Button Palette */
+    --btn-primary: #6366f1;
+    --btn-primary-hover: #5457ec;
+    --btn-primary-focus: rgba(99, 102, 241, 0.35);
+
+    --btn-secondary: #64748b;
+    --btn-secondary-hover: #5b6b81;
+    --btn-secondary-focus: rgba(100, 116, 139, 0.35);
+
+    --btn-success: #10b981;
+    --btn-success-hover: #0fa372;
+    --btn-success-focus: rgba(16, 185, 129, 0.35);
+
+    --btn-danger: #ef4444;
+    --btn-danger-hover: #dc3b3b;
+    --btn-danger-focus: rgba(239, 68, 68, 0.35);
+
+    --btn-warning: #f59e0b;
+    --btn-warning-hover: #e38f06;
+    --btn-warning-focus: rgba(245, 158, 11, 0.35);
+
+    --btn-info: #0ea5e9;
+    --btn-info-hover: #0c96d3;
+    --btn-info-focus: rgba(14, 165, 233, 0.35);
+}
+
+
+/* Global Scrollbar Reset - App Like Feel */
+* {
+    box-sizing: border-box;
+    scrollbar-width: none;
+    /* Firefox */
+    -ms-overflow-style: none;
+    /* IE 10+ */
+}
+
+/* Chrome/Safari - Hide Scrollbar */
+*::-webkit-scrollbar {
+    display: none;
+    width: 0;
+    height: 0;
+}
+
+body {
+    background-color: var(--bg-main);
+    background-image:
+        radial-gradient(circle at 10% 20%, rgba(30, 64, 175, 0.1) 0%, transparent 40%),
+        radial-gradient(circle at 90% 80%, rgba(16, 185, 129, 0.05) 0%, transparent 40%);
+    color: var(--text-primary);
+    font-family: 'IBM Plex Sans Arabic', 'Cairo', system-ui, -apple-system, Segoe UI, Roboto, 'Almarai', sans-serif;
+    font-weight: 400;
+    direction: rtl;
+    min-height: 100vh;
+    min-height: 100dvh;
+    /* Mobile Adaptive Fix */
+    padding-bottom: 2rem;
+    overflow-x: hidden;
+    /* Allow Y-scrolling but hide bar */
+}
+
+
+/* Premium Glass Cards */
+.custom-navbar,
+.pro-card,
+.filter-container,
+.stat-box,
+.card {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    box-shadow: var(--shadow-md);
+    border-radius: var(--radius);
+    transition: var(--transition);
+}
+
+/* Hover Effects */
+.stat-box:hover,
+.pro-card:hover {
+    background: var(--bg-card-hover) !important;
+    transform: translateY(-3px);
+    border-color: rgba(99, 102, 241, 0.3);
+    box-shadow: var(--shadow-lg), var(--shadow-glow);
+}
+
+/* Navbar Layout: Brand (Right) | Links (Center) | User (Left) */
+.navbar-layout {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    /* RTL: Col 1 is Right, Col 3 is Left */
+    grid-template-areas: "brand links user";
+    align-items: center;
+    gap: 1.5rem;
+    padding: 0.8rem 1.5rem;
+    width: 100%;
+}
+
+.navbar-brand-section {
+    grid-area: brand;
+    justify-self: start;
+    /* أقصى اليمين */
+    display: flex;
+    align-items: center;
+}
+
+.navbar-links-section {
+    grid-area: links;
+    justify-self: center;
+    /* في المنتصف تماماً */
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: nowrap;
+    align-items: center;
+}
+
+.navbar-user-section {
+    grid-area: user;
+    justify-self: end;
+    /* أقصى اليسار */
+}
+
+/* Reduce link button size to fit without scroll */
+.navbar-links-section .btn {
+    padding: 0.4rem 0.8rem !important;
+    font-size: 0.85rem !important;
+    white-space: nowrap;
+}
+
+/* Mobile Navbar */
+@media (max-width: 768px) {
+    .navbar-layout {
+        grid-template-columns: 1fr 1fr;
+        grid-template-rows: auto auto;
+        gap: 1rem;
+        padding: 0.5rem;
+    }
+
+    .navbar-links-section {
+        grid-column: 1 / -1;
+        grid-row: 2;
+        width: 100%;
+        justify-content: center;
+    }
+
+    .navbar-brand-section {
+        grid-column: 1;
+        grid-row: 1;
+    }
+
+    .navbar-user-section {
+        grid-column: 2;
+        grid-row: 1;
+    }
+}
+
+/* Old navbar styles override/cleanup if needed */
+.custom-navbar {
+    background: var(--bg-card);
+    border-bottom: 1px solid var(--border-color);
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    padding: 1rem 1.5rem;
+    position: sticky;
+    top: 0;
+    z-index: 1000;
+    margin-bottom: 2rem;
+}
+
+.brand-logo {
+    font-weight: 800;
+    font-size: 1.5rem;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    /* Multi-layer text shadow for maximum visibility */
+    text-shadow:
+        0 2px 4px rgba(0, 0, 0, 0.5),
+        0 4px 8px rgba(0, 0, 0, 0.4),
+        0 8px 16px rgba(0, 0, 0, 0.3),
+        0 0 30px rgba(99, 102, 241, 0.4),
+        0 0 60px rgba(99, 102, 241, 0.2);
+}
+
+/* Professional drop shadow for logo image */
+.brand-logo img {
+    filter:
+        drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5)) drop-shadow(0 4px 8px rgba(0, 0, 0, 0.4)) drop-shadow(0 8px 16px rgba(0, 0, 0, 0.3)) drop-shadow(0 0 20px rgba(99, 102, 241, 0.5)) drop-shadow(0 0 40px rgba(99, 102, 241, 0.3));
+    transition: filter 0.3s ease;
+}
+
+.brand-logo img:hover {
+    filter:
+        drop-shadow(0 4px 8px rgba(0, 0, 0, 0.6)) drop-shadow(0 8px 16px rgba(0, 0, 0, 0.5)) drop-shadow(0 0 30px rgba(99, 102, 241, 0.7)) drop-shadow(0 0 60px rgba(99, 102, 241, 0.5));
+}
+
+.user-profile-btn {
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    color: var(--text-primary);
+    border-radius: 50px;
+    padding: 0.5rem 1.2rem;
+    transition: 0.3s;
+}
+
+.user-profile-btn:hover {
+    background: rgba(59, 130, 246, 0.2);
+    border-color: var(--primary);
+    box-shadow: 0 0 15px var(--primary-glow);
+}
+
+
+.stat-box {
+    padding: 1.5rem;
+    position: relative;
+    overflow: hidden;
+    height: 100%;
+    transition: transform 0.3s, box-shadow 0.3s;
+}
+
+.stat-box::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 100%;
+    background: linear-gradient(to bottom, rgba(255, 255, 255, 0.03), transparent);
+    pointer-events: none;
+}
+
+.stat-box:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 15px 35px rgba(0, 0, 0, 0.4), 0 0 20px rgba(59, 130, 246, 0.1);
+    border-color: rgba(59, 130, 246, 0.3);
+}
+
+.stat-box .icon-wrapper {
+    position: absolute;
+    top: -15px;
+    left: -15px;
+    font-size: 6rem;
+    opacity: 0.05;
+    transform: rotate(15deg);
+    transition: 0.5s;
+    background: radial-gradient(circle, #fff, transparent);
+    background-clip: text;
+    -webkit-background-clip: text;
+}
+
+.stat-box:hover .icon-wrapper {
+    opacity: 0.1;
+    transform: rotate(0deg) scale(1.1);
+    left: -5px;
+}
+
+.stat-label {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+    font-weight: 500;
+    margin-bottom: 0.5rem;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    position: relative;
+    z-index: 2;
+}
+
+.stat-value {
+    color: white;
+    font-size: 1.7rem;
+    font-weight: 800;
+    font-family: 'Cairo', 'IBM Plex Sans Arabic', system-ui, sans-serif;
+    letter-spacing: 0.2px;
+    position: relative;
+    z-index: 2;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+    white-space: nowrap;
+    direction: ltr;
+    text-align: right;
+    display: block;
+}
+
+
+
+.filter-container {
+    padding: 1.5rem;
+}
+
+/* Inputs */
+/* Inputs - Modern Glass */
+.custom-input,
+.form-control,
+.form-select {
+    background-color: rgba(33, 46, 64, 0.5) !important;
+    /* Semi-transparent dark */
+    border: 1px solid var(--glass-border) !important;
+    color: var(--text-primary) !important;
+    border-radius: 12px;
+    height: 48px;
+    padding: 0 1rem;
+    transition: var(--transition);
+}
+
+.custom-input:focus,
+.form-control:focus,
+.form-select:focus {
+    background-color: rgba(33, 46, 64, 0.9) !important;
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 4px rgba(99, 102, 241, 0.15) !important;
+    outline: none;
+}
+
+.custom-input::placeholder {
+    color: var(--text-muted);
+    opacity: 0.7;
+}
+
+/* Fix for Select dropdown specificaly */
+select.custom-input,
+select.form-select {
+    padding-top: 0;
+    padding-bottom: 0;
+    background-position: left 0.75rem center;
+    /* Move arrow to left for RTL */
+}
+
+/* Fix for Date inputs */
+input[type="date"].custom-input {
+    line-height: normal;
+    /* Date inputs need normal line height usually */
+    padding-top: 0.6rem;
+    padding-bottom: 0.6rem;
+}
+
+.custom-input:focus,
+.form-control:focus,
+.form-select:focus {
+    background-color: #212E40 !important;
+    border-color: var(--primary) !important;
+    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2);
+    outline: none;
+}
+
+/* Search Button */
+.btn-search {
+    background-color: var(--primary);
+    border: none;
+    border-radius: 12px;
+    color: white;
+    font-weight: 700;
+    box-shadow: none;
+    height: 40px;
+    transition: 0.2s;
+}
+
+.btn-search:hover {
+    transform: scale(1.02);
+    box-shadow: 0 6px 20px rgba(37, 99, 235, 0.6);
+}
+
+/* Table - The exact look */
+.pro-card {
+    overflow: hidden;
+    position: relative;
+}
+
+/* Modern Table Design */
+.custom-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+}
+
+.custom-table th {
+    background: rgba(33, 46, 64, 0.4) !important;
+    color: var(--text-secondary);
+    font-size: 0.85rem;
+    font-weight: 700;
+    padding: 1.25rem 1rem;
+    border-bottom: 1px solid var(--glass-border);
+    white-space: nowrap;
+    text-align: start;
+    /* Let direction decide, allow override */
+}
+
+.custom-table td {
+    padding: 1rem;
+    color: var(--text-primary);
+    border-bottom: 1px solid var(--glass-border);
+    vertical-align: middle;
+    text-align: start;
+    /* Let direction decide, allow override */
+}
+
+.custom-table tbody tr {
+    transition: transform 0.2s, background-color 0.2s;
+}
+
+.custom-table tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.03) !important;
+    transform: scale(1);
+    /* Ensure stacking context */
+    position: relative;
+    z-index: 5;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+}
+
+/* Specific Column Alignments - REMOVED TO PREVENT CONFLICTS */
+/* Utility classes like .text-center should handle alignment */
+
+/* Center numeric columns for better look */
+
+/* Center numeric columns for better look */
+.custom-table th.text-center,
+.custom-table td.text-center,
+.custom-table th.text-center-header,
+.custom-table td.text-center-cell {
+    text-align: center !important;
+}
+
+/* LTR Columns (like English Text) */
+.custom-table th.text-ltr,
+.custom-table td.text-ltr {
+    direction: ltr;
+    /* Just direction, keep alignment inherited (Right) unless overridden */
+    text-align: right;
+}
+
+/* Monospace Numbers (Prices/IDs) */
+.custom-table td.font-monospace {
+    font-family: 'Cairo', 'IBM Plex Sans Arabic', 'Segoe UI', Consolas, monospace;
+    letter-spacing: 0.3px;
+    direction: ltr;
+    text-align: right;
+}
+
+/* Explicit Left Align if needed */
+.text-left {
+    text-align: left !important;
+}
+
+.custom-table thead th {
+    background-color: rgba(33, 46, 64, 0.95);
+    /* Dark blue header */
+    color: var(--text-secondary);
+    font-weight: 800;
+    font-size: 0.9rem;
+    padding: 1rem;
+    border-bottom: 2px solid var(--border-color);
+    white-space: nowrap;
+}
+
+.custom-table tbody tr {
+    background-color: var(--bg-card);
+    border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+    transition: background 0.2s;
+}
+
+.custom-table tbody tr:hover {
+    background-color: rgba(59, 130, 246, 0.05) !important;
+}
+
+.custom-table tbody td {
+    padding: 1rem;
+    color: #fff;
+    vertical-align: middle;
+    font-size: 1rem;
+    font-weight: 500;
+}
+
+/* Columns Specifics */
+.text-center-header,
+.text-center-cell {
+    text-align: center !important;
+}
+
+.text-ltr {
+    text-align: left;
+    direction: ltr;
+}
+
+/* The Green Numbers */
+.text-success {
+    color: #22c55e !important;
+    /* brighter green */
+    font-weight: 700 !important;
+}
+
+.text-danger {
+    color: #f43f5e !important;
+    /* brighter red */
+    font-weight: 700;
+}
+
+/* Typography tuning for readability */
+.section-title {
+    font-size: 1.05rem;
+    font-weight: 800;
+}
+
+.custom-table th {
+    font-weight: 800;
+    letter-spacing: 0.2px;
+}
+
+.custom-table td {
+    font-weight: 600;
+    letter-spacing: 0.1px;
+}
+
+.custom-input,
+.form-control,
+.form-select {
+    font-size: 0.95rem;
+}
+
+.btn {
+    font-weight: 700;
+}
+
+.text-danger {
+    color: #f87171 !important;
+    font-weight: 700;
+}
+
+.text-white {
+    color: #fff !important;
+}
+
+/* Status Badge - Rounded capsule */
+.status-badge {
+    display: inline-block;
+    padding: 4px 12px;
+    border-radius: 50px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.status-completed {
+    background-color: rgba(16, 185, 129, 0.15);
+    color: #34d399;
+    border: none;
+    box-shadow: none;
+}
+
+.status-pending {
+    background-color: rgba(245, 158, 11, 0.15);
+    color: #fbbf24;
+    border: none;
+}
+
+/* Action Button "عرض" - Blue Button */
+.btn-action-blue {
+    background-color: var(--primary);
+    color: white;
+    padding: 4px 16px;
+    border-radius: 6px;
+    font-size: 0.85rem;
+    font-weight: 600;
+    border: none;
+    transition: background 0.2s;
+    text-decoration: none;
+    display: inline-block;
+}
+
+.btn-action-blue:hover {
+    background-color: var(--primary-hover);
+    color: white;
+    transform: none;
+}
+
+.btn-icon {
+    width: 38px;
+    height: 38px;
+    border-radius: 10px;
+    background: rgba(255, 255, 255, 0.05);
+    border: 1px solid transparent;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: 0.2s;
+}
+
+.btn-icon:hover {
+    background: var(--primary);
+    color: white;
+    box-shadow: 0 0 15px var(--primary-glow);
+    transform: scale(1.1);
+}
+
+/* ================= Mobile View ================= */
+/* ================= Mobile View ================= */
+@media (max-width: 768px) {
+
+    /* Navbar: Adaptive Wrapping */
+    /* Navbar: Mobile Professional Layout */
+    .navbar-layout {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        /* Two columns for top row */
+        grid-template-areas:
+            "brand user"
+            "links links";
+        gap: 1rem;
+        padding: 0.8rem;
+    }
+
+    /* Top Row Alignment */
+    .navbar-brand-section {
+        grid-area: brand;
+        justify-self: start;
+    }
+
+    .navbar-user-section {
+        grid-area: user;
+        justify-self: end;
+    }
+
+    /* Links: Multi-row Grid */
+    .navbar-links-section {
+        grid-area: links;
+        display: flex;
+        flex-wrap: wrap;
+        /* Allow wrapping to new lines */
+        justify-content: center;
+        /* Center the buttons */
+        gap: 0.5rem;
+        width: 100%;
+        overflow-x: visible;
+        /* Disable scroll */
+        padding-bottom: 0;
+    }
+
+    /* Make buttons expand to fill space nicely */
+    .navbar-links-section .btn {
+        flex: 1 0 auto;
+        /* Grow to fill space */
+        text-align: center;
+        min-width: 30%;
+        /* Ensure ~3 buttons per row */
+        max-width: 48%;
+        /* Never more than 2 per row if nice, or let them flow */
+        padding: 0.5rem !important;
+    }
+
+    .navbar-links-section::-webkit-scrollbar {
+        display: none;
+        /* Hide Scrollbar */
+    }
+
+    .navbar-links-section .btn {
+        flex: 0 0 auto;
+        /* Don't shrink */
+        min-width: auto;
+        font-size: 0.8rem !important;
+        padding: 0.5rem 1rem !important;
+        white-space: nowrap;
+    }
+
+    /* TABLE: Mobile Optimized - No Scroll */
+    .table-container {
+        border-radius: var(--radius);
+        background: transparent;
+        box-shadow: none;
+        overflow-x: visible !important;
+        /* Disable scroll */
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .custom-table {
+        width: 100% !important;
+        /* Force full width */
+        min-width: auto !important;
+        /* Remove min-width */
+        font-size: 0.75rem !important;
+        /* Smaller font */
+    }
+
+    .custom-table thead {
+        display: table-header-group !important;
+    }
+
+    .custom-table thead th {
+        padding: 8px 4px !important;
+        /* Reduce padding */
+        font-size: 0.7rem !important;
+        white-space: nowrap;
+    }
+
+    .custom-table tbody tr {
+        display: table-row !important;
+        background: transparent !important;
+        margin-bottom: 0;
+    }
+
+    .custom-table tbody td {
+        padding: 10px 4px !important;
+        /* Reduce padding */
+        font-size: 0.75rem !important;
+        white-space: nowrap;
+        /* Prevent text wrap */
+    }
+
+    /* Make action button smaller on mobile */
+    .btn-action-mobile {
+        font-size: 0.7rem !important;
+        padding: 4px 8px !important;
+    }
+
+    /* HIDE unwanted columns in mobile (columns 4,5,6,8) */
+    /* Column 4: المحاسب */
+    /* HIDE unwanted columns in mobile (columns 4,5,6,8) - EXCLUDING ATM Table */
+    /* Column 4: المحاسب */
+    /* Column 4: المحاسب */
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management):not(.cashiers-table):not(.reconciliation-table) thead th:nth-child(4),
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management):not(.cashiers-table):not(.reconciliation-table) tbody td:nth-child(4) {
+        display: none !important;
+    }
+
+    /* Column 5: مبيعات النظام */
+    /* Column 5: مبيعات النظام */
+    /* Column 5: مبيعات النظام */
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management):not(.cashiers-table):not(.reconciliation-table) thead th:nth-child(5),
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management):not(.cashiers-table):not(.reconciliation-table) tbody td:nth-child(5) {
+        display: none !important;
+    }
+
+    /* Column 6: المقبوض الفعلي */
+    /* Column 6: المقبوض الفعلي */
+    /* Column 6: المقبوض الفعلي */
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management):not(.cashiers-table):not(.reconciliation-table) thead th:nth-child(6),
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management):not(.cashiers-table):not(.reconciliation-table) tbody td:nth-child(6) {
+        display: none !important;
+    }
+
+    /* Column 8: الحالة */
+    /* Column 8: الحالة */
+    /* Column 8: الحالة */
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management):not(.cashiers-table):not(.reconciliation-table) thead th:nth-child(8),
+    .custom-table:not(.atm-table):not(.customer-table):not(.users-table-management):not(.cashiers-table):not(.reconciliation-table) tbody td:nth-child(8) {
+        display: none !important;
+    }
+
+    /* Mobile Optimization for Reconciliation Request Table (4 Columns) */
+    @media (max-width: 768px) {
+        .reconciliation-table {
+            font-size: 0.75rem !important;
+        }
+
+        .reconciliation-table th,
+        .reconciliation-table td {
+            padding: 6px 2px !important;
+            white-space: normal !important;
+        }
+
+        /* Force display all 4 columns */
+        .reconciliation-table thead th,
+        .reconciliation-table tbody td {
+            display: table-cell !important;
+        }
+
+        /* Adjust width ratios for mobile */
+        .reconciliation-table th:nth-child(1),
+        .reconciliation-table td:nth-child(1) {
+            width: 30% !important;
+        }
+
+        /* Cashier/ID */
+        .reconciliation-table th:nth-child(2),
+        .reconciliation-table td:nth-child(2) {
+            width: 25% !important;
+        }
+
+        /* Date */
+        .reconciliation-table th:nth-child(3),
+        .reconciliation-table td:nth-child(3) {
+            width: 25% !important;
+            background: rgba(25, 135, 84, 0.05) !important;
+        }
+
+        /* Amount */
+        .reconciliation-table th:nth-child(4),
+        .reconciliation-table td:nth-child(4) {
+            width: 20% !important;
+            text-align: center !important;
+        }
+
+        /* Actions */
+    }
+
+    /* Modal Summary Grid - Stack Vertically on Mobile */
+    .summary-grid {
+        grid-template-columns: 1fr !important;
+        /* Single column */
+        gap: 0.75rem !important;
+        padding: 1rem !important;
+    }
+
+    .summary-item {
+        padding: 0.75rem;
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .summary-item label {
+        font-size: 0.75rem !important;
+        margin-bottom: 0.4rem !important;
+    }
+
+    .summary-item .value {
+        font-size: 1.1rem !important;
+    }
+}
+
+.custom-table td {
+    width: auto !important;
+    text-align: right !important;
+    border-bottom: 1px solid var(--glass-border) !important;
+    padding: 1rem !important;
+}
+
+.custom-table td::before {
+    display: none !important;
+    /* No data-labels needed */
+}
+
+/* Reset ATM Table to standard rows */
+.atm-table tr {
+    display: table-row !important;
+    grid-template-columns: none !important;
+    grid-template-rows: none !important;
+    gap: 0;
+}
+
+.atm-table td {
+    padding: 1rem !important;
+}
+
+/* Remove ATM specific overrides */
+.atm-table td[data-label] {
+    grid-column: auto !important;
+    grid-row: auto !important;
+    text-align: right !important;
+    font-weight: normal;
+    margin: 0;
+}
+
+.atm-table td[data-label="المبلغ"] {
+    color: #fff !important;
+    /* Reset specific color if needed, or keep for highlight */
+    font-size: 1rem !important;
+}
+
+/* ================= Customer Ledger Table (Mobile) ================= */
+/* 1: Name, 5: Balance, 8: Actions */
+
+.customer-table.custom-table th:nth-child(1),
+.customer-table.custom-table td:nth-child(1) {
+    width: 45% !important;
+    text-align: right !important;
+    padding-right: 8px !important;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: bold;
+}
+
+.customer-table.custom-table th:nth-child(5),
+.customer-table.custom-table td:nth-child(5) {
+    width: 30% !important;
+    text-align: center !important;
+    color: #0ea5e9 !important;
+    /* Sky Blue */
+    font-family: 'Segoe UI', monospace;
+    font-weight: 700;
+    direction: ltr;
+}
+
+.customer-table.custom-table th:nth-child(8),
+.customer-table.custom-table td:nth-child(8) {
+    width: 25% !important;
+    text-align: center !important;
+}
+
+/* ================= Detailed Ledger Table (Mobile) ================= */
+/* 1: #, 2: Date, 3: Type, 4: Statement(Hidden), 5: Debit, 6: Credit, 7: Balance */
+
+.ledger-details-table.custom-table th:nth-child(1),
+.ledger-details-table.custom-table td:nth-child(1) {
+    width: 10% !important;
+    text-align: center !important;
+}
+
+.ledger-details-table.custom-table th:nth-child(2),
+.ledger-details-table.custom-table td:nth-child(2) {
+    width: 22% !important;
+    /* Date */
+    font-size: 0.65rem !important;
+    font-family: 'Segoe UI', monospace;
+    letter-spacing: -0.5px;
+    text-align: center !important;
+}
+
+.ledger-details-table.custom-table th:nth-child(3),
+.ledger-details-table.custom-table td:nth-child(3) {
+    width: 20% !important;
+    /* Type */
+    text-align: center !important;
+}
+
+.ledger-details-table.custom-table th:nth-child(5),
+/* Debit */
+.ledger-details-table.custom-table td:nth-child(5),
+.ledger-details-table.custom-table th:nth-child(6),
+/* Credit */
+.ledger-details-table.custom-table td:nth-child(6) {
+    width: 16% !important;
+    text-align: center !important;
+    font-family: 'Segoe UI', monospace;
+    font-size: 0.7rem !important;
+    direction: ltr;
+    padding: 4px 1px !important;
+}
+
+.ledger-details-table.custom-table th:nth-child(7),
+/* Balance */
+.ledger-details-table.custom-table td:nth-child(7) {
+    width: 16% !important;
+    text-align: center !important;
+    font-weight: bold;
+    color: #0ea5e9 !important;
+    font-family: 'Segoe UI', monospace;
+    direction: ltr;
+    padding: 4px 1px !important;
+}
+
+/* Ensure horizontal scroll if needed, though we hid columns */
+.table-container {
+    overflow-x: auto;
+}
+
+/* ================= Modal: Glassmorphism & Animations ================= */
+
+/* Modal Fade-in Animation */
+.modal.fade .modal-dialog {
+    transition: transform 0.4s cubic-bezier(0.34, 1.56, 0.64, 1), opacity 0.3s ease-out;
+    transform: scale(0.9) translateY(-20px);
+}
+
+.modal.show .modal-dialog {
+    transform: scale(1) translateY(0);
+}
+
+/* Glassmorphism Modal */
+/* Glassmorphism Modal - Force persistent transparency */
+/* Glassmorphism Modal - Force persistent transparency (NUCLEAR OPTION) */
+.modal-content,
+.modal-dialog .modal-content,
+.modal.show .modal-dialog .modal-content {
+    background: rgba(30, 41, 59, 0.65) !important;
+    /* Slightly more transparent */
+    background-color: rgba(30, 41, 59, 0.65) !important;
+    backdrop-filter: blur(20px) saturate(180%) !important;
+    -webkit-backdrop-filter: blur(20px) saturate(180%) !important;
+    border: 1px solid rgba(255, 255, 255, 0.15) !important;
+    box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.05) inset, 0 25px 50px -12px rgba(0, 0, 0, 0.8) !important;
+    color: white !important;
+}
+
+/* Ensure children don't block opacity */
+.modal-header,
+.modal-body,
+.modal-footer {
+    background: transparent !important;
+    background-color: transparent !important;
+    border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+.modal-header {
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
+    padding: 1.5rem;
+}
+
+.modal-title {
+    font-weight: 700;
+    color: white;
+    text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+}
+
+.btn-close-white {
+    filter: invert(1) grayscale(100%) brightness(200%);
+}
+
+/* Summary Grid - Improved */
+.summary-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1rem;
+    background: rgba(15, 23, 42, 0.4);
+    backdrop-filter: blur(10px);
+    padding: 1.5rem;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    margin-bottom: 1.5rem;
+    text-align: center;
+}
+
+.summary-item label {
+    display: block;
+    color: rgba(255, 255, 255, 0.7);
+    font-size: 0.85rem;
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+}
+
+.summary-item .value {
+    font-size: 1.4rem;
+    font-weight: 800;
+    font-family: 'Cairo', 'IBM Plex Sans Arabic', system-ui, sans-serif;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+/* Modal Tables - Fixed Alignment */
+.modal-table {
+    width: 100%;
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-bottom: 1rem;
+    background: rgba(15, 23, 42, 0.3);
+}
+
+.modal-table th {
+    background: rgba(15, 23, 42, 0.6);
+    color: rgba(255, 255, 255, 0.8);
+    font-weight: 700;
+    padding: 12px;
+    text-align: center !important;
+    /* Fix alignment */
+    font-size: 0.85rem;
+    border-bottom: 2px solid rgba(255, 255, 255, 0.2);
+}
+
+.modal-table td {
+    background: rgba(30, 41, 59, 0.3);
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 12px;
+    color: white;
+    text-align: center !important;
+    /* Fix alignment */
+    vertical-align: middle;
+    font-size: 0.9rem;
+}
+
+/* Table text alignment by column type */
+.modal-table th:first-child,
+.modal-table td:first-child {
+    text-align: right !important;
+    /* اسم الفئة */
+}
+
+.modal-table th:last-child,
+.modal-table td:last-child {
+    text-align: left !important;
+    /* القيمة بالـ LTR */
+    direction: ltr;
+    font-family: 'Cairo', monospace;
+}
+
+.modal-table tr:last-child td {
+    border-bottom: none;
+}
+
+.modal-body {
+    color: #e2e8f0;
+}
+
+.detail-amount-box {
+    background: rgba(0, 0, 0, 0.2);
+    border-radius: 16px;
+    padding: 1rem;
+    text-align: center;
+    border: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+    width: 8px;
+}
+
+::-webkit-scrollbar-track {
+    background: var(--bg-dark);
+}
+
+::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.2);
+}
+
+/* ==================== Animations & Final Touches ==================== */
+@keyframes float-up {
+    from {
+        opacity: 0;
+        transform: translateY(20px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+.custom-navbar {
+    animation: float-up 0.8s cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.stat-box {
+    animation: float-up 0.6s backwards;
+}
+
+.stat-box:nth-child(1) {
+    animation-delay: 0.1s;
+}
+
+.stat-box:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.stat-box:nth-child(3) {
+    animation-delay: 0.2s;
+}
+
+.stat-box:nth-child(4) {
+    animation-delay: 0.25s;
+}
+
+.filter-container {
+    animation: float-up 0.6s 0.3s backwards;
+}
+
+.pro-card {
+    animation: float-up 0.8s 0.4s backwards;
+}
+
+.custom-table tbody tr {
+    opacity: 0;
+    animation: float-up 0.5s ease-out forwards;
+}
+
+.custom-table tbody tr:nth-child(1) {
+    animation-delay: 0.1s;
+}
+
+.custom-table tbody tr:nth-child(2) {
+    animation-delay: 0.15s;
+}
+
+.custom-table tbody tr:nth-child(3) {
+    animation-delay: 0.2s;
+}
+
+.custom-table tbody tr:nth-child(4) {
+    animation-delay: 0.25s;
+}
+
+.custom-table tbody tr:nth-child(5) {
+    animation-delay: 0.3s;
+}
+
+.custom-table tbody tr:nth-child(6) {
+    animation-delay: 0.35s;
+}
+
+.custom-table tbody tr:nth-child(7) {
+    animation-delay: 0.4s;
+}
+
+.custom-table tbody tr:nth-child(8) {
+    animation-delay: 0.45s;
+}
+
+.custom-table tbody tr:nth-child(9) {
+    animation-delay: 0.5s;
+}
+
+.custom-table tbody tr:nth-child(10) {
+    animation-delay: 0.55s;
+}
+
+/* Utility and UI Enhancements */
+.bg-card {
+    background: var(--bg-card) !important;
+}
+
+.hover-bg-primary:hover {
+    background: var(--primary) !important;
+    border-color: var(--primary) !important;
+    color: #fff !important;
+    box-shadow: 0 0 15px var(--primary-glow) !important;
+}
+
+/* Dropdown Glass style */
+.dropdown-menu {
+    background: var(--bg-card) !important;
+    border: 1px solid var(--glass-border) !important;
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+}
+
+.dropdown-menu .dropdown-item {
+    color: var(--text-primary);
+}
+
+.dropdown-menu .dropdown-item:hover {
+    background: rgba(99, 102, 241, 0.12);
+    color: #fff;
+}
+
+/* Section Titles */
+.section-title {
+    color: var(--text-secondary);
+    font-weight: 800;
+    letter-spacing: .5px;
+}
+
+/* Buttons - Professional System */
+.btn {
+    --btn-bg: var(--btn-secondary);
+    --btn-bg-hover: var(--btn-secondary-hover);
+    --btn-focus: var(--btn-secondary-focus);
+    --btn-color: #fff;
+    --btn-border: transparent;
+
+    background: var(--btn-bg);
+    color: var(--btn-color);
+    border: 1px solid var(--btn-border);
+    border-radius: 12px;
+    padding: 0.6rem 1rem;
+    line-height: 1.1;
+    font-weight: 700;
+    letter-spacing: 0.2px;
+    transition: transform .15s ease, box-shadow .2s ease, background-color .2s ease, border-color .2s ease;
+}
+
+.btn:hover {
+    background: var(--btn-bg-hover);
+    transform: translateY(-1px);
+    box-shadow: 0 10px 18px -8px rgba(0, 0, 0, .4);
+}
+
+.btn:active {
+    transform: translateY(0);
+}
+
+.btn:focus {
+    box-shadow: 0 0 0 4px var(--btn-focus) !important;
+    outline: none !important;
+}
+
+.btn:disabled,
+.btn.disabled {
+    opacity: .65;
+    cursor: not-allowed;
+    filter: saturate(.7);
+}
+
+/* Solid variants */
+.btn-primary {
+    --btn-bg: var(--btn-primary);
+    --btn-bg-hover: var(--btn-primary-hover);
+    --btn-focus: var(--btn-primary-focus);
+    --btn-border: var(--btn-primary);
+}
+
+.btn-secondary {
+    --btn-bg: var(--btn-secondary);
+    --btn-bg-hover: var(--btn-secondary-hover);
+    --btn-focus: var(--btn-secondary-focus);
+    --btn-border: var(--btn-secondary);
+}
+
+.btn-success {
+    --btn-bg: var(--btn-success);
+    --btn-bg-hover: var(--btn-success-hover);
+    --btn-focus: var(--btn-success-focus);
+    --btn-border: var(--btn-success);
+}
+
+.btn-danger {
+    --btn-bg: var(--btn-danger);
+    --btn-bg-hover: var(--btn-danger-hover);
+    --btn-focus: var(--btn-danger-focus);
+    --btn-border: var(--btn-danger);
+}
+
+.btn-warning {
+    --btn-bg: var(--btn-warning);
+    --btn-bg-hover: var(--btn-warning-hover);
+    --btn-focus: var(--btn-warning-focus);
+    --btn-border: var(--btn-warning);
+    color: #1f2937;
+}
+
+.btn-info {
+    --btn-bg: var(--btn-info);
+    --btn-bg-hover: var(--btn-info-hover);
+    --btn-focus: var(--btn-info-focus);
+    --btn-border: var(--btn-info);
+}
+
+/* Outline variants */
+.btn-outline-primary,
+.btn-outline-secondary,
+.btn-outline-success,
+.btn-outline-danger,
+.btn-outline-warning,
+.btn-outline-info {
+    background: transparent;
+    color: var(--btn-bg);
+    border-color: var(--btn-bg);
+}
+
+.btn-outline-primary {
+    --btn-bg: var(--btn-primary);
+}
+
+.btn-outline-secondary {
+    --btn-bg: var(--btn-secondary);
+}
+
+.btn-outline-success {
+    --btn-bg: var(--btn-success);
+}
+
+.btn-outline-danger {
+    --btn-bg: var(--btn-danger);
+}
+
+.btn-outline-warning {
+    --btn-bg: var(--btn-warning);
+    color: var(--btn-warning);
+}
+
+.btn-outline-info {
+    --btn-bg: var(--btn-info);
+}
+
+.btn-outline-primary:hover,
+.btn-outline-secondary:hover,
+.btn-outline-success:hover,
+.btn-outline-danger:hover,
+.btn-outline-warning:hover,
+.btn-outline-info:hover {
+    background: var(--btn-bg);
+    color: #fff;
+}
+
+/* Ghost variant */
+.btn-ghost {
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-primary);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.btn-ghost:hover {
+    background: rgba(255, 255, 255, 0.08);
+}
+
+/* Icon buttons */
+.btn-icon {
+    width: 40px;
+    height: 40px;
+    padding: 0;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.btn-icon i {
+    font-size: 1rem;
+}
+
+/* Sizes */
+.btn-sm {
+    padding: 0.45rem 0.75rem;
+    border-radius: 10px;
+    font-weight: 700;
+}
+
+.btn-lg {
+    padding: 0.85rem 1.25rem;
+    border-radius: 14px;
+    font-weight: 800;
+}
+
+/* Navbar buttons */
+.custom-navbar .btn {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(255, 255, 255, 0.04);
+}
+
+.custom-navbar .btn.btn-primary {
+    background: var(--btn-primary);
+    border-color: var(--btn-primary);
+}
+
+.custom-navbar .btn:hover {
+    border-color: var(--btn-primary);
+    box-shadow: 0 0 12px var(--primary-glow);
+}
+
+/* Table container safety */
+.table-container {
+    overflow-x: auto;
+}
+
+/* Scrollbar track fix to use defined var */
+::-webkit-scrollbar-track {
+    background: var(--bg-dark);
+}
+
+/* ==============================================
+   Fix for Stat Cards Overflow on Mobile (Decimals)
+   ============================================== */
+@media (max-width: 768px) {
+    .stat-value {
+        font-size: 1.2rem !important;
+        /* Reduced from 1.7rem to fit 123,456.78 */
+        white-space: normal !important;
+        /* Allow wrapping if absolutely necessary */
+        line-height: 1.2;
+        word-break: break-all;
+        /* Prevent overflow */
+    }
+
+    .stat-box {
+        padding: 1rem !important;
+        /* Reduce padding to give more space for text */
+        min-height: 110px;
+        /* Ensure consistent height */
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+    }
+
+    .stat-label {
+        font-size: 0.8rem !important;
+        /* Slightly smaller label */
+        margin-bottom: 0.3rem !important;
+    }
+
+    .stat-box .icon-wrapper {
+        font-size: 4rem;
+        /* Smaller background icon */
+        top: -10px;
+        left: -10px;
+    }
+}
+
+@media (max-width: 480px) {
+    .stat-value {
+        font-size: 1.05rem !important;
+        /* Even smaller for very narrow screens */
+    }
+}

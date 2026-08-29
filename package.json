@@ -1,0 +1,146 @@
+{
+  "_comment": "===================================================",
+  "_copyright": "🧾 تطبيق: تصفية برو | 🛠️ المطور: محمد أمين الكامل | 🗓️ سنة: 2025 | 📌 جميع الحقوق محفوظة | يمنع الاستخدام أو التعديل دون إذن كتابي",
+  "_comment2": "===================================================",
+  "name": "casher",
+  "version": "6.0.0",
+  "description": "تصفية برو - Professional Reconciliation System with Customer Codes & Full Ledger Identity Support v6.0.0",
+  "main": "src/main.js",
+  "scripts": {
+    "build:renderer": "node scripts/build-renderer-bundles.js",
+    "prestart": "node scripts/build-renderer-bundles.js",
+    "start": "node scripts/run-electron.js",
+    "start:client-sender": "node scripts/run-client-sender.js",
+    "start:web": "node src/start-web.js",
+    "predev": "node scripts/build-renderer-bundles.js",
+    "dev": "cross-env NODE_ENV=development node scripts/run-electron.js --dev",
+    "prebuild-clean": "node scripts/build-renderer-bundles.js",
+    "build-clean": "node build.js",
+    "build:client-sender": "node scripts/build-client-sender.js",
+    "lint": "eslint \"src/app/**/*.js\" \"src/security/**/*.js\" \"test/**/*.js\" --max-warnings=0",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
+    "postinstall": "electron-builder install-app-deps",
+    "rebuild": "electron-builder install-app-deps"
+  },
+  "keywords": [
+    "cashier",
+    "reconciliation",
+    "arabic",
+    "accounting"
+  ],
+  "author": "محمد أمين الكامل",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "12.6.2",
+    "bootstrap": "5.3.7",
+    "dexie": "4.0.11",
+    "exceljs": "4.4.0",
+    "idb": "8.0.3",
+    "localforage": "1.10.0",
+    "node-fetch": "2.7.0",
+    "pg": "8.17.1",
+    "puppeteer": "24.37.5",
+    "sweetalert2": "11.26.21"
+  },
+  "devDependencies": {
+    "cross-env": "7.0.3",
+    "electron": "39.8.5",
+    "electron-builder": "26.8.1",
+    "eslint": "8.57.1",
+    "png-to-ico": "3.0.1",
+    "rcedit": "4.0.1"
+  },
+  "build": {
+    "appId": "com.tasfiyapro.reconciliation",
+    "productName": "تصفية برو - Tasfiya Pro",
+    "copyright": "© 2025 محمد أمين الكامل - جميع الحقوق محفوظة",
+    "directories": {
+      "output": "dist",
+      "buildResources": "assets"
+    },
+    "files": [
+      "src/**/*",
+      "!src/**/*-test.js",
+      "!src/**/*-diagnostic.js",
+      "!src/**/*-verification.js",
+      "!src/test-functions.js",
+      "!test-*.html",
+      "!*-test.html",
+      "!*-fix.html",
+      "!*SUMMARY.md",
+      "!*DOCUMENTATION.md",
+      "!*REPORT.md",
+      "assets/**/*",
+      "!assets/create-icon.html",
+      "!assets/tasfiya-pro-icon.svg",
+      "!create-icon-for-build.html",
+      "node_modules/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "assets",
+        "to": "assets",
+        "filter": [
+          "**/*",
+          "!create-icon.html",
+          "!tasfiya-pro-icon.svg"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "icon.ico",
+      "requestedExecutionLevel": "asInvoker",
+      "artifactName": "${productName}-${version}-${arch}.${ext}",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "artifactName": "Tasfiya-Pro-${version}-Setup.${ext}",
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "تصفية برو",
+      "deleteAppDataOnUninstall": false,
+      "displayLanguageSelector": false,
+      "language": "1025",
+      "include": "installer.nsh"
+    },
+    "portable": {
+      "artifactName": "Tasfiya-Pro-${version}-Portable.${ext}"
+    },
+    "electronFuses": {
+      "runAsNode": false
+    },
+    "compression": "maximum",
+    "npmRebuild": false,
+    "nodeGypRebuild": false
+  },
+  "overrides": {
+    "ajv": "6.14.0",
+    "@xmldom/xmldom": "0.8.12",
+    "basic-ftp": "5.3.0",
+    "brace-expansion@^1.1.7": "1.1.13",
+    "brace-expansion@^2.0.1": "2.0.3",
+    "brace-expansion@^2.0.2": "2.0.3",
+    "brace-expansion@^5.0.2": "5.0.5",
+    "flatted": "3.4.2",
+    "lodash": "4.18.1",
+    "picomatch": "4.0.4"
+  }
+}

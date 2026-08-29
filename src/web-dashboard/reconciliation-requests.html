@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>طلبات التصفية المعلقة</title>
+    <link rel="icon" type="image/png" href="assets/favicon.png">
+
+    <!-- PWA Manifest -->
+    <link rel="manifest" href="manifest.json">
+    <meta name="theme-color" content="#6366f1">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="تصفية برو">
+    <link rel="apple-touch-icon" href="assets/icon-512.png">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="css/custom.css?v=21" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/sweetalert2@11/dist/sweetalert2.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
+    <script src="/js/onesignal-bootstrap.js"></script>
+
+    <!-- OneSignal SDK -->
+    <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+
+</head>
+
+<body class="bg-dark text-light">
+
+    <!-- Navbar -->
+    <nav class="custom-navbar navbar-layout d-flex justify-content-between align-items-center mb-4">
+        <div class="navbar-brand-section">
+            <div class="brand-logo">
+                <img src="assets/logo-tasfia-pro.png" alt="TP"
+                    style="height: 40px; width: auto; margin-left: 10px; border-radius: 8px;">تصفية برو
+            </div>
+        </div>
+        <div>
+            <a href="index.html" class="btn btn-outline-light btn-sm rounded-pill">
+                <i class="fas fa-arrow-right me-1"></i> عودة للرئيسية
+            </a>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="card glass-card border-0">
+            <div
+                class="card-header bg-transparent border-bottom border-secondary d-flex justify-content-between align-items-center py-3">
+                <h5 class="mb-0 text-white"><i class="fas fa-clock text-warning me-2"></i> طلبات التصفية المعلقة</h5>
+                <button class="btn btn-sm btn-outline-info" onclick="loadRequests()">
+                    <i class="fas fa-sync-alt"></i> تحديث
+                </button>
+            </div>
+            <div class="card-body p-0">
+                <!-- Desktop Table View -->
+                <div class="table-responsive d-none d-md-block">
+                    <table class="table table-dark table-hover mb-0 align-middle custom-table reconciliation-table">
+                        <thead>
+                            <tr>
+                                <th class="text-secondary">#</th>
+                                <th class="text-secondary">التاريخ</th>
+                                <th class="text-secondary">الكاشير</th>
+                                <th class="text-secondary text-center">إجمالي النقد</th>
+                                <th class="text-secondary text-center">الإجراءات</th>
+                            </tr>
+                        </thead>
+                        <tbody id="requestsTableBody">
+                            <tr>
+                                <td colspan="5" class="text-center py-4 text-muted">جاري التحميل...</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+
+                <!-- Mobile Cards View -->
+                <div id="mobileCardsContainer" class="d-md-none p-3">
+                    <div class="text-center py-4 text-muted">جاري التحميل...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Check Auth
+        const userStr = localStorage.getItem('user');
+        if (!userStr) window.location.href = '/login.html';
+        const user = JSON.parse(userStr);
+
+        // Permission Check
+        const isAllowed = (user.role === 'admin') || (user.permissions && user.permissions.includes('reconciliation-requests.html'));
+        if (!isAllowed) {
+            window.location.href = 'index.html';
+        }
+
+        function bootstrapNativeNotifications() {
+            return window.TasfiyaOneSignal.initNativeUser(user, {
+                role: "admin"
+            });
+        }
+
+        // Initialize OneSignal Logic (Official)
+        // 1. Official Callback
+        window.median_onesignal_info = function (data) {
+            console.log("📱 Median App Detected via Official Callback", data);
+            bootstrapNativeNotifications();
+        };
+
+        // 2. Initialize Logic
+        if (user.role === 'admin' || !user.role) {
+            const isMedianApp = window.TasfiyaOneSignal.isNativeEnvironment();
+
+            if (isMedianApp) {
+                console.log("📱 Running in App Mode");
+                bootstrapNativeNotifications();
+
+                window.addEventListener('focus', bootstrapNativeNotifications);
+                document.addEventListener('visibilitychange', () => {
+                    if (document.visibilityState === 'visible') {
+                        bootstrapNativeNotifications();
+                    }
+                });
+            }
+            else {
+                // BROWSER MODE
+                try {
+                    window.TasfiyaOneSignal.initBrowserUser(user, {
+                        role: "admin",
+                        requestPermission: true
+                    });
+                } catch (error) {
+                    console.error("OneSignal Web Error:", error);
+                }
+            }
+        }
+
+        let currentRequests = [];
+        const requestDetailsCache = new Map();
+
+        function toSafeNumber(value) {
+            if (value === null || value === undefined || value === '') return 0;
+            const n = Number(value);
+            return Number.isFinite(n) ? n : 0;
+        }
+
+        function toArray(value) {
+            return Array.isArray(value) ? value : [];
+        }
+
+        function formatMoney(value) {
+            return toSafeNumber(value).toFixed(2);
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function parseRequestDetailsValue(rawValue) {
+            if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+                return rawValue;
+            }
+
+            const normalized = typeof rawValue === 'string' ? rawValue.trim() : '';
+            if (!normalized) {
+                return {};
+            }
+
+            try {
+                return JSON.parse(normalized);
+            } catch (error) {
+                console.warn('Failed to parse request details payload:', error);
+                return {};
+            }
+        }
+
+        function hasMeaningfulRequestDetailsValue(rawValue) {
+            if (rawValue && typeof rawValue === 'object' && !Array.isArray(rawValue)) {
+                return Object.keys(rawValue).length > 0;
+            }
+
+            if (typeof rawValue !== 'string') {
+                return false;
+            }
+
+            const normalized = rawValue.trim();
+            return Boolean(normalized) && !['{}', '[]', 'null'].includes(normalized);
+        }
+
+        function hasRequestDetails(request) {
+            return hasMeaningfulRequestDetailsValue(request?.details)
+                || hasMeaningfulRequestDetailsValue(request?.details_json);
+        }
+
+        function rememberRequestDetails(request) {
+            const numericId = Number(request?.id);
+            if (!Number.isFinite(numericId)) {
+                return request;
+            }
+
+            if (hasRequestDetails(request)) {
+                requestDetailsCache.set(numericId, request);
+            } else {
+                requestDetailsCache.delete(numericId);
+            }
+            currentRequests = currentRequests.map((item) => (
+                Number(item?.id) === numericId
+                    ? { ...item, ...request }
+                    : item
+            ));
+            return request;
+        }
+
+        async function loadRequestDetails(id) {
+            const numericId = Number(id);
+            const cachedRequest = requestDetailsCache.get(numericId);
+            if (cachedRequest && hasRequestDetails(cachedRequest)) {
+                return cachedRequest;
+            }
+
+            const res = await fetch(`/api/reconciliation-requests/${numericId}?include_details=raw`, { cache: 'no-store' });
+            const data = await res.json();
+            if (!res.ok || !data.success) {
+                throw new Error(data.error || `HTTP ${res.status}`);
+            }
+
+            return rememberRequestDetails(data.data || {});
+        }
+
+        function getRequestDetails(req) {
+            const details = parseRequestDetailsValue(req?.details ?? req?.details_json);
+            return {
+                cash: toArray(details.cash_breakdown).length ? toArray(details.cash_breakdown) : toArray(details.cashItems),
+                bank: toArray(details.bank_receipts).length ? toArray(details.bank_receipts) : toArray(details.bankItems),
+                postpaid: toArray(details.postpaid_items).length ? toArray(details.postpaid_items) : toArray(details.postpaidItems),
+                customerReceipts: toArray(details.customer_receipts).length ? toArray(details.customer_receipts) : toArray(details.custReceiptItems),
+                returns: toArray(details.return_items).length ? toArray(details.return_items) : toArray(details.returnItems),
+                suppliers: toArray(details.supplier_items).length ? toArray(details.supplier_items) : toArray(details.supplierItems)
+            };
+        }
+
+        function calculateCashTotal(req) {
+            const details = getRequestDetails(req);
+            const fromRows = details.cash.reduce((sum, item) => {
+                const sub = toSafeNumber(item?.sub);
+                if (sub > 0) return sum + sub;
+                return sum + (toSafeNumber(item?.val) * toSafeNumber(item?.qty));
+            }, 0);
+            const fromField = toSafeNumber(req?.total_cash);
+            return fromField > 0 ? fromField : fromRows;
+        }
+
+        function buildDetailsSection(title, headers, rows, emptyText = 'لا توجد بيانات') {
+            if (!rows.length) {
+                return `
+                    <div class="mb-3 p-2 rounded border border-secondary border-opacity-25 bg-black bg-opacity-25">
+                        <div class="fw-bold mb-2">${title}</div>
+                        <div class="text-white-50 small">${emptyText}</div>
+                    </div>
+                `;
+            }
+
+            const head = headers.map(h => `<th class="text-secondary small">${h}</th>`).join('');
+            const body = rows.join('');
+
+            return `
+                <div class="mb-3 p-2 rounded border border-secondary border-opacity-25 bg-black bg-opacity-25">
+                    <div class="fw-bold mb-2">${title}</div>
+                    <div class="table-responsive">
+                        <table class="table table-dark table-sm table-striped align-middle mb-0">
+                            <thead><tr>${head}</tr></thead>
+                            <tbody>${body}</tbody>
+                        </table>
+                    </div>
+                </div>
+            `;
+        }
+
+        async function showRequestDetails(id) {
+            try {
+                let req = currentRequests.find(r => Number(r.id) === Number(id));
+                if (!req || !hasRequestDetails(req)) {
+                    req = await loadRequestDetails(id);
+                }
+                if (!req) return;
+
+                const d = getRequestDetails(req);
+
+                const totalCash = calculateCashTotal(req);
+                const totalBank = toSafeNumber(req?.total_bank) > 0
+                    ? toSafeNumber(req.total_bank)
+                    : d.bank.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
+                const totalPostpaid = d.postpaid.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
+                const totalCustomerReceipts = d.customerReceipts.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
+                const totalReturns = d.returns.reduce((sum, item) => sum + toSafeNumber(item?.amount), 0);
+                const systemSales = toSafeNumber(req?.system_sales);
+                const totalReceipts = totalCash + totalBank + totalPostpaid + totalReturns - totalCustomerReceipts;
+                const surplusDeficit = totalReceipts - systemSales;
+
+                const cashRows = d.cash.map(item => `
+                <tr>
+                    <td>${escapeHtml(item?.val ?? '-')}</td>
+                    <td>${escapeHtml(item?.qty ?? '-')}</td>
+                    <td class="font-monospace dir-ltr">${formatMoney(item?.sub ?? (toSafeNumber(item?.val) * toSafeNumber(item?.qty)))}</td>
+                </tr>
+            `);
+
+            const bankRows = d.bank.map(item => `
+                <tr>
+                    <td>${escapeHtml(item?.operation_type ?? item?.opText ?? '-')}</td>
+                    <td>${escapeHtml(item?.atm_name ?? item?.atm ?? '-')}</td>
+                    <td>${escapeHtml(item?.bank_name ?? item?.entry_bank_name ?? '-')}</td>
+                    <td class="font-monospace dir-ltr">${formatMoney(item?.amount)}</td>
+                </tr>
+            `);
+
+            const postpaidRows = d.postpaid.map(item => `
+                <tr>
+                    <td>${escapeHtml(item?.customer_name ?? '-')}</td>
+                    <td class="font-monospace dir-ltr">${formatMoney(item?.amount)}</td>
+                </tr>
+            `);
+
+            const customerRows = d.customerReceipts.map(item => `
+                <tr>
+                    <td>${escapeHtml(item?.customer_name ?? '-')}</td>
+                    <td>${escapeHtml(item?.payment_type ?? item?.type ?? '-')}</td>
+                    <td class="font-monospace dir-ltr">${formatMoney(item?.amount)}</td>
+                </tr>
+            `);
+
+            const returnRows = d.returns.map(item => `
+                <tr>
+                    <td>${escapeHtml(item?.invoice_number ?? item?.num ?? '-')}</td>
+                    <td class="font-monospace dir-ltr">${formatMoney(item?.amount)}</td>
+                    <td>${escapeHtml(item?.note ?? '-')}</td>
+                </tr>
+            `);
+
+            const supplierRows = d.suppliers.map(item => `
+                <tr>
+                    <td>${escapeHtml(item?.supplier_name ?? '-')}</td>
+                    <td>${escapeHtml(item?.invoice_number ?? '-')}</td>
+                    <td class="font-monospace dir-ltr">${formatMoney(item?.amount)}</td>
+                </tr>
+            `);
+
+                const notes = req.notes && String(req.notes).trim() !== '' ? escapeHtml(req.notes) : 'لا توجد ملاحظات';
+
+                Swal.fire({
+                    title: `تفاصيل التصفية #${req.id}`,
+                    width: 1100,
+                    background: '#1e293b',
+                    color: '#fff',
+                    confirmButtonText: 'إغلاق',
+                    html: `
+                    <div class="text-start">
+                        <div class="mb-3 small text-white-50">
+                            <div><strong>الكاشير:</strong> ${escapeHtml(req.cashier_name || 'غير معروف')}</div>
+                            <div><strong>التاريخ:</strong> ${escapeHtml(String(req.created_at || '-'))}</div>
+                            <div><strong>الملاحظات:</strong> ${notes}</div>
+                        </div>
+
+                        <div class="row g-2 mb-3">
+                            <div class="col-6 col-md-4"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">مبيعات النظام</div><div class="fw-bold text-info font-monospace dir-ltr">${formatMoney(systemSales)}</div></div></div>
+                            <div class="col-6 col-md-4"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">إجمالي النقد</div><div class="fw-bold text-success font-monospace dir-ltr">${formatMoney(totalCash)}</div></div></div>
+                            <div class="col-6 col-md-4"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">إجمالي البنك</div><div class="fw-bold text-success font-monospace dir-ltr">${formatMoney(totalBank)}</div></div></div>
+                            <div class="col-6 col-md-4"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">المبيعات الآجلة</div><div class="fw-bold text-warning font-monospace dir-ltr">${formatMoney(totalPostpaid)}</div></div></div>
+                            <div class="col-6 col-md-4"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">مقبوضات العملاء</div><div class="fw-bold text-danger font-monospace dir-ltr">${formatMoney(totalCustomerReceipts)}</div></div></div>
+                            <div class="col-6 col-md-4"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">المرتجعات</div><div class="fw-bold text-warning font-monospace dir-ltr">${formatMoney(totalReturns)}</div></div></div>
+                            <div class="col-6 col-md-6"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">إجمالي التحصيل</div><div class="fw-bold text-primary font-monospace dir-ltr">${formatMoney(totalReceipts)}</div></div></div>
+                            <div class="col-6 col-md-6"><div class="p-2 rounded bg-dark border border-secondary border-opacity-25 text-center"><div class="small text-secondary">العجز/الزيادة</div><div class="fw-bold ${surplusDeficit >= 0 ? 'text-success' : 'text-danger'} font-monospace dir-ltr">${formatMoney(surplusDeficit)}</div></div></div>
+                        </div>
+
+                        ${buildDetailsSection('تفصيل النقدية', ['الفئة', 'العدد', 'المجموع'], cashRows)}
+                        ${buildDetailsSection('تفصيل البنك/الشبكة', ['العملية', 'الجهاز', 'البنك', 'المبلغ'], bankRows)}
+                        ${buildDetailsSection('تفصيل المبيعات الآجلة', ['العميل', 'المبلغ'], postpaidRows)}
+                        ${buildDetailsSection('تفصيل مقبوضات العملاء', ['العميل', 'نوع الدفع', 'المبلغ'], customerRows)}
+                        ${buildDetailsSection('تفصيل المرتجعات', ['رقم الفاتورة', 'المبلغ', 'ملاحظات'], returnRows)}
+                        ${buildDetailsSection('تفصيل الموردين/المصروفات', ['الجهة', 'رقم الفاتورة', 'المبلغ'], supplierRows)}
+                    </div>
+                `
+                });
+            } catch (error) {
+                console.error('❌ [Frontend] Error loading request details:', error);
+                Swal.fire({
+                    title: 'خطأ',
+                    text: error.message || 'تعذر تحميل تفاصيل الطلب',
+                    icon: 'error',
+                    background: '#1e293b',
+                    color: '#fff'
+                });
+            }
+        }
+
+        async function loadRequests(silent = false) {
+            const tbody = document.getElementById('requestsTableBody');
+            const cardsContainer = document.getElementById('mobileCardsContainer');
+
+            if (!silent) {
+                const loadingHtml = '<tr><td colspan="5" class="text-center py-4 text-muted">جاري التحميل...</td></tr>';
+                tbody.innerHTML = loadingHtml;
+                cardsContainer.innerHTML = '<div class="text-center py-4 text-muted"><i class="fas fa-spinner fa-spin me-2"></i>جاري التحميل...</div>';
+            }
+
+            try {
+                const res = await fetch('/api/reconciliation-requests', { cache: 'no-store' });
+                const data = await res.json();
+
+                console.log('📋 [Frontend] API Response:', data);
+
+                // Safety check: Ensure data structure is correct
+                if (!data || typeof data !== 'object') {
+                    throw new Error('Invalid response format');
+                }
+
+                if (!data.success) {
+                    throw new Error(data.error || 'Failed to load requests');
+                }
+
+                // Safety: Ensure data.data exists and is an array
+                const requests = Array.isArray(data.data) ? data.data : [];
+                currentRequests = requests.map((requestItem) => {
+                    const cached = requestDetailsCache.get(Number(requestItem?.id));
+                    return cached ? { ...requestItem, ...cached } : requestItem;
+                });
+
+                if (currentRequests.length === 0) {
+                    const emptyHtml = '<tr><td colspan="5" class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</td></tr>';
+                    tbody.innerHTML = emptyHtml;
+                    cardsContainer.innerHTML = '<div class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</div>';
+                    return;
+                }
+
+                // Render Desktop Table
+                tbody.innerHTML = currentRequests.map(req => {
+                    const cashTotal = calculateCashTotal(req);
+
+                    // Date Formatting
+                    let dateStr = req.created_at;
+                    if (dateStr && !dateStr.endsWith('Z')) dateStr = dateStr.replace(' ', 'T') + 'Z';
+                    const date = new Date(dateStr);
+                    const formattedDate = date.toLocaleDateString('en-GB');
+                    const formattedTime = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: false });
+
+                    return `
+                            <tr style="cursor:pointer" onclick="showRequestDetails(${req.id})" title="عرض تفاصيل التصفية">
+                                <td class="font-monospace fw-bold text-white">#${req.id}</td>
+                                <td class="text-white">
+                                    <div class="d-flex flex-column align-items-start">
+                                        <span class="font-monospace fw-bold">${formattedDate}</span>
+                                        <span class="font-monospace text-info small">${formattedTime}</span>
+                                    </div>
+                                </td>
+                                <td class="fw-bold text-white">${req.cashier_name || 'غير معروف'}</td>
+                                <td class="text-center font-monospace text-success fw-bold dir-ltr fs-5">${cashTotal.toFixed(2)}</td>
+                                <td class="text-center">
+                                    <button class="btn btn-sm btn-outline-info px-3 rounded-pill me-2" onclick="event.stopPropagation(); showRequestDetails(${req.id})">
+                                        <i class="fas fa-eye me-1"></i> تفاصيل
+                                    </button>
+                                    <button class="btn btn-sm btn-danger px-3 rounded-pill" onclick="event.stopPropagation(); deleteRequest(${req.id})">
+                                        <i class="fas fa-trash-alt me-1"></i> حذف
+                                    </button>
+                                </td>
+                            </tr>
+                        `;
+                }).join('');
+
+                // Render Mobile Cards
+                cardsContainer.innerHTML = currentRequests.map(req => {
+                    const cashTotal = calculateCashTotal(req);
+
+                    let dateStr = req.created_at;
+                    if (dateStr && !dateStr.endsWith('Z')) dateStr = dateStr.replace(' ', 'T') + 'Z';
+                    const date = new Date(dateStr);
+                    const formattedDate = date.toLocaleDateString('en-GB');
+                    const formattedTime = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', hour12: true }); // AM/PM mostly preferred on mobile
+
+                    return `
+                        <div class="card glass-card mb-3 border border-secondary border-opacity-25 shadow-lg overflow-hidden position-relative" style="cursor:pointer" onclick="showRequestDetails(${req.id})">
+                            <!-- Card Decoration Line -->
+                            <div class="position-absolute top-0 end-0 bottom-0 bg-success" style="width: 4px;"></div>
+                            
+                            <div class="card-body p-3">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <div>
+                                        <h5 class="fw-bold text-white mb-1">
+                                            <i class="fas fa-user-circle text-secondary me-1"></i> ${req.cashier_name || 'غير معروف'}
+                                        </h5>
+                                        <div class="text-white-50 small font-monospace">
+                                            <i class="far fa-clock me-1"></i> ${formattedDate} | ${formattedTime}
+                                        </div>
+                                    </div>
+                                    <span class="badge bg-dark border border-secondary text-light font-monospace">#${req.id}</span>
+                                </div>
+                                
+                                <hr class="border-secondary opacity-25 my-2">
+                                
+                                <div class="d-flex justify-content-between align-items-center mt-2">
+                                    <div class="d-flex flex-column">
+                                        <span class="text-secondary small mb-1">إجمالي النقد</span>
+                                        <span class="fs-3 fw-bold text-success font-monospace dir-ltr">${cashTotal.toFixed(2)} <small class="fs-6 text-white-50">SAR</small></span>
+                                    </div>
+                                    
+                                    <button class="btn btn-outline-info btn-sm rounded-3 px-3 py-2 me-2" onclick="event.stopPropagation(); showRequestDetails(${req.id})">
+                                        <i class="fas fa-eye"></i> تفاصيل
+                                    </button>
+                                    <button class="btn btn-outline-danger btn-sm rounded-3 px-3 py-2" onclick="event.stopPropagation(); deleteRequest(${req.id})">
+                                        <i class="fas fa-trash-alt"></i> حذف
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        `;
+                }).join('');
+
+            } catch (error) {
+                console.error('❌ [Frontend] Error loading requests:', error);
+                const failHtml = `<tr><td colspan="5" class="text-center text-danger">خطأ: ${error.message || 'فشل الاتصال بالخادم'}</td></tr>`;
+                tbody.innerHTML = failHtml;
+                cardsContainer.innerHTML = `<div class="alert alert-danger">خطأ: ${error.message || 'فشل الاتصال بالخادم'}</div>`;
+            }
+        }
+
+        async function deleteRequest(id) {
+            const result = await Swal.fire({
+                title: 'هل أنت متأكد؟',
+                text: "سيتم حذف هذا الطلب نهائياً!",
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                cancelButtonColor: '#3085d6',
+                confirmButtonText: 'نعم، احذف',
+                cancelButtonText: 'إلغاء',
+                background: '#1e293b',
+                color: '#fff'
+            });
+
+            if (result.isConfirmed) {
+                try {
+                    const res = await fetch(`/api/reconciliation-requests/${id}`, { method: 'DELETE' });
+                    const data = await res.json();
+
+                    if (data.success) {
+                        requestDetailsCache.delete(Number(id));
+                        await Swal.fire({
+                            title: 'تم الحذف!',
+                            text: 'تم حذف الطلب بنجاح.',
+                            icon: 'success',
+                            background: '#1e293b',
+                            color: '#fff',
+                            timer: 1500,
+                            showConfirmButton: false
+                        });
+                        loadRequests();
+                    } else {
+                        throw new Error(data.error);
+                    }
+                } catch (error) {
+                    Swal.fire({
+                        title: 'خطأ!',
+                        text: error.message,
+                        icon: 'error',
+                        background: '#1e293b',
+                        color: '#fff'
+                    });
+                }
+            }
+        }
+
+        // Load on start
+        loadRequests();
+
+        // Auto-refresh every 5 seconds to show real-time updates
+        setInterval(() => {
+            // Only refresh if no modal/alert is open to avoid disrupting user
+            if (!document.querySelector('.swal2-container')) {
+                loadRequests(true); // Pass true to indicate silent refresh
+            }
+        }, 5000);
+    </script>
+</body>
+
+</html>
