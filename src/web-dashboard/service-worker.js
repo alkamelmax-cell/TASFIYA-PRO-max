@@ -1,5 +1,5 @@
 // Service Worker for Tasfiya Pro PWA
-// Version: 2.9 - Refined transparent brand mark and mobile app icon
+// Version: 3.0 - Dedicated standard and maskable mobile app icons
 try {
     // Import local SDK instead of CDN
     importScripts('/OneSignalSDKWorker.js');
@@ -7,14 +7,17 @@ try {
     console.warn('⚠️ [SW] Local OneSignal SDK failed to load.', e);
 }
 
-const CACHE_NAME = 'tasfiya-pro-v2.9-brandmark';
+const CACHE_NAME = 'tasfiya-pro-v3.0-appicon';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
     '/assets/logo-tasfia-pro.png?v=brandmark-20260829-v2',
-    '/assets/favicon.png?v=brandmark-20260829-v2',
-    '/assets/icon-192.png?v=brandmark-20260829-v2',
-    '/assets/icon-512.png?v=brandmark-20260829-v2'
+    '/assets/favicon.png?v=appicon-20260829-v3',
+    '/assets/apple-touch-icon.png?v=appicon-20260829-v3',
+    '/assets/icon-192.png?v=appicon-20260829-v3',
+    '/assets/icon-512.png?v=appicon-20260829-v3',
+    '/assets/icon-192-maskable.png?v=appicon-20260829-v3',
+    '/assets/icon-512-maskable.png?v=appicon-20260829-v3'
 ];
 
 function isHtmlNavigationRequest(request) {
@@ -154,7 +157,7 @@ async function fetchApiWithFallback(eventRequest) {
 
 // Install event - cache only static assets
 self.addEventListener('install', (event) => {
-    console.log('🔧 [SW] Installing Service Worker v2.9');
+    console.log('🔧 [SW] Installing Service Worker v3.0');
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => {
@@ -170,7 +173,7 @@ self.addEventListener('install', (event) => {
 
 // Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
-    console.log('🔄 [SW] Activating Service Worker v2.9');
+    console.log('🔄 [SW] Activating Service Worker v3.0');
     event.waitUntil(
         caches.keys().then((cacheNames) => {
             return Promise.all(
