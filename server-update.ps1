@@ -41,6 +41,42 @@ function Get-ListeningProcessIds {
     return @($ids.GetEnumerator() | ForEach-Object { [int]$_ })
 }
 
+function Wait-ForPortsToClose {
+    param(
+        [int[]]$Ports,
+        [int]$TimeoutSeconds = 20
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $remaining = @(Get-ListeningProcessIds -Ports $Ports)
+        if ($remaining.Count -eq 0) {
+            return $true
+        }
+        Start-Sleep -Milliseconds 500
+    } while ((Get-Date) -lt $deadline)
+
+    return $false
+}
+
+function Wait-ForWebServer {
+    param(
+        [int]$Port = 4000,
+        [int]$TimeoutSeconds = 75
+    )
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    do {
+        $listeningPids = @(Get-ListeningProcessIds -Ports @($Port))
+        if ($listeningPids.Count -gt 0) {
+            return $listeningPids
+        }
+        Start-Sleep -Seconds 2
+    } while ((Get-Date) -lt $deadline)
+
+    return @()
+}
+
 function Stop-ManagedServerProcesses {
     param(
         [string]$TaskName,
@@ -104,7 +140,10 @@ function Stop-ManagedServerProcesses {
         }
     }
 
-    Start-Sleep -Seconds 1
+    if (-not (Wait-ForPortsToClose -Ports (4000..4010))) {
+        Write-Host 'Warning: one or more previous web-server ports are still closing.' -ForegroundColor DarkYellow
+    }
+
     return $stoppedSomething
 }
 
@@ -159,12 +198,15 @@ try {
         Write-Host "Server updated. Backup saved to: $backupPath" -ForegroundColor Green
     }
 
+    Write-Host 'Starting the updated web server and waiting for it to become ready...' -ForegroundColor Yellow
     Start-ScheduledTask -TaskName $TaskName
-    Start-Sleep -Seconds 3
 
-    $listeningPids = Get-ListeningProcessIds -Ports @(4000)
+    # Database migrations can take noticeably longer than a few seconds on a
+    # fresh server or a remote PostgreSQL connection.  Do not misreport a
+    # completed update as failed merely because the app is still booting.
+    $listeningPids = Wait-ForWebServer -Port 4000 -TimeoutSeconds 75
     if ($listeningPids.Count -eq 0) {
-        throw 'The web server did not start on port 4000.'
+        throw 'The web server did not become ready on port 4000 within 75 seconds.'
     }
 
     Write-Host 'The web server was started successfully.' -ForegroundColor Green
