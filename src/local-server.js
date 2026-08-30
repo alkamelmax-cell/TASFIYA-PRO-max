@@ -4474,7 +4474,29 @@ class LocalWebServer {
     }
 
     async handleNotificationTest(req, res, authenticatedUser) {
-        const userId = Number(authenticatedUser && authenticatedUser.id);
+        // Prefer the identity attached by the authorization layer. A process
+        // restart can leave an older session shape in circulation, so recover
+        // the numeric admin id from its username rather than trusting any id
+        // supplied by the browser.
+        const sessionUser = authenticatedUser || req.authUser || this.getAuthenticatedUser(req) || {};
+        let userId = Number(sessionUser.id);
+        if ((!Number.isInteger(userId) || userId <= 0) && sessionUser.username) {
+            try {
+                const username = String(sessionUser.username).trim();
+                const row = this.dbManager.pool
+                    ? (await this.dbManager.pool.query(
+                        'SELECT id FROM admins WHERE username = $1 AND active = 1 LIMIT 1',
+                        [username]
+                    )).rows[0]
+                    : this.dbManager.db.prepare(
+                        'SELECT id FROM admins WHERE username = ? AND active = 1 LIMIT 1'
+                    ).get(username);
+                userId = Number(row && row.id);
+            } catch (error) {
+                console.warn(`⚠️ [PUSH] Unable to resolve notification test admin: ${error && error.message ? error.message : error}`);
+            }
+        }
+
         if (!Number.isInteger(userId) || userId <= 0) {
             this.sendJson(res, {
                 success: false,
