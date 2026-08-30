@@ -785,7 +785,7 @@ class LocalWebServer {
                     return;
                 }
                 else if (pathname === '/api/notifications/test' && req.method === 'POST') {
-                    await this.handleNotificationTest(req, res);
+                    await this.handleNotificationTest(req, res, authContext.user);
                     return;
                 }
                 else {
@@ -4473,38 +4473,26 @@ class LocalWebServer {
         });
     }
 
-    async handleNotificationTest(req, res) {
-        let body = {};
-        try {
-            body = await this.readJsonBody(req, {
-                maxBytes: 8 * 1024,
-                routeLabel: 'notification test request'
-            });
-        } catch (error) {
+    async handleNotificationTest(req, res, authenticatedUser) {
+        const userId = Number(authenticatedUser && authenticatedUser.id);
+        if (!Number.isInteger(userId) || userId <= 0) {
             this.sendJson(res, {
                 success: false,
-                code: 'INVALID_NOTIFICATION_TEST_REQUEST',
-                error: error && error.message ? error.message : 'تعذر قراءة بيانات اختبار الإشعار.'
-            }, { statusCode: 400 });
+                code: 'NOTIFICATION_TEST_IDENTITY_MISSING',
+                error: 'تعذر تحديد هوية المدير لاختبار الإشعارات. سجّل الدخول مرة أخرى ثم أعد المحاولة.'
+            }, { statusCode: 401 });
             return;
         }
 
-        const subscriptionId = String(body.subscriptionId || '').trim();
-        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subscriptionId)) {
-            this.sendJson(res, {
-                success: false,
-                code: 'BROWSER_SUBSCRIPTION_MISSING',
-                error: 'لم يرسل المتصفح معرّف اشتراك OneSignal صالحًا. أعد فتح الموقع وانتظر ثوانٍ ثم حاول مرة أخرى.'
-            }, { statusCode: 409 });
-            return;
-        }
-
-        console.log('🔔 [PUSH] Admin requested a notification delivery test');
+        // Test the same stable OneSignal identity used by production alerts.
+        // Browser subscription/player IDs are short-lived and can belong to an
+        // older OneSignal app after a domain migration; external IDs do not.
+        console.log(`🔔 [PUSH] Admin ${userId} requested a notification delivery test`);
         const result = await this.sendOneSignalNotification(
             '🔔 اختبار إشعارات تصفية برو',
             'تم إرسال هذا الاختبار من لوحة الإدارة للتحقق من وصول الإشعارات.',
             { type: 'notification_test', source: 'admin_dashboard' },
-            { subscriptionIds: [subscriptionId] }
+            { externalIds: [`tasfiya-admin-${userId}`] }
         );
 
         this.sendJson(res, result, {
