@@ -746,11 +746,11 @@
 
                 const subscriptionId = window.TasfiyaOneSignal
                     && typeof window.TasfiyaOneSignal.getBrowserPushSubscriptionId === 'function'
-                    ? await window.TasfiyaOneSignal.getBrowserPushSubscriptionId()
+                    ? await window.TasfiyaOneSignal.getBrowserPushSubscriptionId({ requestOptIn: true })
                     : '';
 
                 if (!subscriptionId) {
-                    alert('⚠️ لم يكتمل تسجيل هذا الجهاز في OneSignal بعد. أعد فتح الموقع وانتظر ثوانٍ ثم أعد الاختبار.');
+                    alert('⚠️ لم يتم السماح بالإشعارات أو لم يكتمل الاشتراك. اختر "السماح" من طلب المتصفح ثم أعد الاختبار.');
                     return;
                 }
 

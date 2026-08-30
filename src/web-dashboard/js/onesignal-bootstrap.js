@@ -214,7 +214,6 @@
     function queueOneSignalInit(user, options) {
         const config = options || {};
         const role = config.role || 'admin';
-        const requestPermission = config.requestPermission !== false;
         const userId = user && user.id ? String(user.id) : 'unknown';
         // Keep a stable identity for every administrator across browsers/devices.
         // OneSignal v16 recommends login() for identified users; tags alone do
@@ -261,10 +260,6 @@
                     product: 'tasfiya-pro'
                 });
 
-                if (requestPermission && OneSignal.Notifications.permission === 'default') {
-                    await OneSignal.Notifications.requestPermission();
-                }
-
                 const optedIn = Boolean(
                     OneSignal.User
                     && OneSignal.User.PushSubscription
@@ -282,17 +277,31 @@
         });
     }
 
-    async function getBrowserPushSubscriptionId() {
+    async function getBrowserPushSubscriptionId(options) {
+        const requestOptIn = Boolean(options && options.requestOptIn);
         const readSubscriptionId = () => new Promise((resolve) => {
             windowObj.OneSignalDeferred = windowObj.OneSignalDeferred || [];
-            windowObj.OneSignalDeferred.push(function readOneSignalSubscription(OneSignal) {
+            windowObj.OneSignalDeferred.push(async function readOneSignalSubscription(OneSignal) {
                 try {
-                    const subscriptionId = OneSignal
+                    const pushSubscription = OneSignal
                         && OneSignal.User
                         && OneSignal.User.PushSubscription
-                        ? String(OneSignal.User.PushSubscription.id || '').trim()
-                        : '';
-                    resolve(subscriptionId);
+                        ? OneSignal.User.PushSubscription
+                        : null;
+
+                    // OneSignal v16 exposes permission as a boolean, not the
+                    // legacy "default" string. Calling optIn() from the test
+                    // button's user gesture creates/restores a real browser
+                    // subscription and opens the native Allow prompt if needed.
+                    if (requestOptIn && pushSubscription && !pushSubscription.optedIn) {
+                        await pushSubscription.optIn();
+                    }
+
+                    resolve(
+                        pushSubscription && pushSubscription.optedIn
+                            ? String(pushSubscription.id || '').trim()
+                            : ''
+                    );
                 } catch (error) {
                     console.warn('[Tasfiya OneSignal] Unable to read subscription ID:', error);
                     resolve('');
@@ -301,8 +310,8 @@
         });
 
         // The dashboard can finish loading before OneSignal completes a new
-        // registration. Wait briefly so a delivery test always uses the real
-        // subscription ID, not cached browser state.
+        // registration. Wait briefly so a delivery test uses a real opted-in
+        // subscription ID, never a stale ID left after a domain migration.
         for (let attempt = 0; attempt < 10; attempt += 1) {
             const subscriptionId = await readSubscriptionId();
             if (subscriptionId) return subscriptionId;
@@ -326,8 +335,8 @@
         initBrowserUser(user, options) {
             queueOneSignalInit(user, options);
         },
-        getBrowserPushSubscriptionId() {
-            return getBrowserPushSubscriptionId();
+        getBrowserPushSubscriptionId(options) {
+            return getBrowserPushSubscriptionId(options);
         }
     };
 })(window);
