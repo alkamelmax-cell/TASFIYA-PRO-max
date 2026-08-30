@@ -18,6 +18,8 @@
 
     let serviceWorkerRegistrationPromise = null;
     let oneSignalAppIdPromise = null;
+    let oneSignalInitializationPromise = null;
+    let oneSignalInstance = null;
 
     async function getOneSignalAppId() {
         if (!oneSignalAppIdPromise) {
@@ -220,101 +222,102 @@
         // not reliably unify subscriptions after a browser or domain migration.
         const externalId = user && user.id ? `tasfiya-admin-${userId}` : '';
 
-        windowObj.OneSignalDeferred = windowObj.OneSignalDeferred || [];
-        windowObj.OneSignalDeferred.push(async function initializeOneSignal(OneSignal) {
-            // Both the dashboard boot sequence and the manual test can request
-            // setup at nearly the same time. Reserve initialization before any
-            // async work so OneSignal.init() is never called twice.
-            if (windowObj.__tasfiyaOneSignalInitialized || windowObj.__tasfiyaOneSignalInitializing) {
-                return;
-            }
+        // A browser must never read or opt into PushSubscription while the
+        // OneSignal SDK/service worker is still initializing. Keep one shared
+        // readiness promise so startup and the test button always use the same
+        // fully initialized subscription.
+        if (oneSignalInitializationPromise) {
+            return oneSignalInitializationPromise;
+        }
 
-            windowObj.__tasfiyaOneSignalInitializing = true;
-
-            try {
-                const registration = await registerServiceWorker();
-                if (!registration) {
-                    console.warn('[Tasfiya OneSignal] Skipping initialization because Service Worker is unavailable.');
-                    return;
-                }
-
-                const appId = await getOneSignalAppId();
-                await OneSignal.init({
-                    appId,
-                    allowLocalhostAsSecureOrigin: true,
-                    serviceWorkerPath: PUSH_WORKER_PATH,
-                    serviceWorkerParam: {
-                        scope: PUSH_WORKER_SCOPE
-                    }
-                });
-
-                windowObj.__tasfiyaOneSignalInitialized = true;
-
-                if (externalId) {
-                    await OneSignal.login(externalId);
-                }
-
-                await OneSignal.User.addTags({
-                    role,
-                    userId,
-                    product: 'tasfiya-pro'
-                });
-
-                const optedIn = Boolean(
-                    OneSignal.User
-                    && OneSignal.User.PushSubscription
-                    && OneSignal.User.PushSubscription.optedIn
-                );
-
-                console.info(
-                    `[Tasfiya OneSignal] Ready: permission=${OneSignal.Notifications.permission}; subscribed=${optedIn}`
-                );
-            } catch (error) {
-                console.error('[Tasfiya OneSignal] Initialization failed:', error);
-            } finally {
-                windowObj.__tasfiyaOneSignalInitializing = false;
-            }
-        });
-    }
-
-    async function getBrowserPushSubscriptionId(options) {
-        const requestOptIn = Boolean(options && options.requestOptIn);
-        const readSubscriptionId = () => new Promise((resolve) => {
+        oneSignalInitializationPromise = new Promise((resolve) => {
             windowObj.OneSignalDeferred = windowObj.OneSignalDeferred || [];
-            windowObj.OneSignalDeferred.push(async function readOneSignalSubscription(OneSignal) {
-                try {
-                    const pushSubscription = OneSignal
-                        && OneSignal.User
-                        && OneSignal.User.PushSubscription
-                        ? OneSignal.User.PushSubscription
-                        : null;
+            windowObj.OneSignalDeferred.push(async function initializeOneSignal(OneSignal) {
+                windowObj.__tasfiyaOneSignalInitializing = true;
 
-                    // OneSignal v16 exposes permission as a boolean, not the
-                    // legacy "default" string. Calling optIn() from the test
-                    // button's user gesture creates/restores a real browser
-                    // subscription and opens the native Allow prompt if needed.
-                    if (requestOptIn && pushSubscription && !pushSubscription.optedIn) {
-                        await pushSubscription.optIn();
+                try {
+                    const registration = await registerServiceWorker();
+                    if (!registration) {
+                        console.warn('[Tasfiya OneSignal] Skipping initialization because Service Worker is unavailable.');
+                        resolve(null);
+                        return;
                     }
 
-                    resolve(
-                        pushSubscription && pushSubscription.optedIn
-                            ? String(pushSubscription.id || '').trim()
-                            : ''
+                    const appId = await getOneSignalAppId();
+                    await OneSignal.init({
+                        appId,
+                        allowLocalhostAsSecureOrigin: true,
+                        serviceWorkerPath: PUSH_WORKER_PATH,
+                        serviceWorkerParam: {
+                            scope: PUSH_WORKER_SCOPE
+                        }
+                    });
+
+                    windowObj.__tasfiyaOneSignalInitialized = true;
+                    oneSignalInstance = OneSignal;
+
+                    if (externalId) {
+                        await OneSignal.login(externalId);
+                    }
+
+                    await OneSignal.User.addTags({
+                        role,
+                        userId,
+                        product: 'tasfiya-pro'
+                    });
+
+                    const optedIn = Boolean(
+                        OneSignal.User
+                        && OneSignal.User.PushSubscription
+                        && OneSignal.User.PushSubscription.optedIn
                     );
+
+                    console.info(
+                        `[Tasfiya OneSignal] Ready: permission=${OneSignal.Notifications.permission}; subscribed=${optedIn}`
+                    );
+                    resolve(OneSignal);
                 } catch (error) {
-                    console.warn('[Tasfiya OneSignal] Unable to read subscription ID:', error);
-                    resolve('');
+                    oneSignalInitializationPromise = null;
+                    console.error('[Tasfiya OneSignal] Initialization failed:', error);
+                    resolve(null);
+                } finally {
+                    windowObj.__tasfiyaOneSignalInitializing = false;
                 }
             });
         });
 
-        // The dashboard can finish loading before OneSignal completes a new
-        // registration. Wait briefly so a delivery test uses a real opted-in
-        // subscription ID, never a stale ID left after a domain migration.
+        return oneSignalInitializationPromise;
+    }
+
+    async function getBrowserPushSubscriptionId(options) {
+        const requestOptIn = Boolean(options && options.requestOptIn);
+        const OneSignal = oneSignalInstance || await oneSignalInitializationPromise;
+        if (!OneSignal || !OneSignal.User || !OneSignal.User.PushSubscription) {
+            return '';
+        }
+
+        const pushSubscription = OneSignal.User.PushSubscription;
+        try {
+            // OneSignal v16 exposes permission as a boolean, not the legacy
+            // "default" string. Calling optIn() from the test button's user
+            // gesture creates/restores a real browser subscription and opens
+            // the native Allow prompt if needed.
+            if (requestOptIn && !pushSubscription.optedIn) {
+                await pushSubscription.optIn();
+            }
+        } catch (error) {
+            console.warn('[Tasfiya OneSignal] Unable to opt in this browser:', error);
+            return '';
+        }
+
+        // A successful opt-in can take a short moment before OneSignal assigns
+        // its server-side Subscription ID. Never send the test using a stale
+        // or pre-initialization identifier.
         for (let attempt = 0; attempt < 10; attempt += 1) {
-            const subscriptionId = await readSubscriptionId();
-            if (subscriptionId) return subscriptionId;
+            if (pushSubscription.optedIn) {
+                const subscriptionId = String(pushSubscription.id || '').trim();
+                if (subscriptionId) return subscriptionId;
+            }
             await new Promise((resolve) => windowObj.setTimeout(resolve, 300));
         }
 
@@ -333,7 +336,7 @@
             return queueNativeBootstrap(user, options);
         },
         initBrowserUser(user, options) {
-            queueOneSignalInit(user, options);
+            return queueOneSignalInit(user, options);
         },
         getBrowserPushSubscriptionId(options) {
             return getBrowserPushSubscriptionId(options);
