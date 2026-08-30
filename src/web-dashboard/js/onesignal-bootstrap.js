@@ -282,6 +282,36 @@
         });
     }
 
+    async function getBrowserPushSubscriptionId() {
+        const readSubscriptionId = () => new Promise((resolve) => {
+            windowObj.OneSignalDeferred = windowObj.OneSignalDeferred || [];
+            windowObj.OneSignalDeferred.push(function readOneSignalSubscription(OneSignal) {
+                try {
+                    const subscriptionId = OneSignal
+                        && OneSignal.User
+                        && OneSignal.User.PushSubscription
+                        ? String(OneSignal.User.PushSubscription.id || '').trim()
+                        : '';
+                    resolve(subscriptionId);
+                } catch (error) {
+                    console.warn('[Tasfiya OneSignal] Unable to read subscription ID:', error);
+                    resolve('');
+                }
+            });
+        });
+
+        // The dashboard can finish loading before OneSignal completes a new
+        // registration. Wait briefly so a delivery test always uses the real
+        // subscription ID, not cached browser state.
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+            const subscriptionId = await readSubscriptionId();
+            if (subscriptionId) return subscriptionId;
+            await new Promise((resolve) => windowObj.setTimeout(resolve, 300));
+        }
+
+        return '';
+    }
+
     windowObj.TasfiyaPwa = {
         registerServiceWorker
     };
@@ -295,6 +325,9 @@
         },
         initBrowserUser(user, options) {
             queueOneSignalInit(user, options);
+        },
+        getBrowserPushSubscriptionId() {
+            return getBrowserPushSubscriptionId();
         }
     };
 })(window);

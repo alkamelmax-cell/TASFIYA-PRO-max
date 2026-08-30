@@ -785,7 +785,7 @@ class LocalWebServer {
                     return;
                 }
                 else if (pathname === '/api/notifications/test' && req.method === 'POST') {
-                    await this.handleNotificationTest(res);
+                    await this.handleNotificationTest(req, res);
                     return;
                 }
                 else {
@@ -4412,7 +4412,6 @@ class LocalWebServer {
             process.env.ONESIGNAL_APP_ID || '1b7778f5-0f25-4df8-a281-611b682a964c'
         ).trim();
         const appApiKey = String(process.env.ONESIGNAL_REST_API_KEY || '').trim();
-        const segment = String(process.env.ONESIGNAL_SEGMENT || 'Subscribed Users').trim();
         const publicUrl = String(process.env.TASFIYA_PUBLIC_URL || '').trim().replace(/\/+$/, '');
         const hasValidAppId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(appId);
         const hasValidApiKey = appApiKey.length > 20 && !appApiKey.includes('YOUR_REST_API_KEY_HERE');
@@ -4420,7 +4419,6 @@ class LocalWebServer {
         return {
             appId,
             appApiKey,
-            segment: segment || 'Subscribed Users',
             publicUrl: /^https:\/\//i.test(publicUrl) ? publicUrl : '',
             configured: hasValidAppId && hasValidApiKey
         };
@@ -4431,9 +4429,19 @@ class LocalWebServer {
             return fallbackMessage;
         }
 
+        const toMessage = (value) => {
+            if (typeof value === 'string' && value.trim()) return value.trim();
+            if (value && typeof value === 'object') {
+                return Object.entries(value)
+                    .map(([key, item]) => `${key}: ${typeof item === 'string' ? item : JSON.stringify(item)}`)
+                    .join(' | ');
+            }
+            return '';
+        };
         const candidates = [result.errors, result.error, result.message]
             .flatMap((value) => Array.isArray(value) ? value : [value])
-            .filter((value) => typeof value === 'string' && value.trim());
+            .map(toMessage)
+            .filter(Boolean);
 
         return candidates.length > 0
             ? candidates.join(' | ').slice(0, 500)
@@ -4447,7 +4455,7 @@ class LocalWebServer {
             configured: config.configured,
             provider: 'OneSignal',
             apiEndpoint: 'https://api.onesignal.com/notifications?c=push',
-            targetSegment: config.segment,
+            targeting: 'external_id for system notifications; subscription_id for delivery tests',
             hasAppId: Boolean(config.appId),
             hasApiKey: Boolean(config.appApiKey),
             hasPublicUrl: Boolean(config.publicUrl),
@@ -4465,12 +4473,38 @@ class LocalWebServer {
         });
     }
 
-    async handleNotificationTest(res) {
+    async handleNotificationTest(req, res) {
+        let body = {};
+        try {
+            body = await this.readJsonBody(req, {
+                maxBytes: 8 * 1024,
+                routeLabel: 'notification test request'
+            });
+        } catch (error) {
+            this.sendJson(res, {
+                success: false,
+                code: 'INVALID_NOTIFICATION_TEST_REQUEST',
+                error: error && error.message ? error.message : 'تعذر قراءة بيانات اختبار الإشعار.'
+            }, { statusCode: 400 });
+            return;
+        }
+
+        const subscriptionId = String(body.subscriptionId || '').trim();
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subscriptionId)) {
+            this.sendJson(res, {
+                success: false,
+                code: 'BROWSER_SUBSCRIPTION_MISSING',
+                error: 'لم يرسل المتصفح معرّف اشتراك OneSignal صالحًا. أعد فتح الموقع وانتظر ثوانٍ ثم حاول مرة أخرى.'
+            }, { statusCode: 409 });
+            return;
+        }
+
         console.log('🔔 [PUSH] Admin requested a notification delivery test');
         const result = await this.sendOneSignalNotification(
             '🔔 اختبار إشعارات تصفية برو',
             'تم إرسال هذا الاختبار من لوحة الإدارة للتحقق من وصول الإشعارات.',
-            { type: 'notification_test', source: 'admin_dashboard' }
+            { type: 'notification_test', source: 'admin_dashboard' },
+            { subscriptionIds: [subscriptionId] }
         );
 
         this.sendJson(res, result, {
@@ -4478,12 +4512,51 @@ class LocalWebServer {
         });
     }
 
-    async sendOneSignalNotification(title, message, data = {}) {
+    async getNotificationTargetExternalIds() {
+        try {
+            const rows = this.dbManager.pool
+                ? (await this.dbManager.pool.query('SELECT id FROM admins WHERE active = 1 ORDER BY id')).rows
+                : this.dbManager.db.prepare('SELECT id FROM admins WHERE active = 1 ORDER BY id').all();
+
+            return [...new Set(
+                rows
+                    .map((row) => Number(row && row.id))
+                    .filter((id) => Number.isInteger(id) && id > 0)
+                    .map((id) => `tasfiya-admin-${id}`)
+            )];
+        } catch (error) {
+            console.error(`❌ [PUSH] Unable to resolve notification recipients: ${error && error.message ? error.message : error}`);
+            return [];
+        }
+    }
+
+    normalizeOneSignalIds(values) {
+        const source = Array.isArray(values) ? values : [];
+        return [...new Set(source
+            .map((value) => String(value || '').trim())
+            .filter(Boolean)
+        )];
+    }
+
+    async sendOneSignalNotification(title, message, data = {}, options = {}) {
         const config = this.getOneSignalConfig();
         if (!config.configured) {
             const error = 'OneSignal غير مضبوط: أضف ONESIGNAL_REST_API_KEY الصحيح وأعد تشغيل الخادم.';
             console.error(`❌ [PUSH] ${error}`);
             return { success: false, code: 'ONESIGNAL_NOT_CONFIGURED', error };
+        }
+
+        const subscriptionIds = this.normalizeOneSignalIds(options.subscriptionIds)
+            .filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
+        const explicitExternalIds = this.normalizeOneSignalIds(options.externalIds);
+        const externalIds = subscriptionIds.length > 0
+            ? []
+            : (explicitExternalIds.length > 0 ? explicitExternalIds : await this.getNotificationTargetExternalIds());
+
+        if (subscriptionIds.length === 0 && externalIds.length === 0) {
+            const error = 'لا يوجد إداريون نشطون أو اشتراكات صالحة لتلقي الإشعار.';
+            console.warn(`⚠️ [PUSH] ${error}`);
+            return { success: false, code: 'ONESIGNAL_NO_TARGETS', error };
         }
 
         const notificationPayload = {
@@ -4494,9 +4567,18 @@ class LocalWebServer {
             data,
             priority: 10,
             android_visibility: 1,
-            lockscreen_visibility: 1,
-            included_segments: [config.segment]
+            lockscreen_visibility: 1
         };
+
+        if (subscriptionIds.length > 0) {
+            // Delivery tests target the exact subscription shown in OneSignal,
+            // eliminating ambiguous segment membership from the diagnosis.
+            notificationPayload.include_subscription_ids = subscriptionIds;
+        } else {
+            // Production notifications target authenticated Tasfiya admins.
+            // OneSignal.login() creates these stable external IDs per admin.
+            notificationPayload.include_aliases = { external_id: externalIds };
+        }
 
         if (config.publicUrl) {
             notificationPayload.web_url = config.publicUrl;
@@ -4545,11 +4627,12 @@ class LocalWebServer {
             }
 
             const recipients = Number(result.recipients || 0);
-            console.log(`✅ [PUSH] Sent message=${result.id} recipients=${recipients}`);
+            console.log(`✅ [PUSH] Sent message=${result.id} recipients=${recipients}; target=${subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'}`);
             return {
                 success: true,
                 messageId: result.id,
-                recipients
+                recipients,
+                target: subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'
             };
         } catch (error) {
             const messageText = error && error.message ? error.message : 'تعذر الاتصال بـ OneSignal.';

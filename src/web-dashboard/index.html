@@ -744,17 +744,29 @@
                     window.TasfiyaOneSignal.initBrowserUser(user, { role: 'أدمن', requestPermission: true });
                 }
 
+                const subscriptionId = window.TasfiyaOneSignal
+                    && typeof window.TasfiyaOneSignal.getBrowserPushSubscriptionId === 'function'
+                    ? await window.TasfiyaOneSignal.getBrowserPushSubscriptionId()
+                    : '';
+
+                if (!subscriptionId) {
+                    alert('⚠️ لم يكتمل تسجيل هذا الجهاز في OneSignal بعد. أعد فتح الموقع وانتظر ثوانٍ ثم أعد الاختبار.');
+                    return;
+                }
+
                 const response = await fetch('/api/notifications/test', {
                     method: 'POST',
                     credentials: 'same-origin',
-                    cache: 'no-store'
+                    cache: 'no-store',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ subscriptionId })
                 });
                 const result = await response.json();
 
                 if (result.success) {
                     const recipients = Number(result.recipients || 0);
                     if (recipients > 0) {
-                        alert(`✅ تم قبول الإشعار من OneSignal وإرساله إلى ${recipients} جهاز/أجهزة مشتركة.`);
+                        alert(`✅ تم قبول الإشعار من OneSignal وإرساله إلى هذا الجهاز (${recipients} مستلم).`);
                     } else {
                         alert('⚠️ قبل OneSignal الطلب، لكن لم يُبلغ عن أجهزة مستلمة. تأكد من السماح بالإشعارات واشتراك الجهاز على الرابط الجديد.');
                     }
