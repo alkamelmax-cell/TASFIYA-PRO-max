@@ -10,6 +10,104 @@ $git = Get-Command git -ErrorAction Stop
 $npm = Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
 $wasRunning = $false
 
+function Get-ListeningProcessIds {
+    param([int[]]$Ports)
+
+    $ids = New-Object System.Collections.Generic.HashSet[int]
+    $lines = & netstat.exe -ano -p tcp 2>$null
+    foreach ($line in $lines) {
+        if ($line -notmatch '\bLISTENING\b') {
+            continue
+        }
+
+        $parts = $line -split '\s+' | Where-Object { $_ }
+        if ($parts.Count -lt 5) {
+            continue
+        }
+
+        $localAddress = $parts[1]
+        $pidText = $parts[-1]
+        $portText = ($localAddress -replace '^\[?::\]?:(\d+)$', '$1') -replace '^.*:(\d+)$', '$1'
+        $port = 0
+        $pid = 0
+
+        if ([int]::TryParse($portText, [ref]$port) -and [int]::TryParse($pidText, [ref]$pid)) {
+            if ($Ports -contains $port -and $pid -gt 0) {
+                [void]$ids.Add($pid)
+            }
+        }
+    }
+
+    return @($ids.GetEnumerator() | ForEach-Object { [int]$_ })
+}
+
+function Stop-ManagedServerProcesses {
+    param(
+        [string]$TaskName,
+        [string]$ServerRoot
+    )
+
+    $stoppedSomething = $false
+
+    try {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        if ($task.State -eq 'Running') {
+            Write-Host 'Stopping the scheduled web server task...' -ForegroundColor Yellow
+            Stop-ScheduledTask -TaskName $TaskName
+            Start-Sleep -Seconds 2
+            $stoppedSomething = $true
+        }
+    } catch {
+        Write-Host "Scheduled task was not running or could not be queried: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+
+    $serverRootNormalized = [System.IO.Path]::GetFullPath($ServerRoot).TrimEnd('\')
+    $managedProcesses = @()
+
+    try {
+        $managedProcesses += Get-CimInstance Win32_Process |
+            Where-Object {
+                $_.ProcessId -ne $PID -and
+                $_.Name -in @('node.exe', 'cmd.exe', 'wscript.exe') -and
+                (
+                    ($_.CommandLine -and $_.CommandLine.IndexOf($serverRootNormalized, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+                    ($_.CommandLine -and $_.CommandLine.IndexOf('src\start-web.js', [System.StringComparison]::OrdinalIgnoreCase) -ge 0) -or
+                    ($_.CommandLine -and $_.CommandLine.IndexOf('run start:web', [System.StringComparison]::OrdinalIgnoreCase) -ge 0)
+                )
+            }
+    } catch {
+        Write-Host "Could not inspect managed Node processes: $($_.Exception.Message)" -ForegroundColor DarkYellow
+    }
+
+    foreach ($portPid in (Get-ListeningProcessIds -Ports (4000..4010))) {
+        try {
+            $process = Get-Process -Id $portPid -ErrorAction Stop
+            if ($process.ProcessName -eq 'node') {
+                $managedProcesses += Get-CimInstance Win32_Process -Filter "ProcessId = $portPid" -ErrorAction SilentlyContinue
+            }
+        } catch {
+            continue
+        }
+    }
+
+    $uniqueProcesses = $managedProcesses |
+        Where-Object { $_ -and $_.ProcessId -and $_.ProcessId -ne $PID } |
+        Sort-Object ProcessId -Unique
+
+    foreach ($process in $uniqueProcesses) {
+        try {
+            Write-Host "Stopping old server process PID $($process.ProcessId)..." -ForegroundColor Yellow
+            Stop-Process -Id $process.ProcessId -Force -ErrorAction Stop
+            $stoppedSomething = $true
+        } catch {
+            Write-Host "Could not stop PID $($process.ProcessId): $($_.Exception.Message)" -ForegroundColor DarkYellow
+        }
+    }
+
+    Start-Sleep -Seconds 1
+    return $stoppedSomething
+}
+
 function Invoke-Git {
     param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments)
     & $git.Source @Arguments
@@ -27,14 +125,7 @@ try {
     }
 
     Set-Location $serverRoot
-    $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-    $wasRunning = $task.State -eq 'Running'
-
-    if ($wasRunning) {
-        Write-Host 'Stopping the web server...' -ForegroundColor Yellow
-        Stop-ScheduledTask -TaskName $TaskName
-        Start-Sleep -Seconds 2
-    }
+    $wasRunning = Stop-ManagedServerProcesses -TaskName $TaskName -ServerRoot $serverRoot
 
     Invoke-Git diff --quiet
     $before = (& $git.Source rev-parse HEAD).Trim()
@@ -70,6 +161,12 @@ try {
 
     Start-ScheduledTask -TaskName $TaskName
     Start-Sleep -Seconds 3
+
+    $listeningPids = Get-ListeningProcessIds -Ports @(4000)
+    if ($listeningPids.Count -eq 0) {
+        throw 'The web server did not start on port 4000.'
+    }
+
     Write-Host 'The web server was started successfully.' -ForegroundColor Green
 } catch {
     Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
