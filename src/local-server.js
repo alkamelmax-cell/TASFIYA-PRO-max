@@ -14,6 +14,7 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 512 * 1024;
 const LARGE_JSON_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
 const JSON_COMPRESSION_MIN_BYTES = 1024;
+const ONESIGNAL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isTruthyQueryValue(value) {
     return value === true || value === '1' || value === 'true';
@@ -543,6 +544,8 @@ class LocalWebServer {
     }
 
     async start() {
+        await this.ensureNotificationSubscriptionStore();
+
         // Optimize Database Performance on Startup
         await this.ensureIndexes();
         await this.ensurePostgresSerialSequences();
@@ -782,6 +785,10 @@ class LocalWebServer {
 
                 else if (pathname === '/api/notifications/status' && req.method === 'GET') {
                     this.handleNotificationStatus(res);
+                    return;
+                }
+                else if (pathname === '/api/notifications/register' && req.method === 'POST') {
+                    await this.handleRegisterNotificationSubscription(req, res, authContext.user);
                     return;
                 }
                 else if (pathname === '/api/notifications/test' && req.method === 'POST') {
@@ -4407,13 +4414,244 @@ class LocalWebServer {
         });
     }
 
+    async ensureNotificationSubscriptionStore() {
+        try {
+            if (this.dbManager.pool) {
+                await this.dbManager.pool.query(`
+                    CREATE TABLE IF NOT EXISTS notification_subscriptions (
+                        subscription_id TEXT PRIMARY KEY,
+                        user_id INTEGER NOT NULL,
+                        user_role TEXT DEFAULT 'admin',
+                        external_id TEXT NOT NULL,
+                        one_signal_app_id TEXT DEFAULT '',
+                        user_agent TEXT DEFAULT '',
+                        opted_in INTEGER DEFAULT 1,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                `);
+                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, user_role)');
+                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_external_id ON notification_subscriptions(external_id)');
+                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_app ON notification_subscriptions(one_signal_app_id, opted_in)');
+            } else {
+                this.dbManager.db.exec(`
+                    CREATE TABLE IF NOT EXISTS notification_subscriptions (
+                        subscription_id TEXT PRIMARY KEY,
+                        user_id INTEGER NOT NULL,
+                        user_role TEXT DEFAULT 'admin',
+                        external_id TEXT NOT NULL,
+                        one_signal_app_id TEXT DEFAULT '',
+                        user_agent TEXT DEFAULT '',
+                        opted_in INTEGER DEFAULT 1,
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, user_role);
+                    CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_external_id ON notification_subscriptions(external_id);
+                    CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_app ON notification_subscriptions(one_signal_app_id, opted_in);
+                `);
+            }
+            console.log('✅ [PUSH] Notification subscription store is ready');
+        } catch (error) {
+            console.error(`❌ [PUSH] Failed to prepare notification subscriptions: ${error && error.message ? error.message : error}`);
+        }
+    }
+
+    async resolveAdminNotificationUserId(sessionUser) {
+        const sourceUser = sessionUser || {};
+        let userId = Number(sourceUser.id);
+        if (Number.isInteger(userId) && userId > 0) {
+            return userId;
+        }
+
+        if (!sourceUser.username) {
+            return 0;
+        }
+
+        try {
+            const username = String(sourceUser.username).trim();
+            const row = this.dbManager.pool
+                ? (await this.dbManager.pool.query(
+                    'SELECT id FROM admins WHERE username = $1 LIMIT 1',
+                    [username]
+                )).rows[0]
+                : this.dbManager.db.prepare(
+                    'SELECT id FROM admins WHERE username = ? LIMIT 1'
+                ).get(username);
+            userId = Number(row && row.id);
+            return Number.isInteger(userId) && userId > 0 ? userId : 0;
+        } catch (error) {
+            console.warn(`⚠️ [PUSH] Unable to resolve admin id for notifications: ${error && error.message ? error.message : error}`);
+            return 0;
+        }
+    }
+
+    async registerNotificationSubscription(sessionUser, data = {}, req = null) {
+        const sourceUser = sessionUser || {};
+        if (!sourceUser || sourceUser.role === 'cashier') {
+            return {
+                success: false,
+                statusCode: 403,
+                code: 'NOTIFICATION_REGISTRATION_FORBIDDEN',
+                error: 'تسجيل اشتراك الإشعارات متاح للإدارة فقط.'
+            };
+        }
+
+        const config = this.getOneSignalConfig();
+        if (!ONESIGNAL_UUID_REGEX.test(config.appId)) {
+            return {
+                success: false,
+                statusCode: 500,
+                code: 'ONESIGNAL_APP_ID_MISSING',
+                error: 'OneSignal App ID غير مضبوط في الخادم.'
+            };
+        }
+
+        const userId = await this.resolveAdminNotificationUserId(sourceUser);
+        if (!Number.isInteger(userId) || userId <= 0) {
+            return {
+                success: false,
+                statusCode: 401,
+                code: 'NOTIFICATION_REGISTRATION_IDENTITY_MISSING',
+                error: 'تعذر تحديد هوية المدير لتسجيل الإشعارات. سجّل الدخول مرة أخرى.'
+            };
+        }
+
+        const subscriptionId = String(data.subscriptionId || data.subscription_id || '').trim();
+        if (!ONESIGNAL_UUID_REGEX.test(subscriptionId)) {
+            return {
+                success: false,
+                statusCode: 400,
+                code: 'NOTIFICATION_SUBSCRIPTION_ID_INVALID',
+                error: 'لم يرسل المتصفح معرّف اشتراك OneSignal صالحًا.'
+            };
+        }
+
+        const externalId = `tasfiya-admin-${userId}`;
+        const userAgent = String((req && req.headers && req.headers['user-agent']) || '').slice(0, 500);
+        const optedIn = data.optedIn === false || data.opted_in === false ? 0 : 1;
+
+        if (this.dbManager.pool) {
+            await this.dbManager.pool.query(
+                `
+                    INSERT INTO notification_subscriptions (
+                        subscription_id, user_id, user_role, external_id,
+                        one_signal_app_id, user_agent, opted_in,
+                        created_at, updated_at, last_seen_at
+                    )
+                    VALUES ($1, $2, 'admin', $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    ON CONFLICT (subscription_id) DO UPDATE SET
+                        user_id = EXCLUDED.user_id,
+                        user_role = EXCLUDED.user_role,
+                        external_id = EXCLUDED.external_id,
+                        one_signal_app_id = EXCLUDED.one_signal_app_id,
+                        user_agent = EXCLUDED.user_agent,
+                        opted_in = EXCLUDED.opted_in,
+                        updated_at = CURRENT_TIMESTAMP,
+                        last_seen_at = CURRENT_TIMESTAMP
+                `,
+                [subscriptionId, userId, externalId, config.appId, userAgent, optedIn]
+            );
+        } else {
+            this.dbManager.db.prepare(`
+                INSERT INTO notification_subscriptions (
+                    subscription_id, user_id, user_role, external_id,
+                    one_signal_app_id, user_agent, opted_in,
+                    created_at, updated_at, last_seen_at
+                )
+                VALUES (?, ?, 'admin', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(subscription_id) DO UPDATE SET
+                    user_id = excluded.user_id,
+                    user_role = excluded.user_role,
+                    external_id = excluded.external_id,
+                    one_signal_app_id = excluded.one_signal_app_id,
+                    user_agent = excluded.user_agent,
+                    opted_in = excluded.opted_in,
+                    updated_at = CURRENT_TIMESTAMP,
+                    last_seen_at = CURRENT_TIMESTAMP
+            `).run(subscriptionId, userId, externalId, config.appId, userAgent, optedIn);
+        }
+
+        console.log(`✅ [PUSH] Registered browser subscription for admin ${userId}`);
+        return {
+            success: true,
+            userId,
+            externalId,
+            subscriptionId
+        };
+    }
+
+    async handleRegisterNotificationSubscription(req, res, authenticatedUser) {
+        try {
+            const data = await this.readJsonBody(req, {
+                maxBytes: DEFAULT_JSON_BODY_LIMIT_BYTES,
+                routeLabel: '/api/notifications/register payload'
+            });
+            const result = await this.registerNotificationSubscription(
+                authenticatedUser || req.authUser || this.getAuthenticatedUser(req),
+                data,
+                req
+            );
+
+            this.sendJson(res, result, {
+                statusCode: result.success ? 200 : (result.statusCode || 400)
+            });
+        } catch (error) {
+            this.sendJson(
+                res,
+                { success: false, code: 'NOTIFICATION_REGISTRATION_FAILED', error: error.message },
+                { statusCode: error.statusCode || 500 }
+            );
+        }
+    }
+
+    async getNotificationTargetSubscriptionIds() {
+        const config = this.getOneSignalConfig();
+        if (!ONESIGNAL_UUID_REGEX.test(config.appId)) {
+            return [];
+        }
+
+        try {
+            const rows = this.dbManager.pool
+                ? (await this.dbManager.pool.query(
+                    `
+                        SELECT subscription_id
+                        FROM notification_subscriptions
+                        WHERE user_role = 'admin'
+                          AND COALESCE(opted_in, 1) = 1
+                          AND one_signal_app_id = $1
+                        ORDER BY last_seen_at DESC
+                        LIMIT 200
+                    `,
+                    [config.appId]
+                )).rows
+                : this.dbManager.db.prepare(`
+                    SELECT subscription_id
+                    FROM notification_subscriptions
+                    WHERE user_role = 'admin'
+                      AND COALESCE(opted_in, 1) = 1
+                      AND one_signal_app_id = ?
+                    ORDER BY last_seen_at DESC
+                    LIMIT 200
+                `).all(config.appId);
+
+            const subscriptionIds = this.normalizeOneSignalIds(rows.map((row) => row.subscription_id))
+                .filter((id) => ONESIGNAL_UUID_REGEX.test(id));
+            console.log(`🔔 [PUSH] Resolved ${subscriptionIds.length} registered browser subscription target(s)`);
+            return subscriptionIds;
+        } catch (error) {
+            console.error(`❌ [PUSH] Unable to resolve registered notification subscriptions: ${error && error.message ? error.message : error}`);
+            return [];
+        }
+    }
+
     getOneSignalConfig() {
-        const appId = String(
-            process.env.ONESIGNAL_APP_ID || '1b7778f5-0f25-4df8-a281-611b682a964c'
-        ).trim();
+        const appId = String(process.env.ONESIGNAL_APP_ID || '').trim();
         const appApiKey = String(process.env.ONESIGNAL_REST_API_KEY || '').trim();
         const publicUrl = String(process.env.TASFIYA_PUBLIC_URL || '').trim().replace(/\/+$/, '');
-        const hasValidAppId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(appId);
+        const hasValidAppId = ONESIGNAL_UUID_REGEX.test(appId);
         const hasValidApiKey = appApiKey.length > 20 && !appApiKey.includes('YOUR_REST_API_KEY_HERE');
 
         return {
@@ -4455,7 +4693,7 @@ class LocalWebServer {
             configured: config.configured,
             provider: 'OneSignal',
             apiEndpoint: 'https://api.onesignal.com/notifications?c=push',
-            targeting: 'external_id for system notifications; subscription_id for delivery tests',
+            targeting: 'registered subscription_id first; external_id fallback',
             hasAppId: Boolean(config.appId),
             hasApiKey: Boolean(config.appApiKey),
             hasPublicUrl: Boolean(config.publicUrl),
@@ -4479,23 +4717,11 @@ class LocalWebServer {
         // the numeric admin id from its username rather than trusting any id
         // supplied by the browser.
         const sessionUser = authenticatedUser || req.authUser || this.getAuthenticatedUser(req) || {};
-        let userId = Number(sessionUser.id);
-        if ((!Number.isInteger(userId) || userId <= 0) && sessionUser.username) {
-            try {
-                const username = String(sessionUser.username).trim();
-                const row = this.dbManager.pool
-                    ? (await this.dbManager.pool.query(
-                        'SELECT id FROM admins WHERE username = $1 AND active = 1 LIMIT 1',
-                        [username]
-                    )).rows[0]
-                    : this.dbManager.db.prepare(
-                        'SELECT id FROM admins WHERE username = ? AND active = 1 LIMIT 1'
-                    ).get(username);
-                userId = Number(row && row.id);
-            } catch (error) {
-                console.warn(`⚠️ [PUSH] Unable to resolve notification test admin: ${error && error.message ? error.message : error}`);
-            }
-        }
+        const data = await this.readJsonBody(req, {
+            maxBytes: DEFAULT_JSON_BODY_LIMIT_BYTES,
+            routeLabel: '/api/notifications/test payload'
+        });
+        const userId = await this.resolveAdminNotificationUserId(sessionUser);
 
         if (!Number.isInteger(userId) || userId <= 0) {
             this.sendJson(res, {
@@ -4506,19 +4732,31 @@ class LocalWebServer {
             return;
         }
 
-        // Test the same stable OneSignal identity used by production alerts.
-        // Browser subscription/player IDs are short-lived and can belong to an
-        // older OneSignal app after a domain migration; external IDs do not.
+        const subscriptionId = String(data.subscriptionId || data.subscription_id || '').trim();
+        const hasCurrentSubscriptionId = ONESIGNAL_UUID_REGEX.test(subscriptionId);
+        if (hasCurrentSubscriptionId) {
+            await this.registerNotificationSubscription(
+                sessionUser,
+                { subscriptionId, optedIn: true },
+                req
+            );
+        }
+
+        // The test targets the exact browser subscription when available. This
+        // proves whether the current device can receive push before broader
+        // admin fan-out is involved.
         console.log(`🔔 [PUSH] Admin ${userId} requested a notification delivery test`);
         const result = await this.sendOneSignalNotification(
             '🔔 اختبار إشعارات تصفية برو',
             'تم إرسال هذا الاختبار من لوحة الإدارة للتحقق من وصول الإشعارات.',
             { type: 'notification_test', source: 'admin_dashboard' },
-            { externalIds: [`tasfiya-admin-${userId}`] }
+            hasCurrentSubscriptionId
+                ? { subscriptionIds: [subscriptionId] }
+                : { externalIds: [`tasfiya-admin-${userId}`] }
         );
 
         this.sendJson(res, result, {
-            statusCode: result.success ? 200 : 502
+            statusCode: result.success ? 200 : (result.code === 'ONESIGNAL_NO_RECIPIENTS' ? 409 : 502)
         });
     }
 
@@ -4570,12 +4808,20 @@ class LocalWebServer {
             return { success: false, code: 'ONESIGNAL_NOT_CONFIGURED', error };
         }
 
-        const subscriptionIds = this.normalizeOneSignalIds(options.subscriptionIds)
-            .filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
+        let subscriptionIds = this.normalizeOneSignalIds(options.subscriptionIds)
+            .filter((id) => ONESIGNAL_UUID_REGEX.test(id));
         const explicitExternalIds = this.normalizeOneSignalIds(options.externalIds);
-        const externalIds = subscriptionIds.length > 0
-            ? []
-            : (explicitExternalIds.length > 0 ? explicitExternalIds : await this.getNotificationTargetExternalIds());
+        let externalIds = [];
+
+        if (subscriptionIds.length === 0 && explicitExternalIds.length === 0) {
+            subscriptionIds = await this.getNotificationTargetSubscriptionIds();
+        }
+
+        if (subscriptionIds.length === 0) {
+            externalIds = explicitExternalIds.length > 0
+                ? explicitExternalIds
+                : await this.getNotificationTargetExternalIds();
+        }
 
         if (subscriptionIds.length === 0 && externalIds.length === 0) {
             const error = 'لا يوجد إداريون نشطون أو اشتراكات صالحة لتلقي الإشعار.';
@@ -4651,6 +4897,22 @@ class LocalWebServer {
             }
 
             const recipients = Number(result.recipients || 0);
+            if (recipients <= 0) {
+                const error = this.getOneSignalErrorMessage(
+                    result,
+                    'قبل OneSignal الطلب، لكنه لم يجد جهازًا مشتركًا صالحًا لاستقبال الإشعار.'
+                );
+                console.warn(`⚠️ [PUSH] Notification created without recipients: ${error}; target=${subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'}`);
+                return {
+                    success: false,
+                    code: 'ONESIGNAL_NO_RECIPIENTS',
+                    error,
+                    messageId: result.id,
+                    recipients: 0,
+                    target: subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'
+                };
+            }
+
             console.log(`✅ [PUSH] Sent message=${result.id} recipients=${recipients}; target=${subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'}`);
             return {
                 success: true,

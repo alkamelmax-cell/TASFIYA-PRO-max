@@ -19,6 +19,9 @@
     let oneSignalAppIdPromise = null;
     let oneSignalInitializationPromise = null;
     let oneSignalInstance = null;
+    let browserNotificationUser = null;
+    let browserNotificationRole = 'admin';
+    let browserNotificationAppId = '';
 
     async function getOneSignalAppId() {
         if (!oneSignalAppIdPromise) {
@@ -218,6 +221,51 @@
         return serviceWorkerRegistrationPromise;
     }
 
+    async function registerCurrentBrowserSubscription(OneSignal) {
+        if (
+            !OneSignal
+            || !OneSignal.User
+            || !OneSignal.User.PushSubscription
+            || !browserNotificationUser
+            || !browserNotificationUser.id
+        ) {
+            return false;
+        }
+
+        const pushSubscription = OneSignal.User.PushSubscription;
+        const subscriptionId = String(pushSubscription.id || '').trim();
+        if (!pushSubscription.optedIn || !subscriptionId) {
+            return false;
+        }
+
+        try {
+            const userId = String(browserNotificationUser.id);
+            const response = await windowObj.fetch('/api/notifications/register', {
+                method: 'POST',
+                credentials: 'same-origin',
+                cache: 'no-store',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    subscriptionId,
+                    externalId: `tasfiya-admin-${userId}`,
+                    appId: browserNotificationAppId,
+                    role: browserNotificationRole,
+                    optedIn: true,
+                    permission: OneSignal.Notifications.permission
+                })
+            });
+
+            if (!response.ok) {
+                console.warn('[Tasfiya OneSignal] Server rejected notification registration:', response.status);
+                return false;
+            }
+            return true;
+        } catch (error) {
+            console.warn('[Tasfiya OneSignal] Unable to register browser subscription with server:', error);
+            return false;
+        }
+    }
+
     function queueOneSignalInit(user, options) {
         const config = options || {};
         const role = config.role || 'admin';
@@ -231,6 +279,9 @@
         // OneSignal SDK/service worker is still initializing. Keep one shared
         // readiness promise so startup and the test button always use the same
         // fully initialized subscription.
+        browserNotificationUser = user || null;
+        browserNotificationRole = role;
+
         if (oneSignalInitializationPromise) {
             return oneSignalInitializationPromise;
         }
@@ -249,6 +300,7 @@
                     }
 
                     const appId = await getOneSignalAppId();
+                    browserNotificationAppId = appId;
                     await OneSignal.init({
                         appId,
                         allowLocalhostAsSecureOrigin: true,
@@ -280,6 +332,9 @@
                     console.info(
                         `[Tasfiya OneSignal] Ready: permission=${OneSignal.Notifications.permission}; subscribed=${optedIn}`
                     );
+                    if (optedIn) {
+                        await registerCurrentBrowserSubscription(OneSignal);
+                    }
                     resolve(OneSignal);
                 } catch (error) {
                     oneSignalInitializationPromise = null;
@@ -321,7 +376,10 @@
         for (let attempt = 0; attempt < 10; attempt += 1) {
             if (pushSubscription.optedIn) {
                 const subscriptionId = String(pushSubscription.id || '').trim();
-                if (subscriptionId) return subscriptionId;
+                if (subscriptionId) {
+                    await registerCurrentBrowserSubscription(OneSignal);
+                    return subscriptionId;
+                }
             }
             await new Promise((resolve) => windowObj.setTimeout(resolve, 300));
         }

@@ -1,9 +1,9 @@
 // Service Worker for Tasfiya Pro PWA
-// Version: 3.5 - The PWA worker deliberately does not load the OneSignal SDK.
+// Version: 3.6 - The PWA worker deliberately does not load the OneSignal SDK.
 // OneSignal has its own worker under /push/onesignal/ so browser push
 // subscriptions stay valid and do not conflict with this application's PWA.
 
-const CACHE_NAME = 'tasfiya-pro-v3.5-external-id-push-tests';
+const CACHE_NAME = 'tasfiya-pro-v3.6-registered-push-subscriptions';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
@@ -56,7 +56,8 @@ const NETWORK_FIRST_RUNTIME_PATHS = new Set([
     '/js/session-bootstrap.js',
     '/js/onesignal-bootstrap.js',
     '/manifest.json',
-    '/OneSignalSDKWorker.js'
+    '/OneSignalSDKWorker.js',
+    '/push/onesignal/OneSignalSDKWorker.js'
 ]);
 
 function isNetworkFirstRuntimeRequest(request) {
