@@ -4755,6 +4755,13 @@ class LocalWebServer {
                 : { externalIds: [`tasfiya-admin-${userId}`] }
         );
 
+        // Creating a OneSignal message is not the same as proving that the
+        // provider has dispatched it.  Ask OneSignal for the message metrics
+        // before reporting the diagnostic result to the administrator.
+        if (result.success && result.messageId) {
+            result.delivery = await this.waitForOneSignalDelivery(result.messageId);
+        }
+
         this.sendJson(res, result, {
             statusCode: result.success ? 200 : (result.code === 'ONESIGNAL_NO_RECIPIENTS' ? 409 : 502)
         });
@@ -4800,6 +4807,71 @@ class LocalWebServer {
         )];
     }
 
+    async getOneSignalMessageDelivery(messageId) {
+        const config = this.getOneSignalConfig();
+        if (!config.configured || !ONESIGNAL_UUID_REGEX.test(String(messageId || '').trim())) {
+            return null;
+        }
+
+        try {
+            const response = await fetch(
+                `https://api.onesignal.com/notifications/${encodeURIComponent(messageId)}?app_id=${encodeURIComponent(config.appId)}`,
+                {
+                    headers: {
+                        Accept: 'application/json',
+                        Authorization: `Key ${config.appApiKey}`
+                    }
+                }
+            );
+
+            if (!response.ok) {
+                return { available: false, statusCode: response.status };
+            }
+
+            const payload = await response.json();
+            const toNumberOrNull = (value) => {
+                const parsed = Number(value);
+                return Number.isFinite(parsed) ? parsed : null;
+            };
+
+            return {
+                available: true,
+                successful: toNumberOrNull(payload.successful),
+                failed: toNumberOrNull(payload.failed),
+                errored: toNumberOrNull(payload.errored),
+                received: toNumberOrNull(payload.received),
+                remaining: toNumberOrNull(payload.remaining),
+                completed: Boolean(payload.completed_at),
+                platformDeliveryStats: payload.platform_delivery_stats || null
+            };
+        } catch (error) {
+            console.warn(`⚠️ [PUSH] Could not read OneSignal delivery metrics: ${error && error.message ? error.message : error}`);
+            return { available: false, error: 'DELIVERY_METRICS_UNAVAILABLE' };
+        }
+    }
+
+    async waitForOneSignalDelivery(messageId) {
+        let delivery = null;
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+            delivery = await this.getOneSignalMessageDelivery(messageId);
+            if (!delivery || delivery.available === false) {
+                return delivery;
+            }
+
+            const terminalCount = [delivery.successful, delivery.failed, delivery.errored]
+                .filter((value) => Number.isFinite(value))
+                .reduce((total, value) => total + value, 0);
+            if (delivery.completed || terminalCount > 0) {
+                return delivery;
+            }
+
+            if (attempt < 3) {
+                await new Promise((resolve) => setTimeout(resolve, 1500));
+            }
+        }
+        return delivery;
+    }
+
     async sendOneSignalNotification(title, message, data = {}, options = {}) {
         const config = this.getOneSignalConfig();
         if (!config.configured) {
@@ -4813,10 +4885,10 @@ class LocalWebServer {
         const explicitExternalIds = this.normalizeOneSignalIds(options.externalIds);
         let externalIds = [];
 
-        if (subscriptionIds.length === 0 && explicitExternalIds.length === 0) {
-            subscriptionIds = await this.getNotificationTargetSubscriptionIds();
-        }
-
+        // A direct subscription ID is used only for a diagnostic test of the
+        // current browser.  Normal reconciliation alerts must target the
+        // stable OneSignal external ID so every device belonging to the same
+        // administrator (web and native app) can receive one notification.
         if (subscriptionIds.length === 0) {
             externalIds = explicitExternalIds.length > 0
                 ? explicitExternalIds

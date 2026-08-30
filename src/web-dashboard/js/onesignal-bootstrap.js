@@ -131,7 +131,10 @@
         const config = options || {};
         const role = config.role || 'admin';
         const userId = user && user.id ? String(user.id) : 'unknown';
-        const externalId = user && user.id ? String(user.id) : '';
+        // Keep native subscriptions on the exact same OneSignal user identity
+        // as browser subscriptions.  The server sends operational alerts to
+        // this stable identity, not to a one-off device id.
+        const externalId = user && user.id ? `tasfiya-admin-${userId}` : '';
         const tags = Object.assign({
             role,
             userId

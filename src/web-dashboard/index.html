@@ -766,11 +766,20 @@
                 const result = await response.json();
 
                 if (result.success) {
-                    const recipients = Number(result.recipients);
-                    if (Number.isFinite(recipients) && recipients > 0) {
-                        alert(`✅ تم قبول الإشعار من OneSignal وإرساله إلى هذا الجهاز (${recipients} مستلم).`);
+                    const delivery = result.delivery || {};
+                    const successful = Number(delivery.successful);
+                    const failed = Number(delivery.failed);
+                    const errored = Number(delivery.errored);
+                    const pending = Number(delivery.remaining);
+
+                    if (Number.isFinite(successful) && successful > 0) {
+                        alert(`✅ تم تأكيد تسليم الاختبار من OneSignal (${successful} جهاز).`);
+                    } else if ((Number.isFinite(failed) && failed > 0) || (Number.isFinite(errored) && errored > 0)) {
+                        alert(`❌ أنشأ OneSignal الرسالة لكن لم يسلّمها: غير مشترك/فشل ${failed || 0}، خطأ ${errored || 0}. أعد فتح التطبيق أو المتصفح على الجهاز المطلوب ثم اسمح بالإشعارات.`);
+                    } else if (Number.isFinite(pending) && pending > 0) {
+                        alert(`⏳ قبل OneSignal الاختبار وما زال يعالجه (${pending} قيد الإرسال). انتظر نصف دقيقة ثم أعد الاختبار.`);
                     } else {
-                        alert('✅ قبل OneSignal الإشعار وأنشأ رسالة إرسال. إذا لم يظهر تنبيه النظام، تأكد أن إشعارات Chrome و Windows مسموحة ثم جرّب إرسال طلب تصفية.');
+                        alert('⚠️ أنشأ OneSignal الرسالة، لكن لم تتوفر نتيجة تسليم مؤكدة بعد. لا تعتبر الإشعار واصلًا حتى تظهر رسالة تأكيد التسليم.');
                     }
                     return;
                 }
