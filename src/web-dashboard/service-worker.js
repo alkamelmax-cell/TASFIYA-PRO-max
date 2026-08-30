@@ -1,9 +1,9 @@
 // Service Worker for Tasfiya Pro PWA
-// Version: 3.3 - The PWA worker deliberately does not load the OneSignal SDK.
+// Version: 3.4 - The PWA worker deliberately does not load the OneSignal SDK.
 // OneSignal has its own worker under /push/onesignal/ so browser push
 // subscriptions stay valid and do not conflict with this application's PWA.
 
-const CACHE_NAME = 'tasfiya-pro-v3.3-onesignal-readiness';
+const CACHE_NAME = 'tasfiya-pro-v3.4-server-owned-onesignal-config';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',

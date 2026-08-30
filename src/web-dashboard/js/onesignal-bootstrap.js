@@ -1,7 +1,6 @@
 (function bootstrapTasfiyaOneSignal(windowObj) {
     'use strict';
 
-    const ONE_SIGNAL_APP_ID = '1b7778f5-0f25-4df8-a281-611b682a964c';
     // Keep OneSignal's push worker separate from the PWA worker. A push
     // subscription is bound to its service worker; sharing the root PWA
     // worker previously left some browsers looking subscribed locally while
@@ -33,11 +32,17 @@
                     const configuredAppId = result && result.success
                         ? String(result.oneSignalAppId || '').trim()
                         : '';
-                    return configuredAppId || ONE_SIGNAL_APP_ID;
+                    // The server is the single source of truth. Never fall
+                    // back to a historic App ID: that silently registers the
+                    // browser in a different OneSignal app, making a later
+                    // delivery test report zero recipients.
+                    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(configuredAppId)) {
+                        throw new Error('OneSignal App ID is not configured by the server.');
+                    }
+                    return configuredAppId;
                 } catch (error) {
-                    // Keep the known app id as a safe fallback while the server
-                    // is unavailable. The server remains the source of truth.
-                    return ONE_SIGNAL_APP_ID;
+                    console.error('[Tasfiya OneSignal] Unable to load the server App ID:', error);
+                    throw error;
                 }
             })();
         }
