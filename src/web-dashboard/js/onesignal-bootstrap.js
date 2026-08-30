@@ -2,8 +2,14 @@
     'use strict';
 
     const ONE_SIGNAL_APP_ID = '1b7778f5-0f25-4df8-a281-611b682a964c';
-    const SERVICE_WORKER_PATH = '/service-worker.js';
-    const SERVICE_WORKER_SCOPE = '/';
+    // Keep OneSignal's push worker separate from the PWA worker. A push
+    // subscription is bound to its service worker; sharing the root PWA
+    // worker previously left some browsers looking subscribed locally while
+    // no valid OneSignal subscription existed on the provider.
+    const PUSH_WORKER_PATH = '/push/onesignal/OneSignalSDKWorker.js';
+    const PUSH_WORKER_SCOPE = '/push/onesignal/';
+    const PWA_WORKER_PATH = '/service-worker.js';
+    const PWA_WORKER_SCOPE = '/';
     const LEGACY_CACHE_NAMES = new Set([
         'tasfiya-pro-v2',
         'tasfiya-pro-v2.6'
@@ -187,8 +193,8 @@
                     await registration.update();
                 }
 
-                const registration = await windowObj.navigator.serviceWorker.register(SERVICE_WORKER_PATH, {
-                    scope: SERVICE_WORKER_SCOPE,
+                const registration = await windowObj.navigator.serviceWorker.register(PWA_WORKER_PATH, {
+                    scope: PWA_WORKER_SCOPE,
                     updateViaCache: 'none'
                 });
 
@@ -237,9 +243,9 @@
                 await OneSignal.init({
                     appId,
                     allowLocalhostAsSecureOrigin: true,
-                    serviceWorkerPath: SERVICE_WORKER_PATH,
+                    serviceWorkerPath: PUSH_WORKER_PATH,
                     serviceWorkerParam: {
-                        scope: SERVICE_WORKER_SCOPE
+                        scope: PUSH_WORKER_SCOPE
                     }
                 });
 

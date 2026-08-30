@@ -1,13 +1,9 @@
 // Service Worker for Tasfiya Pro PWA
-// Version: 3.1 - Network-first runtime scripts to prevent stale login/push code
-try {
-    // Import local SDK instead of CDN
-    importScripts('/OneSignalSDKWorker.js');
-} catch (e) {
-    console.warn('⚠️ [SW] Local OneSignal SDK failed to load.', e);
-}
+// Version: 3.2 - The PWA worker deliberately does not load the OneSignal SDK.
+// OneSignal has its own worker under /push/onesignal/ so browser push
+// subscriptions stay valid and do not conflict with this application's PWA.
 
-const CACHE_NAME = 'tasfiya-pro-v3.1-runtime-fresh';
+const CACHE_NAME = 'tasfiya-pro-v3.2-separated-push-worker';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
