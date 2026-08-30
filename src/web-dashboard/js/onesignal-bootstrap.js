@@ -11,6 +11,31 @@
     const NATIVE_BOOTSTRAP_COOLDOWN_MS = 15000;
 
     let serviceWorkerRegistrationPromise = null;
+    let oneSignalAppIdPromise = null;
+
+    async function getOneSignalAppId() {
+        if (!oneSignalAppIdPromise) {
+            oneSignalAppIdPromise = (async () => {
+                try {
+                    const response = await windowObj.fetch('/api/client-config', {
+                        cache: 'no-store',
+                        credentials: 'same-origin'
+                    });
+                    const result = await response.json();
+                    const configuredAppId = result && result.success
+                        ? String(result.oneSignalAppId || '').trim()
+                        : '';
+                    return configuredAppId || ONE_SIGNAL_APP_ID;
+                } catch (error) {
+                    // Keep the known app id as a safe fallback while the server
+                    // is unavailable. The server remains the source of truth.
+                    return ONE_SIGNAL_APP_ID;
+                }
+            })();
+        }
+
+        return oneSignalAppIdPromise;
+    }
 
     function isNativeAppEnvironment() {
         const userAgent = String(windowObj.navigator.userAgent || '').toLowerCase();
@@ -185,6 +210,10 @@
         const role = config.role || 'admin';
         const requestPermission = config.requestPermission !== false;
         const userId = user && user.id ? String(user.id) : 'unknown';
+        // Keep a stable identity for every administrator across browsers/devices.
+        // OneSignal v16 recommends login() for identified users; tags alone do
+        // not reliably unify subscriptions after a browser or domain migration.
+        const externalId = user && user.id ? `tasfiya-admin-${userId}` : '';
 
         windowObj.OneSignalDeferred = windowObj.OneSignalDeferred || [];
         windowObj.OneSignalDeferred.push(async function initializeOneSignal(OneSignal) {
@@ -199,8 +228,9 @@
                     return;
                 }
 
+                const appId = await getOneSignalAppId();
                 await OneSignal.init({
-                    appId: ONE_SIGNAL_APP_ID,
+                    appId,
                     allowLocalhostAsSecureOrigin: true,
                     serviceWorkerPath: SERVICE_WORKER_PATH,
                     serviceWorkerParam: {
@@ -210,12 +240,29 @@
 
                 windowObj.__tasfiyaOneSignalInitialized = true;
 
-                await OneSignal.User.addTag('role', role);
-                await OneSignal.User.addTag('userId', userId);
+                if (externalId) {
+                    await OneSignal.login(externalId);
+                }
+
+                await OneSignal.User.addTags({
+                    role,
+                    userId,
+                    product: 'tasfiya-pro'
+                });
 
                 if (requestPermission && OneSignal.Notifications.permission === 'default') {
                     await OneSignal.Notifications.requestPermission();
                 }
+
+                const optedIn = Boolean(
+                    OneSignal.User
+                    && OneSignal.User.PushSubscription
+                    && OneSignal.User.PushSubscription.optedIn
+                );
+
+                console.info(
+                    `[Tasfiya OneSignal] Ready: permission=${OneSignal.Notifications.permission}; subscribed=${optedIn}`
+                );
             } catch (error) {
                 console.error('[Tasfiya OneSignal] Initialization failed:', error);
             }

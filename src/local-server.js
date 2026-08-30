@@ -595,6 +595,13 @@ class LocalWebServer {
                     return;
                 }
 
+                // This intentionally exposes only the public OneSignal App ID.
+                // The App API key never leaves the server.
+                if (pathname === '/api/client-config' && req.method === 'GET') {
+                    this.handlePublicClientConfig(res);
+                    return;
+                }
+
                 if (pathname === '/api/logout' && req.method === 'POST') {
                     await this.handleLogout(req, res);
                     return;
@@ -773,17 +780,12 @@ class LocalWebServer {
                     return;
                 }
 
-
-                // DEBUG ROUTE: Test Notification directly
-                else if (pathname === '/api/test-notification') {
-                    console.log('🔔 Manual test notification requested');
-                    const result = await this.sendOneSignalNotification(
-                        '🔔 اختبار الإشعارات',
-                        'إذا وصلت هذه الرسالة، فإن OneSignal يعمل بنجاح!',
-                        { type: 'test' }
-                    );
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify(result));
+                else if (pathname === '/api/notifications/status' && req.method === 'GET') {
+                    this.handleNotificationStatus(res);
+                    return;
+                }
+                else if (pathname === '/api/notifications/test' && req.method === 'POST') {
+                    await this.handleNotificationTest(res);
                     return;
                 }
                 else {
@@ -4405,46 +4407,154 @@ class LocalWebServer {
         });
     }
 
+    getOneSignalConfig() {
+        const appId = String(
+            process.env.ONESIGNAL_APP_ID || '1b7778f5-0f25-4df8-a281-611b682a964c'
+        ).trim();
+        const appApiKey = String(process.env.ONESIGNAL_REST_API_KEY || '').trim();
+        const segment = String(process.env.ONESIGNAL_SEGMENT || 'Subscribed Users').trim();
+        const publicUrl = String(process.env.TASFIYA_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+        const hasValidAppId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(appId);
+        const hasValidApiKey = appApiKey.length > 20 && !appApiKey.includes('YOUR_REST_API_KEY_HERE');
+
+        return {
+            appId,
+            appApiKey,
+            segment: segment || 'Subscribed Users',
+            publicUrl: /^https:\/\//i.test(publicUrl) ? publicUrl : '',
+            configured: hasValidAppId && hasValidApiKey
+        };
+    }
+
+    getOneSignalErrorMessage(result, fallbackMessage) {
+        if (!result || typeof result !== 'object') {
+            return fallbackMessage;
+        }
+
+        const candidates = [result.errors, result.error, result.message]
+            .flatMap((value) => Array.isArray(value) ? value : [value])
+            .filter((value) => typeof value === 'string' && value.trim());
+
+        return candidates.length > 0
+            ? candidates.join(' | ').slice(0, 500)
+            : fallbackMessage;
+    }
+
+    handleNotificationStatus(res) {
+        const config = this.getOneSignalConfig();
+        this.sendJson(res, {
+            success: true,
+            configured: config.configured,
+            provider: 'OneSignal',
+            apiEndpoint: 'https://api.onesignal.com/notifications?c=push',
+            targetSegment: config.segment,
+            hasAppId: Boolean(config.appId),
+            hasApiKey: Boolean(config.appApiKey),
+            hasPublicUrl: Boolean(config.publicUrl),
+            message: config.configured
+                ? 'إعداد الإرسال موجود. استخدم اختبار الإشعارات للتحقق من وصوله إلى OneSignal.'
+                : 'مفتاح OneSignal أو App ID غير مضبوط بشكل صحيح في بيئة الخادم.'
+        });
+    }
+
+    handlePublicClientConfig(res) {
+        const config = this.getOneSignalConfig();
+        this.sendJson(res, {
+            success: true,
+            oneSignalAppId: config.appId
+        });
+    }
+
+    async handleNotificationTest(res) {
+        console.log('🔔 [PUSH] Admin requested a notification delivery test');
+        const result = await this.sendOneSignalNotification(
+            '🔔 اختبار إشعارات تصفية برو',
+            'تم إرسال هذا الاختبار من لوحة الإدارة للتحقق من وصول الإشعارات.',
+            { type: 'notification_test', source: 'admin_dashboard' }
+        );
+
+        this.sendJson(res, result, {
+            statusCode: result.success ? 200 : 502
+        });
+    }
+
     async sendOneSignalNotification(title, message, data = {}) {
+        const config = this.getOneSignalConfig();
+        if (!config.configured) {
+            const error = 'OneSignal غير مضبوط: أضف ONESIGNAL_REST_API_KEY الصحيح وأعد تشغيل الخادم.';
+            console.error(`❌ [PUSH] ${error}`);
+            return { success: false, code: 'ONESIGNAL_NOT_CONFIGURED', error };
+        }
+
+        const notificationPayload = {
+            app_id: config.appId,
+            target_channel: 'push',
+            headings: { en: title, ar: title },
+            contents: { en: message, ar: message },
+            data,
+            priority: 10,
+            android_visibility: 1,
+            lockscreen_visibility: 1,
+            included_segments: [config.segment]
+        };
+
+        if (config.publicUrl) {
+            notificationPayload.web_url = config.publicUrl;
+        }
+
         try {
-            const appId = "1b7778f5-0f25-4df8-a281-611b682a964c";
-            const restApiKey = process.env.ONESIGNAL_REST_API_KEY || "YOUR_REST_API_KEY_HERE";
-
-            const notificationPayload = {
-                app_id: appId,
-                headings: { en: title, ar: title },
-                contents: { en: message, ar: message },
-                data: data,
-                priority: 10,
-                android_visibility: 1,
-                lockscreen_visibility: 1,
-                // Send to all subscribed users (no filter)
-                included_segments: ["All"]
-            };
-
-            const response = await fetch('https://onesignal.com/api/v1/notifications', {
+            const response = await fetch('https://api.onesignal.com/notifications?c=push', {
                 method: 'POST',
                 headers: {
+                    Accept: 'application/json',
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${restApiKey}`
+                    // OneSignal's current Create Message API requires the "Key" prefix.
+                    Authorization: `Key ${config.appApiKey}`
                 },
                 body: JSON.stringify(notificationPayload)
             });
 
-
-            const result = await response.json();
-
-            if (response.ok) {
-                // Log only ID to keep console clean
-                // console.log('✅ Notification Sent:', result.id);
-                return { success: true, result };
-            } else {
-                console.error('❌ Notification Failed:', result);
-                return { success: false, error: result };
+            const responseText = await response.text();
+            let result = null;
+            try {
+                result = responseText ? JSON.parse(responseText) : {};
+            } catch (_) {
+                result = { message: responseText.slice(0, 500) };
             }
+
+            if (!response.ok) {
+                const error = this.getOneSignalErrorMessage(
+                    result,
+                    `تعذر إرسال الإشعار (OneSignal HTTP ${response.status}).`
+                );
+                console.error(`❌ [PUSH] OneSignal rejected notification: HTTP ${response.status}; ${error}`);
+                return {
+                    success: false,
+                    code: `ONESIGNAL_HTTP_${response.status}`,
+                    error
+                };
+            }
+
+            if (!result || !result.id) {
+                const error = this.getOneSignalErrorMessage(
+                    result,
+                    'لم يجد OneSignal أي جهاز مشترك صالح لاستقبال الإشعار.'
+                );
+                console.warn(`⚠️ [PUSH] Notification was not created: ${error}`);
+                return { success: false, code: 'ONESIGNAL_NO_RECIPIENTS', error };
+            }
+
+            const recipients = Number(result.recipients || 0);
+            console.log(`✅ [PUSH] Sent message=${result.id} recipients=${recipients}`);
+            return {
+                success: true,
+                messageId: result.id,
+                recipients
+            };
         } catch (error) {
-            console.error('❌ Notification Error:', error.message);
-            return { success: false, error: error.message };
+            const messageText = error && error.message ? error.message : 'تعذر الاتصال بـ OneSignal.';
+            console.error(`❌ [PUSH] Network error: ${messageText}`);
+            return { success: false, code: 'ONESIGNAL_NETWORK_ERROR', error: messageText };
         }
     }
 

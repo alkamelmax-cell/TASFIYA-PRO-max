@@ -102,7 +102,12 @@
                 <i class="fas fa-chevron-down small opacity-50"></i>
             </button>
             <ul class="dropdown-menu dropdown-menu-end bg-card border-secondary shadow-lg mt-2">
-                <!-- Manual Push Registration Button -->
+                <li>
+                    <button type="button" class="dropdown-item d-flex align-items-center gap-2" onclick="testSystemNotifications()">
+                        <i class="fas fa-bell text-warning"></i> اختبار الإشعارات
+                    </button>
+                </li>
+                <li><hr class="dropdown-divider border-secondary"></li>
 
                 <li><a class="dropdown-item text-danger d-flex align-items-center gap-2" href="#" onclick="logout()">
                         <i class="fas fa-sign-out-alt"></i> تسجيل الخروج
@@ -711,6 +716,55 @@
                 setTimeout(() => alert('✅ تم إرسال طلب التفعيل للتطبيق.\nتحقق من OneSignal الآن.'), 1000);
             } else {
                 alert('⚠️ لم يتم اكتشاف التوقيع (UserAgent) تلقائياً، ولكن تم إرسال أمر التفعيل "بالقوة" عبر البروتوكول.\n\nإذا ظهرت أيقونة الأندرويد في OneSignal، فهذا يعني النجاح!');
+            }
+        }
+
+        async function testSystemNotifications() {
+            if (!user || user.role !== 'admin') {
+                alert('هذه العملية متاحة لحساب الإدارة فقط.');
+                return;
+            }
+
+            if (!('Notification' in window)) {
+                alert('هذا المتصفح لا يدعم إشعارات الويب.');
+                return;
+            }
+
+            if (Notification.permission === 'denied') {
+                alert('الإشعارات محظورة لهذا الرابط. اضغط رمز القفل بجانب الرابط ثم اجعل Notifications = Allow، وبعدها حدّث الصفحة.');
+                return;
+            }
+
+            if (!confirm('سيتم إرسال إشعار اختبار إلى جميع الأجهزة المشتركة. هل تريد المتابعة؟')) {
+                return;
+            }
+
+            try {
+                if (window.TasfiyaOneSignal && typeof window.TasfiyaOneSignal.initBrowserUser === 'function') {
+                    window.TasfiyaOneSignal.initBrowserUser(user, { role: 'أدمن', requestPermission: true });
+                }
+
+                const response = await fetch('/api/notifications/test', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    cache: 'no-store'
+                });
+                const result = await response.json();
+
+                if (result.success) {
+                    const recipients = Number(result.recipients || 0);
+                    if (recipients > 0) {
+                        alert(`✅ تم قبول الإشعار من OneSignal وإرساله إلى ${recipients} جهاز/أجهزة مشتركة.`);
+                    } else {
+                        alert('⚠️ قبل OneSignal الطلب، لكن لم يُبلغ عن أجهزة مستلمة. تأكد من السماح بالإشعارات واشتراك الجهاز على الرابط الجديد.');
+                    }
+                    return;
+                }
+
+                alert(`❌ فشل اختبار الإشعارات: ${result.error || result.code || 'سبب غير معروف'}`);
+            } catch (error) {
+                console.error('Notification test failed:', error);
+                alert('❌ تعذر تنفيذ اختبار الإشعارات. تحقق من اتصال الخادم ثم أعد المحاولة.');
             }
         }
 
