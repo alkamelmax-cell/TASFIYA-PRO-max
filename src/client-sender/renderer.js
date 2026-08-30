@@ -2326,11 +2326,32 @@ async function submitFullRequest() {
 
         clearSavedRequestDraft();
         resetFormCollectionsAndFields();
-        updateControlStatus('تم إرسال الطلب بنجاح.', 'success');
+        const notification = result && result.notification ? result.notification : null;
+        const notificationDelivered = notification
+            && notification.delivery
+            && Number(notification.delivery.successful) > 0;
+        const notificationFailed = notification && notification.success === false;
+
+        if (notificationFailed) {
+            const diagnostic = notification.error || notification.code || 'سبب غير معروف';
+            updateControlStatus('تم حفظ الطلب للمراجعة، لكن إشعار الإدارة لم يُنشأ.', 'warning');
+            await showDialog({
+                title: 'تم إرسال الطلب — تعذر إشعار الإدارة',
+                text: `الطلب محفوظ على الخادم للمراجعة، لكن لم يتم إنشاء إشعار للإدارة. السبب: ${diagnostic}`,
+                icon: 'warning',
+                confirmButtonText: 'حسناً'
+            });
+            return;
+        }
+
+        const notificationText = notificationDelivered
+            ? 'وتم تأكيد تسليم الإشعار لجهاز إداري واحد على الأقل.'
+            : 'وتمت إحالة الإشعار إلى OneSignal؛ قد يحتاج ثوانٍ قليلة للظهور.';
+        updateControlStatus(`تم إرسال الطلب بنجاح. ${notificationText}`, 'success');
 
         await showDialog({
             title: 'تم الإرسال',
-            text: 'تم إرسال الطلب للمراجعة.',
+            text: `تم إرسال الطلب للمراجعة. ${notificationText}`,
             icon: 'success',
             confirmButtonText: 'حسناً'
         });

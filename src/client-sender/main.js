@@ -271,6 +271,9 @@ async function submitSingleRequest(payload) {
             success: true,
             request,
             remoteId: response.id || null,
+            notification: response.response && response.response.notification
+                ? response.response.notification
+                : null,
             counts: clientDb.getBootstrapStats(),
             bootstrap: getBootstrapPayload()
         };

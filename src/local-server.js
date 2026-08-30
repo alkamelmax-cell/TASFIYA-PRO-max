@@ -4872,6 +4872,57 @@ class LocalWebServer {
         return delivery;
     }
 
+    hasConfirmedOneSignalDeliveryFailure(delivery) {
+        if (!delivery || delivery.available === false) {
+            return false;
+        }
+
+        const successful = Number(delivery.successful || 0);
+        const failed = Number(delivery.failed || 0);
+        const errored = Number(delivery.errored || 0);
+        return successful === 0 && (failed > 0 || errored > 0);
+    }
+
+    async sendVerifiedReconciliationNotification(title, message, data = {}) {
+        // The normal path uses OneSignal external IDs so one administrator can
+        // receive the alert on every correctly linked device.  If OneSignal
+        // confirms that this identity-based delivery failed, retry only the
+        // locally registered browser subscriptions.  This fixes migrated
+        // installations where a browser subscription exists but its provider
+        // identity was not linked yet, without producing duplicate alerts.
+        const primary = await this.sendOneSignalNotification(title, message, data);
+        if (!primary.success || !primary.messageId) {
+            return primary;
+        }
+
+        primary.delivery = await this.waitForOneSignalDelivery(primary.messageId);
+        if (!this.hasConfirmedOneSignalDeliveryFailure(primary.delivery)) {
+            return primary;
+        }
+
+        const subscriptionIds = await this.getNotificationTargetSubscriptionIds();
+        if (subscriptionIds.length === 0) {
+            return primary;
+        }
+
+        console.warn(
+            `⚠️ [PUSH] External-ID delivery failed for reconciliation alert; retrying ${subscriptionIds.length} registered browser subscription(s).`
+        );
+        const fallback = await this.sendOneSignalNotification(title, message, data, { subscriptionIds });
+        if (fallback.success && fallback.messageId) {
+            fallback.delivery = await this.waitForOneSignalDelivery(fallback.messageId);
+        }
+
+        return {
+            ...fallback,
+            target: fallback.success ? 'registered_subscription_fallback' : primary.target,
+            primaryFailure: {
+                code: primary.code || null,
+                delivery: primary.delivery || null
+            }
+        };
+    }
+
     async sendOneSignalNotification(title, message, data = {}, options = {}) {
         const config = this.getOneSignalConfig();
         if (!config.configured) {
@@ -5123,6 +5174,14 @@ class LocalWebServer {
             console.log('✅ [API] Reconciliation Request Saved. ID:', insertedId);
 
                 // --- TRIGGER NOTIFICATION (Notify Admin using OneSignal) ---
+                // Saving the reconciliation and notifying an administrator are
+                // intentionally separate operations.  The response includes a
+                // safe diagnostic result so the sender never confuses a saved
+                // request with a confirmed notification.
+                let notification = {
+                    success: false,
+                    code: 'NOTIFICATION_NOT_ATTEMPTED'
+                };
                 try {
                     let cashierName = `كاشير ${data.cashier_id}`;
 
@@ -5139,16 +5198,35 @@ class LocalWebServer {
                         console.warn('⚠️ Could not fetch cashier name for notification:', dbErr);
                     }
 
-                    const notificationResult = await this.sendOneSignalNotification(
+                    notification = await this.sendVerifiedReconciliationNotification(
                         'طلب تصفية جديد 🔔',
-                        `قام ${cashierName} بإرسال طلب تصفية جديد. اضغط للمراجعة.`
+                        `قام ${cashierName} بإرسال طلب تصفية جديد. اضغط للمراجعة.`,
+                        { type: 'reconciliation_request', request_id: insertedId }
                     );
-                    if (!notificationResult.success) {
-                        console.warn(`⚠️ [PUSH] Request ${insertedId} was saved but notification was not queued: ${notificationResult.code || 'UNKNOWN_ERROR'}`);
+                    if (!notification.success) {
+                        console.warn(`⚠️ [PUSH] Request ${insertedId} was saved but notification was not queued: ${notification.code || 'UNKNOWN_ERROR'}`);
                     }
-                } catch (e) { console.error('Notification Error', e); }
+                } catch (e) {
+                    notification = {
+                        success: false,
+                        code: 'NOTIFICATION_UNEXPECTED_ERROR',
+                        error: e && e.message ? e.message : 'تعذر إنشاء الإشعار.'
+                    };
+                    console.error('Notification Error', e);
+                }
 
-            this.sendJson(res, { success: true, id: insertedId });
+            this.sendJson(res, {
+                success: true,
+                id: insertedId,
+                notification: {
+                    success: Boolean(notification.success),
+                    code: notification.code || null,
+                    error: notification.success ? null : (notification.error || null),
+                    messageId: notification.messageId || null,
+                    target: notification.target || null,
+                    delivery: notification.delivery || null
+                }
+            });
         } catch (error) {
             console.error('❌ [API] Error creating reconciliation request:', error);
             this.sendJson(
