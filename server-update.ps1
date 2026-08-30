@@ -29,11 +29,11 @@ function Get-ListeningProcessIds {
         $pidText = $parts[-1]
         $portText = ($localAddress -replace '^\[?::\]?:(\d+)$', '$1') -replace '^.*:(\d+)$', '$1'
         $port = 0
-        $pid = 0
+        $processIdNumber = 0
 
-        if ([int]::TryParse($portText, [ref]$port) -and [int]::TryParse($pidText, [ref]$pid)) {
-            if ($Ports -contains $port -and $pid -gt 0) {
-                [void]$ids.Add($pid)
+        if ([int]::TryParse($portText, [ref]$port) -and [int]::TryParse($pidText, [ref]$processIdNumber)) {
+            if ($Ports -contains $port -and $processIdNumber -gt 0) {
+                [void]$ids.Add($processIdNumber)
             }
         }
     }
