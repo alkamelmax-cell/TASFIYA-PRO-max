@@ -4525,15 +4525,29 @@ class LocalWebServer {
     async getNotificationTargetExternalIds() {
         try {
             const rows = this.dbManager.pool
-                ? (await this.dbManager.pool.query('SELECT id FROM admins WHERE active = 1 ORDER BY id')).rows
-                : this.dbManager.db.prepare('SELECT id FROM admins WHERE active = 1 ORDER BY id').all();
+                ? (await this.dbManager.pool.query('SELECT id, active FROM admins ORDER BY id')).rows
+                : this.dbManager.db.prepare('SELECT id, active FROM admins ORDER BY id').all();
 
-            return [...new Set(
+            // Older installations can have NULL activity flags, while Neon
+            // migrations may represent the flag as a boolean instead of 0/1.
+            // Resolve it in JavaScript so a valid subscribed administrator is
+            // never excluded merely by a database-type difference.
+            const isActiveAdmin = (value) => {
+                if (value === null || value === undefined || value === '') return true;
+                if (value === true || value === 1) return true;
+                const normalized = String(value).trim().toLowerCase();
+                return normalized === '1' || normalized === 'true' || normalized === 'yes';
+            };
+
+            const externalIds = [...new Set(
                 rows
+                    .filter((row) => isActiveAdmin(row && row.active))
                     .map((row) => Number(row && row.id))
                     .filter((id) => Number.isInteger(id) && id > 0)
                     .map((id) => `tasfiya-admin-${id}`)
             )];
+            console.log(`🔔 [PUSH] Resolved ${externalIds.length} active administrator target(s)`);
+            return externalIds;
         } catch (error) {
             console.error(`❌ [PUSH] Unable to resolve notification recipients: ${error && error.message ? error.message : error}`);
             return [];
@@ -4798,10 +4812,13 @@ class LocalWebServer {
                         console.warn('⚠️ Could not fetch cashier name for notification:', dbErr);
                     }
 
-                    await this.sendOneSignalNotification(
+                    const notificationResult = await this.sendOneSignalNotification(
                         'طلب تصفية جديد 🔔',
                         `قام ${cashierName} بإرسال طلب تصفية جديد. اضغط للمراجعة.`
                     );
+                    if (!notificationResult.success) {
+                        console.warn(`⚠️ [PUSH] Request ${insertedId} was saved but notification was not queued: ${notificationResult.code || 'UNKNOWN_ERROR'}`);
+                    }
                 } catch (e) { console.error('Notification Error', e); }
 
             this.sendJson(res, { success: true, id: insertedId });
