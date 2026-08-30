@@ -217,9 +217,14 @@
 
         windowObj.OneSignalDeferred = windowObj.OneSignalDeferred || [];
         windowObj.OneSignalDeferred.push(async function initializeOneSignal(OneSignal) {
-            if (windowObj.__tasfiyaOneSignalInitialized) {
+            // Both the dashboard boot sequence and the manual test can request
+            // setup at nearly the same time. Reserve initialization before any
+            // async work so OneSignal.init() is never called twice.
+            if (windowObj.__tasfiyaOneSignalInitialized || windowObj.__tasfiyaOneSignalInitializing) {
                 return;
             }
+
+            windowObj.__tasfiyaOneSignalInitializing = true;
 
             try {
                 const registration = await registerServiceWorker();
@@ -265,6 +270,8 @@
                 );
             } catch (error) {
                 console.error('[Tasfiya OneSignal] Initialization failed:', error);
+            } finally {
+                windowObj.__tasfiyaOneSignalInitializing = false;
             }
         });
     }
