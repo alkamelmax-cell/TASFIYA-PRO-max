@@ -4896,28 +4896,21 @@ class LocalWebServer {
                 return { success: false, code: 'ONESIGNAL_NO_RECIPIENTS', error };
             }
 
-            const recipients = Number(result.recipients || 0);
-            if (recipients <= 0) {
-                const error = this.getOneSignalErrorMessage(
-                    result,
-                    'قبل OneSignal الطلب، لكنه لم يجد جهازًا مشتركًا صالحًا لاستقبال الإشعار.'
-                );
-                console.warn(`⚠️ [PUSH] Notification created without recipients: ${error}; target=${subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'}`);
-                return {
-                    success: false,
-                    code: 'ONESIGNAL_NO_RECIPIENTS',
-                    error,
-                    messageId: result.id,
-                    recipients: 0,
-                    target: subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'
-                };
-            }
+            // OneSignal's Create Message API confirms creation with a non-empty
+            // id. Some API responses or account views do not include a reliable
+            // recipients count immediately, so do not convert a missing count to
+            // zero and falsely report failure after OneSignal accepted the push.
+            const hasRecipientsCount = Object.prototype.hasOwnProperty.call(result, 'recipients');
+            const parsedRecipients = hasRecipientsCount ? Number(result.recipients) : null;
+            const recipients = Number.isFinite(parsedRecipients) ? parsedRecipients : null;
+            const recipientSummary = recipients === null ? 'unknown' : recipients;
 
-            console.log(`✅ [PUSH] Sent message=${result.id} recipients=${recipients}; target=${subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'}`);
+            console.log(`✅ [PUSH] OneSignal accepted message=${result.id} recipients=${recipientSummary}; target=${subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'}`);
             return {
                 success: true,
                 messageId: result.id,
                 recipients,
+                recipientCountKnown: recipients !== null,
                 target: subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'
             };
         } catch (error) {

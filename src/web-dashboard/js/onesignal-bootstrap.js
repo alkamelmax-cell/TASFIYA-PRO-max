@@ -5,7 +5,7 @@
     // subscription is bound to its service worker; sharing the root PWA
     // worker previously left some browsers looking subscribed locally while
     // no valid OneSignal subscription existed on the provider.
-    const PUSH_WORKER_PATH = '/push/onesignal/OneSignalSDKWorker.js';
+    const PUSH_WORKER_PATH = 'push/onesignal/OneSignalSDKWorker.js';
     const PUSH_WORKER_SCOPE = '/push/onesignal/';
     const PWA_WORKER_PATH = '/service-worker.js';
     const PWA_WORKER_SCOPE = '/';
