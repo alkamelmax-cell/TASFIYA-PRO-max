@@ -651,13 +651,6 @@ class LocalWebServer {
                     return;
                 }
 
-                if (pathname === '/notification-diagnostics.html') {
-                    this.serveFile(res, path.join(__dirname, 'web-dashboard', 'notification-diagnostics.html'), 'text/html');
-                    return;
-                }
-
-
-
                 // API endpoints
                 if (pathname === '/api/reconciliations/stats') {
                     await this.handleGetReconciliationsStats(res, parsedUrl.query);
@@ -788,28 +781,8 @@ class LocalWebServer {
                     return;
                 }
 
-                else if (pathname === '/api/notifications/status' && req.method === 'GET') {
-                    this.handleNotificationStatus(res);
-                    return;
-                }
-                else if (pathname === '/api/notifications/diagnostics' && req.method === 'GET') {
-                    await this.handleNotificationDiagnostics(res, authContext.user);
-                    return;
-                }
-                else if (pathname === '/api/notifications/device-diagnostics' && req.method === 'GET') {
-                    await this.handleNotificationDeviceDiagnostics(res, authContext.user, parsedUrl.query);
-                    return;
-                }
-                else if (pathname === '/api/notifications/client-event' && req.method === 'POST') {
-                    await this.handleNotificationClientEvent(req, res, authContext.user);
-                    return;
-                }
                 else if (pathname === '/api/notifications/register' && req.method === 'POST') {
                     await this.handleRegisterNotificationSubscription(req, res, authContext.user);
-                    return;
-                }
-                else if (pathname === '/api/notifications/test' && req.method === 'POST') {
-                    await this.handleNotificationTest(req, res, authContext.user);
                     return;
                 }
                 else {
@@ -4451,6 +4424,7 @@ class LocalWebServer {
                         user_role TEXT DEFAULT 'admin',
                         external_id TEXT NOT NULL,
                         one_signal_app_id TEXT DEFAULT '',
+                        integration_version TEXT DEFAULT '',
                         user_agent TEXT DEFAULT '',
                         opted_in INTEGER DEFAULT 1,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -4461,34 +4435,8 @@ class LocalWebServer {
                 await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, user_role)');
                 await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_external_id ON notification_subscriptions(external_id)');
                 await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_app ON notification_subscriptions(one_signal_app_id, opted_in)');
-                await this.dbManager.pool.query(`
-                    CREATE TABLE IF NOT EXISTS notification_delivery_events (
-                        id BIGSERIAL PRIMARY KEY,
-                        request_id BIGINT NULL,
-                        event_type TEXT NOT NULL,
-                        target_type TEXT DEFAULT '',
-                        target_count INTEGER DEFAULT 0,
-                        one_signal_message_id TEXT DEFAULT '',
-                        queued BOOLEAN DEFAULT FALSE,
-                        delivery_json TEXT DEFAULT '',
-                        error_code TEXT DEFAULT '',
-                        error_message TEXT DEFAULT '',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                `);
-                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_delivery_events_created ON notification_delivery_events(created_at DESC)');
-                await this.dbManager.pool.query(`
-                    CREATE TABLE IF NOT EXISTS notification_client_events (
-                        id BIGSERIAL PRIMARY KEY,
-                        subscription_id TEXT NOT NULL,
-                        user_id INTEGER NOT NULL,
-                        event_type TEXT NOT NULL,
-                        one_signal_message_id TEXT DEFAULT '',
-                        page_path TEXT DEFAULT '',
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                `);
-                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_client_events_subscription ON notification_client_events(subscription_id, created_at DESC)');
+                await this.dbManager.pool.query("ALTER TABLE notification_subscriptions ADD COLUMN IF NOT EXISTS integration_version TEXT DEFAULT ''");
+                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_delivery_protocol ON notification_subscriptions(one_signal_app_id, integration_version, opted_in)');
             } else {
                 this.dbManager.db.exec(`
                     CREATE TABLE IF NOT EXISTS notification_subscriptions (
@@ -4497,6 +4445,7 @@ class LocalWebServer {
                         user_role TEXT DEFAULT 'admin',
                         external_id TEXT NOT NULL,
                         one_signal_app_id TEXT DEFAULT '',
+                        integration_version TEXT DEFAULT '',
                         user_agent TEXT DEFAULT '',
                         opted_in INTEGER DEFAULT 1,
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -4506,313 +4455,16 @@ class LocalWebServer {
                     CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, user_role);
                     CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_external_id ON notification_subscriptions(external_id);
                     CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_app ON notification_subscriptions(one_signal_app_id, opted_in);
-
-                    CREATE TABLE IF NOT EXISTS notification_delivery_events (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        request_id INTEGER,
-                        event_type TEXT NOT NULL,
-                        target_type TEXT DEFAULT '',
-                        target_count INTEGER DEFAULT 0,
-                        one_signal_message_id TEXT DEFAULT '',
-                        queued INTEGER DEFAULT 0,
-                        delivery_json TEXT DEFAULT '',
-                        error_code TEXT DEFAULT '',
-                        error_message TEXT DEFAULT '',
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_notification_delivery_events_created ON notification_delivery_events(created_at DESC);
-
-                    CREATE TABLE IF NOT EXISTS notification_client_events (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        subscription_id TEXT NOT NULL,
-                        user_id INTEGER NOT NULL,
-                        event_type TEXT NOT NULL,
-                        one_signal_message_id TEXT DEFAULT '',
-                        page_path TEXT DEFAULT '',
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_notification_client_events_subscription ON notification_client_events(subscription_id, created_at DESC);
                 `);
+                const sqliteColumns = this.dbManager.db.prepare('PRAGMA table_info(notification_subscriptions)').all();
+                if (!sqliteColumns.some((column) => column.name === 'integration_version')) {
+                    this.dbManager.db.exec("ALTER TABLE notification_subscriptions ADD COLUMN integration_version TEXT DEFAULT ''");
+                }
+                this.dbManager.db.exec('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_delivery_protocol ON notification_subscriptions(one_signal_app_id, integration_version, opted_in)');
             }
-            console.log('✅ [PUSH] Notification subscription and delivery audit stores are ready');
+            console.log('✅ [PUSH] Notification subscription store is ready');
         } catch (error) {
             console.error(`❌ [PUSH] Failed to prepare notification subscriptions: ${error && error.message ? error.message : error}`);
-        }
-    }
-
-    async recordNotificationDeliveryEvent(event = {}) {
-        const deliveryJson = event.delivery && typeof event.delivery === 'object'
-            ? JSON.stringify(event.delivery).slice(0, 4000)
-            : '';
-        const values = {
-            requestId: Number.isInteger(Number(event.requestId)) ? Number(event.requestId) : null,
-            eventType: String(event.eventType || 'reconciliation_request').slice(0, 100),
-            targetType: String(event.targetType || '').slice(0, 100),
-            targetCount: Math.max(0, Number.parseInt(event.targetCount, 10) || 0),
-            messageId: String(event.messageId || '').slice(0, 200),
-            queued: Boolean(event.success),
-            deliveryJson,
-            errorCode: String(event.code || '').slice(0, 100),
-            errorMessage: String(event.error || '').slice(0, 1000)
-        };
-
-        try {
-            if (this.dbManager.pool) {
-                await this.dbManager.pool.query(
-                    `
-                        INSERT INTO notification_delivery_events (
-                            request_id, event_type, target_type, target_count,
-                            one_signal_message_id, queued, delivery_json,
-                            error_code, error_message, created_at
-                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
-                    `,
-                    [
-                        values.requestId, values.eventType, values.targetType, values.targetCount,
-                        values.messageId, values.queued, values.deliveryJson,
-                        values.errorCode, values.errorMessage
-                    ]
-                );
-            } else {
-                this.dbManager.db.prepare(`
-                    INSERT INTO notification_delivery_events (
-                        request_id, event_type, target_type, target_count,
-                        one_signal_message_id, queued, delivery_json,
-                        error_code, error_message, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                `).run(
-                    values.requestId, values.eventType, values.targetType, values.targetCount,
-                    values.messageId, values.queued ? 1 : 0, values.deliveryJson,
-                    values.errorCode, values.errorMessage
-                );
-            }
-        } catch (error) {
-            // Delivery audit must never affect saving a reconciliation request.
-            console.warn(`⚠️ [PUSH] Could not write delivery audit: ${error && error.message ? error.message : error}`);
-        }
-    }
-
-    async handleNotificationDiagnostics(res, authenticatedUser) {
-        if (!authenticatedUser || authenticatedUser.role === 'cashier') {
-            this.sendJson(res, {
-                success: false,
-                error: 'تشخيص الإشعارات متاح للإدارة فقط.'
-            }, { statusCode: 403 });
-            return;
-        }
-
-        try {
-            const config = this.getOneSignalConfig();
-            const subscriptionIds = await this.getNotificationTargetSubscriptionIds();
-            const rows = this.dbManager.pool
-                ? (await this.dbManager.pool.query(`
-                    SELECT request_id, event_type, target_type, target_count,
-                           one_signal_message_id, queued, delivery_json,
-                           error_code, error_message, created_at
-                    FROM notification_delivery_events
-                    ORDER BY id DESC
-                    LIMIT 20
-                `)).rows
-                : this.dbManager.db.prepare(`
-                    SELECT request_id, event_type, target_type, target_count,
-                           one_signal_message_id, queued, delivery_json,
-                           error_code, error_message, created_at
-                    FROM notification_delivery_events
-                    ORDER BY id DESC
-                    LIMIT 20
-                `).all();
-
-            const events = rows.map((row) => {
-                let delivery = null;
-                try {
-                    delivery = row.delivery_json ? JSON.parse(row.delivery_json) : null;
-                } catch (_) {
-                    delivery = null;
-                }
-                return {
-                    requestId: row.request_id,
-                    eventType: row.event_type,
-                    target: row.target_type,
-                    targetCount: Number(row.target_count || 0),
-                    messageId: row.one_signal_message_id || null,
-                    queued: Boolean(row.queued),
-                    delivery,
-                    code: row.error_code || null,
-                    error: row.error_message || null,
-                    createdAt: row.created_at
-                };
-            });
-
-            this.sendJson(res, {
-                success: true,
-                configured: config.configured,
-                registeredSubscriptionCount: subscriptionIds.length,
-                events
-            });
-        } catch (error) {
-            this.sendJson(res, {
-                success: false,
-                error: 'تعذر قراءة تشخيص الإشعارات.'
-            }, { statusCode: 500 });
-        }
-    }
-
-    async handleNotificationDeviceDiagnostics(res, authenticatedUser, query = {}) {
-        if (!authenticatedUser || authenticatedUser.role === 'cashier') {
-            this.sendJson(res, {
-                success: false,
-                error: 'تشخيص جهاز الإشعارات متاح للإدارة فقط.'
-            }, { statusCode: 403 });
-            return;
-        }
-
-        try {
-            const userId = await this.resolveAdminNotificationUserId(authenticatedUser);
-            const config = this.getOneSignalConfig();
-            const subscriptionId = String(query.subscriptionId || query.subscription_id || '').trim();
-            const hasSubscriptionId = ONESIGNAL_UUID_REGEX.test(subscriptionId);
-            const externalId = userId > 0 ? `tasfiya-admin-${userId}` : '';
-            const targetExternalIds = await this.getNotificationTargetExternalIds();
-            let registration = null;
-            let lastClientEvent = null;
-
-            if (hasSubscriptionId) {
-                registration = this.dbManager.pool
-                    ? (await this.dbManager.pool.query(
-                        `
-                            SELECT subscription_id, opted_in, last_seen_at, updated_at
-                            FROM notification_subscriptions
-                            WHERE subscription_id = $1
-                              AND user_id = $2
-                              AND user_role = 'admin'
-                              AND one_signal_app_id = $3
-                            LIMIT 1
-                        `,
-                        [subscriptionId, userId, config.appId]
-                    )).rows[0]
-                    : this.dbManager.db.prepare(`
-                        SELECT subscription_id, opted_in, last_seen_at, updated_at
-                        FROM notification_subscriptions
-                        WHERE subscription_id = ?
-                          AND user_id = ?
-                          AND user_role = 'admin'
-                          AND one_signal_app_id = ?
-                        LIMIT 1
-                    `).get(subscriptionId, userId, config.appId);
-
-                lastClientEvent = this.dbManager.pool
-                    ? (await this.dbManager.pool.query(
-                        `
-                            SELECT event_type, one_signal_message_id, page_path, created_at
-                            FROM notification_client_events
-                            WHERE subscription_id = $1 AND user_id = $2
-                            ORDER BY id DESC
-                            LIMIT 1
-                        `,
-                        [subscriptionId, userId]
-                    )).rows[0]
-                    : this.dbManager.db.prepare(`
-                        SELECT event_type, one_signal_message_id, page_path, created_at
-                        FROM notification_client_events
-                        WHERE subscription_id = ? AND user_id = ?
-                        ORDER BY id DESC
-                        LIMIT 1
-                    `).get(subscriptionId, userId);
-            }
-
-            this.sendJson(res, {
-                success: true,
-                expectedExternalId: externalId || null,
-                hasBrowserSubscriptionId: hasSubscriptionId,
-                registeredOnServer: Boolean(registration),
-                serverOptedIn: Boolean(registration && Number(registration.opted_in) !== 0),
-                targetedForOperationalAlerts: Boolean(externalId && targetExternalIds.includes(externalId)),
-                lastSeenAt: registration ? registration.last_seen_at : null,
-                lastClientEvent: lastClientEvent || null
-            });
-        } catch (error) {
-            console.warn(`⚠️ [PUSH] Unable to read current device diagnostics: ${error && error.message ? error.message : error}`);
-            this.sendJson(res, {
-                success: false,
-                error: 'تعذر مطابقة هذا الجهاز مع سجل الإشعارات.'
-            }, { statusCode: 500 });
-        }
-    }
-
-    async handleNotificationClientEvent(req, res, authenticatedUser) {
-        if (!authenticatedUser || authenticatedUser.role === 'cashier') {
-            this.sendJson(res, { success: false, error: 'غير مصرح بتسجيل حدث إشعار.' }, { statusCode: 403 });
-            return;
-        }
-
-        try {
-            const data = await this.readJsonBody(req, {
-                maxBytes: DEFAULT_JSON_BODY_LIMIT_BYTES,
-                routeLabel: '/api/notifications/client-event payload'
-            });
-            const userId = await this.resolveAdminNotificationUserId(authenticatedUser);
-            const subscriptionId = String(data.subscriptionId || '').trim();
-            const eventType = String(data.eventType || '').trim();
-            const allowedEventTypes = new Set(['foreground_will_display', 'click', 'dismiss']);
-
-            if (!Number.isInteger(userId) || userId <= 0 || !ONESIGNAL_UUID_REGEX.test(subscriptionId) || !allowedEventTypes.has(eventType)) {
-                this.sendJson(res, { success: false, error: 'بيانات حدث الإشعار غير صالحة.' }, { statusCode: 400 });
-                return;
-            }
-
-            const config = this.getOneSignalConfig();
-            const knownSubscription = this.dbManager.pool
-                ? (await this.dbManager.pool.query(
-                    `
-                        SELECT 1
-                        FROM notification_subscriptions
-                        WHERE subscription_id = $1
-                          AND user_id = $2
-                          AND one_signal_app_id = $3
-                          AND COALESCE(opted_in, 1) <> 0
-                        LIMIT 1
-                    `,
-                    [subscriptionId, userId, config.appId]
-                )).rowCount > 0
-                : Boolean(this.dbManager.db.prepare(`
-                    SELECT 1
-                    FROM notification_subscriptions
-                    WHERE subscription_id = ?
-                      AND user_id = ?
-                      AND one_signal_app_id = ?
-                      AND COALESCE(opted_in, 1) <> 0
-                    LIMIT 1
-                `).get(subscriptionId, userId, config.appId));
-
-            if (!knownSubscription) {
-                this.sendJson(res, { success: false, error: 'هذا الجهاز غير مسجل بعد لدى الخادم.' }, { statusCode: 409 });
-                return;
-            }
-
-            const messageId = String(data.messageId || '').slice(0, 200);
-            const pagePath = String(data.pagePath || '').slice(0, 300);
-            if (this.dbManager.pool) {
-                await this.dbManager.pool.query(
-                    `
-                        INSERT INTO notification_client_events (
-                            subscription_id, user_id, event_type,
-                            one_signal_message_id, page_path, created_at
-                        ) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
-                    `,
-                    [subscriptionId, userId, eventType, messageId, pagePath]
-                );
-            } else {
-                this.dbManager.db.prepare(`
-                    INSERT INTO notification_client_events (
-                        subscription_id, user_id, event_type,
-                        one_signal_message_id, page_path, created_at
-                    ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                `).run(subscriptionId, userId, eventType, messageId, pagePath);
-            }
-
-            this.sendJson(res, { success: true });
-        } catch (error) {
-            console.warn(`⚠️ [PUSH] Could not record browser notification receipt: ${error && error.message ? error.message : error}`);
-            this.sendJson(res, { success: false, error: 'تعذر حفظ حدث استقبال الإشعار.' }, { statusCode: 500 });
         }
     }
 
@@ -4887,6 +4539,8 @@ class LocalWebServer {
         }
 
         const externalId = `tasfiya-admin-${userId}`;
+        const integrationVersion = String(data.integrationVersion || data.integration_version || '').trim();
+        const isCurrentIntegration = integrationVersion === 'onesignal-worker-v1';
         const userAgent = String((req && req.headers && req.headers['user-agent']) || '').slice(0, 500);
         const optedIn = data.optedIn === false || data.opted_in === false ? 0 : 1;
 
@@ -4895,48 +4549,51 @@ class LocalWebServer {
                 `
                     INSERT INTO notification_subscriptions (
                         subscription_id, user_id, user_role, external_id,
-                        one_signal_app_id, user_agent, opted_in,
+                        one_signal_app_id, integration_version, user_agent, opted_in,
                         created_at, updated_at, last_seen_at
                     )
-                    VALUES ($1, $2, 'admin', $3, $4, $5, $6, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES ($1, $2, 'admin', $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     ON CONFLICT (subscription_id) DO UPDATE SET
                         user_id = EXCLUDED.user_id,
                         user_role = EXCLUDED.user_role,
                         external_id = EXCLUDED.external_id,
                         one_signal_app_id = EXCLUDED.one_signal_app_id,
+                        integration_version = EXCLUDED.integration_version,
                         user_agent = EXCLUDED.user_agent,
                         opted_in = EXCLUDED.opted_in,
                         updated_at = CURRENT_TIMESTAMP,
                         last_seen_at = CURRENT_TIMESTAMP
                 `,
-                [subscriptionId, userId, externalId, config.appId, userAgent, optedIn]
+                [subscriptionId, userId, externalId, config.appId, integrationVersion, userAgent, optedIn]
             );
         } else {
             this.dbManager.db.prepare(`
                 INSERT INTO notification_subscriptions (
                     subscription_id, user_id, user_role, external_id,
-                    one_signal_app_id, user_agent, opted_in,
+                    one_signal_app_id, integration_version, user_agent, opted_in,
                     created_at, updated_at, last_seen_at
                 )
-                VALUES (?, ?, 'admin', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?, ?, 'admin', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 ON CONFLICT(subscription_id) DO UPDATE SET
                     user_id = excluded.user_id,
                     user_role = excluded.user_role,
                     external_id = excluded.external_id,
                     one_signal_app_id = excluded.one_signal_app_id,
+                    integration_version = excluded.integration_version,
                     user_agent = excluded.user_agent,
                     opted_in = excluded.opted_in,
                     updated_at = CURRENT_TIMESTAMP,
                     last_seen_at = CURRENT_TIMESTAMP
-            `).run(subscriptionId, userId, externalId, config.appId, userAgent, optedIn);
+            `).run(subscriptionId, userId, externalId, config.appId, integrationVersion, userAgent, optedIn);
         }
 
-        console.log(`✅ [PUSH] Registered browser subscription for admin ${userId}`);
+        console.log(`✅ [PUSH] Registered browser subscription for admin ${userId}; current_worker=${isCurrentIntegration}`);
         return {
             success: true,
             userId,
             externalId,
-            subscriptionId
+            subscriptionId,
+            currentWorker: isCurrentIntegration
         };
     }
 
@@ -4983,6 +4640,7 @@ class LocalWebServer {
                         WHERE user_role = 'admin'
                           AND COALESCE(opted_in, 1) = 1
                           AND one_signal_app_id = $1
+                          AND integration_version = 'onesignal-worker-v1'
                         ORDER BY last_seen_at DESC
                         LIMIT 200
                     `,
@@ -4994,6 +4652,7 @@ class LocalWebServer {
                     WHERE user_role = 'admin'
                       AND COALESCE(opted_in, 1) = 1
                       AND one_signal_app_id = ?
+                      AND integration_version = 'onesignal-worker-v1'
                     ORDER BY last_seen_at DESC
                     LIMIT 200
                 `).all(config.appId);
@@ -5051,84 +4710,11 @@ class LocalWebServer {
             : fallbackMessage;
     }
 
-    handleNotificationStatus(res) {
-        const config = this.getOneSignalConfig();
-        this.sendJson(res, {
-            success: true,
-            configured: config.configured,
-            provider: 'OneSignal',
-            apiEndpoint: 'https://api.onesignal.com/notifications?c=push',
-            targeting: 'registered subscription_id first; external_id fallback',
-            hasAppId: Boolean(config.appId),
-            hasApiKey: Boolean(config.appApiKey),
-            hasPublicUrl: Boolean(config.publicUrl),
-            message: config.configured
-                ? 'إعداد الإرسال موجود. استخدم اختبار الإشعارات للتحقق من وصوله إلى OneSignal.'
-                : 'مفتاح OneSignal أو App ID غير مضبوط بشكل صحيح في بيئة الخادم.'
-        });
-    }
-
     handlePublicClientConfig(res) {
         const config = this.getOneSignalConfig();
         this.sendJson(res, {
             success: true,
             oneSignalAppId: config.appId
-        });
-    }
-
-    async handleNotificationTest(req, res, authenticatedUser) {
-        // Prefer the identity attached by the authorization layer. A process
-        // restart can leave an older session shape in circulation, so recover
-        // the numeric admin id from its username rather than trusting any id
-        // supplied by the browser.
-        const sessionUser = authenticatedUser || req.authUser || this.getAuthenticatedUser(req) || {};
-        const data = await this.readJsonBody(req, {
-            maxBytes: DEFAULT_JSON_BODY_LIMIT_BYTES,
-            routeLabel: '/api/notifications/test payload'
-        });
-        const userId = await this.resolveAdminNotificationUserId(sessionUser);
-
-        if (!Number.isInteger(userId) || userId <= 0) {
-            this.sendJson(res, {
-                success: false,
-                code: 'NOTIFICATION_TEST_IDENTITY_MISSING',
-                error: 'تعذر تحديد هوية المدير لاختبار الإشعارات. سجّل الدخول مرة أخرى ثم أعد المحاولة.'
-            }, { statusCode: 401 });
-            return;
-        }
-
-        const subscriptionId = String(data.subscriptionId || data.subscription_id || '').trim();
-        const hasCurrentSubscriptionId = ONESIGNAL_UUID_REGEX.test(subscriptionId);
-        if (hasCurrentSubscriptionId) {
-            await this.registerNotificationSubscription(
-                sessionUser,
-                { subscriptionId, optedIn: true },
-                req
-            );
-        }
-
-        // The test targets the exact browser subscription when available. This
-        // proves whether the current device can receive push before broader
-        // admin fan-out is involved.
-        console.log(`🔔 [PUSH] Admin ${userId} requested a notification delivery test`);
-        const result = await this.sendOneSignalNotification(
-            '🔔 اختبار إشعارات تصفية برو',
-            'تم إرسال هذا الاختبار من لوحة الإدارة للتحقق من وصول الإشعارات.',
-            { type: 'notification_test', source: 'admin_dashboard' },
-            hasCurrentSubscriptionId
-                ? { subscriptionIds: [subscriptionId] }
-                : { externalIds: [`tasfiya-admin-${userId}`] }
-        );
-
-        // Creating a OneSignal message is not the same as proving that the
-        // provider has dispatched it.  Ask OneSignal for the message metrics
-        // before reporting the diagnostic result to the administrator.
-        if (result.success && result.messageId) {
-            result.delivery = await this.waitForOneSignalDelivery(result.messageId);
-        }
-
-        this.sendJson(res, result, {
-            statusCode: result.success ? 200 : (result.code === 'ONESIGNAL_NO_RECIPIENTS' ? 409 : 502)
         });
     }
 
@@ -5172,82 +4758,6 @@ class LocalWebServer {
         )];
     }
 
-    async getOneSignalMessageDelivery(messageId) {
-        const config = this.getOneSignalConfig();
-        if (!config.configured || !ONESIGNAL_UUID_REGEX.test(String(messageId || '').trim())) {
-            return null;
-        }
-
-        try {
-            const response = await fetch(
-                `https://api.onesignal.com/notifications/${encodeURIComponent(messageId)}?app_id=${encodeURIComponent(config.appId)}`,
-                {
-                    headers: {
-                        Accept: 'application/json',
-                        Authorization: `Key ${config.appApiKey}`
-                    }
-                }
-            );
-
-            if (!response.ok) {
-                return { available: false, statusCode: response.status };
-            }
-
-            const payload = await response.json();
-            const toNumberOrNull = (value) => {
-                const parsed = Number(value);
-                return Number.isFinite(parsed) ? parsed : null;
-            };
-
-            return {
-                available: true,
-                successful: toNumberOrNull(payload.successful),
-                failed: toNumberOrNull(payload.failed),
-                errored: toNumberOrNull(payload.errored),
-                received: toNumberOrNull(payload.received),
-                remaining: toNumberOrNull(payload.remaining),
-                completed: Boolean(payload.completed_at),
-                platformDeliveryStats: payload.platform_delivery_stats || null
-            };
-        } catch (error) {
-            console.warn(`⚠️ [PUSH] Could not read OneSignal delivery metrics: ${error && error.message ? error.message : error}`);
-            return { available: false, error: 'DELIVERY_METRICS_UNAVAILABLE' };
-        }
-    }
-
-    async waitForOneSignalDelivery(messageId) {
-        let delivery = null;
-        for (let attempt = 0; attempt < 4; attempt += 1) {
-            delivery = await this.getOneSignalMessageDelivery(messageId);
-            if (!delivery || delivery.available === false) {
-                return delivery;
-            }
-
-            const terminalCount = [delivery.successful, delivery.failed, delivery.errored]
-                .filter((value) => Number.isFinite(value))
-                .reduce((total, value) => total + value, 0);
-            if (delivery.completed || terminalCount > 0) {
-                return delivery;
-            }
-
-            if (attempt < 3) {
-                await new Promise((resolve) => setTimeout(resolve, 1500));
-            }
-        }
-        return delivery;
-    }
-
-    hasConfirmedOneSignalDeliveryFailure(delivery) {
-        if (!delivery || delivery.available === false) {
-            return false;
-        }
-
-        const successful = Number(delivery.successful || 0);
-        const failed = Number(delivery.failed || 0);
-        const errored = Number(delivery.errored || 0);
-        return successful === 0 && (failed > 0 || errored > 0);
-    }
-
     async sendVerifiedReconciliationNotification(title, message, data = {}) {
         // Operational alerts are sent to the exact current browser
         // subscriptions registered by this server, one subscription per API
@@ -5271,7 +4781,7 @@ class LocalWebServer {
         }
 
         const attempts = await Promise.all(subscriptionIds.map(async (subscriptionId) => {
-            const result = await this.sendOneSignalNotification(
+            return this.sendOneSignalNotification(
                 title,
                 message,
                 data,
@@ -5280,32 +4790,10 @@ class LocalWebServer {
                     webUrl: data.web_url || ''
                 }
             );
-            if (result.success && result.messageId) {
-                result.delivery = await this.waitForOneSignalDelivery(result.messageId);
-            }
-            return result;
         }));
 
         const successfulAttempts = attempts.filter((result) => result && result.success);
         const failedAttempts = attempts.filter((result) => !result || !result.success);
-        const deliveryAttempts = successfulAttempts
-            .map((result) => result.delivery)
-            .filter((delivery) => delivery && delivery.available !== false);
-        const numberFromDeliveries = (key) => deliveryAttempts.reduce(
-            (total, delivery) => total + (Number.isFinite(Number(delivery[key])) ? Number(delivery[key]) : 0),
-            0
-        );
-        const delivery = deliveryAttempts.length > 0
-            ? {
-                available: true,
-                successful: numberFromDeliveries('successful'),
-                failed: numberFromDeliveries('failed'),
-                errored: numberFromDeliveries('errored'),
-                received: numberFromDeliveries('received'),
-                remaining: numberFromDeliveries('remaining'),
-                completed: deliveryAttempts.every((item) => item.completed === true)
-            }
-            : (successfulAttempts.length > 0 ? { available: false } : null);
 
         if (successfulAttempts.length === 0) {
             const firstFailure = failedAttempts[0] || {};
@@ -5314,8 +4802,7 @@ class LocalWebServer {
                 code: firstFailure.code || 'ONESIGNAL_NO_RECIPIENTS',
                 error: firstFailure.error || 'لم يقبل OneSignal أي اشتراك جهاز مسجل.',
                 target: 'registered_subscription',
-                targetCount: subscriptionIds.length,
-                delivery
+                targetCount: subscriptionIds.length
             };
         }
 
@@ -5326,8 +4813,7 @@ class LocalWebServer {
             target: 'registered_subscription',
             targetCount: subscriptionIds.length,
             acceptedCount: successfulAttempts.length,
-            failedTargetCount: failedAttempts.length,
-            delivery
+            failedTargetCount: failedAttempts.length
         };
     }
 
@@ -5377,10 +4863,8 @@ class LocalWebServer {
         const explicitExternalIds = this.normalizeOneSignalIds(options.externalIds);
         let externalIds = [];
 
-        // A direct subscription ID is used only for a diagnostic test of the
-        // current browser.  Normal reconciliation alerts must target the
-        // stable OneSignal external ID so every device belonging to the same
-        // administrator (web and native app) can receive one notification.
+        // Operational alerts use registered subscription IDs when supplied.
+        // The external-id path remains a safe fallback for other callers.
         if (subscriptionIds.length === 0) {
             externalIds = explicitExternalIds.length > 0
                 ? explicitExternalIds
@@ -5405,8 +4889,7 @@ class LocalWebServer {
         };
 
         if (subscriptionIds.length > 0) {
-            // Delivery tests target the exact subscription shown in OneSignal,
-            // eliminating ambiguous segment membership from the diagnosis.
+            // Send directly to the known browser subscription.
             notificationPayload.include_subscription_ids = subscriptionIds;
         } else {
             // Production notifications target authenticated Tasfiya admins.
@@ -5663,18 +5146,6 @@ class LocalWebServer {
                     };
                     console.error('Notification Error', e);
                 }
-
-                await this.recordNotificationDeliveryEvent({
-                    requestId: insertedId,
-                    eventType: 'reconciliation_request',
-                    targetType: notification.target,
-                    targetCount: notification.targetCount,
-                    messageId: notification.messageId,
-                    success: notification.success,
-                    delivery: notification.delivery,
-                    code: notification.code,
-                    error: notification.error
-                });
 
             this.sendJson(res, {
                 success: true,

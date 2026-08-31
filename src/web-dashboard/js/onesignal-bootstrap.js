@@ -9,7 +9,6 @@
     const PUSH_WORKER_SCOPE = '/push/onesignal/';
     const PWA_WORKER_PATH = '/service-worker.js';
     const PWA_WORKER_SCOPE = '/';
-    const ONESIGNAL_SUBSCRIPTION_ID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
     const LEGACY_CACHE_NAMES = new Set([
         'tasfiya-pro-v2',
         'tasfiya-pro-v2.6'
@@ -23,7 +22,6 @@
     let browserNotificationUser = null;
     let browserNotificationRole = 'admin';
     let browserNotificationAppId = '';
-    let notificationEventListenersAttached = false;
 
     async function getOneSignalAppId() {
         if (!oneSignalAppIdPromise) {
@@ -254,6 +252,7 @@
                     subscriptionId,
                     externalId: `tasfiya-admin-${userId}`,
                     appId: browserNotificationAppId,
+                    integrationVersion: 'onesignal-worker-v1',
                     role: browserNotificationRole,
                     optedIn: true,
                     permission: OneSignal.Notifications.permission
@@ -269,68 +268,6 @@
             console.warn('[Tasfiya OneSignal] Unable to register browser subscription with server:', error);
             return false;
         }
-    }
-
-    function getNotificationEventMessageId(event) {
-        try {
-            const notification = event && typeof event.getNotification === 'function'
-                ? event.getNotification()
-                : (event && event.notification ? event.notification : event);
-            return String(
-                (notification && (notification.id || notification.notificationId || notification.notification_id)) || ''
-            ).slice(0, 200);
-        } catch (_) {
-            return '';
-        }
-    }
-
-    async function recordBrowserNotificationEvent(OneSignal, eventType, event) {
-        const pushSubscription = OneSignal
-            && OneSignal.User
-            && OneSignal.User.PushSubscription;
-        const subscriptionId = String(pushSubscription && pushSubscription.id || '').trim();
-        if (!browserNotificationUser || !browserNotificationUser.id || !ONESIGNAL_SUBSCRIPTION_ID_REGEX.test(subscriptionId)) {
-            return;
-        }
-
-        try {
-            await windowObj.fetch('/api/notifications/client-event', {
-                method: 'POST',
-                credentials: 'same-origin',
-                cache: 'no-store',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    subscriptionId,
-                    eventType,
-                    messageId: getNotificationEventMessageId(event),
-                    pagePath: `${windowObj.location.pathname || '/'}${windowObj.location.search || ''}`
-                })
-            });
-        } catch (_) {
-            // This audit is diagnostic only.  A telemetry failure must never
-            // suppress a notification or affect the OneSignal SDK.
-        }
-    }
-
-    function attachNotificationEventListeners(OneSignal) {
-        if (
-            notificationEventListenersAttached
-            || !OneSignal
-            || !OneSignal.Notifications
-            || typeof OneSignal.Notifications.addEventListener !== 'function'
-        ) {
-            return;
-        }
-
-        notificationEventListenersAttached = true;
-        ['foregroundWillDisplay', 'click', 'dismiss'].forEach((eventType) => {
-            OneSignal.Notifications.addEventListener(eventType, (event) => {
-                // Do not call preventDefault(): OneSignal must keep its
-                // standard display behavior.  We only keep a receipt audit
-                // so support can distinguish delivery from device display.
-                void recordBrowserNotificationEvent(OneSignal, eventType, event);
-            });
-        });
     }
 
     function queueOneSignalInit(user, options) {
@@ -379,7 +316,6 @@
 
                     windowObj.__tasfiyaOneSignalInitialized = true;
                     oneSignalInstance = OneSignal;
-                    attachNotificationEventListeners(OneSignal);
 
                     if (externalId) {
                         await OneSignal.login(externalId);
@@ -475,21 +411,6 @@
         return { success: true, subscriptionId };
     }
 
-    async function getBrowserPushState() {
-        const OneSignal = oneSignalInstance || await oneSignalInitializationPromise;
-        const pushSubscription = OneSignal
-            && OneSignal.User
-            && OneSignal.User.PushSubscription;
-        return {
-            ready: Boolean(OneSignal && pushSubscription),
-            permission: OneSignal && OneSignal.Notifications
-                ? String(OneSignal.Notifications.permission || '')
-                : '',
-            optedIn: Boolean(pushSubscription && pushSubscription.optedIn),
-            subscriptionId: String(pushSubscription && pushSubscription.id || '').trim()
-        };
-    }
-
     windowObj.TasfiyaPwa = {
         registerServiceWorker
     };
@@ -506,9 +427,6 @@
         },
         getBrowserPushSubscriptionId(options) {
             return getBrowserPushSubscriptionId(options);
-        },
-        getBrowserPushState() {
-            return getBrowserPushState();
         },
         requestBrowserPushPermission() {
             return requestBrowserPushPermission();
