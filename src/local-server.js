@@ -4884,42 +4884,38 @@ class LocalWebServer {
     }
 
     async sendVerifiedReconciliationNotification(title, message, data = {}) {
-        // The normal path uses OneSignal external IDs so one administrator can
-        // receive the alert on every correctly linked device.  If OneSignal
-        // confirms that this identity-based delivery failed, retry only the
-        // locally registered browser subscriptions.  This fixes migrated
-        // installations where a browser subscription exists but its provider
-        // identity was not linked yet, without producing duplicate alerts.
-        const primary = await this.sendOneSignalNotification(title, message, data);
-        if (!primary.success || !primary.messageId) {
-            return primary;
-        }
-
-        primary.delivery = await this.waitForOneSignalDelivery(primary.messageId);
-        if (!this.hasConfirmedOneSignalDeliveryFailure(primary.delivery)) {
-            return primary;
-        }
-
+        // A dashboard test that was confirmed delivered targets the exact
+        // OneSignal subscription ID.  Production alerts must use the same
+        // proven route whenever the server has registered subscriptions.
+        //
+        // External IDs are retained only as a fallback for a fresh server with
+        // no registered browser yet.  Treating the external-ID result as the
+        // primary route caused an accepted OneSignal message to be mistaken for
+        // a delivered request alert after the Render -> local-server move: the
+        // browser had a real subscription, while the alias association was not
+        // guaranteed to be ready at that moment.
         const subscriptionIds = await this.getNotificationTargetSubscriptionIds();
-        if (subscriptionIds.length === 0) {
-            return primary;
-        }
-
-        console.warn(
-            `⚠️ [PUSH] External-ID delivery failed for reconciliation alert; retrying ${subscriptionIds.length} registered browser subscription(s).`
+        const directTarget = subscriptionIds.length > 0;
+        console.log(
+            `🔔 [PUSH] Reconciliation alert target=${directTarget ? 'registered_subscription' : 'external_id_fallback'} count=${directTarget ? subscriptionIds.length : 'admin-aliases'}`
         );
-        const fallback = await this.sendOneSignalNotification(title, message, data, { subscriptionIds });
-        if (fallback.success && fallback.messageId) {
-            fallback.delivery = await this.waitForOneSignalDelivery(fallback.messageId);
+
+        const result = await this.sendOneSignalNotification(
+            title,
+            message,
+            data,
+            directTarget ? { subscriptionIds } : {}
+        );
+
+        if (result.success && result.messageId) {
+            result.delivery = await this.waitForOneSignalDelivery(result.messageId);
         }
 
         return {
-            ...fallback,
-            target: fallback.success ? 'registered_subscription_fallback' : primary.target,
-            primaryFailure: {
-                code: primary.code || null,
-                delivery: primary.delivery || null
-            }
+            ...result,
+            target: result.target === 'subscription_id'
+                ? 'registered_subscription'
+                : result.target
         };
     }
 
