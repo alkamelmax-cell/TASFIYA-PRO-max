@@ -4971,10 +4971,14 @@ class LocalWebServer {
         }
 
         try {
+            const activeExternalIds = new Set(await this.getNotificationTargetExternalIds());
+            if (activeExternalIds.size === 0) {
+                return [];
+            }
             const rows = this.dbManager.pool
                 ? (await this.dbManager.pool.query(
                     `
-                        SELECT subscription_id
+                        SELECT subscription_id, external_id
                         FROM notification_subscriptions
                         WHERE user_role = 'admin'
                           AND COALESCE(opted_in, 1) = 1
@@ -4985,7 +4989,7 @@ class LocalWebServer {
                     [config.appId]
                 )).rows
                 : this.dbManager.db.prepare(`
-                    SELECT subscription_id
+                    SELECT subscription_id, external_id
                     FROM notification_subscriptions
                     WHERE user_role = 'admin'
                       AND COALESCE(opted_in, 1) = 1
@@ -4994,9 +4998,13 @@ class LocalWebServer {
                     LIMIT 200
                 `).all(config.appId);
 
-            const subscriptionIds = this.normalizeOneSignalIds(rows.map((row) => row.subscription_id))
+            const subscriptionIds = this.normalizeOneSignalIds(
+                rows
+                    .filter((row) => activeExternalIds.has(String(row.external_id || '')))
+                    .map((row) => row.subscription_id)
+            )
                 .filter((id) => ONESIGNAL_UUID_REGEX.test(id));
-            console.log(`🔔 [PUSH] Resolved ${subscriptionIds.length} registered browser subscription target(s)`);
+            console.log(`🔔 [PUSH] Resolved ${subscriptionIds.length} active registered browser subscription target(s)`);
             return subscriptionIds;
         } catch (error) {
             console.error(`❌ [PUSH] Unable to resolve registered notification subscriptions: ${error && error.message ? error.message : error}`);
@@ -5241,41 +5249,85 @@ class LocalWebServer {
     }
 
     async sendVerifiedReconciliationNotification(title, message, data = {}) {
-        // A OneSignal Subscription ID identifies one browser/device only. It
-        // changes when site data is cleared, a browser is reinstalled, or a
-        // user moves to a new public URL.  Sending operational alerts to every
-        // ID ever stored locally made a single stale ID reject the whole batch
-        // (invalid_player_ids), even when the administrator had a valid new
-        // subscription.
-        //
-        // The stable external ID is the authoritative recipient identity. The
-        // Web SDK calls OneSignal.login("tasfiya-admin-<id>") after every
-        // sign-in, so OneSignal links all *currently subscribed* browser and
-        // mobile devices for that administrator and automatically ignores old
-        // devices. Subscription IDs remain stored only for diagnostics.
-        const externalIds = await this.getNotificationTargetExternalIds();
+        // Operational alerts are sent to the exact current browser
+        // subscriptions registered by this server, one subscription per API
+        // request.  This prevents a stale device from invalidating a batch and
+        // removes the hidden dependency on OneSignal's external-id linking.
+        // Each device gets its own message, so a failed old device never stops
+        // an active administrator's browser from receiving its alert.
+        const subscriptionIds = await this.getNotificationTargetSubscriptionIds();
         console.log(
-            `🔔 [PUSH] Reconciliation alert target=external_id count=${externalIds.length}`
+            `🔔 [PUSH] Reconciliation alert target=registered_subscription count=${subscriptionIds.length}`
         );
 
-        const result = await this.sendOneSignalNotification(
-            title,
-            message,
-            data,
-            {
-                externalIds,
-                webUrl: data.web_url || ''
+        if (subscriptionIds.length === 0) {
+            return {
+                success: false,
+                code: 'ONESIGNAL_NO_TARGETS',
+                error: 'لا توجد اشتراكات إدارية نشطة ومسجلة بالخادم لتلقي الإشعار.',
+                target: 'registered_subscription',
+                targetCount: 0
+            };
+        }
+
+        const attempts = await Promise.all(subscriptionIds.map(async (subscriptionId) => {
+            const result = await this.sendOneSignalNotification(
+                title,
+                message,
+                data,
+                {
+                    subscriptionIds: [subscriptionId],
+                    webUrl: data.web_url || ''
+                }
+            );
+            if (result.success && result.messageId) {
+                result.delivery = await this.waitForOneSignalDelivery(result.messageId);
             }
-        );
+            return result;
+        }));
 
-        if (result.success && result.messageId) {
-            result.delivery = await this.waitForOneSignalDelivery(result.messageId);
+        const successfulAttempts = attempts.filter((result) => result && result.success);
+        const failedAttempts = attempts.filter((result) => !result || !result.success);
+        const deliveryAttempts = successfulAttempts
+            .map((result) => result.delivery)
+            .filter((delivery) => delivery && delivery.available !== false);
+        const numberFromDeliveries = (key) => deliveryAttempts.reduce(
+            (total, delivery) => total + (Number.isFinite(Number(delivery[key])) ? Number(delivery[key]) : 0),
+            0
+        );
+        const delivery = deliveryAttempts.length > 0
+            ? {
+                available: true,
+                successful: numberFromDeliveries('successful'),
+                failed: numberFromDeliveries('failed'),
+                errored: numberFromDeliveries('errored'),
+                received: numberFromDeliveries('received'),
+                remaining: numberFromDeliveries('remaining'),
+                completed: deliveryAttempts.every((item) => item.completed === true)
+            }
+            : (successfulAttempts.length > 0 ? { available: false } : null);
+
+        if (successfulAttempts.length === 0) {
+            const firstFailure = failedAttempts[0] || {};
+            return {
+                success: false,
+                code: firstFailure.code || 'ONESIGNAL_NO_RECIPIENTS',
+                error: firstFailure.error || 'لم يقبل OneSignal أي اشتراك جهاز مسجل.',
+                target: 'registered_subscription',
+                targetCount: subscriptionIds.length,
+                delivery
+            };
         }
 
         return {
-            ...result,
-            target: result.target || 'external_id',
-            targetCount: result.targetCount || externalIds.length
+            success: true,
+            messageId: successfulAttempts[0].messageId,
+            messageIds: successfulAttempts.map((result) => result.messageId),
+            target: 'registered_subscription',
+            targetCount: subscriptionIds.length,
+            acceptedCount: successfulAttempts.length,
+            failedTargetCount: failedAttempts.length,
+            delivery
         };
     }
 
