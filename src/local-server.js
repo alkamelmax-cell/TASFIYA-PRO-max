@@ -4902,6 +4902,16 @@ class LocalWebServer {
             notificationPayload.web_url = notificationWebUrl;
         }
 
+        // Web Push clients (including Chrome on Android) need an explicit,
+        // publicly reachable icon.  This keeps the Tasfiya identity in the
+        // lock-screen notification instead of falling back to Chrome's generic
+        // site icon when the installed PWA is closed.
+        const notificationIconUrl = this.buildNotificationWebUrl('assets/icon-192.png?v=brand-20260831-v1');
+        if (notificationIconUrl) {
+            notificationPayload.chrome_web_icon = notificationIconUrl;
+            notificationPayload.chrome_web_badge = notificationIconUrl;
+        }
+
         try {
             const response = await fetch('https://api.onesignal.com/notifications?c=push', {
                 method: 'POST',
