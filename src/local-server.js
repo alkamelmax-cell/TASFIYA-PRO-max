@@ -5045,20 +5045,21 @@ class LocalWebServer {
     }
 
     async sendVerifiedReconciliationNotification(title, message, data = {}) {
-        // A dashboard test that was confirmed delivered targets the exact
-        // OneSignal subscription ID.  Production alerts must use the same
-        // proven route whenever the server has registered subscriptions.
+        // A OneSignal Subscription ID identifies one browser/device only. It
+        // changes when site data is cleared, a browser is reinstalled, or a
+        // user moves to a new public URL.  Sending operational alerts to every
+        // ID ever stored locally made a single stale ID reject the whole batch
+        // (invalid_player_ids), even when the administrator had a valid new
+        // subscription.
         //
-        // External IDs are retained only as a fallback for a fresh server with
-        // no registered browser yet.  Treating the external-ID result as the
-        // primary route caused an accepted OneSignal message to be mistaken for
-        // a delivered request alert after the Render -> local-server move: the
-        // browser had a real subscription, while the alias association was not
-        // guaranteed to be ready at that moment.
-        const subscriptionIds = await this.getNotificationTargetSubscriptionIds();
-        const directTarget = subscriptionIds.length > 0;
+        // The stable external ID is the authoritative recipient identity. The
+        // Web SDK calls OneSignal.login("tasfiya-admin-<id>") after every
+        // sign-in, so OneSignal links all *currently subscribed* browser and
+        // mobile devices for that administrator and automatically ignores old
+        // devices. Subscription IDs remain stored only for diagnostics.
+        const externalIds = await this.getNotificationTargetExternalIds();
         console.log(
-            `🔔 [PUSH] Reconciliation alert target=${directTarget ? 'registered_subscription' : 'external_id_fallback'} count=${directTarget ? subscriptionIds.length : 'admin-aliases'}`
+            `🔔 [PUSH] Reconciliation alert target=external_id count=${externalIds.length}`
         );
 
         const result = await this.sendOneSignalNotification(
@@ -5066,7 +5067,7 @@ class LocalWebServer {
             message,
             data,
             {
-                ...(directTarget ? { subscriptionIds } : {}),
+                externalIds,
                 webUrl: data.web_url || ''
             }
         );
@@ -5077,10 +5078,8 @@ class LocalWebServer {
 
         return {
             ...result,
-            target: result.target === 'subscription_id'
-                ? 'registered_subscription'
-                : result.target,
-            targetCount: directTarget ? subscriptionIds.length : (result.targetCount || 0)
+            target: result.target || 'external_id',
+            targetCount: result.targetCount || externalIds.length
         };
     }
 
