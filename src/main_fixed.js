@@ -164,7 +164,7 @@ function createWindow() {
       contextIsolation: false,
       enableRemoteModule: true
     },
-    icon: path.join(__dirname, '../assets/logo-tasfia-pro.png'),
+    icon: path.join(__dirname, '../assets/icon.png'),
     title: 'تصفية برو - Tasfiya Pro',
     show: true
   });

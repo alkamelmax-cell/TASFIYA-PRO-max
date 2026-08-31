@@ -75,7 +75,7 @@ function createMainWindow() {
         minWidth: 1024,
         minHeight: 720,
         title: CLIENT_WINDOW_TITLE,
-        icon: path.join(__dirname, '..', '..', 'assets', 'logo-tasfia-pro.png'),
+        icon: path.join(__dirname, '..', '..', 'assets', 'client-sender-icon.png'),
         autoHideMenuBar: !IS_DEV_MODE,
         webPreferences: createSecureWebPreferences(__dirname, {
             preloadFile: 'preload.js',

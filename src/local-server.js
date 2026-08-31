@@ -4906,7 +4906,7 @@ class LocalWebServer {
         // publicly reachable icon.  This keeps the Tasfiya identity in the
         // lock-screen notification instead of falling back to Chrome's generic
         // site icon when the installed PWA is closed.
-        const notificationIconUrl = this.buildNotificationWebUrl('assets/logo-tasfia-pro.png?v=raw-logo-20260831-v1');
+        const notificationIconUrl = this.buildNotificationWebUrl('assets/icon-192.png?v=appicon-20260831-v2');
         if (notificationIconUrl) {
             notificationPayload.chrome_web_icon = notificationIconUrl;
             notificationPayload.chrome_web_badge = notificationIconUrl;
