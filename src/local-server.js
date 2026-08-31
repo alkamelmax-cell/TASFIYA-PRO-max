@@ -5145,20 +5145,12 @@ class LocalWebServer {
             return { success: false, code: 'ONESIGNAL_NO_TARGETS', error };
         }
 
-        // Keep a copy of the deep-link in additional data as well as in the
-        // provider launch-url fields.  OneSignal opens web_url itself when
-        // the browser is closed; the extra data lets an already-open browser
-        // route the click to the exact record as a safe fallback.
-        const notificationData = data && typeof data === 'object' && !Array.isArray(data)
-            ? { ...data }
-            : data;
-
         const notificationPayload = {
             app_id: config.appId,
             target_channel: 'push',
             headings: { en: title, ar: title },
             contents: { en: message, ar: message },
-            data: notificationData,
+            data,
             priority: 10,
             android_visibility: 1,
             lockscreen_visibility: 1
@@ -5176,14 +5168,7 @@ class LocalWebServer {
 
         const notificationWebUrl = this.getNotificationWebUrl(config, options.webUrl);
         if (notificationWebUrl) {
-            // `url` is the standard cross-platform launch URL and `web_url`
-            // is the web-push-specific override.  Sending both makes the
-            // intended record URL explicit for every OneSignal click path.
-            notificationPayload.url = notificationWebUrl;
             notificationPayload.web_url = notificationWebUrl;
-            if (notificationData && typeof notificationData === 'object' && !notificationData.web_url) {
-                notificationPayload.data = { ...notificationData, web_url: notificationWebUrl };
-            }
         }
 
         try {

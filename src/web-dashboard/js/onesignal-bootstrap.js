@@ -22,7 +22,6 @@
     let browserNotificationUser = null;
     let browserNotificationRole = 'admin';
     let browserNotificationAppId = '';
-    let notificationClickListenerRegistered = false;
 
     async function getOneSignalAppId() {
         if (!oneSignalAppIdPromise) {
@@ -270,71 +269,6 @@
         }
     }
 
-    function readNotificationAdditionalData(event) {
-        const notification = event && typeof event === 'object' && event.notification
-            ? event.notification
-            : {};
-        const data = notification.additionalData
-            || notification.data
-            || (event && event.additionalData)
-            || (event && event.data)
-            || {};
-        return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-    }
-
-    function buildNotificationRecordUrl(data) {
-        const suppliedUrl = String(data.web_url || data.webUrl || '').trim();
-        if (suppliedUrl) {
-            return suppliedUrl;
-        }
-
-        const requestId = Number(data.request_id || data.requestId);
-        if (
-            Number.isInteger(requestId)
-            && requestId > 0
-            && (data.type === 'reconciliation_request' || data.type === 'reconciliation_approved')
-        ) {
-            return `/reconciliation-requests.html?request_id=${encodeURIComponent(requestId)}`;
-        }
-
-        const reconciliationId = Number(data.reconciliation_id || data.reconciliationId);
-        if (Number.isInteger(reconciliationId) && reconciliationId > 0 && data.type === 'new_reconciliation') {
-            return `/index.html?reconciliation_id=${encodeURIComponent(reconciliationId)}`;
-        }
-
-        return '';
-    }
-
-    function installNotificationClickRouting(OneSignal) {
-        if (
-            notificationClickListenerRegistered
-            || !OneSignal
-            || !OneSignal.Notifications
-            || typeof OneSignal.Notifications.addEventListener !== 'function'
-        ) {
-            return;
-        }
-
-        notificationClickListenerRegistered = true;
-        OneSignal.Notifications.addEventListener('click', (event) => {
-            const destination = buildNotificationRecordUrl(readNotificationAdditionalData(event));
-            if (!destination) {
-                return;
-            }
-
-            try {
-                const target = new URL(destination, windowObj.location.origin);
-                // Notification payload data is never allowed to redirect an
-                // authenticated administrator away from this server.
-                if (target.origin === windowObj.location.origin) {
-                    windowObj.location.assign(target.toString());
-                }
-            } catch (error) {
-                console.warn('[Tasfiya OneSignal] Invalid notification click URL:', error);
-            }
-        });
-    }
-
     function queueOneSignalInit(user, options) {
         const config = options || {};
         const role = config.role || 'admin';
@@ -373,11 +307,6 @@
                     await OneSignal.init({
                         appId,
                         allowLocalhostAsSecureOrigin: true,
-                        // When a matching Tasfiya tab is already open, focus
-                        // it and navigate it to the record URL instead of
-                        // leaving the user on the dashboard home page.
-                        notificationClickHandlerMatch: 'origin',
-                        notificationClickHandlerAction: 'navigate',
                         serviceWorkerPath: PUSH_WORKER_PATH,
                         serviceWorkerParam: {
                             scope: PUSH_WORKER_SCOPE
@@ -386,7 +315,6 @@
 
                     windowObj.__tasfiyaOneSignalInitialized = true;
                     oneSignalInstance = OneSignal;
-                    installNotificationClickRouting(OneSignal);
 
                     if (externalId) {
                         await OneSignal.login(externalId);
