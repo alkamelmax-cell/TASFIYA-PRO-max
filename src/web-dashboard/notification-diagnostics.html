@@ -44,6 +44,8 @@
     </main>
 
     <script src="/js/session-bootstrap.js"></script>
+    <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
+    <script src="/js/onesignal-bootstrap.js?v=11"></script>
     <script>
         const sessionHelper = window.TasfiyaSession || null;
         const summaryElement = document.getElementById('summary');
@@ -83,18 +85,56 @@
         }
 
         function summaryCard(title, value, tone, icon) {
-            return `<div class="col-12 col-md-4"><div class="diagnostic-card p-3 h-100"><div class="small text-white-50 mb-2"><i class="fas ${icon} ms-1"></i>${title}</div><div class="h4 mb-0 ${tone}">${escapeHtml(value)}</div></div></div>`;
+            return `<div class="col-12 col-md-6 col-xl-3"><div class="diagnostic-card p-3 h-100"><div class="small text-white-50 mb-2"><i class="fas ${icon} ms-1"></i>${title}</div><div class="h5 mb-0 ${tone}">${escapeHtml(value)}</div></div></div>`;
+        }
+
+        function describeCurrentDevice(device) {
+            if (!device || !device.browser || !device.browser.ready) {
+                return { tone: 'status-warn', title: 'جارٍ التحقق من هذا المتصفح' };
+            }
+            if (!device.browser.optedIn || String(device.browser.permission).toLowerCase() === 'false') {
+                return { tone: 'status-fail', title: 'هذا المتصفح غير مشترك' };
+            }
+            if (!device.server || !device.server.registeredOnServer) {
+                return { tone: 'status-warn', title: 'مشترك في OneSignal لكن غير مسجل بالخادم' };
+            }
+            if (!device.server.targetedForOperationalAlerts) {
+                return { tone: 'status-fail', title: 'هذا الإداري غير مستهدف بالتنبيهات' };
+            }
+            if (device.server.lastClientEvent) {
+                return { tone: 'status-ok', title: 'تم رصد استقبال في هذا المتصفح' };
+            }
+            return { tone: 'status-ok', title: 'هذا المتصفح هدف صالح للإشعار' };
         }
 
         function render(data) {
             const events = Array.isArray(data.events) ? data.events : [];
             const latest = events[0] || null;
             const latestState = latest ? describeEvent(latest) : null;
+            const currentDevice = describeCurrentDevice(data.currentDevice);
             summaryElement.innerHTML = [
                 summaryCard('إعداد OneSignal', data.configured ? 'مضبوط' : 'غير مضبوط', data.configured ? 'status-ok' : 'status-fail', 'fa-gear'),
                 summaryCard('اشتراكات مسجلة بالخادم', String(Number(data.registeredSubscriptionCount || 0)), Number(data.registeredSubscriptionCount || 0) > 0 ? 'status-ok' : 'status-fail', 'fa-bell'),
-                summaryCard('نتيجة آخر عملية', latestState ? latestState.title : 'لا توجد عمليات بعد', latestState ? `status-${latestState.state}` : 'status-warn', 'fa-circle-check')
+                summaryCard('نتيجة آخر عملية', latestState ? latestState.title : 'لا توجد عمليات بعد', latestState ? `status-${latestState.state}` : 'status-warn', 'fa-circle-check'),
+                summaryCard('هذا الجهاز', currentDevice.title, currentDevice.tone, 'fa-laptop')
             ].join('');
+
+            const oldDeviceDetails = document.getElementById('deviceDetails');
+            if (oldDeviceDetails) oldDeviceDetails.remove();
+            if (data.currentDevice && data.currentDevice.server) {
+                const detail = data.currentDevice.server.lastClientEvent;
+                const section = document.createElement('section');
+                section.id = 'deviceDetails';
+                section.className = 'diagnostic-card p-3 mb-4';
+                section.innerHTML = `<div class="fw-bold mb-2"><i class="fas fa-fingerprint text-info ms-1"></i>مطابقة الجهاز المفتوح</div>
+                    <div class="event-details d-flex gap-3 flex-wrap">
+                        <span>المتصفح: ${data.currentDevice.browser.optedIn ? 'مشترك' : 'غير مشترك'}</span>
+                        <span>مسجل بالخادم: ${data.currentDevice.server.registeredOnServer ? 'نعم' : 'لا'}</span>
+                        <span>ضمن المستهدفين: ${data.currentDevice.server.targetedForOperationalAlerts ? 'نعم' : 'لا'}</span>
+                        <span>آخر إشارة استقبال: ${detail ? `${escapeHtml(detail.eventType)} — ${escapeHtml(new Date(detail.created_at || detail.createdAt).toLocaleString('ar-SA'))}` : 'لم تُرصد بعد'}</span>
+                    </div>`;
+                document.querySelector('main').insertBefore(section, document.querySelector('main').children[2]);
+            }
 
             if (!events.length) {
                 eventsElement.innerHTML = '<div class="py-4 text-white-50">لا توجد عمليات إرسال مسجلة بعد. أرسل طلب تصفية ثم عد إلى هذه الصفحة.</div>';
@@ -110,13 +150,34 @@
             }).join('');
         }
 
-        async function loadDiagnostics() {
+        async function loadCurrentDeviceDiagnostics(user) {
+            const result = { browser: { ready: false, permission: '', optedIn: false, subscriptionId: '' }, server: null };
+            if (!window.TasfiyaOneSignal || !user || user.role !== 'admin') return result;
+            try {
+                await window.TasfiyaOneSignal.initBrowserUser(user, { role: 'أدمن' });
+                result.browser = await window.TasfiyaOneSignal.getBrowserPushState();
+                const params = new URLSearchParams();
+                if (result.browser.subscriptionId) params.set('subscriptionId', result.browser.subscriptionId);
+                const response = await fetch(`/api/notifications/device-diagnostics?${params.toString()}`, {
+                    credentials: 'same-origin', cache: 'no-store'
+                });
+                const data = await response.json();
+                if (response.ok && data.success) result.server = data;
+            } catch (_) {
+                // The main delivery audit remains useful even when the browser
+                // cannot expose local subscription state.
+            }
+            return result;
+        }
+
+        async function loadDiagnostics(user) {
             refreshButton.disabled = true;
             refreshButton.innerHTML = '<i class="fas fa-spinner fa-spin ms-1"></i>جاري القراءة';
             try {
                 const response = await fetch('/api/notifications/diagnostics', { credentials: 'same-origin', cache: 'no-store' });
                 const data = await response.json();
                 if (!response.ok || !data.success) throw new Error(data.error || `HTTP ${response.status}`);
+                data.currentDevice = await loadCurrentDeviceDiagnostics(user);
                 render(data);
                 document.getElementById('lastUpdated').textContent = `آخر قراءة: ${new Date().toLocaleTimeString('ar-SA')}`;
             } catch (error) {
@@ -136,9 +197,12 @@
                 window.location.replace('/login.html');
                 return;
             }
-            await loadDiagnostics();
+            await loadDiagnostics(user);
         });
-        refreshButton.addEventListener('click', loadDiagnostics);
+        refreshButton.addEventListener('click', async () => {
+            const user = sessionHelper ? sessionHelper.readStoredUser() : JSON.parse(localStorage.getItem('user') || 'null');
+            await loadDiagnostics(user);
+        });
     </script>
 </body>
 </html>

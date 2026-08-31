@@ -796,6 +796,14 @@ class LocalWebServer {
                     await this.handleNotificationDiagnostics(res, authContext.user);
                     return;
                 }
+                else if (pathname === '/api/notifications/device-diagnostics' && req.method === 'GET') {
+                    await this.handleNotificationDeviceDiagnostics(res, authContext.user, parsedUrl.query);
+                    return;
+                }
+                else if (pathname === '/api/notifications/client-event' && req.method === 'POST') {
+                    await this.handleNotificationClientEvent(req, res, authContext.user);
+                    return;
+                }
                 else if (pathname === '/api/notifications/register' && req.method === 'POST') {
                     await this.handleRegisterNotificationSubscription(req, res, authContext.user);
                     return;
@@ -4469,6 +4477,18 @@ class LocalWebServer {
                     )
                 `);
                 await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_delivery_events_created ON notification_delivery_events(created_at DESC)');
+                await this.dbManager.pool.query(`
+                    CREATE TABLE IF NOT EXISTS notification_client_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        subscription_id TEXT NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        event_type TEXT NOT NULL,
+                        one_signal_message_id TEXT DEFAULT '',
+                        page_path TEXT DEFAULT '',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                `);
+                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_client_events_subscription ON notification_client_events(subscription_id, created_at DESC)');
             } else {
                 this.dbManager.db.exec(`
                     CREATE TABLE IF NOT EXISTS notification_subscriptions (
@@ -4501,6 +4521,17 @@ class LocalWebServer {
                         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
                     );
                     CREATE INDEX IF NOT EXISTS idx_notification_delivery_events_created ON notification_delivery_events(created_at DESC);
+
+                    CREATE TABLE IF NOT EXISTS notification_client_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        subscription_id TEXT NOT NULL,
+                        user_id INTEGER NOT NULL,
+                        event_type TEXT NOT NULL,
+                        one_signal_message_id TEXT DEFAULT '',
+                        page_path TEXT DEFAULT '',
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_notification_client_events_subscription ON notification_client_events(subscription_id, created_at DESC);
                 `);
             }
             console.log('✅ [PUSH] Notification subscription and delivery audit stores are ready');
@@ -4622,6 +4653,166 @@ class LocalWebServer {
                 success: false,
                 error: 'تعذر قراءة تشخيص الإشعارات.'
             }, { statusCode: 500 });
+        }
+    }
+
+    async handleNotificationDeviceDiagnostics(res, authenticatedUser, query = {}) {
+        if (!authenticatedUser || authenticatedUser.role === 'cashier') {
+            this.sendJson(res, {
+                success: false,
+                error: 'تشخيص جهاز الإشعارات متاح للإدارة فقط.'
+            }, { statusCode: 403 });
+            return;
+        }
+
+        try {
+            const userId = await this.resolveAdminNotificationUserId(authenticatedUser);
+            const config = this.getOneSignalConfig();
+            const subscriptionId = String(query.subscriptionId || query.subscription_id || '').trim();
+            const hasSubscriptionId = ONESIGNAL_UUID_REGEX.test(subscriptionId);
+            const externalId = userId > 0 ? `tasfiya-admin-${userId}` : '';
+            const targetExternalIds = await this.getNotificationTargetExternalIds();
+            let registration = null;
+            let lastClientEvent = null;
+
+            if (hasSubscriptionId) {
+                registration = this.dbManager.pool
+                    ? (await this.dbManager.pool.query(
+                        `
+                            SELECT subscription_id, opted_in, last_seen_at, updated_at
+                            FROM notification_subscriptions
+                            WHERE subscription_id = $1
+                              AND user_id = $2
+                              AND user_role = 'admin'
+                              AND one_signal_app_id = $3
+                            LIMIT 1
+                        `,
+                        [subscriptionId, userId, config.appId]
+                    )).rows[0]
+                    : this.dbManager.db.prepare(`
+                        SELECT subscription_id, opted_in, last_seen_at, updated_at
+                        FROM notification_subscriptions
+                        WHERE subscription_id = ?
+                          AND user_id = ?
+                          AND user_role = 'admin'
+                          AND one_signal_app_id = ?
+                        LIMIT 1
+                    `).get(subscriptionId, userId, config.appId);
+
+                lastClientEvent = this.dbManager.pool
+                    ? (await this.dbManager.pool.query(
+                        `
+                            SELECT event_type, one_signal_message_id, page_path, created_at
+                            FROM notification_client_events
+                            WHERE subscription_id = $1 AND user_id = $2
+                            ORDER BY id DESC
+                            LIMIT 1
+                        `,
+                        [subscriptionId, userId]
+                    )).rows[0]
+                    : this.dbManager.db.prepare(`
+                        SELECT event_type, one_signal_message_id, page_path, created_at
+                        FROM notification_client_events
+                        WHERE subscription_id = ? AND user_id = ?
+                        ORDER BY id DESC
+                        LIMIT 1
+                    `).get(subscriptionId, userId);
+            }
+
+            this.sendJson(res, {
+                success: true,
+                expectedExternalId: externalId || null,
+                hasBrowserSubscriptionId: hasSubscriptionId,
+                registeredOnServer: Boolean(registration),
+                serverOptedIn: Boolean(registration && Number(registration.opted_in) !== 0),
+                targetedForOperationalAlerts: Boolean(externalId && targetExternalIds.includes(externalId)),
+                lastSeenAt: registration ? registration.last_seen_at : null,
+                lastClientEvent: lastClientEvent || null
+            });
+        } catch (error) {
+            console.warn(`⚠️ [PUSH] Unable to read current device diagnostics: ${error && error.message ? error.message : error}`);
+            this.sendJson(res, {
+                success: false,
+                error: 'تعذر مطابقة هذا الجهاز مع سجل الإشعارات.'
+            }, { statusCode: 500 });
+        }
+    }
+
+    async handleNotificationClientEvent(req, res, authenticatedUser) {
+        if (!authenticatedUser || authenticatedUser.role === 'cashier') {
+            this.sendJson(res, { success: false, error: 'غير مصرح بتسجيل حدث إشعار.' }, { statusCode: 403 });
+            return;
+        }
+
+        try {
+            const data = await this.readJsonBody(req, {
+                maxBytes: DEFAULT_JSON_BODY_LIMIT_BYTES,
+                routeLabel: '/api/notifications/client-event payload'
+            });
+            const userId = await this.resolveAdminNotificationUserId(authenticatedUser);
+            const subscriptionId = String(data.subscriptionId || '').trim();
+            const eventType = String(data.eventType || '').trim();
+            const allowedEventTypes = new Set(['foreground_will_display', 'click', 'dismiss']);
+
+            if (!Number.isInteger(userId) || userId <= 0 || !ONESIGNAL_UUID_REGEX.test(subscriptionId) || !allowedEventTypes.has(eventType)) {
+                this.sendJson(res, { success: false, error: 'بيانات حدث الإشعار غير صالحة.' }, { statusCode: 400 });
+                return;
+            }
+
+            const config = this.getOneSignalConfig();
+            const knownSubscription = this.dbManager.pool
+                ? (await this.dbManager.pool.query(
+                    `
+                        SELECT 1
+                        FROM notification_subscriptions
+                        WHERE subscription_id = $1
+                          AND user_id = $2
+                          AND one_signal_app_id = $3
+                          AND COALESCE(opted_in, 1) <> 0
+                        LIMIT 1
+                    `,
+                    [subscriptionId, userId, config.appId]
+                )).rowCount > 0
+                : Boolean(this.dbManager.db.prepare(`
+                    SELECT 1
+                    FROM notification_subscriptions
+                    WHERE subscription_id = ?
+                      AND user_id = ?
+                      AND one_signal_app_id = ?
+                      AND COALESCE(opted_in, 1) <> 0
+                    LIMIT 1
+                `).get(subscriptionId, userId, config.appId));
+
+            if (!knownSubscription) {
+                this.sendJson(res, { success: false, error: 'هذا الجهاز غير مسجل بعد لدى الخادم.' }, { statusCode: 409 });
+                return;
+            }
+
+            const messageId = String(data.messageId || '').slice(0, 200);
+            const pagePath = String(data.pagePath || '').slice(0, 300);
+            if (this.dbManager.pool) {
+                await this.dbManager.pool.query(
+                    `
+                        INSERT INTO notification_client_events (
+                            subscription_id, user_id, event_type,
+                            one_signal_message_id, page_path, created_at
+                        ) VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP)
+                    `,
+                    [subscriptionId, userId, eventType, messageId, pagePath]
+                );
+            } else {
+                this.dbManager.db.prepare(`
+                    INSERT INTO notification_client_events (
+                        subscription_id, user_id, event_type,
+                        one_signal_message_id, page_path, created_at
+                    ) VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                `).run(subscriptionId, userId, eventType, messageId, pagePath);
+            }
+
+            this.sendJson(res, { success: true });
+        } catch (error) {
+            console.warn(`⚠️ [PUSH] Could not record browser notification receipt: ${error && error.message ? error.message : error}`);
+            this.sendJson(res, { success: false, error: 'تعذر حفظ حدث استقبال الإشعار.' }, { statusCode: 500 });
         }
     }
 
