@@ -136,6 +136,27 @@
 
         let currentRequests = [];
         const requestDetailsCache = new Map();
+        let requestedNotificationRequestId = (() => {
+            const value = Number(new URLSearchParams(window.location.search).get('request_id'));
+            return Number.isInteger(value) && value > 0 ? value : null;
+        })();
+
+        async function openNotificationRequestIfNeeded() {
+            if (!requestedNotificationRequestId) {
+                return;
+            }
+
+            const requestId = requestedNotificationRequestId;
+            requestedNotificationRequestId = null;
+
+            // The record may already be approved and therefore absent from the
+            // default pending list. showRequestDetails loads it directly by ID.
+            await showRequestDetails(requestId);
+
+            const currentUrl = new URL(window.location.href);
+            currentUrl.searchParams.delete('request_id');
+            window.history.replaceState({}, '', `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
+        }
 
         function toSafeNumber(value) {
             if (value === null || value === undefined || value === '') return 0;
@@ -428,6 +449,8 @@
                     const cached = requestDetailsCache.get(Number(requestItem?.id));
                     return cached ? { ...requestItem, ...cached } : requestItem;
                 });
+
+                await openNotificationRequestIfNeeded();
 
                 if (currentRequests.length === 0) {
                     const emptyHtml = '<tr><td colspan="5" class="text-center py-5 text-white-50"><i class="fas fa-check-circle fa-3x mb-3 opacity-50"></i><br>لا توجد طلبات معلقة</td></tr>';

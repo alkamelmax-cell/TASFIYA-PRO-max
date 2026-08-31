@@ -377,6 +377,24 @@
         }
 
         const API_URL = '/api';
+        let requestedNotificationReconciliationId = (() => {
+            const value = Number(new URLSearchParams(window.location.search).get('reconciliation_id'));
+            return Number.isInteger(value) && value > 0 ? value : null;
+        })();
+
+        async function openNotificationReconciliationIfNeeded() {
+            if (!requestedNotificationReconciliationId) {
+                return;
+            }
+
+            const reconciliationId = requestedNotificationReconciliationId;
+            requestedNotificationReconciliationId = null;
+            await openDetails(reconciliationId);
+
+            const currentUrl = new URL(window.location.href);
+            currentUrl.searchParams.delete('reconciliation_id');
+            window.history.replaceState({}, '', `${currentUrl.pathname}${currentUrl.search}${currentUrl.hash}`);
+        }
 
         document.addEventListener('DOMContentLoaded', async () => {
             const activeUser = await requireActiveSession();
@@ -405,7 +423,8 @@
             document.getElementById('filterDateTo').value = '';
 
             await loadLookups();
-            loadReconciliations();
+            await loadReconciliations();
+            await openNotificationReconciliationIfNeeded();
         });
 
         async function loadLookups() {

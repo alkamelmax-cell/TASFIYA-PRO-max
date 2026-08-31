@@ -2081,13 +2081,18 @@ class LocalWebServer {
 
                 // Send notification
                 try {
+                    const requestLink = this.buildNotificationWebUrl(
+                        `reconciliation-requests.html?request_id=${encodeURIComponent(id)}`
+                    );
                     await this.sendOneSignalNotification(
                         '✅  تصفية جديدة مكتملة',
                         `تم اعتماد تصفية للكاشير ${cashierName}`,
                         {
                             type: 'reconciliation_approved',
-                            cashier_name: cashierName
-                        }
+                            cashier_name: cashierName,
+                            request_id: Number(id)
+                        },
+                        { webUrl: requestLink }
                     );
                 } catch (e) { console.warn('Notification failed', e); }
 
@@ -4061,13 +4066,18 @@ class LocalWebServer {
                         }
 
                         // Send async notification
+                        const reconciliationId = Number(firstNewRec.id);
+                        const reconciliationLink = newReconciliationsCount === 1 && Number.isInteger(reconciliationId) && reconciliationId > 0
+                            ? this.buildNotificationWebUrl(`index.html?reconciliation_id=${encodeURIComponent(reconciliationId)}`)
+                            : '';
                         this.sendOneSignalNotification(title, msg, {
                             type: 'new_reconciliation',
                             count: newReconciliationsCount,
+                            reconciliation_id: Number.isInteger(reconciliationId) && reconciliationId > 0 ? reconciliationId : null,
                             rec_number: firstNewRec.reconciliation_number,
                             cashier_name: cashierName,
                             surplus_deficit: surplusDeficit
-                        }).catch(e => console.error('Notification send failed:', e));
+                        }, { webUrl: reconciliationLink }).catch(e => console.error('Notification send failed:', e));
                     }
                 }
 
@@ -5055,7 +5065,10 @@ class LocalWebServer {
             title,
             message,
             data,
-            directTarget ? { subscriptionIds } : {}
+            {
+                ...(directTarget ? { subscriptionIds } : {}),
+                webUrl: data.web_url || ''
+            }
         );
 
         if (result.success && result.messageId) {
@@ -5069,6 +5082,39 @@ class LocalWebServer {
                 : result.target,
             targetCount: directTarget ? subscriptionIds.length : (result.targetCount || 0)
         };
+    }
+
+    buildNotificationWebUrl(relativePath = '') {
+        const config = this.getOneSignalConfig();
+        if (!config.publicUrl) {
+            return '';
+        }
+
+        try {
+            const baseUrl = new URL(`${config.publicUrl}/`);
+            const targetUrl = new URL(String(relativePath || ''), baseUrl);
+            // Notification URLs are always kept on this Tasfiya server. This
+            // prevents an alert payload from becoming an open redirect.
+            return targetUrl.origin === baseUrl.origin ? targetUrl.toString() : config.publicUrl;
+        } catch (_) {
+            return config.publicUrl;
+        }
+    }
+
+    getNotificationWebUrl(config, requestedUrl) {
+        const fallbackUrl = config && config.publicUrl ? config.publicUrl : '';
+        const candidate = String(requestedUrl || '').trim();
+        if (!candidate) {
+            return fallbackUrl;
+        }
+
+        try {
+            const baseUrl = new URL(`${fallbackUrl}/`);
+            const targetUrl = new URL(candidate, baseUrl);
+            return targetUrl.origin === baseUrl.origin ? targetUrl.toString() : fallbackUrl;
+        } catch (_) {
+            return fallbackUrl;
+        }
     }
 
     async sendOneSignalNotification(title, message, data = {}, options = {}) {
@@ -5121,8 +5167,9 @@ class LocalWebServer {
             notificationPayload.include_aliases = { external_id: externalIds };
         }
 
-        if (config.publicUrl) {
-            notificationPayload.web_url = config.publicUrl;
+        const notificationWebUrl = this.getNotificationWebUrl(config, options.webUrl);
+        if (notificationWebUrl) {
+            notificationPayload.web_url = notificationWebUrl;
         }
 
         try {
@@ -5350,7 +5397,13 @@ class LocalWebServer {
                     notification = await this.sendVerifiedReconciliationNotification(
                         'طلب تصفية جديد 🔔',
                         `قام ${cashierName} بإرسال طلب تصفية جديد. اضغط للمراجعة.`,
-                        { type: 'reconciliation_request', request_id: insertedId }
+                        {
+                            type: 'reconciliation_request',
+                            request_id: insertedId,
+                            web_url: this.buildNotificationWebUrl(
+                                `reconciliation-requests.html?request_id=${encodeURIComponent(insertedId)}`
+                            )
+                        }
                     );
                     if (!notification.success) {
                         console.warn(`⚠️ [PUSH] Request ${insertedId} was saved but notification was not queued: ${notification.code || 'UNKNOWN_ERROR'}`);
