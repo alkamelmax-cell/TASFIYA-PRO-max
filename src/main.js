@@ -505,7 +505,7 @@ function createWindow() {
         webPreferences: createSecureWebPreferences(__dirname, {
             devTools: IS_DEV_MODE
         }),
-        icon: path.join(__dirname, '../assets/icon.ico'),
+        icon: path.join(__dirname, '../assets/logo-tasfia-pro.png'),
         title: 'تصفية برو - Tasfiya Pro',
         show: true,
         autoHideMenuBar: IS_CLIENT_BUILD

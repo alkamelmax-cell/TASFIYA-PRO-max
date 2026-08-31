@@ -39,7 +39,7 @@ function createWindow() {
             sandbox: true,
             webSecurity: true
         },
-        icon: path.join(__dirname, '../assets/icon.ico'),
+        icon: path.join(__dirname, '../assets/logo-tasfia-pro.png'),
         title: 'تصفية برو - Tasfiya Pro',
         show: false
     });
