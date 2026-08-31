@@ -787,6 +787,10 @@ class LocalWebServer {
                     this.handleNotificationStatus(res);
                     return;
                 }
+                else if (pathname === '/api/notifications/diagnostics' && req.method === 'GET') {
+                    await this.handleNotificationDiagnostics(res, authContext.user);
+                    return;
+                }
                 else if (pathname === '/api/notifications/register' && req.method === 'POST') {
                     await this.handleRegisterNotificationSubscription(req, res, authContext.user);
                     return;
@@ -4434,6 +4438,22 @@ class LocalWebServer {
                 await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, user_role)');
                 await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_external_id ON notification_subscriptions(external_id)');
                 await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_app ON notification_subscriptions(one_signal_app_id, opted_in)');
+                await this.dbManager.pool.query(`
+                    CREATE TABLE IF NOT EXISTS notification_delivery_events (
+                        id BIGSERIAL PRIMARY KEY,
+                        request_id BIGINT NULL,
+                        event_type TEXT NOT NULL,
+                        target_type TEXT DEFAULT '',
+                        target_count INTEGER DEFAULT 0,
+                        one_signal_message_id TEXT DEFAULT '',
+                        queued BOOLEAN DEFAULT FALSE,
+                        delivery_json TEXT DEFAULT '',
+                        error_code TEXT DEFAULT '',
+                        error_message TEXT DEFAULT '',
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                `);
+                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_delivery_events_created ON notification_delivery_events(created_at DESC)');
             } else {
                 this.dbManager.db.exec(`
                     CREATE TABLE IF NOT EXISTS notification_subscriptions (
@@ -4451,11 +4471,142 @@ class LocalWebServer {
                     CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, user_role);
                     CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_external_id ON notification_subscriptions(external_id);
                     CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_app ON notification_subscriptions(one_signal_app_id, opted_in);
+
+                    CREATE TABLE IF NOT EXISTS notification_delivery_events (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        request_id INTEGER,
+                        event_type TEXT NOT NULL,
+                        target_type TEXT DEFAULT '',
+                        target_count INTEGER DEFAULT 0,
+                        one_signal_message_id TEXT DEFAULT '',
+                        queued INTEGER DEFAULT 0,
+                        delivery_json TEXT DEFAULT '',
+                        error_code TEXT DEFAULT '',
+                        error_message TEXT DEFAULT '',
+                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_notification_delivery_events_created ON notification_delivery_events(created_at DESC);
                 `);
             }
-            console.log('✅ [PUSH] Notification subscription store is ready');
+            console.log('✅ [PUSH] Notification subscription and delivery audit stores are ready');
         } catch (error) {
             console.error(`❌ [PUSH] Failed to prepare notification subscriptions: ${error && error.message ? error.message : error}`);
+        }
+    }
+
+    async recordNotificationDeliveryEvent(event = {}) {
+        const deliveryJson = event.delivery && typeof event.delivery === 'object'
+            ? JSON.stringify(event.delivery).slice(0, 4000)
+            : '';
+        const values = {
+            requestId: Number.isInteger(Number(event.requestId)) ? Number(event.requestId) : null,
+            eventType: String(event.eventType || 'reconciliation_request').slice(0, 100),
+            targetType: String(event.targetType || '').slice(0, 100),
+            targetCount: Math.max(0, Number.parseInt(event.targetCount, 10) || 0),
+            messageId: String(event.messageId || '').slice(0, 200),
+            queued: Boolean(event.success),
+            deliveryJson,
+            errorCode: String(event.code || '').slice(0, 100),
+            errorMessage: String(event.error || '').slice(0, 1000)
+        };
+
+        try {
+            if (this.dbManager.pool) {
+                await this.dbManager.pool.query(
+                    `
+                        INSERT INTO notification_delivery_events (
+                            request_id, event_type, target_type, target_count,
+                            one_signal_message_id, queued, delivery_json,
+                            error_code, error_message, created_at
+                        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CURRENT_TIMESTAMP)
+                    `,
+                    [
+                        values.requestId, values.eventType, values.targetType, values.targetCount,
+                        values.messageId, values.queued, values.deliveryJson,
+                        values.errorCode, values.errorMessage
+                    ]
+                );
+            } else {
+                this.dbManager.db.prepare(`
+                    INSERT INTO notification_delivery_events (
+                        request_id, event_type, target_type, target_count,
+                        one_signal_message_id, queued, delivery_json,
+                        error_code, error_message, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                `).run(
+                    values.requestId, values.eventType, values.targetType, values.targetCount,
+                    values.messageId, values.queued ? 1 : 0, values.deliveryJson,
+                    values.errorCode, values.errorMessage
+                );
+            }
+        } catch (error) {
+            // Delivery audit must never affect saving a reconciliation request.
+            console.warn(`⚠️ [PUSH] Could not write delivery audit: ${error && error.message ? error.message : error}`);
+        }
+    }
+
+    async handleNotificationDiagnostics(res, authenticatedUser) {
+        if (!authenticatedUser || authenticatedUser.role === 'cashier') {
+            this.sendJson(res, {
+                success: false,
+                error: 'تشخيص الإشعارات متاح للإدارة فقط.'
+            }, { statusCode: 403 });
+            return;
+        }
+
+        try {
+            const config = this.getOneSignalConfig();
+            const subscriptionIds = await this.getNotificationTargetSubscriptionIds();
+            const rows = this.dbManager.pool
+                ? (await this.dbManager.pool.query(`
+                    SELECT request_id, event_type, target_type, target_count,
+                           one_signal_message_id, queued, delivery_json,
+                           error_code, error_message, created_at
+                    FROM notification_delivery_events
+                    ORDER BY id DESC
+                    LIMIT 20
+                `)).rows
+                : this.dbManager.db.prepare(`
+                    SELECT request_id, event_type, target_type, target_count,
+                           one_signal_message_id, queued, delivery_json,
+                           error_code, error_message, created_at
+                    FROM notification_delivery_events
+                    ORDER BY id DESC
+                    LIMIT 20
+                `).all();
+
+            const events = rows.map((row) => {
+                let delivery = null;
+                try {
+                    delivery = row.delivery_json ? JSON.parse(row.delivery_json) : null;
+                } catch (_) {
+                    delivery = null;
+                }
+                return {
+                    requestId: row.request_id,
+                    eventType: row.event_type,
+                    target: row.target_type,
+                    targetCount: Number(row.target_count || 0),
+                    messageId: row.one_signal_message_id || null,
+                    queued: Boolean(row.queued),
+                    delivery,
+                    code: row.error_code || null,
+                    error: row.error_message || null,
+                    createdAt: row.created_at
+                };
+            });
+
+            this.sendJson(res, {
+                success: true,
+                configured: config.configured,
+                registeredSubscriptionCount: subscriptionIds.length,
+                events
+            });
+        } catch (error) {
+            this.sendJson(res, {
+                success: false,
+                error: 'تعذر قراءة تشخيص الإشعارات.'
+            }, { statusCode: 500 });
         }
     }
 
@@ -4915,7 +5066,8 @@ class LocalWebServer {
             ...result,
             target: result.target === 'subscription_id'
                 ? 'registered_subscription'
-                : result.target
+                : result.target,
+            targetCount: directTarget ? subscriptionIds.length : (result.targetCount || 0)
         };
     }
 
@@ -5030,7 +5182,8 @@ class LocalWebServer {
                 messageId: result.id,
                 recipients,
                 recipientCountKnown: recipients !== null,
-                target: subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'
+                target: subscriptionIds.length > 0 ? 'subscription_id' : 'external_id',
+                targetCount: subscriptionIds.length > 0 ? subscriptionIds.length : externalIds.length
             };
         } catch (error) {
             const messageText = error && error.message ? error.message : 'تعذر الاتصال بـ OneSignal.';
@@ -5210,6 +5363,18 @@ class LocalWebServer {
                     };
                     console.error('Notification Error', e);
                 }
+
+                await this.recordNotificationDeliveryEvent({
+                    requestId: insertedId,
+                    eventType: 'reconciliation_request',
+                    targetType: notification.target,
+                    targetCount: notification.targetCount,
+                    messageId: notification.messageId,
+                    success: notification.success,
+                    delivery: notification.delivery,
+                    code: notification.code,
+                    error: notification.error
+                });
 
             this.sendJson(res, {
                 success: true,
