@@ -651,6 +651,11 @@ class LocalWebServer {
                     return;
                 }
 
+                if (pathname === '/notification-diagnostics.html') {
+                    this.serveFile(res, path.join(__dirname, 'web-dashboard', 'notification-diagnostics.html'), 'text/html');
+                    return;
+                }
+
 
 
                 // API endpoints

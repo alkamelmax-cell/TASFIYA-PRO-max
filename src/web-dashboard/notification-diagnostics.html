@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>تشخيص الإشعارات | تصفية برو</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.rtl.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" rel="stylesheet">
+    <link href="css/custom.css?v=21" rel="stylesheet">
+    <style>
+        body { background: #101c31; color: #edf4ff; min-height: 100vh; }
+        .diagnostic-card { background: #1a2940; border: 1px solid rgba(255,255,255,.12); border-radius: 18px; }
+        .event-row { border-bottom: 1px solid rgba(255,255,255,.1); }
+        .event-row:last-child { border-bottom: 0; }
+        .status-ok { color: #38d996; }
+        .status-warn { color: #ffc857; }
+        .status-fail { color: #ff7474; }
+        .event-details { color: #b8c6d9; font-size: .9rem; }
+        code { color: #a8d8ff; direction: ltr; unicode-bidi: plaintext; }
+    </style>
+</head>
+<body>
+    <main class="container py-4 py-md-5">
+        <div class="d-flex align-items-center justify-content-between gap-3 flex-wrap mb-4">
+            <div>
+                <h1 class="h3 fw-bold mb-1"><i class="fas fa-stethoscope text-info ms-2"></i>تشخيص الإشعارات</h1>
+                <p class="text-white-50 mb-0">نتيجة OneSignal الفعلية لكل طلب — من دون إرسال اختبار أو تغيير أي بيانات.</p>
+            </div>
+            <div class="d-flex gap-2">
+                <a href="index.html" class="btn btn-outline-light"><i class="fas fa-home ms-1"></i>الرئيسية</a>
+                <button id="refreshButton" type="button" class="btn btn-primary"><i class="fas fa-rotate ms-1"></i>تحديث</button>
+            </div>
+        </div>
+
+        <div id="summary" class="row g-3 mb-4" aria-live="polite"></div>
+
+        <section class="diagnostic-card p-3 p-md-4">
+            <div class="d-flex justify-content-between align-items-center gap-2 mb-3">
+                <h2 class="h5 fw-bold mb-0">آخر عمليات الإرسال</h2>
+                <span id="lastUpdated" class="small text-white-50"></span>
+            </div>
+            <div id="events" class="text-center py-5 text-white-50">جاري قراءة سجل الإشعارات…</div>
+        </section>
+    </main>
+
+    <script src="/js/session-bootstrap.js"></script>
+    <script>
+        const sessionHelper = window.TasfiyaSession || null;
+        const summaryElement = document.getElementById('summary');
+        const eventsElement = document.getElementById('events');
+        const refreshButton = document.getElementById('refreshButton');
+
+        function escapeHtml(value) {
+            return String(value ?? '')
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function describeEvent(event) {
+            if (!event.queued) {
+                return { state: 'fail', title: 'لم يُنشأ الإشعار', detail: event.error || event.code || 'الخادم لم يحصل على قبول من OneSignal.' };
+            }
+            const delivery = event.delivery || null;
+            if (!delivery || delivery.available === false) {
+                return { state: 'warn', title: 'أُنشئ الإشعار، ونتيجة التسليم غير متاحة', detail: 'OneSignal قبل الإشعار، لكن الخادم لم يستطع قراءة عدّاد التسليم من المزود.' };
+            }
+            const successful = Number(delivery.successful || 0);
+            const failed = Number(delivery.failed || 0);
+            const errored = Number(delivery.errored || 0);
+            const remaining = Number(delivery.remaining || 0);
+            if (successful > 0) {
+                return { state: 'ok', title: `أكد OneSignal التسليم إلى ${successful} جهاز`, detail: 'إذا لم يظهر تنبيه على جهاز بعينه رغم هذه النتيجة، فالمشكلة في اشتراك أو إعدادات ذلك المتصفح/الجهاز، وليست في الخادم.' };
+            }
+            if (failed > 0 || errored > 0) {
+                return { state: 'fail', title: 'فشل OneSignal في التسليم', detail: `فشل: ${failed}، أخطاء: ${errored}. راجع اشتراك الجهاز أو إعداد OneSignal.` };
+            }
+            return {
+                state: 'warn',
+                title: remaining > 0 ? 'الإشعار ما زال قيد التسليم' : 'لم يؤكد OneSignal تسليمًا بعد',
+                detail: 'حدّث الصفحة بعد بضع ثوانٍ. إذا بقيت النتيجة صفرًا، فلا يوجد جهاز مشترك صالح لهذا المستخدم.'
+            };
+        }
+
+        function summaryCard(title, value, tone, icon) {
+            return `<div class="col-12 col-md-4"><div class="diagnostic-card p-3 h-100"><div class="small text-white-50 mb-2"><i class="fas ${icon} ms-1"></i>${title}</div><div class="h4 mb-0 ${tone}">${escapeHtml(value)}</div></div></div>`;
+        }
+
+        function render(data) {
+            const events = Array.isArray(data.events) ? data.events : [];
+            const latest = events[0] || null;
+            const latestState = latest ? describeEvent(latest) : null;
+            summaryElement.innerHTML = [
+                summaryCard('إعداد OneSignal', data.configured ? 'مضبوط' : 'غير مضبوط', data.configured ? 'status-ok' : 'status-fail', 'fa-gear'),
+                summaryCard('اشتراكات مسجلة بالخادم', String(Number(data.registeredSubscriptionCount || 0)), Number(data.registeredSubscriptionCount || 0) > 0 ? 'status-ok' : 'status-fail', 'fa-bell'),
+                summaryCard('نتيجة آخر عملية', latestState ? latestState.title : 'لا توجد عمليات بعد', latestState ? `status-${latestState.state}` : 'status-warn', 'fa-circle-check')
+            ].join('');
+
+            if (!events.length) {
+                eventsElement.innerHTML = '<div class="py-4 text-white-50">لا توجد عمليات إرسال مسجلة بعد. أرسل طلب تصفية ثم عد إلى هذه الصفحة.</div>';
+                return;
+            }
+            eventsElement.innerHTML = events.map((event) => {
+                const state = describeEvent(event);
+                const delivery = event.delivery || {};
+                const eventName = event.eventType === 'reconciliation_request' ? 'طلب تصفية' : event.eventType;
+                const requestLabel = event.requestId ? `طلب #${event.requestId}` : 'تنبيه نظام';
+                const date = event.createdAt ? new Date(event.createdAt).toLocaleString('ar-SA') : '-';
+                return `<article class="event-row py-3"><div class="d-flex justify-content-between align-items-start gap-3 flex-wrap"><div><div class="fw-bold status-${state.state}"><i class="fas fa-${state.state === 'ok' ? 'circle-check' : state.state === 'fail' ? 'circle-xmark' : 'clock'} ms-1"></i>${escapeHtml(state.title)}</div><div class="event-details mt-1">${escapeHtml(state.detail)}</div></div><div class="small text-white-50 text-md-start">${escapeHtml(date)}</div></div><div class="event-details mt-2 d-flex gap-3 flex-wrap"><span>${escapeHtml(eventName)} — ${escapeHtml(requestLabel)}</span><span>الاستهداف: ${escapeHtml(event.target || '-')} (${Number(event.targetCount || 0)})</span><span>نجح: ${Number(delivery.successful || 0)} / فشل: ${Number(delivery.failed || 0)} / أخطاء: ${Number(delivery.errored || 0)}</span>${event.messageId ? `<span>المعرف: <code>${escapeHtml(event.messageId)}</code></span>` : ''}</div></article>`;
+            }).join('');
+        }
+
+        async function loadDiagnostics() {
+            refreshButton.disabled = true;
+            refreshButton.innerHTML = '<i class="fas fa-spinner fa-spin ms-1"></i>جاري القراءة';
+            try {
+                const response = await fetch('/api/notifications/diagnostics', { credentials: 'same-origin', cache: 'no-store' });
+                const data = await response.json();
+                if (!response.ok || !data.success) throw new Error(data.error || `HTTP ${response.status}`);
+                render(data);
+                document.getElementById('lastUpdated').textContent = `آخر قراءة: ${new Date().toLocaleTimeString('ar-SA')}`;
+            } catch (error) {
+                summaryElement.innerHTML = '';
+                eventsElement.innerHTML = `<div class="py-4 status-fail">تعذر قراءة التشخيص: ${escapeHtml(error.message || error)}</div>`;
+            } finally {
+                refreshButton.disabled = false;
+                refreshButton.innerHTML = '<i class="fas fa-rotate ms-1"></i>تحديث';
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', async () => {
+            const user = sessionHelper && typeof sessionHelper.requireActiveSession === 'function'
+                ? await sessionHelper.requireActiveSession()
+                : JSON.parse(localStorage.getItem('user') || 'null');
+            if (!user || user.role !== 'admin') {
+                window.location.replace('/login.html');
+                return;
+            }
+            await loadDiagnostics();
+        });
+        refreshButton.addEventListener('click', loadDiagnostics);
+    </script>
+</body>
+</html>
