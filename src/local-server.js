@@ -4540,7 +4540,7 @@ class LocalWebServer {
 
         const externalId = `tasfiya-admin-${userId}`;
         const integrationVersion = String(data.integrationVersion || data.integration_version || '').trim();
-        const isCurrentIntegration = integrationVersion === 'onesignal-worker-v1';
+        const isCurrentIntegration = integrationVersion === 'onesignal-root-worker-v2';
         const userAgent = String((req && req.headers && req.headers['user-agent']) || '').slice(0, 500);
         const optedIn = data.optedIn === false || data.opted_in === false ? 0 : 1;
 
@@ -4640,7 +4640,7 @@ class LocalWebServer {
                         WHERE user_role = 'admin'
                           AND COALESCE(opted_in, 1) = 1
                           AND one_signal_app_id = $1
-                          AND integration_version = 'onesignal-worker-v1'
+                          AND integration_version = 'onesignal-root-worker-v2'
                         ORDER BY last_seen_at DESC
                         LIMIT 200
                     `,
@@ -4652,7 +4652,7 @@ class LocalWebServer {
                     WHERE user_role = 'admin'
                       AND COALESCE(opted_in, 1) = 1
                       AND one_signal_app_id = ?
-                      AND integration_version = 'onesignal-worker-v1'
+                      AND integration_version = 'onesignal-root-worker-v2'
                     ORDER BY last_seen_at DESC
                     LIMIT 200
                 `).all(config.appId);

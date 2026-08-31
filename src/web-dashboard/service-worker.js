@@ -1,9 +1,13 @@
-// Service Worker for Tasfiya Pro PWA
-// Version: 3.9 - The PWA worker deliberately does not load the OneSignal SDK.
-// OneSignal has its own worker under /push/onesignal/ so browser push
-// subscriptions stay valid and do not conflict with this application's PWA.
+// One worker owns both the PWA and OneSignal push handling.  This is required
+// for installed Android Chrome clients: otherwise a closed app can receive a
+// raw push in the PWA worker and Chrome displays only its generic background
+// update notification.
+importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
-const CACHE_NAME = 'tasfiya-pro-v3.9-onesignal-worker-isolation';
+// Service Worker for Tasfiya Pro PWA
+// Version: 4.0 - Root PWA and OneSignal push worker are intentionally unified.
+
+const CACHE_NAME = 'tasfiya-pro-v4.0-unified-push-worker';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
@@ -56,7 +60,7 @@ const NETWORK_FIRST_RUNTIME_PATHS = new Set([
     '/js/session-bootstrap.js',
     '/js/onesignal-bootstrap.js',
     '/manifest.json',
-    '/push/onesignal/OneSignalSDKWorker.js'
+    '/service-worker.js'
 ]);
 
 function isNetworkFirstRuntimeRequest(request) {

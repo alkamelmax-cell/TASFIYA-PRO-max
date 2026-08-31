@@ -1,12 +1,12 @@
 (function bootstrapTasfiyaOneSignal(windowObj) {
     'use strict';
 
-    // Keep OneSignal's push worker separate from the PWA worker. A push
-    // subscription is bound to its service worker; sharing the root PWA
-    // worker previously left some browsers looking subscribed locally while
-    // no valid OneSignal subscription existed on the provider.
-    const PUSH_WORKER_PATH = 'push/onesignal/OneSignalSDKWorker.js';
-    const PUSH_WORKER_SCOPE = '/push/onesignal/';
+    // Android Chrome delivers this installed web app's pushes through the
+    // root PWA scope.  The root worker therefore imports OneSignal itself;
+    // using two workers left a closed phone showing Chrome's generic
+    // "site updated in the background" message instead of the alert text.
+    const PUSH_WORKER_PATH = '/service-worker.js';
+    const PUSH_WORKER_SCOPE = '/';
     const PWA_WORKER_PATH = '/service-worker.js';
     const PWA_WORKER_SCOPE = '/';
     const LEGACY_CACHE_NAMES = new Set([
@@ -252,7 +252,7 @@
                     subscriptionId,
                     externalId: `tasfiya-admin-${userId}`,
                     appId: browserNotificationAppId,
-                    integrationVersion: 'onesignal-worker-v1',
+                    integrationVersion: 'onesignal-root-worker-v2',
                     role: browserNotificationRole,
                     optedIn: true,
                     permission: OneSignal.Notifications.permission
