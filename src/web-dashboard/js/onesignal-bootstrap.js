@@ -362,9 +362,9 @@
         const pushSubscription = OneSignal.User.PushSubscription;
         try {
             // OneSignal v16 exposes permission as a boolean, not the legacy
-            // "default" string. Calling optIn() from the test button's user
-            // gesture creates/restores a real browser subscription and opens
-            // the native Allow prompt if needed.
+            // "default" string. optIn() must only be called from a genuine
+            // user action (the "Enable notifications" control in the app),
+            // otherwise modern browsers are allowed to silently block it.
             if (requestOptIn && !pushSubscription.optedIn) {
                 await pushSubscription.optIn();
             }
@@ -390,6 +390,26 @@
         return '';
     }
 
+    async function requestBrowserPushPermission() {
+        const OneSignal = oneSignalInstance || await oneSignalInitializationPromise;
+        if (!OneSignal || !OneSignal.User || !OneSignal.User.PushSubscription) {
+            return { success: false, code: 'NOT_READY' };
+        }
+
+        const subscriptionId = await getBrowserPushSubscriptionId({ requestOptIn: true });
+        if (!subscriptionId) {
+            const permission = 'Notification' in windowObj
+                ? String(windowObj.Notification.permission || '')
+                : '';
+            return {
+                success: false,
+                code: permission === 'denied' ? 'DENIED' : 'NOT_SUBSCRIBED'
+            };
+        }
+
+        return { success: true, subscriptionId };
+    }
+
     windowObj.TasfiyaPwa = {
         registerServiceWorker
     };
@@ -406,6 +426,9 @@
         },
         getBrowserPushSubscriptionId(options) {
             return getBrowserPushSubscriptionId(options);
+        },
+        requestBrowserPushPermission() {
+            return requestBrowserPushPermission();
         }
     };
 })(window);

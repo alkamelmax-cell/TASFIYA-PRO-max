@@ -103,8 +103,8 @@
             </button>
             <ul class="dropdown-menu dropdown-menu-end bg-card border-secondary shadow-lg mt-2">
                 <li>
-                    <button type="button" class="dropdown-item d-flex align-items-center gap-2" onclick="testSystemNotifications()">
-                        <i class="fas fa-bell text-warning"></i> اختبار الإشعارات
+                    <button id="enableNotificationsMenuButton" type="button" class="dropdown-item d-flex align-items-center gap-2" onclick="enableSystemNotifications()">
+                        <i class="fas fa-bell text-warning"></i> تفعيل الإشعارات
                     </button>
                 </li>
                 <li><hr class="dropdown-divider border-secondary"></li>
@@ -117,6 +117,17 @@
     </nav>
 
     <div class="container-fluid px-3 px-md-4">
+
+        <div id="notificationActivationBanner" class="alert alert-primary d-none align-items-center justify-content-between gap-3 shadow-sm mb-4" role="alert">
+            <div>
+                <i class="fas fa-bell me-1"></i>
+                <strong>فعّل الإشعارات</strong>
+                <span class="d-block small mt-1">لتصلك طلبات التصفية والتنبيهات فورًا حتى عند عدم فتح الصفحة.</span>
+            </div>
+            <button id="enableNotificationsBannerButton" type="button" class="btn btn-primary text-nowrap" onclick="enableSystemNotifications()">
+                <i class="fas fa-bell me-1"></i> تفعيل الآن
+            </button>
+        </div>
 
         <!-- Stats Row -->
         <div class="row g-3 mb-4">
@@ -287,13 +298,91 @@
             else {
                 console.log("💻 Running in Browser Mode");
                 try {
-                    window.TasfiyaOneSignal.initBrowserUser(user, {
-                        role: "أدمن",
-                        requestPermission: true
-                    });
+                    window.TasfiyaOneSignal.initBrowserUser(user, { role: "أدمن" })
+                        .finally(updateNotificationActivationControl);
                 } catch (error) {
                     console.error("OneSignal Error:", error);
                 }
+            }
+        }
+
+        function updateNotificationActivationControl() {
+            const banner = document.getElementById('notificationActivationBanner');
+            const menuButton = document.getElementById('enableNotificationsMenuButton');
+            const bannerButton = document.getElementById('enableNotificationsBannerButton');
+            const isBrowser = !window.TasfiyaOneSignal || !window.TasfiyaOneSignal.isNativeEnvironment();
+            const permission = isBrowser && 'Notification' in window ? Notification.permission : '';
+
+            if (banner) {
+                banner.classList.toggle('d-none', !isBrowser || permission !== 'default');
+                banner.classList.toggle('d-flex', isBrowser && permission === 'default');
+            }
+
+            if (!menuButton) {
+                return;
+            }
+
+            if (!isBrowser) {
+                menuButton.classList.add('d-none');
+                return;
+            }
+
+            menuButton.classList.remove('d-none');
+            if (permission === 'granted') {
+                menuButton.innerHTML = '<i class="fas fa-bell-check text-success"></i> الإشعارات مفعلة';
+                if (bannerButton) bannerButton.disabled = true;
+            } else if (permission === 'denied') {
+                menuButton.innerHTML = '<i class="fas fa-bell-slash text-danger"></i> الإشعارات محظورة';
+            } else {
+                menuButton.innerHTML = '<i class="fas fa-bell text-warning"></i> تفعيل الإشعارات';
+            }
+        }
+
+        async function enableSystemNotifications() {
+            if (!user || user.role !== 'admin') {
+                return;
+            }
+
+            if (!window.TasfiyaOneSignal || window.TasfiyaOneSignal.isNativeEnvironment()) {
+                alert('يتم تفعيل إشعارات تطبيق الهاتف من إعدادات التطبيق.');
+                return;
+            }
+
+            if (!('Notification' in window)) {
+                alert('هذا المتصفح لا يدعم إشعارات الويب.');
+                return;
+            }
+
+            if (Notification.permission === 'denied') {
+                alert('الإشعارات محظورة لهذا الرابط. اضغط رمز القفل بجانب الرابط ثم اجعل Notifications = Allow، وبعدها حدّث الصفحة.');
+                return;
+            }
+
+            const buttons = [
+                document.getElementById('enableNotificationsMenuButton'),
+                document.getElementById('enableNotificationsBannerButton')
+            ].filter(Boolean);
+            buttons.forEach((button) => { button.disabled = true; });
+
+            try {
+                await window.TasfiyaOneSignal.initBrowserUser(user, { role: 'أدمن' });
+                const result = await window.TasfiyaOneSignal.requestBrowserPushPermission();
+                if (!result || !result.success) {
+                    if (result && result.code === 'DENIED') {
+                        alert('تم رفض الإذن. اسمح بالإشعارات من رمز القفل بجانب الرابط ثم حدّث الصفحة.');
+                    } else {
+                        alert('لم يكتمل اشتراك هذا الجهاز في الإشعارات. اختر "السماح" من طلب المتصفح ثم اضغط تفعيل الإشعارات مرة أخرى.');
+                    }
+                    return;
+                }
+
+                alert('✅ تم تفعيل الإشعارات وربط هذا الجهاز بالخادم. ستصلك الطلبات والتنبيهات الجديدة تلقائيًا.');
+            } catch (error) {
+                console.error('Notification activation failed:', error);
+                alert('تعذر تفعيل الإشعارات الآن. تحقق من اتصال الإنترنت ثم أعد المحاولة.');
+            } finally {
+                buttons.forEach((button) => { button.disabled = false; });
+                updateNotificationActivationControl();
             }
         }
 
@@ -724,90 +813,6 @@
         function formatNum(val) {
             // Compact format for cards (e.g. 1.2k) if needed, currently full number
             return Number(val || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
-        }
-
-        // Manual Push Retry Check
-        function retryPushRegistration() {
-            alert('جاري محاولة ربط الإشعارات...');
-            const isApp = bootstrapNativeNotifications();
-
-            if (isApp) {
-                setTimeout(() => alert('✅ تم إرسال طلب التفعيل للتطبيق.\nتحقق من OneSignal الآن.'), 1000);
-            } else {
-                alert('⚠️ لم يتم اكتشاف التوقيع (UserAgent) تلقائياً، ولكن تم إرسال أمر التفعيل "بالقوة" عبر البروتوكول.\n\nإذا ظهرت أيقونة الأندرويد في OneSignal، فهذا يعني النجاح!');
-            }
-        }
-
-        async function testSystemNotifications() {
-            if (!user || user.role !== 'admin') {
-                alert('هذه العملية متاحة لحساب الإدارة فقط.');
-                return;
-            }
-
-            if (!('Notification' in window)) {
-                alert('هذا المتصفح لا يدعم إشعارات الويب.');
-                return;
-            }
-
-            if (Notification.permission === 'denied') {
-                alert('الإشعارات محظورة لهذا الرابط. اضغط رمز القفل بجانب الرابط ثم اجعل Notifications = Allow، وبعدها حدّث الصفحة.');
-                return;
-            }
-
-            if (!confirm('سيتم إرسال إشعار اختبار إلى جميع الأجهزة المشتركة. هل تريد المتابعة؟')) {
-                return;
-            }
-
-            try {
-                if (window.TasfiyaOneSignal && typeof window.TasfiyaOneSignal.initBrowserUser === 'function') {
-                    window.TasfiyaOneSignal.initBrowserUser(user, { role: 'أدمن', requestPermission: true });
-                }
-
-                const subscriptionId = window.TasfiyaOneSignal
-                    && typeof window.TasfiyaOneSignal.getBrowserPushSubscriptionId === 'function'
-                    ? await window.TasfiyaOneSignal.getBrowserPushSubscriptionId({ requestOptIn: true })
-                    : '';
-
-                if (!subscriptionId) {
-                    alert('⚠️ لم يتم السماح بالإشعارات أو لم يكتمل الاشتراك. اختر "السماح" من طلب المتصفح ثم أعد الاختبار.');
-                    return;
-                }
-
-                const response = await fetch('/api/notifications/test', {
-                    method: 'POST',
-                    credentials: 'same-origin',
-                    cache: 'no-store',
-                    headers: { 'Content-Type': 'application/json' },
-                    // Send the current browser subscription so the server can
-                    // test the exact device and save it for future alerts.
-                    body: JSON.stringify({ subscriptionId })
-                });
-                const result = await response.json();
-
-                if (result.success) {
-                    const delivery = result.delivery || {};
-                    const successful = Number(delivery.successful);
-                    const failed = Number(delivery.failed);
-                    const errored = Number(delivery.errored);
-                    const pending = Number(delivery.remaining);
-
-                    if (Number.isFinite(successful) && successful > 0) {
-                        alert(`✅ تم تأكيد تسليم الاختبار من OneSignal (${successful} جهاز).`);
-                    } else if ((Number.isFinite(failed) && failed > 0) || (Number.isFinite(errored) && errored > 0)) {
-                        alert(`❌ أنشأ OneSignal الرسالة لكن لم يسلّمها: غير مشترك/فشل ${failed || 0}، خطأ ${errored || 0}. أعد فتح التطبيق أو المتصفح على الجهاز المطلوب ثم اسمح بالإشعارات.`);
-                    } else if (Number.isFinite(pending) && pending > 0) {
-                        alert(`⏳ قبل OneSignal الاختبار وما زال يعالجه (${pending} قيد الإرسال). انتظر نصف دقيقة ثم أعد الاختبار.`);
-                    } else {
-                        alert('⚠️ أنشأ OneSignal الرسالة، لكن لم تتوفر نتيجة تسليم مؤكدة بعد. لا تعتبر الإشعار واصلًا حتى تظهر رسالة تأكيد التسليم.');
-                    }
-                    return;
-                }
-
-                alert(`❌ فشل اختبار الإشعارات: ${result.error || result.code || 'سبب غير معروف'}`);
-            } catch (error) {
-                console.error('Notification test failed:', error);
-                alert('❌ تعذر تنفيذ اختبار الإشعارات. تحقق من اتصال الخادم ثم أعد المحاولة.');
-            }
         }
 
         function showLoading(show) {
