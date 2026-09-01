@@ -571,6 +571,11 @@ class LocalWebServer {
                 console.log(`📨 [REQUEST] ${req.method} ${pathname}`);
                 // Serve Static Files
                 // Serve Static Files
+                if (pathname === '/.well-known/assetlinks.json' && req.method === 'GET') {
+                    this.serveAndroidAssetLinks(res);
+                    return;
+                }
+
                 if (pathname.endsWith('.js') || pathname.endsWith('.json') || pathname.startsWith('/css/') || pathname.startsWith('/js/') || pathname.startsWith('/assets/')) {
                     this.serveStatic(res, pathname);
                     return;
@@ -861,6 +866,30 @@ class LocalWebServer {
         if (path.basename(filePath) === 'manifest.json') contentType = 'application/manifest+json';
 
         this.serveFile(res, filePath, contentType);
+    }
+
+    serveAndroidAssetLinks(res) {
+        const fingerprint = String(process.env.ANDROID_TWA_SHA256_CERT_FINGERPRINT || '')
+            .trim()
+            .toUpperCase();
+
+        const statements = fingerprint
+            ? [{
+                relation: ['delegate_permission/common.handle_all_urls'],
+                target: {
+                    namespace: 'android_app',
+                    package_name: 'com.tasfiyapro.app',
+                    sha256_cert_fingerprints: [fingerprint]
+                }
+            }]
+            : [];
+
+        res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store, max-age=0',
+            'X-Content-Type-Options': 'nosniff'
+        });
+        res.end(JSON.stringify(statements));
     }
 
     async handleLogin(req, res) {
