@@ -1697,7 +1697,11 @@ class LocalWebServer {
             // Postgres throws error on empty string for timestamp, SQLite accepts it
             const isPostgres = !!process.env.DATABASE_URL;
             const greatestFunc = isPostgres ? 'GREATEST' : 'MAX';
-            const defaultDate = isPostgres ? "'1970-01-01 00:00:00'" : "''";
+            const defaultDate = isPostgres ? "TIMESTAMP '1970-01-01 00:00:00'" : "''";
+            const transactionCreatedAt = isPostgres ? 'created_at::timestamp' : 'created_at';
+            const openingBalanceCreatedAt = isPostgres
+                ? "make_timestamp(CAST(fiscal_year AS INTEGER), 1, 1, 0, 0, 0)"
+                : "fiscal_year || '-01-01 00:00:00'";
             const dateFrom = typeof query.dateFrom === 'string' ? query.dateFrom.trim() : '';
             const dateToRaw = typeof query.dateTo === 'string' ? query.dateTo.trim() : '';
 
@@ -1737,17 +1741,17 @@ class LocalWebServer {
                         ORDER BY ps.created_at DESC LIMIT 1
                     ) as branch_name 
                 FROM (
-                    SELECT customer_name, amount, 'debit' as type, created_at FROM postpaid_sales WHERE customer_name IS NOT NULL
+                    SELECT customer_name, amount, 'debit' as type, ${transactionCreatedAt} as created_at FROM postpaid_sales WHERE customer_name IS NOT NULL
                     UNION ALL
-                    SELECT customer_name, amount, 'debit' as type, created_at FROM manual_postpaid_sales WHERE customer_name IS NOT NULL
+                    SELECT customer_name, amount, 'debit' as type, ${transactionCreatedAt} as created_at FROM manual_postpaid_sales WHERE customer_name IS NOT NULL
                     UNION ALL
-                    SELECT customer_name, amount, 'credit' as type, created_at FROM customer_receipts WHERE customer_name IS NOT NULL
+                    SELECT customer_name, amount, 'credit' as type, ${transactionCreatedAt} as created_at FROM customer_receipts WHERE customer_name IS NOT NULL
                     UNION ALL
-                    SELECT customer_name, amount, 'credit' as type, created_at FROM manual_customer_receipts WHERE customer_name IS NOT NULL
+                    SELECT customer_name, amount, 'credit' as type, ${transactionCreatedAt} as created_at FROM manual_customer_receipts WHERE customer_name IS NOT NULL
                     UNION ALL
                     SELECT customer_name, ABS(opening_balance) as amount,
                            CASE WHEN opening_balance >= 0 THEN 'debit' ELSE 'credit' END as type,
-                           fiscal_year || '-01-01 00:00:00' as created_at
+                           ${openingBalanceCreatedAt} as created_at
                     FROM customer_fiscal_opening_balances ob
                     WHERE customer_name IS NOT NULL
                       AND CAST(ob.fiscal_year AS INTEGER) = (
