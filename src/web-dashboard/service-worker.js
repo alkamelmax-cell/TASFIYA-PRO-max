@@ -5,9 +5,9 @@
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
 // Service Worker for Tasfiya Pro PWA
-// Version: 4.3 - Root PWA and OneSignal push worker are intentionally unified.
+// Version: 4.4 - Root PWA and OneSignal push worker are intentionally unified.
 
-const CACHE_NAME = 'tasfiya-pro-v4.3-rounded-app-icon-20260831';
+const CACHE_NAME = 'tasfiya-pro-v4.4-onesignal-registration-ready';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
@@ -196,7 +196,7 @@ async function fetchApiWithFallback(eventRequest) {
 
 // Install event - cache only static assets
 self.addEventListener('install', (event) => {
-    console.log('🔧 [SW] Installing Service Worker v3.1');
+    console.log('🔧 [SW] Installing Service Worker v4.4');
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => {
@@ -212,7 +212,7 @@ self.addEventListener('install', (event) => {
 
 // Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
-    console.log('🔄 [SW] Activating Service Worker v3.1');
+    console.log('🔄 [SW] Activating Service Worker v4.4');
     event.waitUntil(
         caches.keys().then((cacheNames) => {
             return Promise.all(

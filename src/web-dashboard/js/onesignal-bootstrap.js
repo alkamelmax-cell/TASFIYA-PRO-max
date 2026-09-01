@@ -192,6 +192,40 @@
         }
     }
 
+    // OneSignal's worker messenger requires an actual registration before it
+    // can exchange messages.  Waiting for the installation state here avoids
+    // a startup race that Chromium reports as "No SW registration for
+    // postMessage" even though the worker appears a moment later.
+    function waitForWorkerRegistration(registration) {
+        if (!registration || registration.active) {
+            return Promise.resolve(registration || null);
+        }
+
+        const installingWorker = registration.installing;
+        if (!installingWorker) {
+            return Promise.resolve(registration);
+        }
+
+        return new Promise((resolve) => {
+            let settled = false;
+            const complete = () => {
+                if (settled) return;
+                settled = true;
+                resolve(registration);
+            };
+            const timeoutId = windowObj.setTimeout(complete, 8000);
+            installingWorker.addEventListener('statechange', () => {
+                if (
+                    installingWorker.state === 'activated'
+                    || installingWorker.state === 'redundant'
+                ) {
+                    windowObj.clearTimeout(timeoutId);
+                    complete();
+                }
+            });
+        });
+    }
+
     async function registerServiceWorker() {
         if (!canUseServiceWorkers()) {
             return null;
@@ -201,18 +235,13 @@
             serviceWorkerRegistrationPromise = (async () => {
                 await cleanLegacyCaches();
 
-                const registrations = await windowObj.navigator.serviceWorker.getRegistrations();
-                for (const registration of registrations) {
-                    await registration.update();
-                }
-
                 const registration = await windowObj.navigator.serviceWorker.register(PWA_WORKER_PATH, {
                     scope: PWA_WORKER_SCOPE,
                     updateViaCache: 'none'
                 });
 
                 await registration.update();
-                await windowObj.navigator.serviceWorker.ready;
+                await waitForWorkerRegistration(registration);
                 return registration;
             })().catch((error) => {
                 console.error('[Tasfiya PWA] Service Worker registration failed:', error);
