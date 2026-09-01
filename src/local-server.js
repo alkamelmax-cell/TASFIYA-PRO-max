@@ -5197,6 +5197,9 @@ class LocalWebServer {
             const updatedAfter = query && query.updated_after
                 ? String(query.updated_after).trim()
                 : '';
+            const afterId = query && query.after_id
+                ? Math.max(0, parseInt(query.after_id, 10) || 0)
+                : 0;
             const buildPostgresFilters = () => {
                 const params = [];
                 const clauses = [];
@@ -5208,9 +5211,17 @@ class LocalWebServer {
                     clauses.push("COALESCE(r.status, 'pending') <> 'deleted'");
                 }
 
-                if (updatedAfter) {
+                if (updatedAfter && afterId) {
+                    params.push(updatedAfter);
+                    const updatedAfterIndex = params.length;
+                    params.push(afterId);
+                    clauses.push(`(COALESCE(r.updated_at, r.created_at) > $${updatedAfterIndex} OR r.id > $${params.length})`);
+                } else if (updatedAfter) {
                     params.push(updatedAfter);
                     clauses.push(`COALESCE(r.updated_at, r.created_at) > $${params.length}`);
+                } else if (afterId) {
+                    params.push(afterId);
+                    clauses.push(`r.id > $${params.length}`);
                 }
 
                 return {
@@ -5229,9 +5240,16 @@ class LocalWebServer {
                     clauses.push("COALESCE(r.status, 'pending') <> 'deleted'");
                 }
 
-                if (updatedAfter) {
+                if (updatedAfter && afterId) {
+                    params.push(updatedAfter);
+                    params.push(afterId);
+                    clauses.push('(datetime(COALESCE(r.updated_at, r.created_at)) > datetime(?) OR r.id > ?)');
+                } else if (updatedAfter) {
                     params.push(updatedAfter);
                     clauses.push('datetime(COALESCE(r.updated_at, r.created_at)) > datetime(?)');
+                } else if (afterId) {
+                    params.push(afterId);
+                    clauses.push('r.id > ?');
                 }
 
                 return {
