@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The launcher artwork is intentionally inset by 10dp on each edge of the
+  108dp adaptive-icon safe canvas.  This presents the exact same logo at
+  roughly 80% of its former visible size, without cropping it on round masks.
+-->
+<inset xmlns:android="http://schemas.android.com/apk/res/android"
+    android:inset="10dp">
+    <bitmap
+        android:gravity="fill"
+        android:src="@drawable/tasfiya_launcher" />
+</inset>
