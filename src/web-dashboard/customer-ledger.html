@@ -321,9 +321,12 @@
         <!-- ==================== DETAILS VIEW ==================== -->
         <div id="customerDetailsSection" class="d-none">
 
-            <div class="d-flex align-items-center gap-3 mb-4 mt-4">
+            <div class="d-flex align-items-center gap-2 mb-4 mt-4 flex-wrap">
                 <button class="btn btn-outline-secondary rounded-pill px-4" onclick="showListView()">
                     <i class="fas fa-arrow-right me-2"></i> رجوع للقائمة
+                </button>
+                <button id="shareCustomerLedgerButton" class="btn btn-success rounded-pill px-4" onclick="shareCustomerLedgerReport()" disabled>
+                    <i class="fas fa-share-nodes me-2"></i><span>مشاركة كشف الحساب</span>
                 </button>
                 <h4 class="text-white mb-0" id="selectedCustomerTitle">تفاصيل العميل</h4>
             </div>
@@ -466,7 +469,7 @@
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <script src="customer-ledger.js?v=22"></script>
+    <script src="customer-ledger.js?v=23"></script>
 </body>
 
 </html>

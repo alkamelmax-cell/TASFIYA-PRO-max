@@ -711,6 +711,10 @@ class LocalWebServer {
                     await this.handleGetCustomerLedger(res, parsedUrl.query);
                     return;
                 }
+                else if (pathname === '/api/customer-ledger/report.pdf' && req.method === 'GET') {
+                    await this.handleGetCustomerLedgerPdf(res, parsedUrl.query);
+                    return;
+                }
                 else if (pathname === '/api/update-manual-transaction' && req.method === 'POST') {
                     await this.handleUpdateManualTransaction(req, res);
                     return;
@@ -1911,6 +1915,75 @@ class LocalWebServer {
             this.sendJson(res, { success: false, error: error.message });
         }
     }
+
+    async loadCustomerLedgerReportData(query = {}) {
+        let payload = null;
+        const captureResponse = {
+            headersSent: false,
+            writeHead(_statusCode, _headers) {
+                this.headersSent = true;
+            },
+            end(body) {
+                payload = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf8') : String(body || '{}'));
+            }
+        };
+        await this.handleGetCustomerLedger(captureResponse, query);
+        if (!payload?.success) {
+            throw new Error(payload?.error || 'تعذر تحميل كشف الحساب');
+        }
+        return Array.isArray(payload.data) ? payload.data : [];
+    }
+
+    buildCustomerLedgerPdfHtml(customerName, dateFrom, dateTo, ledger) {
+        let runningBalance = 0;
+        const rows = ledger.map((row) => {
+            const debit = parseNumericDbValue(row.debit, 0);
+            const credit = parseNumericDbValue(row.credit, 0);
+            runningBalance += debit - credit;
+            return { ...row, debit, credit, runningBalance };
+        });
+        const totalDebit = rows.reduce((sum, row) => sum + row.debit, 0);
+        const totalCredit = rows.reduce((sum, row) => sum + row.credit, 0);
+        const period = dateFrom && dateTo ? `${dateFrom} — ${dateTo}` : dateFrom ? `من ${dateFrom}` : dateTo ? `حتى ${dateTo}` : 'كل الفترات';
+        let logoSource = '';
+        try {
+            logoSource = `data:image/png;base64,${fs.readFileSync(path.join(__dirname, 'web-dashboard', 'assets', 'logo-tasfia-pro.png')).toString('base64')}`;
+        } catch (_error) {}
+        const body = rows.length
+            ? rows.map((row, index) => `<tr>
+                <td>${index + 1}</td><td>${escapeReportHtml(String(row.created_at || '').slice(0, 10))}</td>
+                <td>${escapeReportHtml(row.type || '-')}</td><td>${escapeReportHtml(row.description || '-')}</td>
+                <td class="debit">${row.debit ? formatReportAmount(row.debit) : '-'}</td><td class="credit">${row.credit ? formatReportAmount(row.credit) : '-'}</td>
+                <td class="balance">${formatReportAmount(row.runningBalance)}</td></tr>`).join('')
+            : '<tr><td class="empty" colspan="7">لا توجد حركات ضمن الفترة المحددة</td></tr>';
+        return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>
+            @page { size:A4; margin:13mm; } *{box-sizing:border-box} body{margin:0;font-family:Tahoma,Arial,sans-serif;color:#183c52;font-size:10px;background:#fff}.header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #4bcfc6;padding-bottom:11px;margin-bottom:15px}.brand{display:flex;align-items:center;gap:10px}.brand img{width:42px;height:42px;object-fit:contain}.brand h1{font-size:19px;margin:0;color:#244b64}.brand p{margin:3px 0 0;color:#688798}.title{text-align:left}.title strong{font-size:16px;display:block}.title span{color:#688798}.meta,.summary{display:grid;gap:8px}.meta{grid-template-columns:repeat(2,1fr);margin-bottom:12px}.summary{grid-template-columns:repeat(3,1fr);margin:14px 0 18px}.card{border:1px solid #d7e5e8;background:#f8fbfb;border-radius:8px;padding:9px}.summary .card{text-align:center;background:linear-gradient(135deg,#f5fbfb,#eef8f7)}.label{display:block;color:#698495;font-size:9px;margin-bottom:4px}.value{font-weight:700;font-size:14px;color:#1d5873;direction:ltr}.debit{color:#b17b00;font-weight:bold}.credit{color:#07875a;font-weight:bold}.balance{font-weight:bold;color:#244b64}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #d9e7e9;border-radius:8px;overflow:hidden}th{background:#244b64;color:#fff;padding:8px;text-align:right;font-size:9px}td{padding:7px;border-top:1px solid #e5edef;text-align:right;direction:ltr}td:nth-child(3),td:nth-child(4){direction:rtl}tr:nth-child(even) td{background:#f8fbfb}.empty{text-align:center;direction:rtl;color:#718998;padding:14px}.footer{margin-top:18px;padding-top:9px;border-top:1px solid #d8e5e8;color:#718998;display:flex;justify-content:space-between;font-size:9px}
+        </style></head><body><section class="header"><div class="brand">${logoSource ? `<img src="${logoSource}" alt="Tasfiya Pro">` : ''}<div><h1>تصفية برو</h1><p>كشف حساب عميل</p></div></div><div class="title"><strong>كشف حساب</strong><span>تم إنشاؤه ${escapeReportHtml(new Date().toLocaleString('en-GB'))}</span></div></section><section class="meta"><div class="card"><span class="label">العميل</span><strong>${escapeReportHtml(customerName)}</strong></div><div class="card"><span class="label">الفترة</span><strong>${escapeReportHtml(period)}</strong></div></section><section class="summary"><div class="card"><span class="label">إجمالي المبيعات الآجلة</span><span class="value debit">${formatReportAmount(totalDebit)}</span></div><div class="card"><span class="label">إجمالي السداد</span><span class="value credit">${formatReportAmount(totalCredit)}</span></div><div class="card"><span class="label">الرصيد المتبقي</span><span class="value">${formatReportAmount(totalDebit - totalCredit)}</span></div></section><table><thead><tr><th>#</th><th>التاريخ</th><th>نوع الحركة</th><th>البيان</th><th>مدين</th><th>دائن</th><th>الرصيد</th></tr></thead><tbody>${body}</tbody></table><footer class="footer"><span>تصفية برو — كشف حساب مالي</span><span>هذه الوثيقة تم إنشاؤها إلكترونيًا</span></footer></body></html>`;
+    }
+
+    async handleGetCustomerLedgerPdf(res, query = {}) {
+        let page = null;
+        try {
+            const customerName = String(query.customerName || '').trim();
+            if (!customerName) {
+                this.sendJson(res, { success: false, error: 'اسم العميل مطلوب' }, { statusCode: 400 });
+                return;
+            }
+            const ledger = await this.loadCustomerLedgerReportData(query);
+            const browser = await this.getPdfBrowser();
+            page = await browser.newPage();
+            await page.setContent(this.buildCustomerLedgerPdfHtml(customerName, query.dateFrom || '', query.dateTo || '', ledger), { waitUntil: 'load' });
+            const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });
+            res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Length': pdf.length, 'Content-Disposition': 'inline; filename="tasfiya-customer-ledger.pdf"', 'Cache-Control': 'no-store, max-age=0' });
+            res.end(pdf);
+        } catch (error) {
+            console.error('[Customer Ledger PDF] Generation failed:', error.message);
+            this.sendJson(res, { success: false, error: 'تعذر إنشاء كشف الحساب' }, { statusCode: 500 });
+        } finally {
+            if (page) await page.close().catch(() => {});
+        }
+    }
+
     async handleGetCustomersSummary(res, query = {}) {
         try {
             // Determine DB type for compatibility

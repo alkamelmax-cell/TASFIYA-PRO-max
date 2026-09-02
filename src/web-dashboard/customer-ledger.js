@@ -276,6 +276,8 @@ function viewCustomerStatement(customerName) {
     // Clear filters
     document.getElementById('filterDateFrom').value = '';
     document.getElementById('filterDateTo').value = '';
+    const shareButton = document.getElementById('shareCustomerLedgerButton');
+    if (shareButton) shareButton.disabled = true;
 
     // Load Data
     loadCustomerLedger(customerName);
@@ -309,6 +311,8 @@ async function loadCustomerLedger(customerName) {
             currentLedgerData = result.data; // Store globally
             renderLedgerTable(result.data);
             calculateStats(result.data);
+            const shareButton = document.getElementById('shareCustomerLedgerButton');
+            if (shareButton) shareButton.disabled = false;
         } else {
             alert('حدث خطأ: ' + result.error);
         }
@@ -318,6 +322,79 @@ async function loadCustomerLedger(customerName) {
     } finally {
         showLoading(false);
     }
+}
+
+async function shareCustomerLedgerReport() {
+    const customerName = (document.getElementById('currentCustomerName')?.value || '').trim();
+    if (!customerName) return;
+
+    const dateFrom = document.getElementById('filterDateFrom')?.value || '';
+    const dateTo = document.getElementById('filterDateTo')?.value || '';
+    const params = new URLSearchParams({ customerName });
+    if (dateFrom) params.set('dateFrom', dateFrom);
+    if (dateTo) params.set('dateTo', dateTo);
+
+    const reportUrl = `${API_URL}/customer-ledger/report.pdf?${params.toString()}`;
+    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.matchMedia('(pointer: coarse)').matches;
+    if (!isMobile) {
+        window.open(reportUrl, '_blank', 'noopener');
+        return;
+    }
+
+    const shareButton = document.getElementById('shareCustomerLedgerButton');
+    try {
+        if (shareButton) {
+            shareButton.disabled = true;
+            shareButton.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i><span>جارٍ تجهيز الملف</span>';
+        }
+        const response = await fetch(reportUrl, { cache: 'no-store', credentials: 'same-origin' });
+        if (!response.ok) throw new Error(`PDF request failed with ${response.status}`);
+        const blob = await response.blob();
+        if (blob.type !== 'application/pdf' || blob.size === 0) throw new Error('Invalid PDF response');
+        const fileName = 'كشف-حساب-عميل.pdf';
+        const file = new File([blob], fileName, { type: 'application/pdf' });
+
+        if (window.TasfiyaAndroid && typeof window.TasfiyaAndroid.sharePdf === 'function') {
+            const accepted = window.TasfiyaAndroid.sharePdf(await customerLedgerBlobToBase64(blob), fileName);
+            if (accepted) return;
+        }
+
+        const supportsFileShare = typeof navigator.share === 'function' &&
+            (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] }));
+        if (supportsFileShare) {
+            await navigator.share({ files: [file], title: `كشف حساب ${customerName}` });
+            return;
+        }
+
+        const downloadUrl = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = downloadUrl;
+        link.download = fileName;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
+        alert('تم تنزيل كشف الحساب. يمكنك مشاركته من مجلد التنزيلات.');
+    } catch (error) {
+        if (error?.name !== 'AbortError') {
+            console.error('[CUSTOMER LEDGER PDF] Failed:', error);
+            alert('تعذر تجهيز كشف الحساب للمشاركة. تحقق من اتصال الخادم ثم حاول مرة أخرى.');
+        }
+    } finally {
+        if (shareButton) {
+            shareButton.disabled = false;
+            shareButton.innerHTML = '<i class="fas fa-share-nodes me-2"></i><span>مشاركة كشف الحساب</span>';
+        }
+    }
+}
+
+function customerLedgerBlobToBase64(blob) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result).split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(blob);
+    });
 }
 
 let currentLedgerData = [];
