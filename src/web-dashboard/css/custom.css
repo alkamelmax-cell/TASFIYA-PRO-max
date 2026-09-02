@@ -1086,6 +1086,44 @@ input[type="date"].custom-input {
     text-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
 }
 
+/* Customer operations inside reconciliation details */
+.customer-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: .65rem;
+}
+
+.customer-summary-item {
+    min-width: 0;
+    padding: .8rem .65rem;
+    text-align: center;
+    border: 1px solid rgba(96, 165, 250, .18);
+    border-radius: .75rem;
+    background: linear-gradient(145deg, rgba(15, 23, 42, .72), rgba(15, 47, 59, .38));
+}
+
+.customer-summary-item label {
+    display: block;
+    margin-bottom: .35rem;
+    color: rgba(226, 232, 240, .68);
+    font-size: .74rem;
+    font-weight: 700;
+}
+
+.customer-summary-item strong {
+    display: block;
+    overflow: hidden;
+    font-size: 1rem;
+    font-weight: 800;
+    text-overflow: ellipsis;
+}
+
+.customer-summary-table small {
+    display: block;
+    margin-top: .16rem;
+    font-size: .7rem;
+}
+
 /* Modal Tables - Fixed Alignment */
 .modal-table {
     width: 100%;
@@ -1135,6 +1173,30 @@ input[type="date"].custom-input {
 
 .modal-table tr:last-child td {
     border-bottom: none;
+}
+
+@media (max-width: 575.98px) {
+    .customer-summary-grid {
+        gap: .45rem;
+    }
+
+    .customer-summary-item {
+        padding: .65rem .35rem;
+    }
+
+    .customer-summary-item label {
+        font-size: .65rem;
+    }
+
+    .customer-summary-item strong {
+        font-size: .82rem;
+    }
+
+    .customer-summary-table th,
+    .customer-summary-table td {
+        padding: .65rem .35rem;
+        font-size: .72rem;
+    }
 }
 
 .modal-body {

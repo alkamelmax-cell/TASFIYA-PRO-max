@@ -27,7 +27,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="css/custom.css?v=ui-20260902-v1">
+    <link rel="stylesheet" href="css/custom.css?v=ui-20260902-v2">
 
     <!-- OneSignal SDK -->
     <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
@@ -697,8 +697,55 @@
             const rec = data.reconciliation;
             const cash = data.cashReceipts || [];
             const bank = data.bankReceipts || [];
+            const customerReceipts = data.customerReceipts || [];
+            const postpaidSales = data.postpaidSales || [];
 
             const totalCashAmount = cash.reduce((sum, c) => sum + Number(c.total_amount), 0);
+
+            // Customer operations are saved with the reconciliation.  Merge sales and
+            // receipts by the most reliable identity available so that the summary
+            // shows one clear row per customer instead of asking the accountant to
+            // select the customer again.
+            const asAmount = (value) => {
+                const amount = Number(value || 0);
+                return Number.isFinite(amount) ? amount : 0;
+            };
+            const escapeHtml = (value) => String(value ?? '').replace(/[&<>'\"]/g, (char) => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#039;', '"': '&quot;'
+            }[char]));
+            const customerRows = new Map();
+            const customerIdentity = (row) => {
+                const id = Number(row.customer_id || 0);
+                const code = String(row.customer_code || '').trim();
+                const name = String(row.customer_name || '').trim();
+                if (id > 0) return `id:${id}`;
+                if (code) return `code:${code.toUpperCase()}`;
+                return `name:${name.toLocaleLowerCase('ar') || 'unknown'}`;
+            };
+            const addCustomerOperation = (row, field) => {
+                const key = customerIdentity(row);
+                const existing = customerRows.get(key) || {
+                    name: String(row.customer_name || '').trim() || 'عميل غير مسمى',
+                    code: String(row.customer_code || '').trim(),
+                    postpaidSales: 0,
+                    customerReceipts: 0
+                };
+                existing[field] += asAmount(row.amount);
+                if (!existing.code && row.customer_code) existing.code = String(row.customer_code).trim();
+                customerRows.set(key, existing);
+            };
+            postpaidSales.forEach((row) => addCustomerOperation(row, 'postpaidSales'));
+            customerReceipts.forEach((row) => addCustomerOperation(row, 'customerReceipts'));
+
+            const customers = Array.from(customerRows.values())
+                .map((customer) => ({
+                    ...customer,
+                    balance: customer.postpaidSales - customer.customerReceipts
+                }))
+                .sort((a, b) => (b.postpaidSales + b.customerReceipts) - (a.postpaidSales + a.customerReceipts));
+            const totalPostpaidSales = customers.reduce((sum, customer) => sum + customer.postpaidSales, 0);
+            const totalCustomerReceipts = customers.reduce((sum, customer) => sum + customer.customerReceipts, 0);
+            const totalCustomerBalance = customers.reduce((sum, customer) => sum + customer.balance, 0);
 
             let html = `
                 <div class="d-flex justify-content-between align-items-center mb-4 px-2">
@@ -733,6 +780,50 @@
                             ${formatCurrency(rec.surplus_deficit).replace(' SAR', '')}
                         </div>
                     </div>
+                </div>
+
+                <!-- Customer details saved with this reconciliation -->
+                <h6 class="section-title text-sm mb-3 mt-4 text-white"><i class="fas fa-users text-info me-2"></i> حسابات العملاء</h6>
+                <div class="customer-summary-grid mb-3">
+                    <div class="customer-summary-item">
+                        <label>مبيعات الآجل</label>
+                        <strong class="text-warning font-monospace text-ltr">${formatCurrency(totalPostpaidSales).replace(' SAR', '')}</strong>
+                    </div>
+                    <div class="customer-summary-item">
+                        <label>مقبوضات العملاء</label>
+                        <strong class="text-success font-monospace text-ltr">${formatCurrency(totalCustomerReceipts).replace(' SAR', '')}</strong>
+                    </div>
+                    <div class="customer-summary-item">
+                        <label>الصافي المستحق</label>
+                        <strong class="${totalCustomerBalance > 0 ? 'text-warning' : totalCustomerBalance < 0 ? 'text-success' : 'text-white'} font-monospace text-ltr">${formatCurrency(totalCustomerBalance).replace(' SAR', '')}</strong>
+                    </div>
+                </div>
+                <div class="modal-table customer-summary-table">
+                    <table class="w-100">
+                        <thead>
+                            <tr>
+                                <th>العميل</th>
+                                <th class="text-ltr">مبيعات الآجل</th>
+                                <th class="text-ltr">المقبوض</th>
+                                <th class="text-ltr">الصافي</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${customers.map((customer) => `
+                                <tr>
+                                    <td>
+                                        <div class="fw-bold text-white">${escapeHtml(customer.name)}</div>
+                                        ${customer.code ? `<small class="text-secondary font-monospace">${escapeHtml(customer.code)}</small>` : ''}
+                                    </td>
+                                    <td class="font-monospace text-ltr text-warning">${formatCurrency(customer.postpaidSales).replace(' SAR', '')}</td>
+                                    <td class="font-monospace text-ltr text-success">${formatCurrency(customer.customerReceipts).replace(' SAR', '')}</td>
+                                    <td class="font-monospace text-ltr fw-bold ${customer.balance > 0 ? 'text-warning' : customer.balance < 0 ? 'text-success' : 'text-white'}">${formatCurrency(customer.balance).replace(' SAR', '')}</td>
+                                </tr>
+                            `).join('') || `
+                                <tr><td colspan="4" class="text-center py-3 text-muted small">لا توجد عمليات عملاء ضمن هذه التصفية</td></tr>
+                            `}
+                        </tbody>
+                    </table>
                 </div>
 
                 <!-- Cash Details Table -->
