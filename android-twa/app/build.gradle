@@ -10,8 +10,9 @@ android {
         applicationId 'com.tasfiyapro.app'
         minSdk 23
         targetSdk 35
-        versionCode 4
-        versionName '1.1.1'
+        // Bump this when launcher artwork changes so Android refreshes its icon cache.
+        versionCode 5
+        versionName '1.1.2'
     }
 
     signingConfigs {
