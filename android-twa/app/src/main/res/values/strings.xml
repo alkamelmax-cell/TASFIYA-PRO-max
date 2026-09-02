@@ -2,5 +2,4 @@
 <resources>
     <string name="app_name">تصفية برو</string>
     <string name="launch_url" translatable="false">https://server.tail22db51.ts.net/</string>
-    <string name="asset_statements" translatable="false">[{&quot;relation&quot;:[&quot;delegate_permission/common.handle_all_urls&quot;],&quot;target&quot;:{&quot;namespace&quot;:&quot;web&quot;,&quot;site&quot;:&quot;https://server.tail22db51.ts.net&quot;}}]</string>
 </resources>
