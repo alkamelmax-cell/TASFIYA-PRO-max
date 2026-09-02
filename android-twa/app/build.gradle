@@ -42,5 +42,7 @@ android {
 }
 
 dependencies {
-    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.7.2'
+    // 2.5.0 is the version already verified by our GitHub build. It contains
+    // WebViewFallbackActivity while avoiding new upstream compatibility changes.
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
 }

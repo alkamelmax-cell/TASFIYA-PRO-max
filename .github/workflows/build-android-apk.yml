@@ -50,16 +50,30 @@ jobs:
           set -euo pipefail
           chmod +x gradlew
 
+          build_apk() {
+            set +e
+            "$@" 2>&1 | tee "$RUNNER_TEMP/tasfiya-gradle-build.log"
+            local build_status=${PIPESTATUS[0]}
+            set -e
+            if [[ $build_status -ne 0 ]]; then
+              echo '### Android build error' >> "$GITHUB_STEP_SUMMARY"
+              echo '```text' >> "$GITHUB_STEP_SUMMARY"
+              tail -n 160 "$RUNNER_TEMP/tasfiya-gradle-build.log" >> "$GITHUB_STEP_SUMMARY"
+              echo '```' >> "$GITHUB_STEP_SUMMARY"
+              exit $build_status
+            fi
+          }
+
           if [[ -n "${ANDROID_KEYSTORE_BASE64:-}" && -n "${ANDROID_KEYSTORE_PASSWORD:-}" && -n "${ANDROID_KEY_ALIAS:-}" && -n "${ANDROID_KEY_PASSWORD:-}" ]]; then
             echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > release.keystore
             export ANDROID_KEYSTORE_PATH="$PWD/release.keystore"
-            ./gradlew --no-daemon :app:assembleRelease
+            build_apk ./gradlew --no-daemon :app:assembleRelease --stacktrace
             mkdir -p output
             cp app/build/outputs/apk/release/app-release.apk output/Tasfiya-Pro-release.apk
             echo "artifact_name=Tasfiya-Pro-release" >> "$GITHUB_OUTPUT"
           else
             echo "Signing secrets are absent: producing a debug APK for installation/testing only."
-            ./gradlew --no-daemon :app:assembleDebug
+            build_apk ./gradlew --no-daemon :app:assembleDebug --stacktrace
             mkdir -p output
             cp app/build/outputs/apk/debug/app-debug.apk output/Tasfiya-Pro-debug.apk
             echo "artifact_name=Tasfiya-Pro-debug" >> "$GITHUB_OUTPUT"
