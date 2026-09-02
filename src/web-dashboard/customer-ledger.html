@@ -360,21 +360,28 @@
 
             <!-- Stats Row -->
             <div class="row g-3 mb-4">
-                <div class="col-6 col-lg-4">
+                <div class="col-6 col-lg-3">
+                    <div class="stat-box">
+                        <i class="fas fa-history icon-wrapper text-warning"></i>
+                        <div class="stat-label">الرصيد السابق</div>
+                        <div class="stat-value text-warning" id="statsOpeningBalance">0.00</div>
+                    </div>
+                </div>
+                <div class="col-6 col-lg-3">
                     <div class="stat-box">
                         <i class="fas fa-file-invoice-dollar icon-wrapper text-danger"></i>
-                        <div class="stat-label">إجمالي المبيعات الآجلة</div>
+                        <div class="stat-label">مبيعات الفترة</div>
                         <div class="stat-value text-danger" id="statsTotalDebit">0.00</div>
                     </div>
                 </div>
-                <div class="col-6 col-lg-4">
+                <div class="col-6 col-lg-3">
                     <div class="stat-box">
                         <i class="fas fa-hand-holding-usd icon-wrapper text-success"></i>
-                        <div class="stat-label">إجمالي السداد</div>
+                        <div class="stat-label">سداد الفترة</div>
                         <div class="stat-value text-success" id="statsTotalCredit">0.00</div>
                     </div>
                 </div>
-                <div class="col-12 col-lg-4">
+                <div class="col-6 col-lg-3">
                     <div class="stat-box">
                         <i class="fas fa-balance-scale icon-wrapper text-info"></i>
                         <div class="stat-label">الرصيد المتبقي</div>
@@ -496,7 +503,7 @@
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
-    <script src="customer-ledger.js?v=24"></script>
+    <script src="customer-ledger.js?v=26"></script>
 </body>
 
 </html>

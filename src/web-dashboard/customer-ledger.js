@@ -434,6 +434,7 @@ function renderLedgerTable(data) {
         const debit = Number(row.debit || 0);
         const credit = Number(row.credit || 0);
         const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '-';
+        const isOpeningBalance = row.is_opening_balance || row.id === 'opening-balance';
 
         const isManual = row.type === 'مبيعات يدوية' || row.type === 'سند قبض يدوي';
 
@@ -447,7 +448,7 @@ function renderLedgerTable(data) {
             <td class="text-white text-center d-none d-md-table-cell">${data.length - index}</td>
             <td class="text-center">${new Date(row.created_at).toLocaleDateString('en-GB')}</td>
             <td class="text-center">
-                <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}" style="font-size: 0.65rem;">${row.type}</span>
+                <span class="badge ${isOpeningBalance ? 'bg-warning text-dark' : debit > 0 ? 'bg-danger' : 'bg-success'}" style="font-size: 0.65rem;">${row.type}</span>
                 <div class="small text-secondary mt-1 text-nowrap d-block d-md-none" style="font-size: 0.6rem; opacity: 0.8;">${cashierDisplay}</div>
             </td>
             <td class="d-none d-md-table-cell">
@@ -475,6 +476,7 @@ function renderLedgerTable(data) {
             const amount = debit > 0 ? debit : credit;
             const amountType = debit > 0 ? 'debit' : 'credit';
             const cashierDisplay = row.cashier_name ? `#${row.reconciliation_number || '?'} - ${row.cashier_name}` : '';
+            const isOpeningBalance = row.is_opening_balance || row.id === 'opening-balance';
 
             const isManual = row.type === 'مبيعات يدوية' || row.type === 'سند قبض يدوي';
 
@@ -490,12 +492,12 @@ function renderLedgerTable(data) {
                     <span class="ledger-card-date"><i class="fas fa-calendar-alt me-1"></i>${new Date(row.created_at).toLocaleDateString('en-GB')}</span>
                     <div>
                         ${editBtnMobile}
-                        <span class="badge ${debit > 0 ? 'bg-danger' : 'bg-success'}">${row.type}</span>
+                        <span class="badge ${isOpeningBalance ? 'bg-warning text-dark' : debit > 0 ? 'bg-danger' : 'bg-success'}">${row.type}</span>
                     </div>
                 </div>
                 <div class="ledger-card-body">
                     <div class="ledger-card-amount ${amountType}">
-                        <div class="amount-label">${debit > 0 ? 'مدين' : 'دائن'}</div>
+                        <div class="amount-label">${isOpeningBalance ? 'رصيد' : debit > 0 ? 'مدين' : 'دائن'}</div>
                         <div class="amount-value" dir="ltr">${formatCurrency(amount)}</div>
                     </div>
                     ${cashierDisplay ? `<div class="ledger-card-cashier"><i class="fas fa-user me-1"></i>${cashierDisplay}</div>` : ''}
@@ -508,16 +510,25 @@ function renderLedgerTable(data) {
 }
 
 function calculateStats(data) {
+    let openingBalance = 0;
     let totalDebit = 0;
     let totalCredit = 0;
 
     data.forEach(r => {
-        totalDebit += Number(r.debit || 0);
-        totalCredit += Number(r.credit || 0);
+        const debit = Number(r.debit || 0);
+        const credit = Number(r.credit || 0);
+        if (r.is_opening_balance || r.id === 'opening-balance') {
+            openingBalance += debit - credit;
+            return;
+        }
+        totalDebit += debit;
+        totalCredit += credit;
     });
 
-    const balance = totalDebit - totalCredit;
+    const balance = openingBalance + totalDebit - totalCredit;
 
+    const openingElement = document.getElementById('statsOpeningBalance');
+    if (openingElement) openingElement.textContent = formatCurrency(openingBalance);
     document.getElementById('statsTotalDebit').textContent = formatCurrency(totalDebit);
     document.getElementById('statsTotalCredit').textContent = formatCurrency(totalCredit);
     document.getElementById('statsBalance').textContent = formatCurrency(balance);

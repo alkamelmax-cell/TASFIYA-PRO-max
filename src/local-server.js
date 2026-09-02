@@ -1696,7 +1696,7 @@ class LocalWebServer {
         const openingStartDate = openingRow?.fiscal_year ? `${openingRow.fiscal_year}-01-01` : '';
         let openingBalance = parseNumericDbValue(openingRow?.opening_balance, 0);
 
-        if (dateFrom && openingStartDate) {
+        if (dateFrom) {
             openingBalance += await this.calculateCustomerLedgerPreperiod(customerName, dateFrom, openingStartDate, pool);
         }
 
@@ -1714,11 +1714,12 @@ class LocalWebServer {
 
         if (pool) {
             const params = lowerDate ? [customerName, lowerDate, upperDate] : [customerName, upperDate];
-            const recSql = lowerDate ? 'AND r.reconciliation_date >= $2 AND r.reconciliation_date < $3' : 'AND r.reconciliation_date < $2';
+            const salesSql = lowerDate ? 'AND DATE(ps.created_at) >= $2 AND DATE(ps.created_at) < $3' : 'AND DATE(ps.created_at) < $2';
+            const receiptsSql = lowerDate ? 'AND DATE(cr.created_at) >= $2 AND DATE(cr.created_at) < $3' : 'AND DATE(cr.created_at) < $2';
             const manualSql = lowerDate ? 'AND DATE(created_at) >= $2 AND DATE(created_at) < $3' : 'AND DATE(created_at) < $2';
             const [postpaid, receipts, manualPostpaid, manualReceipts] = await Promise.all([
-                pool.query(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id WHERE ps.customer_name = $1 ${recSql}`, params),
-                pool.query(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id WHERE cr.customer_name = $1 ${recSql}`, params),
+                pool.query(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps WHERE ps.customer_name = $1 ${salesSql}`, params),
+                pool.query(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr WHERE cr.customer_name = $1 ${receiptsSql}`, params),
                 pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_postpaid_sales WHERE customer_name = $1 ${manualSql}`, params),
                 pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_customer_receipts WHERE customer_name = $1 ${manualSql}`, params)
             ]);
@@ -1729,10 +1730,11 @@ class LocalWebServer {
         }
 
         const params = lowerDate ? [customerName, lowerDate, upperDate] : [customerName, upperDate];
-        const recSql = lowerDate ? 'AND r.reconciliation_date >= ? AND r.reconciliation_date < ?' : 'AND r.reconciliation_date < ?';
+        const salesSql = lowerDate ? 'AND DATE(ps.created_at) >= ? AND DATE(ps.created_at) < ?' : 'AND DATE(ps.created_at) < ?';
+        const receiptsSql = lowerDate ? 'AND DATE(cr.created_at) >= ? AND DATE(cr.created_at) < ?' : 'AND DATE(cr.created_at) < ?';
         const manualSql = lowerDate ? 'AND DATE(created_at) >= ? AND DATE(created_at) < ?' : 'AND DATE(created_at) < ?';
-        const postpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id WHERE ps.customer_name = ? ${recSql}`).get(params);
-        const receipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id WHERE cr.customer_name = ? ${recSql}`).get(params);
+        const postpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps WHERE ps.customer_name = ? ${salesSql}`).get(params);
+        const receipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr WHERE cr.customer_name = ? ${receiptsSql}`).get(params);
         const manualPostpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_postpaid_sales WHERE customer_name = ? ${manualSql}`).get(params);
         const manualReceipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_customer_receipts WHERE customer_name = ? ${manualSql}`).get(params);
 
@@ -1749,10 +1751,11 @@ class LocalWebServer {
         }
         return {
             id: 'opening-balance',
+            is_opening_balance: true,
             amount: Math.abs(openingBalance),
             created_at: `${dateFrom || openingContext.openingStartDate || '1970-01-01'} 00:00:00`,
-            type: 'رصيد افتتاحي',
-            description: 'رصيد مرحل من سنة مؤرشفة',
+            type: dateFrom ? 'رصيد سابق' : 'رصيد افتتاحي',
+            description: dateFrom ? 'رصيد العميل قبل بداية الفترة المحددة' : 'رصيد مرحل من سنة مؤرشفة',
             cashier_name: 'النظام',
             reconciliation_number: null,
             debit: openingBalance >= 0 ? openingBalance : 0,
@@ -1942,9 +1945,14 @@ class LocalWebServer {
             runningBalance += debit - credit;
             return { ...row, debit, credit, runningBalance };
         });
-        const totalDebit = rows.reduce((sum, row) => sum + row.debit, 0);
-        const totalCredit = rows.reduce((sum, row) => sum + row.credit, 0);
-        const period = dateFrom && dateTo ? `${dateFrom} — ${dateTo}` : dateFrom ? `من ${dateFrom}` : dateTo ? `حتى ${dateTo}` : 'كل الفترات';
+        const openingBalance = rows
+            .filter((row) => row.is_opening_balance || row.id === 'opening-balance')
+            .reduce((sum, row) => sum + row.debit - row.credit, 0);
+        const periodRows = rows.filter((row) => !(row.is_opening_balance || row.id === 'opening-balance'));
+        const totalDebit = periodRows.reduce((sum, row) => sum + row.debit, 0);
+        const totalCredit = periodRows.reduce((sum, row) => sum + row.credit, 0);
+        const closingBalance = openingBalance + totalDebit - totalCredit;
+        const period = dateFrom && dateTo ? `من ${dateFrom} إلى ${dateTo}` : dateFrom ? `من ${dateFrom}` : dateTo ? `حتى ${dateTo}` : 'كل الفترات';
         let logoSource = '';
         try {
             logoSource = `data:image/png;base64,${fs.readFileSync(path.join(__dirname, 'web-dashboard', 'assets', 'logo-tasfia-pro.png')).toString('base64')}`;
@@ -1957,8 +1965,8 @@ class LocalWebServer {
                 <td class="balance">${formatReportAmount(row.runningBalance)}</td></tr>`).join('')
             : '<tr><td class="empty" colspan="7">لا توجد حركات ضمن الفترة المحددة</td></tr>';
         return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>
-            @page { size:A4; margin:13mm; } *{box-sizing:border-box} body{margin:0;font-family:Tahoma,Arial,sans-serif;color:#183c52;font-size:10px;background:#fff}.header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #4bcfc6;padding-bottom:11px;margin-bottom:15px}.brand{display:flex;align-items:center;gap:10px}.brand img{width:42px;height:42px;object-fit:contain}.brand h1{font-size:19px;margin:0;color:#244b64}.brand p{margin:3px 0 0;color:#688798}.title{text-align:left}.title strong{font-size:16px;display:block}.title span{color:#688798}.meta,.summary{display:grid;gap:8px}.meta{grid-template-columns:repeat(2,1fr);margin-bottom:12px}.summary{grid-template-columns:repeat(3,1fr);margin:14px 0 18px}.card{border:1px solid #d7e5e8;background:#f8fbfb;border-radius:8px;padding:9px}.summary .card{text-align:center;background:linear-gradient(135deg,#f5fbfb,#eef8f7)}.label{display:block;color:#698495;font-size:9px;margin-bottom:4px}.value{font-weight:700;font-size:14px;color:#1d5873;direction:ltr}.debit{color:#b17b00;font-weight:bold}.credit{color:#07875a;font-weight:bold}.balance{font-weight:bold;color:#244b64}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #d9e7e9;border-radius:8px;overflow:hidden}th{background:#244b64;color:#fff;padding:8px;text-align:right;font-size:9px}td{padding:7px;border-top:1px solid #e5edef;text-align:right;direction:ltr}td:nth-child(3),td:nth-child(4){direction:rtl}tr:nth-child(even) td{background:#f8fbfb}.empty{text-align:center;direction:rtl;color:#718998;padding:14px}.footer{margin-top:18px;padding-top:9px;border-top:1px solid #d8e5e8;color:#718998;display:flex;justify-content:space-between;font-size:9px}
-        </style></head><body><section class="header"><div class="brand">${logoSource ? `<img src="${logoSource}" alt="Tasfiya Pro">` : ''}<div><h1>تصفية برو</h1><p>كشف حساب عميل</p></div></div><div class="title"><strong>كشف حساب</strong><span>تم إنشاؤه ${escapeReportHtml(new Date().toLocaleString('en-GB'))}</span></div></section><section class="meta"><div class="card"><span class="label">العميل</span><strong>${escapeReportHtml(customerName)}</strong></div><div class="card"><span class="label">الفترة</span><strong>${escapeReportHtml(period)}</strong></div></section><section class="summary"><div class="card"><span class="label">إجمالي المبيعات الآجلة</span><span class="value debit">${formatReportAmount(totalDebit)}</span></div><div class="card"><span class="label">إجمالي السداد</span><span class="value credit">${formatReportAmount(totalCredit)}</span></div><div class="card"><span class="label">الرصيد المتبقي</span><span class="value">${formatReportAmount(totalDebit - totalCredit)}</span></div></section><table><thead><tr><th>#</th><th>التاريخ</th><th>نوع الحركة</th><th>البيان</th><th>مدين</th><th>دائن</th><th>الرصيد</th></tr></thead><tbody>${body}</tbody></table><footer class="footer"><span>تم تطوير هذا النظام بواسطة محمد أمين الكامل</span><span>جميع الحقوق محفوظة © تصفية برو - Tasfiya Pro</span></footer></body></html>`;
+            @page { size:A4; margin:13mm; } *{box-sizing:border-box} body{margin:0;font-family:Tahoma,Arial,sans-serif;color:#183c52;font-size:10px;background:#fff}.header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #4bcfc6;padding-bottom:11px;margin-bottom:15px}.brand{display:flex;align-items:center;gap:10px}.brand img{width:42px;height:42px;object-fit:contain}.brand h1{font-size:19px;margin:0;color:#244b64}.brand p{margin:3px 0 0;color:#688798}.title{text-align:left}.title strong{font-size:16px;display:block}.title span{color:#688798}.meta,.summary{display:grid;gap:8px}.meta{grid-template-columns:repeat(2,1fr);margin-bottom:12px}.summary{grid-template-columns:repeat(4,1fr);margin:14px 0 18px}.card{border:1px solid #d7e5e8;background:#f8fbfb;border-radius:8px;padding:9px}.summary .card{text-align:center;background:linear-gradient(135deg,#f5fbfb,#eef8f7)}.label{display:block;color:#698495;font-size:9px;margin-bottom:4px}.value{font-weight:700;font-size:14px;color:#1d5873;direction:ltr}.debit{color:#b17b00;font-weight:bold}.credit{color:#07875a;font-weight:bold}.balance{font-weight:bold;color:#244b64}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #d9e7e9;border-radius:8px;overflow:hidden}th{background:#244b64;color:#fff;padding:8px;text-align:right;font-size:9px}td{padding:7px;border-top:1px solid #e5edef;text-align:right;direction:ltr}td:nth-child(3),td:nth-child(4){direction:rtl}tr:nth-child(even) td{background:#f8fbfb}.empty{text-align:center;direction:rtl;color:#718998;padding:14px}.footer{margin-top:18px;padding-top:9px;border-top:1px solid #d8e5e8;color:#718998;display:flex;justify-content:space-between;font-size:9px}
+        </style></head><body><section class="header"><div class="brand">${logoSource ? `<img src="${logoSource}" alt="Tasfiya Pro">` : ''}<div><h1>تصفية برو</h1><p>كشف حساب عميل</p></div></div><div class="title"><strong>كشف حساب</strong><span>تم إنشاؤه ${escapeReportHtml(new Date().toLocaleString('en-GB'))}</span></div></section><section class="meta"><div class="card"><span class="label">العميل</span><strong>${escapeReportHtml(customerName)}</strong></div><div class="card"><span class="label">الفترة</span><strong>${escapeReportHtml(period)}</strong></div></section><section class="summary"><div class="card"><span class="label">الرصيد السابق</span><span class="value">${formatReportAmount(openingBalance)}</span></div><div class="card"><span class="label">مبيعات الفترة</span><span class="value debit">${formatReportAmount(totalDebit)}</span></div><div class="card"><span class="label">سداد الفترة</span><span class="value credit">${formatReportAmount(totalCredit)}</span></div><div class="card"><span class="label">الرصيد المتبقي</span><span class="value">${formatReportAmount(closingBalance)}</span></div></section><table><thead><tr><th>#</th><th>التاريخ</th><th>نوع الحركة</th><th>البيان</th><th>مدين</th><th>دائن</th><th>الرصيد</th></tr></thead><tbody>${body}</tbody></table><footer class="footer"><span>تم تطوير هذا النظام بواسطة محمد أمين الكامل</span><span>جميع الحقوق محفوظة © تصفية برو - Tasfiya Pro</span></footer></body></html>`;
     }
 
     async handleGetCustomerLedgerPdf(res, query = {}) {
