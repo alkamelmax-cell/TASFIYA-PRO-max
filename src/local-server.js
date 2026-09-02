@@ -5,6 +5,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
+const puppeteer = require('puppeteer');
 const { parse } = require('url');
 const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
 const { WebSessionStore } = require('./security/web-session-store');
@@ -49,6 +50,19 @@ function parseNumericDbValue(value, fallback = 0) {
 
     const normalized = Number.parseFloat(String(value).replace(/,/g, '').trim());
     return Number.isFinite(normalized) ? normalized : fallback;
+}
+
+function escapeReportHtml(value) {
+    return String(value ?? '').replace(/[&<>"']/g, (character) => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+    }[character]));
+}
+
+function formatReportAmount(value) {
+    return parseNumericDbValue(value, 0).toLocaleString('en-US', {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2
+    });
 }
 
 function normalizeDetailsJsonPayload(value) {
@@ -189,6 +203,8 @@ class LocalWebServer {
         this.port = port;
         this.server = null;
         this.sessionStore = new WebSessionStore({ ttlMs: SESSION_TTL_MS });
+        this.pdfBrowser = null;
+        this.pdfBrowserPromise = null;
     }
 
     async readJsonBody(req, options = {}) {
@@ -677,6 +693,11 @@ class LocalWebServer {
                     await this.handleGetCashboxReport(res, parsedUrl.query);
                     return;
                 }
+                else if (pathname.match(/^\/api\/reconciliation\/\d+\/report\.pdf$/) && req.method === 'GET') {
+                    const id = pathname.split('/')[3];
+                    await this.handleGetReconciliationPdf(res, id);
+                    return;
+                }
                 else if (pathname.match(/^\/api\/reconciliation\/\d+$/)) {
                     const id = pathname.split('/').pop();
                     await this.handleGetReconciliationDetails(res, id);
@@ -824,6 +845,12 @@ class LocalWebServer {
                 console.log('🌐 [WEB APP] Server stopped');
             });
             this.server = null;
+        }
+
+        if (this.pdfBrowser) {
+            this.pdfBrowser.close().catch(() => {});
+            this.pdfBrowser = null;
+            this.pdfBrowserPromise = null;
         }
     }
 
@@ -1453,6 +1480,171 @@ class LocalWebServer {
 
         } catch (error) {
             this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    async getPdfBrowser() {
+        if (this.pdfBrowser) {
+            return this.pdfBrowser;
+        }
+
+        if (!this.pdfBrowserPromise) {
+            this.pdfBrowserPromise = puppeteer.launch({
+                headless: true,
+                args: ['--no-sandbox', '--disable-setuid-sandbox']
+            }).then((browser) => {
+                this.pdfBrowser = browser;
+                browser.on('disconnected', () => {
+                    this.pdfBrowser = null;
+                    this.pdfBrowserPromise = null;
+                });
+                return browser;
+            }).catch((error) => {
+                this.pdfBrowserPromise = null;
+                throw error;
+            });
+        }
+
+        return this.pdfBrowserPromise;
+    }
+
+    async loadReconciliationReportData(id) {
+        const rec = await this.dbManager.db.prepare(`
+            SELECT r.*, c.name as cashier_name, a.name as accountant_name
+            FROM reconciliations r
+            LEFT JOIN cashiers c ON r.cashier_id = c.id
+            LEFT JOIN accountants a ON r.accountant_id = a.id
+            WHERE r.id = ?
+        `).get(id);
+
+        if (!rec) {
+            return null;
+        }
+
+        const [cashReceipts, bankReceipts, customerReceipts, postpaidSales] = await Promise.all([
+            this.dbManager.db.prepare('SELECT * FROM cash_receipts WHERE reconciliation_id = ?').all(id),
+            this.dbManager.db.prepare(`
+                SELECT b.*, tm.name as atm_name
+                FROM bank_receipts b
+                LEFT JOIN atms tm ON b.atm_id = tm.id
+                WHERE b.reconciliation_id = ?
+            `).all(id),
+            this.dbManager.db.prepare('SELECT * FROM customer_receipts WHERE reconciliation_id = ?').all(id),
+            this.dbManager.db.prepare('SELECT * FROM postpaid_sales WHERE reconciliation_id = ?').all(id)
+        ]);
+
+        return { reconciliation: rec, cashReceipts, bankReceipts, customerReceipts, postpaidSales };
+    }
+
+    buildReconciliationPdfHtml(data) {
+        const rec = data.reconciliation || {};
+        const customerRows = new Map();
+        const customerKey = (row) => {
+            const id = Number(row?.customer_id || 0);
+            const code = String(row?.customer_code || '').trim().toUpperCase();
+            const name = String(row?.customer_name || '').trim().toLocaleLowerCase('ar');
+            return id > 0 ? `id:${id}` : (code ? `code:${code}` : `name:${name || 'unknown'}`);
+        };
+        const addCustomer = (row, field) => {
+            const key = customerKey(row);
+            const existing = customerRows.get(key) || {
+                name: String(row?.customer_name || '').trim() || 'عميل غير مسمى',
+                code: String(row?.customer_code || '').trim(),
+                postpaidSales: 0,
+                customerReceipts: 0
+            };
+            existing[field] += parseNumericDbValue(row?.amount, 0);
+            if (!existing.code && row?.customer_code) existing.code = String(row.customer_code).trim();
+            customerRows.set(key, existing);
+        };
+
+        (data.postpaidSales || []).forEach((row) => addCustomer(row, 'postpaidSales'));
+        (data.customerReceipts || []).forEach((row) => addCustomer(row, 'customerReceipts'));
+        const customers = Array.from(customerRows.values())
+            .map((customer) => ({ ...customer, balance: customer.postpaidSales - customer.customerReceipts }))
+            .sort((left, right) => (right.postpaidSales + right.customerReceipts) - (left.postpaidSales + left.customerReceipts));
+        const totalPostpaid = customers.reduce((sum, customer) => sum + customer.postpaidSales, 0);
+        const totalCustomerReceipts = customers.reduce((sum, customer) => sum + customer.customerReceipts, 0);
+        const totalCash = (data.cashReceipts || []).reduce((sum, row) => sum + parseNumericDbValue(row.total_amount, 0), 0);
+        const totalBank = (data.bankReceipts || []).reduce((sum, row) => sum + parseNumericDbValue(row.amount, 0), 0);
+        const reportNumber = rec.reconciliation_number || rec.id;
+        const reportDate = String(rec.reconciliation_date || rec.created_at || '').slice(0, 10) || '-';
+        const isCompleted = String(rec.status || '').toLowerCase() === 'completed';
+        let logoSource = '';
+        try {
+            const logoPath = path.join(__dirname, 'web-dashboard', 'assets', 'logo-tasfia-pro.png');
+            logoSource = `data:image/png;base64,${fs.readFileSync(logoPath).toString('base64')}`;
+        } catch (_error) {
+            logoSource = '';
+        }
+
+        const customerBody = customers.length
+            ? customers.map((customer) => `
+                <tr>
+                    <td><strong>${escapeReportHtml(customer.name)}</strong>${customer.code ? `<small>${escapeReportHtml(customer.code)}</small>` : ''}</td>
+                    <td>${formatReportAmount(customer.postpaidSales)}</td>
+                    <td>${formatReportAmount(customer.customerReceipts)}</td>
+                    <td class="${customer.balance < 0 ? 'credit' : customer.balance > 0 ? 'debit' : ''}">${formatReportAmount(customer.balance)}</td>
+                </tr>`).join('')
+            : '<tr><td colspan="4" class="empty">لا توجد عمليات عملاء ضمن هذه التصفية</td></tr>';
+        const cashBody = (data.cashReceipts || []).length
+            ? data.cashReceipts.map((row) => `<tr><td>${escapeReportHtml(row.denomination)}</td><td>${escapeReportHtml(row.quantity)}</td><td>${formatReportAmount(row.total_amount)}</td></tr>`).join('')
+            : '<tr><td colspan="3" class="empty">لا توجد تفاصيل نقدية</td></tr>';
+        const bankBody = (data.bankReceipts || []).length
+            ? data.bankReceipts.map((row) => `<tr><td>${escapeReportHtml(row.operation_type || 'بطاقة')}</td><td>${escapeReportHtml(row.atm_name || '-')}</td><td>${formatReportAmount(row.amount)}</td></tr>`).join('')
+            : '<tr><td colspan="3" class="empty">لا توجد عمليات شبكة</td></tr>';
+
+        return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>
+            @page { size: A4; margin: 13mm; }
+            * { box-sizing: border-box; }
+            body { margin: 0; color: #16364b; font-family: Tahoma, Arial, sans-serif; font-size: 11px; background: #fff; }
+            .header { display:flex; align-items:center; justify-content:space-between; border-bottom:3px solid #4bcfc6; padding-bottom:12px; margin-bottom:16px; }
+            .brand { display:flex; align-items:center; gap:10px; } .brand img { width:44px; height:44px; object-fit:contain; } .brand h1 { margin:0; font-size:20px; color:#244b64; } .brand p { margin:3px 0 0; color:#5e8397; font-size:10px; }
+            .document-title { text-align:left; } .document-title strong { display:block; font-size:16px; color:#244b64; } .document-title span { color:#638497; }
+            .meta { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-bottom:14px; } .meta-card,.summary-card { border:1px solid #d7e5e8; border-radius:9px; padding:9px; background:#f8fbfb; }
+            .label { display:block; color:#698495; font-size:9px; margin-bottom:4px; } .value { font-weight:700; color:#183c52; font-size:12px; } .status { color:${isCompleted ? '#07875a' : '#ad7a00'}; }
+            .summary { display:grid; grid-template-columns:repeat(3, 1fr); gap:9px; margin:14px 0 18px; } .summary-card { text-align:center; background:linear-gradient(135deg,#f5fbfb,#eef8f7); } .summary-card .value { font-size:17px; color:#1d5873; direction:ltr; } .summary-card.success .value { color:#0b9b68; } .summary-card.warning .value { color:#b17b00; }
+            h2 { font-size:14px; margin:17px 0 8px; color:#214b62; border-right:4px solid #55cfc6; padding-right:7px; } table { width:100%; border-collapse:separate; border-spacing:0; border:1px solid #d9e7e9; border-radius:8px; overflow:hidden; margin-bottom:12px; } th { background:#244b64; color:white; padding:8px; font-size:10px; text-align:right; } td { padding:8px; border-top:1px solid #e4edef; text-align:right; direction:ltr; } td:first-child { direction:rtl; } tr:nth-child(even) td { background:#f8fbfb; } td small { display:block; color:#6c8795; font-size:9px; margin-top:2px; } .credit { color:#07875a; font-weight:bold; } .debit { color:#b17b00; font-weight:bold; } .empty { text-align:center; direction:rtl; color:#718998; padding:12px; } .total-row td { background:#eef9f5 !important; color:#067d56; font-weight:bold; } .footer { margin-top:20px; padding-top:9px; border-top:1px solid #d8e5e8; display:flex; justify-content:space-between; color:#718998; font-size:9px; }
+        </style></head><body>
+            <section class="header"><div class="brand">${logoSource ? `<img src="${logoSource}" alt="Tasfiya Pro">` : ''}<div><h1>تصفية برو</h1><p>تقرير تصفية تفصيلي</p></div></div><div class="document-title"><strong>تقرير التصفية #${escapeReportHtml(reportNumber)}</strong><span>تم إنشاؤه ${escapeReportHtml(new Date().toLocaleString('en-GB'))}</span></div></section>
+            <section class="meta"><div class="meta-card"><span class="label">رقم التصفية</span><span class="value">#${escapeReportHtml(reportNumber)}</span></div><div class="meta-card"><span class="label">التاريخ</span><span class="value">${escapeReportHtml(reportDate)}</span></div><div class="meta-card"><span class="label">الكاشير</span><span class="value">${escapeReportHtml(rec.cashier_name || '-')}</span></div><div class="meta-card"><span class="label">الحالة</span><span class="value status">${isCompleted ? 'مكتملة' : 'مسودة'}</span></div></section>
+            <section class="summary"><div class="summary-card"><span class="label">مبيعات النظام</span><span class="value">${formatReportAmount(rec.system_sales)}</span></div><div class="summary-card success"><span class="label">إجمالي المقبوضات</span><span class="value">${formatReportAmount(rec.total_receipts)}</span></div><div class="summary-card ${parseNumericDbValue(rec.surplus_deficit) < 0 ? 'warning' : 'success'}"><span class="label">الفرق</span><span class="value">${formatReportAmount(rec.surplus_deficit)}</span></div></section>
+            <h2>حسابات العملاء</h2><section class="summary"><div class="summary-card warning"><span class="label">مبيعات الآجل</span><span class="value">${formatReportAmount(totalPostpaid)}</span></div><div class="summary-card success"><span class="label">مقبوضات العملاء</span><span class="value">${formatReportAmount(totalCustomerReceipts)}</span></div><div class="summary-card"><span class="label">الصافي المستحق</span><span class="value">${formatReportAmount(totalPostpaid - totalCustomerReceipts)}</span></div></section>
+            <table><thead><tr><th>العميل</th><th>مبيعات الآجل</th><th>المقبوض</th><th>الصافي</th></tr></thead><tbody>${customerBody}</tbody></table>
+            <h2>تفاصيل النقدية</h2><table><thead><tr><th>الفئة</th><th>العدد</th><th>القيمة</th></tr></thead><tbody>${cashBody}<tr class="total-row"><td colspan="2">إجمالي الكاش</td><td>${formatReportAmount(totalCash)}</td></tr></tbody></table>
+            <h2>عمليات الشبكة</h2><table><thead><tr><th>النوع</th><th>الجهاز</th><th>المبلغ</th></tr></thead><tbody>${bankBody}<tr class="total-row"><td colspan="2">إجمالي الشبكة</td><td>${formatReportAmount(totalBank)}</td></tr></tbody></table>
+            <footer class="footer"><span>تصفية برو — تقرير مالي داخلي</span><span>هذه الوثيقة تم إنشاؤها إلكترونيًا</span></footer>
+        </body></html>`;
+    }
+
+    async handleGetReconciliationPdf(res, id) {
+        let page = null;
+        try {
+            const data = await this.loadReconciliationReportData(id);
+            if (!data) {
+                this.sendJson(res, { success: false, error: 'Not found' }, { statusCode: 404 });
+                return;
+            }
+
+            const browser = await this.getPdfBrowser();
+            page = await browser.newPage();
+            await page.setContent(this.buildReconciliationPdfHtml(data), { waitUntil: 'load' });
+            const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });
+            const reportNumber = String(data.reconciliation.reconciliation_number || data.reconciliation.id).replace(/[^a-zA-Z0-9_-]/g, '');
+            res.writeHead(200, {
+                'Content-Type': 'application/pdf',
+                'Content-Length': pdf.length,
+                'Content-Disposition': `inline; filename="tasfiya-reconciliation-${reportNumber}.pdf"`,
+                'Cache-Control': 'no-store, max-age=0'
+            });
+            res.end(pdf);
+        } catch (error) {
+            console.error('[PDF Report] Generation failed:', error.message);
+            this.sendJson(res, { success: false, error: 'تعذر إنشاء ملف التقرير' }, { statusCode: 500 });
+        } finally {
+            if (page) {
+                await page.close().catch(() => {});
+            }
         }
     }
 

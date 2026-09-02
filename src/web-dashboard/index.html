@@ -31,9 +31,6 @@
 
     <!-- OneSignal SDK -->
     <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
-    <!-- PDF generation is used only when the accountant explicitly shares a reconciliation. -->
-    <script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js" defer></script>
-    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js" defer></script>
 
 </head>
 
@@ -897,56 +894,27 @@
             const rec = activeReconciliationDetails.reconciliation;
             const reportNumber = rec.reconciliation_number || rec.id;
             const fileName = `تقرير-تصفية-${reportNumber}.pdf`;
+            const reportUrl = `${API_URL}/reconciliation/${rec.id}/report.pdf`;
             const shareButton = document.querySelector('.reconciliation-share-button');
-            const reportSurface = document.createElement('section');
-            reportSurface.className = 'reconciliation-pdf-share-surface';
-            reportSurface.dir = 'rtl';
-            reportSurface.innerHTML = `
-                <header class="pdf-share-header">
-                    <div class="pdf-share-brand">
-                        <img src="${window.location.origin}/assets/logo-tasfia-pro.png" alt="تصفية برو">
-                        <div><strong>تصفية برو</strong><span>تقرير تصفية مالي</span></div>
-                    </div>
-                    <div class="pdf-share-reference"><span>تقرير تصفية</span><strong>#${reportNumber}</strong></div>
-                </header>
-                <div class="pdf-share-content"></div>
-                <footer class="pdf-share-footer">تصفية برو — تقرير مُنشأ من النظام</footer>`;
-            reportSurface.querySelector('.pdf-share-content').appendChild(document.getElementById('modalBody').cloneNode(true));
-            document.body.appendChild(reportSurface);
+            const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+                window.matchMedia('(pointer: coarse)').matches;
+
+            // Desktop browsers already have a reliable PDF viewer and print dialog.
+            // Opening the server-produced PDF preserves the usual back button and print controls.
+            if (!isMobile) {
+                window.open(reportUrl, '_blank', 'noopener');
+                return;
+            }
 
             try {
                 if (shareButton) {
                     shareButton.disabled = true;
-                    shareButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>جارٍ تجهيز PDF</span>';
+                    shareButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>جارٍ تجهيز الملف</span>';
                 }
-                await ensurePdfShareLibraries();
-                if (document.fonts && document.fonts.ready) await document.fonts.ready;
-
-                const canvas = await window.html2canvas(reportSurface, {
-                    backgroundColor: '#0b1724',
-                    scale: 2,
-                    useCORS: true,
-                    logging: false,
-                    windowWidth: 1200
-                });
-                const { jsPDF } = window.jspdf;
-                const pdf = new jsPDF({ orientation: 'p', unit: 'mm', format: 'a4', compress: true });
-                const pageWidth = 210;
-                const pageHeight = 297;
-                const margin = 8;
-                const printableWidth = pageWidth - (margin * 2);
-                const printableHeight = pageHeight - (margin * 2);
-                const imageHeight = (canvas.height * printableWidth) / canvas.width;
-                const imageData = canvas.toDataURL('image/jpeg', .94);
-                let renderedHeight = 0;
-
-                while (renderedHeight < imageHeight) {
-                    if (renderedHeight > 0) pdf.addPage();
-                    pdf.addImage(imageData, 'JPEG', margin, margin - renderedHeight, printableWidth, imageHeight, undefined, 'FAST');
-                    renderedHeight += printableHeight;
-                }
-
-                const blob = pdf.output('blob');
+                const response = await fetch(reportUrl, { cache: 'no-store', credentials: 'same-origin' });
+                if (!response.ok) throw new Error(`PDF request failed with ${response.status}`);
+                const blob = await response.blob();
+                if (blob.type !== 'application/pdf' || blob.size === 0) throw new Error('Invalid PDF response');
                 const file = new File([blob], fileName, { type: 'application/pdf' });
                 if (window.TasfiyaAndroid && typeof window.TasfiyaAndroid.sharePdf === 'function') {
                     const nativeShareAccepted = window.TasfiyaAndroid.sharePdf(await blobToBase64(blob), fileName);
@@ -972,32 +940,14 @@
             } catch (error) {
                 if (error && error.name !== 'AbortError') {
                     console.error('[PDF SHARE] Failed:', error);
-                    alert('تعذر تجهيز ملف PDF للمشاركة. تحقق من اتصال الإنترنت ثم حاول مرة أخرى.');
+                    alert('تعذر تجهيز ملف PDF للمشاركة. تحقق من اتصال الخادم ثم حاول مرة أخرى.');
                 }
             } finally {
-                reportSurface.remove();
                 if (shareButton) {
                     shareButton.disabled = false;
                     shareButton.innerHTML = '<i class="fas fa-share-nodes"></i><span>مشاركة PDF</span>';
                 }
             }
-        }
-
-        function loadPdfShareScript(id, source) {
-            if (document.getElementById(id)) return Promise.resolve();
-            return new Promise((resolve, reject) => {
-                const script = document.createElement('script');
-                script.id = id;
-                script.src = source;
-                script.onload = resolve;
-                script.onerror = () => reject(new Error(`Could not load ${source}`));
-                document.head.appendChild(script);
-            });
-        }
-
-        async function ensurePdfShareLibraries() {
-            if (!window.html2canvas) await loadPdfShareScript('tasfiya-html2canvas', 'https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js');
-            if (!(window.jspdf && window.jspdf.jsPDF)) await loadPdfShareScript('tasfiya-jspdf', 'https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js');
         }
 
         function blobToBase64(blob) {
