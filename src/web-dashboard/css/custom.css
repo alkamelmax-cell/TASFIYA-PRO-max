@@ -1081,6 +1081,59 @@ input[type="date"].custom-input {
 
 .reconciliation-share-button:active { transform: translateY(0); }
 
+.reconciliation-share-button:disabled {
+    cursor: wait;
+    filter: grayscale(.2);
+    opacity: .78;
+}
+
+/* Rendered off-screen only long enough to produce an identical PDF report. */
+.reconciliation-pdf-share-surface {
+    position: absolute;
+    top: 0;
+    left: -10000px;
+    width: 794px;
+    padding: 28px;
+    overflow: hidden;
+    color: #fff;
+    background: #0b1724;
+    font-family: 'Almarai', sans-serif;
+}
+
+.pdf-share-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 18px 20px;
+    margin-bottom: 18px;
+    border: 1px solid rgba(45, 212, 191, .36);
+    border-radius: 16px;
+    background: linear-gradient(135deg, #0b5048, #112b48);
+}
+
+.pdf-share-brand { display: flex; align-items: center; gap: 12px; }
+.pdf-share-brand img { width: 46px; height: 46px; object-fit: contain; }
+.pdf-share-brand strong,
+.pdf-share-brand span { display: block; }
+.pdf-share-brand strong { font-size: 1.1rem; }
+.pdf-share-brand span { margin-top: .35rem; color: rgba(226, 255, 249, .72); font-size: .74rem; }
+.pdf-share-reference { text-align: left; }
+.pdf-share-reference span,
+.pdf-share-reference strong { display: block; }
+.pdf-share-reference span { color: rgba(226, 255, 249, .7); font-size: .76rem; }
+.pdf-share-reference strong { margin-top: .35rem; color: #5eead4; font-size: 1.1rem; direction: ltr; }
+.reconciliation-pdf-share-surface .modal-body { padding: 0 !important; }
+.reconciliation-pdf-share-surface .customer-summary-grid { gap: .65rem; }
+.pdf-share-footer {
+    margin-top: 18px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, .12);
+    color: rgba(226, 232, 240, .6);
+    text-align: center;
+    font-size: .72rem;
+}
+
 .modal-title {
     font-weight: 700;
     color: white;
