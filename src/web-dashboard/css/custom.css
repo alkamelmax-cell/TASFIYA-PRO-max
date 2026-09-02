@@ -1534,3 +1534,453 @@ input[type="date"].custom-input {
         /* Even smaller for very narrow screens */
     }
 }
+
+/* =========================================================
+   TASFIYAH PRO · CONTROL ROOM
+   A shared application shell for every web-dashboard page.
+   The colours are taken from the Tasfiyah Pro mark: midnight
+   navy, deep teal, soft mint and a restrained gold accent.
+   ========================================================= */
+:root {
+    --bg-main: #071613;
+    --bg-deeper: #04100d;
+    --bg-card: #0d211c;
+    --bg-card-hover: #112a23;
+    --glass-border: rgba(135, 220, 203, 0.14);
+    --border-color: rgba(135, 220, 203, 0.14);
+    --glass-shine: rgba(166, 242, 225, 0.045);
+    --text-primary: #f3faf8;
+    --text-secondary: #a7c3bd;
+    --text-muted: #6f9289;
+    --primary: #55d1c4;
+    --primary-dark: #299b90;
+    --primary-glow: rgba(85, 209, 196, 0.26);
+    --success: #38d39f;
+    --warning: #e0b92d;
+    --danger: #ff766d;
+    --btn-primary: #299f94;
+    --btn-primary-hover: #38b8aa;
+    --btn-primary-focus: rgba(85, 209, 196, 0.3);
+    --radius: 18px;
+    --shadow-md: 0 18px 50px rgba(0, 0, 0, 0.2);
+    --shadow-lg: 0 24px 70px rgba(0, 0, 0, 0.32);
+    --shadow-glow: 0 14px 38px var(--primary-glow);
+}
+
+html {
+    background: var(--bg-deeper);
+}
+
+body {
+    background:
+        radial-gradient(900px 480px at 18% -10%, rgba(85, 209, 196, 0.10), transparent 64%),
+        radial-gradient(720px 520px at 92% 100%, rgba(224, 185, 45, 0.07), transparent 70%),
+        var(--bg-main);
+    padding: 1.5rem 20.5rem 2.5rem 1.75rem;
+    letter-spacing: 0;
+}
+
+/* Fixed desktop navigation, built from the existing markup so links and
+   permissions keep working exactly as before. */
+.custom-navbar.navbar-layout {
+    position: fixed;
+    z-index: 1040;
+    inset: 0 0 0 auto;
+    width: 18.25rem;
+    height: 100dvh;
+    margin: 0 !important;
+    padding: 1.25rem 0.85rem 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    overflow-y: auto;
+    overflow-x: hidden;
+    border: 0;
+    border-left: 1px solid var(--glass-border);
+    border-radius: 0;
+    background: linear-gradient(180deg, rgba(7, 24, 20, 0.98), rgba(4, 15, 12, 0.98)) !important;
+    box-shadow: -18px 0 48px rgba(0, 0, 0, 0.22);
+    backdrop-filter: blur(20px);
+}
+
+.navbar-brand-section {
+    width: 100%;
+    justify-content: center;
+    padding: 0.2rem 0.45rem 1.35rem;
+    border-bottom: 1px solid rgba(135, 220, 203, 0.11);
+}
+
+.brand-logo {
+    width: 100%;
+    justify-content: center;
+    gap: 0.7rem;
+    color: #fff;
+    font-size: 1.2rem;
+    line-height: 1.1;
+    text-shadow: none;
+}
+
+.brand-logo img {
+    width: 52px !important;
+    height: 52px !important;
+    margin: 0 !important;
+    object-fit: contain;
+    filter: drop-shadow(0 7px 15px rgba(41, 159, 148, 0.3));
+}
+
+.navbar-links-section {
+    width: 100%;
+    margin-top: 1rem;
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.28rem;
+}
+
+.navbar-links-section .btn,
+.custom-navbar .navbar-links-section .btn {
+    width: 100%;
+    min-height: 2.85rem;
+    padding: 0.7rem 0.85rem !important;
+    display: flex;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 0.7rem;
+    color: #bdd5d0 !important;
+    font-size: 0.88rem !important;
+    text-align: right;
+    border: 1px solid transparent !important;
+    border-radius: 0.8rem !important;
+    background: transparent !important;
+    box-shadow: none !important;
+}
+
+.navbar-links-section .btn i {
+    width: 1.25rem;
+    color: #7fa99f;
+    text-align: center;
+}
+
+.navbar-links-section .btn:hover {
+    color: #fff !important;
+    background: rgba(85, 209, 196, 0.08) !important;
+    border-color: rgba(85, 209, 196, 0.13) !important;
+    transform: translateX(-2px);
+}
+
+.navbar-links-section .btn.btn-primary {
+    color: #0b221e !important;
+    background: linear-gradient(135deg, #e2c549, #cfaa20) !important;
+    border-color: #e9cc59 !important;
+    box-shadow: 0 10px 22px rgba(208, 170, 32, 0.18) !important;
+}
+
+.navbar-links-section .btn.btn-primary i {
+    color: #0b221e;
+}
+
+.navbar-user-section {
+    width: 100%;
+    margin-top: auto;
+    padding: 1rem 0.4rem 0;
+    border-top: 1px solid rgba(135, 220, 203, 0.11);
+}
+
+.user-profile-btn {
+    width: 100%;
+    padding: 0.55rem 0.65rem;
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    color: var(--text-primary);
+    background: rgba(255, 255, 255, 0.035);
+    border-color: rgba(135, 220, 203, 0.12);
+}
+
+.user-profile-btn .bg-primary {
+    background: linear-gradient(135deg, #55d1c4, #267e78) !important;
+}
+
+.container-fluid {
+    max-width: 1680px;
+    margin-inline: auto;
+}
+
+/* Main surfaces */
+.pro-card,
+.filter-container,
+.stat-box,
+.card {
+    background: linear-gradient(145deg, rgba(17, 42, 35, 0.98), rgba(10, 30, 24, 0.98)) !important;
+    border-color: var(--glass-border) !important;
+    box-shadow: var(--shadow-md);
+}
+
+.filter-container {
+    padding: 1.35rem;
+}
+
+.section-title {
+    color: #f7fffd;
+    font-weight: 800;
+    font-size: 1.08rem;
+    letter-spacing: 0;
+}
+
+.custom-label {
+    color: #90afa8;
+    font-size: 0.77rem;
+    font-weight: 700;
+    margin-bottom: 0.48rem;
+}
+
+.custom-input,
+.form-control,
+.form-select {
+    height: 46px;
+    color: #edf9f6 !important;
+    background: #071612 !important;
+    border-color: rgba(135, 220, 203, 0.16) !important;
+    border-radius: 0.68rem;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.025);
+}
+
+.custom-input:focus,
+.form-control:focus,
+.form-select:focus {
+    background: #0a1d18 !important;
+    border-color: #55d1c4 !important;
+    box-shadow: 0 0 0 4px rgba(85, 209, 196, 0.13) !important;
+}
+
+.btn-primary,
+.btn-search {
+    color: #06231e !important;
+    background: linear-gradient(135deg, #5ad9ca, #38a99e) !important;
+    border-color: transparent !important;
+    box-shadow: 0 8px 18px rgba(57, 169, 158, 0.2);
+}
+
+.btn-primary:hover,
+.btn-search:hover {
+    color: #031610 !important;
+    background: linear-gradient(135deg, #75e4d7, #47bcb0) !important;
+    transform: translateY(-1px);
+}
+
+.btn-secondary {
+    background: #1a3931 !important;
+    border-color: rgba(135, 220, 203, 0.14) !important;
+}
+
+.stat-box {
+    min-height: 132px;
+    padding: 1.3rem;
+    border-radius: 1rem;
+}
+
+.stat-box::after {
+    content: '';
+    position: absolute;
+    inset: auto 1.25rem 0;
+    height: 2px;
+    opacity: 0.8;
+    background: linear-gradient(90deg, transparent, var(--primary), transparent);
+}
+
+.stat-label {
+    color: #9ab8b1;
+    font-size: 0.84rem;
+    text-transform: none;
+    letter-spacing: 0;
+}
+
+.stat-value {
+    color: #effcf9;
+    font-size: clamp(1.38rem, 2vw, 1.9rem);
+}
+
+.custom-table th {
+    background: rgba(4, 16, 13, 0.6) !important;
+    color: #89aaa1;
+    padding-block: 1rem;
+}
+
+.custom-table td {
+    padding-block: 1rem;
+    border-color: rgba(135, 220, 203, 0.09);
+}
+
+.custom-table tbody tr:hover {
+    background: rgba(85, 209, 196, 0.055) !important;
+    box-shadow: inset -3px 0 0 #55d1c4;
+}
+
+.modal-content,
+.dropdown-menu {
+    color: var(--text-primary);
+    background: #102820 !important;
+    border-color: rgba(135, 220, 203, 0.16) !important;
+    box-shadow: var(--shadow-lg);
+}
+
+.dropdown-item {
+    color: #c8ddd8;
+}
+
+.dropdown-item:hover,
+.dropdown-item:focus {
+    color: white;
+    background: rgba(85, 209, 196, 0.12);
+}
+
+/* Dashboard-only rhythm */
+.dashboard-overview {
+    display: flex;
+    align-items: end;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.25rem 0 1.3rem;
+}
+
+.dashboard-overview h1 {
+    margin: 0;
+    color: #f8fffd;
+    font-size: clamp(1.45rem, 3vw, 2rem);
+    font-weight: 800;
+}
+
+.dashboard-overview p {
+    margin: 0.35rem 0 0;
+    color: var(--text-secondary);
+    font-size: 0.88rem;
+}
+
+.dashboard-overview .overview-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    color: #a8dbd1;
+    background: rgba(85, 209, 196, 0.08);
+    border: 1px solid rgba(85, 209, 196, 0.15);
+    border-radius: 999px;
+    padding: 0.5rem 0.75rem;
+    white-space: nowrap;
+    font-size: 0.78rem;
+    font-weight: 700;
+}
+
+@media (max-width: 1100px) {
+    body {
+        padding: 1rem 1rem 2rem;
+    }
+
+    .custom-navbar.navbar-layout {
+        position: sticky;
+        inset: 0 auto auto;
+        width: 100%;
+        height: auto;
+        min-height: unset;
+        margin: 0 0 1rem !important;
+        padding: 0.7rem;
+        display: grid;
+        grid-template-columns: 1fr auto;
+        grid-template-areas: 'brand user' 'links links';
+        border: 1px solid var(--glass-border);
+        border-radius: 1rem;
+        box-shadow: 0 10px 34px rgba(0, 0, 0, 0.22);
+        overflow: visible;
+    }
+
+    .navbar-brand-section {
+        grid-area: brand;
+        justify-content: flex-start;
+        width: auto;
+        padding: 0;
+        border: 0;
+    }
+
+    .brand-logo {
+        width: auto;
+        font-size: 1rem;
+    }
+
+    .brand-logo img {
+        width: 40px !important;
+        height: 40px !important;
+    }
+
+    .navbar-user-section {
+        grid-area: user;
+        width: auto;
+        margin: 0;
+        padding: 0;
+        border: 0;
+    }
+
+    .user-profile-btn {
+        width: auto;
+        padding: 0.35rem;
+    }
+
+    .navbar-links-section {
+        grid-area: links;
+        width: 100%;
+        margin-top: 0.65rem;
+        padding-bottom: 0.1rem;
+        display: flex;
+        flex-direction: row;
+        overflow-x: auto;
+        gap: 0.45rem;
+        scrollbar-width: thin;
+    }
+
+    .navbar-links-section .btn,
+    .custom-navbar .navbar-links-section .btn {
+        width: auto;
+        min-width: max-content;
+        min-height: 2.45rem;
+        padding: 0.5rem 0.7rem !important;
+        border-color: rgba(135, 220, 203, 0.12) !important;
+        border-radius: 0.65rem !important;
+    }
+
+    .container-fluid {
+        padding-inline: 0.15rem !important;
+    }
+}
+
+@media (max-width: 575px) {
+    body {
+        padding: 0.55rem 0.55rem 1.4rem;
+    }
+
+    .custom-navbar.navbar-layout {
+        border-radius: 0.85rem;
+    }
+
+    .brand-logo {
+        font-size: 0.92rem;
+    }
+
+    .dashboard-overview {
+        align-items: flex-start;
+        flex-direction: column;
+        padding-bottom: 1rem;
+    }
+
+    .dashboard-overview .overview-chip {
+        font-size: 0.72rem;
+    }
+
+    .filter-container,
+    .pro-card {
+        border-radius: 0.9rem;
+    }
+
+    .stat-box {
+        min-height: 108px;
+        padding: 1rem !important;
+    }
+}
