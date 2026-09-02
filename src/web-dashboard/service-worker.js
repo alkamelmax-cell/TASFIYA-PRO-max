@@ -5,12 +5,13 @@
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
 // Service Worker for Tasfiya Pro PWA
-// Version: 4.5 - Root PWA and OneSignal push worker are intentionally unified.
+// Version: 4.6 - Root PWA and OneSignal push worker are intentionally unified.
 
-const CACHE_NAME = 'tasfiya-pro-v4.5-control-room-brand';
+const CACHE_NAME = 'tasfiya-pro-v4.6-shared-navigation';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
+    '/js/navigation-shell.js?v=1',
     '/assets/logo-tasfia-pro.png?v=ui-brand-20260902-v1',
     '/assets/favicon.png?v=appicon-20260831-v2',
     '/assets/apple-touch-icon.png?v=appicon-20260831-v2',
@@ -58,6 +59,7 @@ function isCacheableStaticRequest(request) {
 // running an outdated OneSignal integration after a server deployment.
 const NETWORK_FIRST_RUNTIME_PATHS = new Set([
     '/js/session-bootstrap.js',
+    '/js/navigation-shell.js',
     '/js/onesignal-bootstrap.js',
     '/manifest.json',
     '/service-worker.js'
