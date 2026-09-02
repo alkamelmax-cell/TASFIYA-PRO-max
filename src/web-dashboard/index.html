@@ -27,7 +27,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="css/custom.css?v=ui-20260902-v2">
+    <link rel="stylesheet" href="css/custom.css?v=ui-20260902-v3">
 
     <!-- OneSignal SDK -->
     <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
@@ -253,9 +253,16 @@
     <div class="modal fade" id="detailsModal" tabindex="-1">
         <div class="modal-dialog modal-dialog-centered modal-lg">
             <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title fw-bold text-white">تفاصيل التصفية</h5>
-                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal"></button>
+                <div class="modal-header reconciliation-modal-header">
+                    <div class="d-flex align-items-center gap-2">
+                        <h5 class="modal-title fw-bold text-white mb-0">تفاصيل التصفية</h5>
+                        <button type="button" class="reconciliation-share-button" onclick="shareReconciliationReport()"
+                            title="حفظ أو مشاركة تقرير PDF" aria-label="حفظ أو مشاركة تقرير PDF">
+                            <i class="fas fa-share-nodes"></i>
+                            <span>مشاركة PDF</span>
+                        </button>
+                    </div>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="إغلاق"></button>
                 </div>
                 <div class="modal-body p-4" id="modalBody">
                     <!-- Dynamic -->
@@ -681,6 +688,8 @@
             document.getElementById('statsTotalCash').textContent = formatCurrency(totalCash);
         }
 
+        let activeReconciliationDetails = null;
+
         async function openDetails(id) {
             showLoading(true);
             try {
@@ -694,6 +703,7 @@
         }
 
         function renderModalContent(data) {
+            activeReconciliationDetails = data;
             const rec = data.reconciliation;
             const cash = data.cashReceipts || [];
             const bank = data.bankReceipts || [];
@@ -873,6 +883,126 @@
             `;
 
             document.getElementById('modalBody').innerHTML = html;
+        }
+
+        function shareReconciliationReport() {
+            if (!activeReconciliationDetails || !activeReconciliationDetails.reconciliation) {
+                alert('لا تتوفر بيانات تصفية لإنشاء التقرير.');
+                return;
+            }
+
+            const data = activeReconciliationDetails;
+            const rec = data.reconciliation;
+            const cash = data.cashReceipts || [];
+            const bank = data.bankReceipts || [];
+            const customerReceipts = data.customerReceipts || [];
+            const postpaidSales = data.postpaidSales || [];
+            const asAmount = (value) => Number.isFinite(Number(value)) ? Number(value) : 0;
+            const escapeReportHtml = (value) => String(value ?? '').replace(/[&<>'\"]/g, (char) => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#039;', '"': '&quot;'
+            }[char]));
+            const money = (value) => `${asAmount(value).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ر.س`;
+            const customerMap = new Map();
+            const customerKey = (row) => {
+                const id = Number(row.customer_id || 0);
+                const code = String(row.customer_code || '').trim();
+                const name = String(row.customer_name || '').trim();
+                return id > 0 ? `id:${id}` : (code ? `code:${code.toUpperCase()}` : `name:${name.toLocaleLowerCase('ar') || 'unknown'}`);
+            };
+            const addCustomerRow = (row, field) => {
+                const key = customerKey(row);
+                const existing = customerMap.get(key) || {
+                    name: String(row.customer_name || '').trim() || 'عميل غير مسمى',
+                    code: String(row.customer_code || '').trim(),
+                    sales: 0,
+                    receipts: 0
+                };
+                existing[field] += asAmount(row.amount);
+                if (!existing.code && row.customer_code) existing.code = String(row.customer_code).trim();
+                customerMap.set(key, existing);
+            };
+            postpaidSales.forEach((row) => addCustomerRow(row, 'sales'));
+            customerReceipts.forEach((row) => addCustomerRow(row, 'receipts'));
+            const customers = Array.from(customerMap.values()).map((customer) => ({ ...customer, balance: customer.sales - customer.receipts }));
+            const totalCash = cash.reduce((sum, row) => sum + asAmount(row.total_amount), 0);
+            const totalSales = customers.reduce((sum, customer) => sum + customer.sales, 0);
+            const totalReceipts = customers.reduce((sum, customer) => sum + customer.receipts, 0);
+            const totalBalance = customers.reduce((sum, customer) => sum + customer.balance, 0);
+            const reportNumber = rec.reconciliation_number || rec.id;
+            const reportDate = rec.reconciliation_date ? new Date(rec.reconciliation_date).toLocaleDateString('en-GB') : '-';
+            const status = rec.status === 'completed' ? 'مكتملة' : 'مسودة';
+            const baseUrl = window.location.origin;
+            const customerTable = customers.length ? customers.map((customer) => `
+                <tr>
+                    <td><strong>${escapeReportHtml(customer.name)}</strong>${customer.code ? `<small>${escapeReportHtml(customer.code)}</small>` : ''}</td>
+                    <td class="number warning">${money(customer.sales)}</td>
+                    <td class="number success">${money(customer.receipts)}</td>
+                    <td class="number ${customer.balance > 0 ? 'warning' : customer.balance < 0 ? 'success' : ''}">${money(customer.balance)}</td>
+                </tr>`).join('') : '<tr><td colspan="4" class="empty">لا توجد عمليات عملاء ضمن هذه التصفية</td></tr>';
+            const cashTable = cash.length ? cash.map((row) => `
+                <tr><td>${escapeReportHtml(row.denomination)}</td><td class="number">${escapeReportHtml(row.quantity)}</td><td class="number">${money(row.total_amount)}</td></tr>`).join('') : '<tr><td colspan="3" class="empty">لا توجد عمليات نقدية</td></tr>';
+            const bankRows = bank.length ? bank.map((row) => `
+                <tr><td><strong>${escapeReportHtml(row.operation_type || 'بطاقة')}</strong><small>${escapeReportHtml(row.atm_name || '-')}</small></td><td class="number">${money(row.amount)}</td></tr>`).join('') : '<tr><td colspan="2" class="empty">لا توجد عمليات شبكة</td></tr>';
+            const reportWindow = window.open('', '_blank');
+
+            if (!reportWindow) {
+                alert('لم يتم فتح التقرير. اسمح بالنوافذ المنبثقة لهذا الموقع ثم حاول مرة أخرى.');
+                return;
+            }
+
+            reportWindow.document.write(`<!DOCTYPE html>
+                <html lang="ar" dir="rtl"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <title>تقرير تصفية #${escapeReportHtml(reportNumber)}</title>
+                <link href="https://fonts.googleapis.com/css2?family=Almarai:wght@400;700;800&display=swap" rel="stylesheet">
+                <style>
+                    @page { size: A4; margin: 11mm; }
+                    * { box-sizing: border-box; }
+                    body { margin: 0; color: #112c2b; background: #fff; font-family: Almarai, Arial, sans-serif; font-size: 11px; }
+                    .report { max-width: 190mm; margin: auto; }
+                    .header { display:flex; justify-content:space-between; align-items:center; gap:18px; padding:16px 18px; border-radius:16px; color:#fff; background:linear-gradient(135deg,#073b35,#0e6256); border:1px solid #21b99d; }
+                    .brand { display:flex; align-items:center; gap:10px; }
+                    .brand img { width:46px; height:46px; object-fit:contain; }
+                    .brand-title { font-size:18px; font-weight:800; }
+                    .brand-subtitle { opacity:.76; margin-top:4px; font-size:9px; }
+                    .report-title { text-align:left; }
+                    .report-title h1 { font-size:17px; margin:0 0 5px; }
+                    .report-title span { font-size:10px; opacity:.84; }
+                    .meta { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin:13px 0; }
+                    .meta-card { padding:10px; border:1px solid #d7ebe5; border-radius:10px; background:#f7fcfa; }
+                    .meta-card label { display:block; color:#6b8280; font-size:9px; margin-bottom:5px; }
+                    .meta-card strong { font-size:12px; }
+                    .status { color:#087f65; background:#d9f6ea; padding:4px 9px; border-radius:20px; font-size:9px; }
+                    .summary { display:grid; grid-template-columns:repeat(3,1fr); gap:9px; margin:0 0 16px; }
+                    .summary-card { text-align:center; border-radius:12px; padding:12px 8px; background:#f5faf8; border:1px solid #d7ebe5; }
+                    .summary-card label { display:block; color:#617b77; font-size:9px; margin-bottom:7px; font-weight:700; }
+                    .summary-card strong { font-size:16px; direction:ltr; display:block; }
+                    .blue { color:#1470c8; } .green,.success { color:#07865f; } .warning { color:#ad7800; }
+                    .section { margin-top:16px; page-break-inside:avoid; }
+                    .section h2 { margin:0 0 8px; font-size:13px; color:#123f3a; padding-right:9px; border-right:4px solid #16b89b; }
+                    .customer-totals { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:9px; }
+                    .customer-total { padding:9px; border-radius:9px; background:#f7fbfc; border:1px solid #dfecef; }
+                    .customer-total label { display:block; color:#607b80; font-size:8px; margin-bottom:5px; }
+                    .customer-total strong { font-size:12px; direction:ltr; display:block; }
+                    table { width:100%; border-collapse:separate; border-spacing:0; overflow:hidden; border:1px solid #d5e8e4; border-radius:10px; }
+                    th { background:#103f39; color:#fff; padding:9px 8px; text-align:right; font-size:9px; }
+                    td { padding:8px; border-top:1px solid #e1efeb; background:#fff; vertical-align:middle; }
+                    tr:nth-child(even) td { background:#f8fbfa; }
+                    td small { display:block; margin-top:3px; color:#708884; font-size:8px; }
+                    .number { text-align:left; direction:ltr; font-family:Arial,sans-serif; font-weight:700; white-space:nowrap; }
+                    .empty { text-align:center; color:#6b8280; padding:15px; }
+                    .total-row td { background:#e9f7f1 !important; color:#087f65; font-weight:800; }
+                    .footer { margin-top:17px; padding-top:8px; border-top:1px solid #dbece8; color:#708884; display:flex; justify-content:space-between; font-size:8px; }
+                    @media print { body { -webkit-print-color-adjust:exact; print-color-adjust:exact; } }
+                </style></head><body><main class="report">
+                    <header class="header"><div class="brand"><img src="${baseUrl}/assets/logo-tasfia-pro.png" alt="تصفية برو"><div><div class="brand-title">تصفية برو</div><div class="brand-subtitle">نظام إدارة التصفيات</div></div></div><div class="report-title"><h1>تقرير تصفية</h1><span>تقرير مالي تفصيلي</span></div></header>
+                    <section class="meta"><div class="meta-card"><label>رقم التصفية</label><strong>#${escapeReportHtml(reportNumber)}</strong></div><div class="meta-card"><label>التاريخ</label><strong dir="ltr">${escapeReportHtml(reportDate)}</strong></div><div class="meta-card"><label>الحالة</label><strong><span class="status">${status}</span></strong></div></section>
+                    <section class="summary"><div class="summary-card"><label>مبيعات النظام</label><strong class="blue">${money(rec.system_sales)}</strong></div><div class="summary-card"><label>إجمالي المقبوضات</label><strong class="green">${money(rec.total_receipts)}</strong></div><div class="summary-card"><label>الفرق</label><strong class="${asAmount(rec.surplus_deficit) >= 0 ? 'green' : 'warning'}">${money(rec.surplus_deficit)}</strong></div></section>
+                    <section class="section"><h2>حسابات العملاء</h2><div class="customer-totals"><div class="customer-total"><label>مبيعات الآجل</label><strong class="warning">${money(totalSales)}</strong></div><div class="customer-total"><label>مقبوضات العملاء</label><strong class="success">${money(totalReceipts)}</strong></div><div class="customer-total"><label>الصافي المستحق</label><strong class="${totalBalance > 0 ? 'warning' : totalBalance < 0 ? 'success' : ''}">${money(totalBalance)}</strong></div></div><table><thead><tr><th>العميل</th><th>مبيعات الآجل</th><th>المقبوض</th><th>الصافي</th></tr></thead><tbody>${customerTable}</tbody></table></section>
+                    <section class="section"><h2>تفاصيل النقدية</h2><table><thead><tr><th>الفئة</th><th>العدد</th><th>القيمة</th></tr></thead><tbody>${cashTable}<tr class="total-row"><td colspan="2">إجمالي الكاش</td><td class="number">${money(totalCash)}</td></tr></tbody></table></section>
+                    <section class="section"><h2>عمليات الشبكة</h2><table><thead><tr><th>العملية</th><th>القيمة</th></tr></thead><tbody>${bankRows}</tbody></table></section>
+                    <footer class="footer"><span>تصفية برو — تقرير مُنشأ من النظام</span><span dir="ltr">${new Date().toLocaleString('en-GB')}</span></footer>
+                </main><script>window.onload = () => setTimeout(() => window.print(), 350);<\/script></body></html>`);
+            reportWindow.document.close();
         }
 
         async function resetAllData() {

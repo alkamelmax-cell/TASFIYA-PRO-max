@@ -1047,6 +1047,40 @@ input[type="date"].custom-input {
     padding: 1.5rem;
 }
 
+.reconciliation-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+}
+
+.reconciliation-share-button {
+    display: inline-flex;
+    align-items: center;
+    gap: .42rem;
+    border: 1px solid rgba(45, 212, 191, .4);
+    border-radius: 999px;
+    padding: .47rem .8rem;
+    color: #ddfff7;
+    background: linear-gradient(135deg, rgba(13, 148, 136, .9), rgba(14, 116, 144, .9));
+    box-shadow: 0 6px 18px rgba(13, 148, 136, .22), inset 0 1px 0 rgba(255,255,255,.2);
+    font-family: inherit;
+    font-size: .77rem;
+    font-weight: 800;
+    line-height: 1;
+    transition: transform .18s ease, box-shadow .18s ease, filter .18s ease;
+}
+
+.reconciliation-share-button:hover,
+.reconciliation-share-button:focus-visible {
+    color: #fff;
+    filter: brightness(1.1);
+    transform: translateY(-1px);
+    box-shadow: 0 9px 24px rgba(13, 148, 136, .33), inset 0 1px 0 rgba(255,255,255,.25);
+}
+
+.reconciliation-share-button:active { transform: translateY(0); }
+
 .modal-title {
     font-weight: 700;
     color: white;
@@ -1176,6 +1210,13 @@ input[type="date"].custom-input {
 }
 
 @media (max-width: 575.98px) {
+    .reconciliation-modal-header { padding: 1rem !important; }
+
+    .reconciliation-share-button {
+        padding: .45rem .58rem;
+        font-size: .7rem;
+    }
+
     .customer-summary-grid {
         gap: .45rem;
     }
