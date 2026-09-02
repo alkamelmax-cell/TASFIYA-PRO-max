@@ -3,16 +3,25 @@ package com.tasfiyapro.app;
 import android.annotation.SuppressLint;
 import android.app.Activity;
 import android.content.ActivityNotFoundException;
+import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Color;
 import android.net.Uri;
 import android.os.Bundle;
+import android.util.Base64;
 import android.view.View;
+import android.webkit.JavascriptInterface;
 import android.webkit.CookieManager;
 import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+
+import androidx.core.content.FileProvider;
+
+import java.io.File;
+import java.io.FileOutputStream;
+import java.io.IOException;
 
 /**
  * Native, dependency-free host for the Tasfiya Pro web application.
@@ -52,6 +61,7 @@ public final class MainActivity extends Activity {
         CookieManager.setAcceptFileSchemeCookies(false);
 
         webView.setWebViewClient(new TasfiyaWebViewClient());
+        webView.addJavascriptInterface(new TasfiyaShareBridge(), "TasfiyaAndroid");
         if (savedInstanceState == null) {
             webView.loadUrl(getString(R.string.launch_url));
         } else {
@@ -96,6 +106,50 @@ public final class MainActivity extends Activity {
                 // Keep the user inside the app when Android has no handler.
             }
             return true;
+        }
+    }
+
+    /**
+     * Lets the trusted Tasfiya dashboard hand a generated PDF to Android's
+     * native chooser. WebView itself does not implement the browser Web Share
+     * API consistently, so this keeps sharing inside the app and always offers
+     * WhatsApp, e-mail, files, and other installed targets.
+     */
+    private final class TasfiyaShareBridge {
+        @JavascriptInterface
+        public boolean sharePdf(String base64Pdf, String requestedFileName) {
+            try {
+                String safeFileName = requestedFileName == null
+                        ? "tasfiya-reconciliation.pdf"
+                        : requestedFileName.replaceAll("[^A-Za-z0-9._\\-\u0600-\u06FF]", "_");
+                if (!safeFileName.endsWith(".pdf")) safeFileName += ".pdf";
+
+                File reportDirectory = new File(getCacheDir(), "shared_reports");
+                if (!reportDirectory.exists() && !reportDirectory.mkdirs()) {
+                    throw new IOException("Unable to create the temporary report directory");
+                }
+                File reportFile = new File(reportDirectory, safeFileName);
+                try (FileOutputStream output = new FileOutputStream(reportFile, false)) {
+                    output.write(Base64.decode(base64Pdf, Base64.DEFAULT));
+                }
+
+                Uri reportUri = FileProvider.getUriForFile(
+                        MainActivity.this,
+                        getPackageName() + ".fileprovider",
+                        reportFile
+                );
+                runOnUiThread(() -> {
+                    Intent shareIntent = new Intent(Intent.ACTION_SEND);
+                    shareIntent.setType("application/pdf");
+                    shareIntent.putExtra(Intent.EXTRA_STREAM, reportUri);
+                    shareIntent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+                    shareIntent.setClipData(ClipData.newRawUri("تقرير تصفية", reportUri));
+                    startActivity(Intent.createChooser(shareIntent, "مشاركة تقرير التصفية"));
+                });
+                return true;
+            } catch (Exception ignored) {
+                return false;
+            }
         }
     }
 }
