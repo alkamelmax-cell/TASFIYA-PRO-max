@@ -23,6 +23,13 @@
     let browserNotificationRole = 'admin';
     let browserNotificationAppId = '';
 
+    function getBrowserNotificationPermission() {
+        if (!('Notification' in windowObj)) {
+            return 'unsupported';
+        }
+        return String(windowObj.Notification.permission || '');
+    }
+
     async function getOneSignalAppId() {
         if (!oneSignalAppIdPromise) {
             oneSignalAppIdPromise = (async () => {
@@ -299,6 +306,62 @@
         }
     }
 
+    async function waitForBrowserSubscriptionId(OneSignal, attempts = 20) {
+        if (!OneSignal || !OneSignal.User || !OneSignal.User.PushSubscription) {
+            return '';
+        }
+
+        const pushSubscription = OneSignal.User.PushSubscription;
+        for (let attempt = 0; attempt < attempts; attempt += 1) {
+            const subscriptionId = String(pushSubscription.id || '').trim();
+            if (pushSubscription.optedIn && subscriptionId) {
+                return subscriptionId;
+            }
+            await new Promise((resolve) => windowObj.setTimeout(resolve, 300));
+        }
+        return '';
+    }
+
+    async function ensureBrowserSubscriptionRegistered(OneSignal, options = {}) {
+        if (!OneSignal || !OneSignal.User || !OneSignal.User.PushSubscription) {
+            return false;
+        }
+
+        const requestOptIn = Boolean(options.requestOptIn);
+        const permission = getBrowserNotificationPermission();
+        const pushSubscription = OneSignal.User.PushSubscription;
+
+        try {
+            if (
+                requestOptIn
+                && permission === 'default'
+                && OneSignal.Notifications
+                && typeof OneSignal.Notifications.requestPermission === 'function'
+            ) {
+                await OneSignal.Notifications.requestPermission();
+            }
+
+            // Important recovery path:
+            // after domain/app migration Chrome may still show permission=granted
+            // while OneSignal's subscription is not opted-in or not registered
+            // with this server. Re-opt-in without showing a browser prompt.
+            const updatedPermission = getBrowserNotificationPermission();
+            if ((requestOptIn || updatedPermission === 'granted') && !pushSubscription.optedIn) {
+                await pushSubscription.optIn();
+            }
+        } catch (error) {
+            console.warn('[Tasfiya OneSignal] Browser opt-in failed:', error);
+            return false;
+        }
+
+        const subscriptionId = await waitForBrowserSubscriptionId(OneSignal, 20);
+        if (!subscriptionId) {
+            return false;
+        }
+
+        return registerCurrentBrowserSubscription(OneSignal);
+    }
+
     function queueOneSignalInit(user, options) {
         const config = options || {};
         const role = config.role || 'admin';
@@ -356,6 +419,8 @@
                         product: 'tasfiya-pro'
                     });
 
+                    await ensureBrowserSubscriptionRegistered(OneSignal, { requestOptIn: true });
+
                     const optedIn = Boolean(
                         OneSignal.User
                         && OneSignal.User.PushSubscription
@@ -365,9 +430,6 @@
                     console.info(
                         `[Tasfiya OneSignal] Ready: permission=${OneSignal.Notifications.permission}; subscribed=${optedIn}`
                     );
-                    if (optedIn) {
-                        await registerCurrentBrowserSubscription(OneSignal);
-                    }
                     resolve(OneSignal);
                 } catch (error) {
                     oneSignalInitializationPromise = null;
@@ -389,35 +451,8 @@
             return '';
         }
 
-        const pushSubscription = OneSignal.User.PushSubscription;
-        try {
-            // OneSignal v16 exposes permission as a boolean, not the legacy
-            // "default" string. optIn() must only be called from a genuine
-            // user action (the "Enable notifications" control in the app),
-            // otherwise modern browsers are allowed to silently block it.
-            if (requestOptIn && !pushSubscription.optedIn) {
-                await pushSubscription.optIn();
-            }
-        } catch (error) {
-            console.warn('[Tasfiya OneSignal] Unable to opt in this browser:', error);
-            return '';
-        }
-
-        // A successful opt-in can take a short moment before OneSignal assigns
-        // its server-side Subscription ID. Never send the test using a stale
-        // or pre-initialization identifier.
-        for (let attempt = 0; attempt < 10; attempt += 1) {
-            if (pushSubscription.optedIn) {
-                const subscriptionId = String(pushSubscription.id || '').trim();
-                if (subscriptionId) {
-                    await registerCurrentBrowserSubscription(OneSignal);
-                    return subscriptionId;
-                }
-            }
-            await new Promise((resolve) => windowObj.setTimeout(resolve, 300));
-        }
-
-        return '';
+        const registered = await ensureBrowserSubscriptionRegistered(OneSignal, { requestOptIn });
+        return registered ? String(OneSignal.User.PushSubscription.id || '').trim() : '';
     }
 
     async function requestBrowserPushPermission() {
@@ -459,6 +494,16 @@
         },
         requestBrowserPushPermission() {
             return requestBrowserPushPermission();
+        },
+        async getBrowserPushStatus() {
+            const OneSignal = oneSignalInstance || await oneSignalInitializationPromise;
+            const pushSubscription = OneSignal && OneSignal.User ? OneSignal.User.PushSubscription : null;
+            return {
+                permission: getBrowserNotificationPermission(),
+                optedIn: Boolean(pushSubscription && pushSubscription.optedIn),
+                subscriptionId: pushSubscription ? String(pushSubscription.id || '').trim() : '',
+                registered: Boolean(OneSignal ? await registerCurrentBrowserSubscription(OneSignal) : false)
+            };
         }
     };
 })(window);

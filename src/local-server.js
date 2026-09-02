@@ -2384,15 +2384,15 @@ class LocalWebServer {
                     const requestLink = this.buildNotificationWebUrl(
                         `reconciliation-requests.html?request_id=${encodeURIComponent(id)}`
                     );
-                    await this.sendOneSignalNotification(
+                    await this.sendVerifiedReconciliationNotification(
                         '✅  تصفية جديدة مكتملة',
                         `تم اعتماد تصفية للكاشير ${cashierName}`,
                         {
                             type: 'reconciliation_approved',
                             cashier_name: cashierName,
-                            request_id: Number(id)
-                        },
-                        { webUrl: requestLink }
+                            request_id: Number(id),
+                            web_url: requestLink
+                        }
                     );
                 } catch (e) { console.warn('Notification failed', e); }
 
@@ -4370,14 +4370,15 @@ class LocalWebServer {
                         const reconciliationLink = newReconciliationsCount === 1 && Number.isInteger(reconciliationId) && reconciliationId > 0
                             ? this.buildNotificationWebUrl(`index.html?reconciliation_id=${encodeURIComponent(reconciliationId)}`)
                             : '';
-                        this.sendOneSignalNotification(title, msg, {
+                        this.sendVerifiedReconciliationNotification(title, msg, {
                             type: 'new_reconciliation',
                             count: newReconciliationsCount,
                             reconciliation_id: Number.isInteger(reconciliationId) && reconciliationId > 0 ? reconciliationId : null,
                             rec_number: firstNewRec.reconciliation_number,
                             cashier_name: cashierName,
-                            surplus_deficit: surplusDeficit
-                        }, { webUrl: reconciliationLink }).catch(e => console.error('Notification send failed:', e));
+                            surplus_deficit: surplusDeficit,
+                            web_url: reconciliationLink
+                        }).catch(e => console.error('Notification send failed:', e));
                     }
                 }
 
@@ -4954,8 +4955,9 @@ class LocalWebServer {
                         WHERE user_role = 'admin'
                           AND COALESCE(opted_in, 1) = 1
                           AND one_signal_app_id = $1
-                          AND integration_version = 'onesignal-root-worker-v2'
-                        ORDER BY last_seen_at DESC
+                        ORDER BY
+                          CASE WHEN integration_version = 'onesignal-root-worker-v2' THEN 0 ELSE 1 END,
+                          last_seen_at DESC
                         LIMIT 200
                     `,
                     [config.appId]
@@ -4966,8 +4968,9 @@ class LocalWebServer {
                     WHERE user_role = 'admin'
                       AND COALESCE(opted_in, 1) = 1
                       AND one_signal_app_id = ?
-                      AND integration_version = 'onesignal-root-worker-v2'
-                    ORDER BY last_seen_at DESC
+                    ORDER BY
+                      CASE WHEN integration_version = 'onesignal-root-worker-v2' THEN 0 ELSE 1 END,
+                      last_seen_at DESC
                     LIMIT 200
                 `).all(config.appId);
 
@@ -5072,63 +5075,105 @@ class LocalWebServer {
         )];
     }
 
+    mergeNotificationResults(primaryResult, fallbackResult) {
+        const primary = primaryResult || {};
+        const fallback = fallbackResult || {};
+        const primaryDelivery = primary.delivery && typeof primary.delivery === 'object'
+            ? primary.delivery
+            : {};
+        const fallbackDelivery = fallback.delivery && typeof fallback.delivery === 'object'
+            ? fallback.delivery
+            : {};
+        const primaryPlatformStats = primaryDelivery.platformDeliveryStats || {};
+        const fallbackPlatformStats = fallbackDelivery.platformDeliveryStats || {};
+        const mergedChromeStats = [
+            primaryPlatformStats.chrome_web_push,
+            fallbackPlatformStats.chrome_web_push
+        ].filter(Boolean).reduce((acc, stats) => {
+            acc.successful += Number(stats.successful || 0);
+            acc.failed += Number(stats.failed || 0);
+            acc.errored += Number(stats.errored || 0);
+            acc.converted += Number(stats.converted || 0);
+            acc.received += Number(stats.received || 0);
+            return acc;
+        }, { successful: 0, failed: 0, errored: 0, converted: 0, received: 0 });
+
+        return {
+            success: Boolean(primary.success || fallback.success),
+            code: primary.success ? null : (fallback.code || primary.code || null),
+            error: primary.success || fallback.success ? null : (fallback.error || primary.error || null),
+            messageId: primary.messageId || fallback.messageId || null,
+            messageIds: [primary.messageId, fallback.messageId].filter(Boolean),
+            target: primary.success ? primary.target : (fallback.target || primary.target || null),
+            targetCount: Number(primary.targetCount || 0) + Number(fallback.targetCount || 0),
+            fallbackUsed: Boolean(!primary.success && fallbackResult),
+            delivery: {
+                available: Boolean(primaryDelivery.available || fallbackDelivery.available),
+                completed: Boolean(primaryDelivery.completed || fallbackDelivery.completed),
+                successful: Number(primaryDelivery.successful || 0) + Number(fallbackDelivery.successful || 0),
+                failed: Number(primaryDelivery.failed || 0) + Number(fallbackDelivery.failed || 0),
+                errored: Number(primaryDelivery.errored || 0) + Number(fallbackDelivery.errored || 0),
+                received: Number(primaryDelivery.received || 0) + Number(fallbackDelivery.received || 0),
+                remaining: Number(primaryDelivery.remaining || 0) + Number(fallbackDelivery.remaining || 0),
+                platformDeliveryStats: {
+                    chrome_web_push: mergedChromeStats
+                }
+            }
+        };
+    }
+
     async sendVerifiedReconciliationNotification(title, message, data = {}) {
-        // Operational alerts are sent to the exact current browser
-        // subscriptions registered by this server, one subscription per API
-        // request.  This prevents a stale device from invalidating a batch and
-        // removes the hidden dependency on OneSignal's external-id linking.
-        // Each device gets its own message, so a failed old device never stops
-        // an active administrator's browser from receiving its alert.
+        // Reconciliation alerts must survive domain/app migrations.  The
+        // stable external_id path is the primary delivery route because it is
+        // tied to the authenticated admin identity.  Registered browser
+        // subscription IDs remain a precise fallback for devices that have
+        // already reported themselves to this server.
+        const externalIds = await this.getNotificationTargetExternalIds();
         const subscriptionIds = await this.getNotificationTargetSubscriptionIds();
         console.log(
-            `🔔 [PUSH] Reconciliation alert target=registered_subscription count=${subscriptionIds.length}`
+            `🔔 [PUSH] Reconciliation alert targets external_id=${externalIds.length}, subscription_id=${subscriptionIds.length}`
         );
 
-        if (subscriptionIds.length === 0) {
+        if (externalIds.length === 0 && subscriptionIds.length === 0) {
             return {
                 success: false,
                 code: 'ONESIGNAL_NO_TARGETS',
-                error: 'لا توجد اشتراكات إدارية نشطة ومسجلة بالخادم لتلقي الإشعار.',
-                target: 'registered_subscription',
+                error: 'لا توجد هوية إدارية أو اشتراكات أجهزة صالحة لتلقي الإشعار.',
+                target: 'none',
                 targetCount: 0
             };
         }
 
-        const attempts = await Promise.all(subscriptionIds.map(async (subscriptionId) => {
-            return this.sendOneSignalNotification(
+        let primaryResult = null;
+        if (externalIds.length > 0) {
+            primaryResult = await this.sendOneSignalNotification(
                 title,
                 message,
                 data,
                 {
-                    subscriptionIds: [subscriptionId],
+                    externalIds,
                     webUrl: data.web_url || ''
                 }
             );
-        }));
-
-        const successfulAttempts = attempts.filter((result) => result && result.success);
-        const failedAttempts = attempts.filter((result) => !result || !result.success);
-
-        if (successfulAttempts.length === 0) {
-            const firstFailure = failedAttempts[0] || {};
-            return {
-                success: false,
-                code: firstFailure.code || 'ONESIGNAL_NO_RECIPIENTS',
-                error: firstFailure.error || 'لم يقبل OneSignal أي اشتراك جهاز مسجل.',
-                target: 'registered_subscription',
-                targetCount: subscriptionIds.length
-            };
+            if (primaryResult && primaryResult.success) {
+                return primaryResult;
+            }
         }
 
-        return {
-            success: true,
-            messageId: successfulAttempts[0].messageId,
-            messageIds: successfulAttempts.map((result) => result.messageId),
-            target: 'registered_subscription',
-            targetCount: subscriptionIds.length,
-            acceptedCount: successfulAttempts.length,
-            failedTargetCount: failedAttempts.length
-        };
+        let fallbackResult = null;
+        if (subscriptionIds.length > 0) {
+            fallbackResult = await this.sendOneSignalNotification(
+                title,
+                message,
+                data,
+                {
+                    subscriptionIds,
+                    webUrl: data.web_url || ''
+                }
+            );
+        }
+
+        return this.mergeNotificationResults(primaryResult, fallbackResult);
     }
 
     buildNotificationWebUrl(relativePath = '') {
