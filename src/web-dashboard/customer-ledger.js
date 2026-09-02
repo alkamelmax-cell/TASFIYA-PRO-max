@@ -345,7 +345,7 @@ async function shareCustomerLedgerReport() {
     try {
         if (shareButton) {
             shareButton.disabled = true;
-            shareButton.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i><span>جارٍ تجهيز الملف</span>';
+            shareButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>تجهيز</span>';
         }
         const response = await fetch(reportUrl, { cache: 'no-store', credentials: 'same-origin' });
         if (!response.ok) throw new Error(`PDF request failed with ${response.status}`);
@@ -383,7 +383,7 @@ async function shareCustomerLedgerReport() {
     } finally {
         if (shareButton) {
             shareButton.disabled = false;
-            shareButton.innerHTML = '<i class="fas fa-share-nodes me-2"></i><span>مشاركة كشف الحساب</span>';
+            shareButton.innerHTML = '<i class="fas fa-share-nodes"></i><span>مشاركة</span>';
         }
     }
 }

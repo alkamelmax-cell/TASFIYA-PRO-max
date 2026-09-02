@@ -39,6 +39,33 @@
             vertical-align: middle !important;
         }
 
+        .ledger-share-button {
+            --share-border: rgba(75, 207, 198, 0.42);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            gap: 0.45rem;
+            min-width: 112px;
+            min-height: 42px;
+            padding: 0.55rem 1.15rem !important;
+            border: 1px solid var(--share-border) !important;
+            background: linear-gradient(135deg, #0f8e70 0%, #10a982 100%) !important;
+            color: #fff !important;
+            font-weight: 800;
+            box-shadow: 0 12px 26px rgba(16, 169, 130, 0.22), inset 0 1px 0 rgba(255, 255, 255, 0.18);
+            transition: transform 0.18s ease, box-shadow 0.18s ease, opacity 0.18s ease;
+        }
+
+        .ledger-share-button:hover:not(:disabled) {
+            transform: translateY(-1px);
+            box-shadow: 0 16px 34px rgba(16, 169, 130, 0.3), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+        }
+
+        .ledger-share-button:disabled {
+            opacity: 0.62;
+            cursor: wait;
+        }
+
         /* Mobile Optimization for Ledger Details */
         @media (max-width: 768px) {
             /* 1. CUSTOMER LIST TABLE RULES */
@@ -325,8 +352,8 @@
                 <button class="btn btn-outline-secondary rounded-pill px-4" onclick="showListView()">
                     <i class="fas fa-arrow-right me-2"></i> رجوع للقائمة
                 </button>
-                <button id="shareCustomerLedgerButton" class="btn btn-success rounded-pill px-4" onclick="shareCustomerLedgerReport()" disabled>
-                    <i class="fas fa-share-nodes me-2"></i><span>مشاركة كشف الحساب</span>
+                <button id="shareCustomerLedgerButton" class="btn rounded-pill ledger-share-button" onclick="shareCustomerLedgerReport()" title="مشاركة كشف الحساب PDF" aria-label="مشاركة كشف الحساب PDF" disabled>
+                    <i class="fas fa-share-nodes"></i><span>مشاركة</span>
                 </button>
                 <h4 class="text-white mb-0" id="selectedCustomerTitle">تفاصيل العميل</h4>
             </div>
