@@ -1,0 +1,11 @@
+#!/usr/bin/env sh
+
+# Lightweight Gradle launcher for GitHub Actions and local development.
+set -eu
+
+if command -v gradle >/dev/null 2>&1; then
+  exec gradle "$@"
+fi
+
+echo "Gradle was not found. Install Gradle 8.7+ or run this project from Android Studio." >&2
+exit 1

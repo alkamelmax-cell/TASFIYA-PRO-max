@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">تصفية برو</string>
+    <string name="launch_url" translatable="false">https://server.tail22db51.ts.net/</string>
+    <string name="onesignal_app_id" translatable="false">a7374552-43a4-48af-9ec4-9dec3dbdbc51</string>
+</resources>
