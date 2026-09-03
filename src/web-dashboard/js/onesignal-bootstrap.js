@@ -68,6 +68,91 @@
             || userAgent.includes('median');
     }
 
+    function readNativeOneSignalStatus() {
+        if (
+            !windowObj.TasfiyaNativeOneSignal
+            || typeof windowObj.TasfiyaNativeOneSignal.getStatusJson !== 'function'
+        ) {
+            return null;
+        }
+
+        try {
+            const rawStatus = windowObj.TasfiyaNativeOneSignal.getStatusJson();
+            if (!rawStatus) {
+                return null;
+            }
+            return typeof rawStatus === 'string' ? JSON.parse(rawStatus) : rawStatus;
+        } catch (error) {
+            console.warn('[Tasfiya OneSignal] Failed to read native Android status:', error);
+            return null;
+        }
+    }
+
+    async function registerNativeAndroidSubscription(user, externalId, role) {
+        if (!windowObj.TasfiyaNativeOneSignal || !externalId || !user || !user.id) {
+            return false;
+        }
+
+        const wait = (ms) => new Promise((resolve) => windowObj.setTimeout(resolve, ms));
+
+        for (let attempt = 1; attempt <= 18; attempt += 1) {
+            const status = readNativeOneSignalStatus();
+            windowObj.__tasfiyaNativeOneSignalStatus = status;
+
+            const subscriptionId = String(status && status.subscriptionId ? status.subscriptionId : '').trim();
+            if (subscriptionId) {
+                const appId = String((status && status.appId) || await getOneSignalAppId()).trim();
+                const response = await windowObj.fetch('/api/notifications/register', {
+                    method: 'POST',
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        subscriptionId,
+                        externalId,
+                        appId,
+                        integrationVersion: 'android-native-v1',
+                        role,
+                        optedIn: status && status.optedIn !== false,
+                        permission: Boolean(status && status.permission),
+                        platform: 'android-native',
+                        nativeStatus: {
+                            initialized: Boolean(status && status.initialized),
+                            tokenPresent: Boolean(status && status.tokenPresent),
+                            oneSignalId: String((status && status.oneSignalId) || ''),
+                            lastError: String((status && status.lastError) || '')
+                        }
+                    })
+                });
+
+                if (!response.ok) {
+                    console.warn('[Tasfiya OneSignal] Server rejected native Android registration:', response.status);
+                    return false;
+                }
+
+                console.info('[Tasfiya OneSignal] Native Android subscription registered with server');
+                return true;
+            }
+
+            await wait(Math.min(700 + attempt * 250, 2500));
+        }
+
+        console.warn('[Tasfiya OneSignal] Native Android subscription was not ready after startup retries');
+        return false;
+    }
+
+    function scheduleNativeAndroidRegistration(user, externalId, role) {
+        const register = () => {
+            registerNativeAndroidSubscription(user, externalId, role).catch((error) => {
+                console.warn('[Tasfiya OneSignal] Native Android registration failed:', error);
+            });
+        };
+
+        windowObj.setTimeout(register, 1200);
+        windowObj.setTimeout(register, 7000);
+        windowObj.setTimeout(register, 18000);
+    }
+
     function safeSessionStorageGet(key) {
         try {
             return windowObj.sessionStorage ? windowObj.sessionStorage.getItem(key) : null;
@@ -160,6 +245,7 @@
                     externalId,
                     tags
                 }));
+                scheduleNativeAndroidRegistration(user, externalId, role);
                 return true;
             } catch (error) {
                 console.warn('[Tasfiya OneSignal] Native Android bridge failed:', error);

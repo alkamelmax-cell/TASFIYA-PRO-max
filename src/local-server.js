@@ -4855,7 +4855,9 @@ class LocalWebServer {
 
         const externalId = `tasfiya-admin-${userId}`;
         const integrationVersion = String(data.integrationVersion || data.integration_version || '').trim();
-        const isCurrentIntegration = integrationVersion === 'onesignal-root-worker-v2';
+        const isNativeAndroidIntegration = integrationVersion === 'android-native-v1';
+        const isCurrentIntegration = integrationVersion === 'onesignal-root-worker-v2' || isNativeAndroidIntegration;
+        const platformLabel = isNativeAndroidIntegration ? 'Android native' : 'browser';
         const userAgent = String((req && req.headers && req.headers['user-agent']) || '').slice(0, 500);
         const optedIn = data.optedIn === false || data.opted_in === false ? 0 : 1;
 
@@ -4902,12 +4904,13 @@ class LocalWebServer {
             `).run(subscriptionId, userId, externalId, config.appId, integrationVersion, userAgent, optedIn);
         }
 
-        console.log(`✅ [PUSH] Registered browser subscription for admin ${userId}; current_worker=${isCurrentIntegration}`);
+        console.log(`✅ [PUSH] Registered ${platformLabel} subscription for admin ${userId}; current_integration=${isCurrentIntegration}`);
         return {
             success: true,
             userId,
             externalId,
             subscriptionId,
+            platform: platformLabel,
             currentWorker: isCurrentIntegration
         };
     }
@@ -4956,6 +4959,7 @@ class LocalWebServer {
                           AND COALESCE(opted_in, 1) = 1
                           AND one_signal_app_id = $1
                         ORDER BY
+                          CASE WHEN integration_version = 'android-native-v1' THEN 0 ELSE 1 END,
                           CASE WHEN integration_version = 'onesignal-root-worker-v2' THEN 0 ELSE 1 END,
                           last_seen_at DESC
                         LIMIT 200
@@ -4969,6 +4973,7 @@ class LocalWebServer {
                       AND COALESCE(opted_in, 1) = 1
                       AND one_signal_app_id = ?
                     ORDER BY
+                      CASE WHEN integration_version = 'android-native-v1' THEN 0 ELSE 1 END,
                       CASE WHEN integration_version = 'onesignal-root-worker-v2' THEN 0 ELSE 1 END,
                       last_seen_at DESC
                     LIMIT 200
@@ -4980,7 +4985,7 @@ class LocalWebServer {
                     .map((row) => row.subscription_id)
             )
                 .filter((id) => ONESIGNAL_UUID_REGEX.test(id));
-            console.log(`🔔 [PUSH] Resolved ${subscriptionIds.length} active registered browser subscription target(s)`);
+            console.log(`🔔 [PUSH] Resolved ${subscriptionIds.length} active registered notification subscription target(s)`);
             return subscriptionIds;
         } catch (error) {
             console.error(`❌ [PUSH] Unable to resolve registered notification subscriptions: ${error && error.message ? error.message : error}`);
