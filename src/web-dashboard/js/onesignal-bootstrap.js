@@ -62,7 +62,10 @@
 
     function isNativeAppEnvironment() {
         const userAgent = String(windowObj.navigator.userAgent || '').toLowerCase();
-        return Boolean(windowObj.gonative) || userAgent.includes('gonative') || userAgent.includes('median');
+        return Boolean(windowObj.TasfiyaNativeOneSignal)
+            || Boolean(windowObj.gonative)
+            || userAgent.includes('gonative')
+            || userAgent.includes('median');
     }
 
     function safeSessionStorageGet(key) {
@@ -144,8 +147,24 @@
         const externalId = user && user.id ? `tasfiya-admin-${userId}` : '';
         const tags = Object.assign({
             role,
-            userId
+            userId,
+            product: 'tasfiya-pro'
         }, config.additionalTags || {});
+
+        if (
+            windowObj.TasfiyaNativeOneSignal
+            && typeof windowObj.TasfiyaNativeOneSignal.configure === 'function'
+        ) {
+            try {
+                windowObj.TasfiyaNativeOneSignal.configure(JSON.stringify({
+                    externalId,
+                    tags
+                }));
+                return true;
+            } catch (error) {
+                console.warn('[Tasfiya OneSignal] Native Android bridge failed:', error);
+            }
+        }
 
         dispatchNativeOneSignalUrl('gonative://onesignal/register');
         applyNativeTags(tags);
