@@ -3,6 +3,52 @@ const path = require('path');
 const Database = require('better-sqlite3');
 const { buildCashboxVoucherSyncKey } = require('./app/cashbox-voucher-utils');
 
+function normalizeRemoteSyncUrl(value) {
+    const rawValue = String(value || '').trim();
+    if (!rawValue) {
+        return '';
+    }
+
+    try {
+        const parsedUrl = new URL(rawValue);
+        if (parsedUrl.protocol !== 'https:') {
+            return '';
+        }
+
+        parsedUrl.hash = '';
+        parsedUrl.search = '';
+        let pathname = parsedUrl.pathname.replace(/\/+$/, '');
+        pathname = pathname
+            .replace(/\/api\/sync\/users$/i, '')
+            .replace(/\/api$/i, '')
+            .replace(/\/+$/, '');
+
+        const originAndBasePath = `${parsedUrl.origin}${pathname && pathname !== '/' ? pathname : ''}`
+            .replace(/\/+$/, '');
+        return `${originAndBasePath}/api/sync/users`;
+    } catch (_error) {
+        return '';
+    }
+}
+
+function getConfiguredRemoteUrl(database) {
+    try {
+        const row = database.prepare(`
+            SELECT setting_value
+            FROM system_settings
+            WHERE category = 'general'
+              AND setting_key = 'sync_server_url'
+              AND setting_value IS NOT NULL
+              AND TRIM(setting_value) <> ''
+            ORDER BY id DESC
+            LIMIT 1
+        `).get();
+        return normalizeRemoteSyncUrl(row && row.setting_value);
+    } catch (_error) {
+        return '';
+    }
+}
+
 // 1. Find Database
 const possiblePaths = [
     // Standard Electron UserData on Windows
@@ -30,7 +76,14 @@ const db = new Database(dbPath, { readonly: true }); // Read only to be safe
 
 // Check if sync is enabled
 try {
-    const settingRow = db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
+    const settingRow = db.prepare(`
+        SELECT setting_value
+        FROM system_settings
+        WHERE category = 'general'
+          AND setting_key = 'sync_enabled'
+        ORDER BY id DESC
+        LIMIT 1
+    `).get();
     if (settingRow && settingRow.setting_value === 'false') {
         console.log('⛔ [SYNC] Sync is disabled. Skipping manual sync.');
         console.log('Enable sync in settings to sync data to cloud.');
@@ -89,10 +142,14 @@ try {
     - ${cashbox_vouchers.length} Cashbox Vouchers
     - ${cashbox_voucher_audit_log.length} Cashbox Audit Logs`);
 
-    // 5. Send to Cloud
-    const REMOTE_URL = 'https://tasfiya-pro-max.onrender.com/api/sync/users';
+    // 5. Send to the configured server
+    const REMOTE_URL = getConfiguredRemoteUrl(db);
+    if (!REMOTE_URL) {
+        console.error('❌ لا يوجد رابط خادم مزامنة محفوظ. افتح إعدادات التطبيق واحفظ رابط الخادم الجديد أولاً.');
+        process.exit(1);
+    }
 
-    console.log('🚀 Sending data to Cloud (' + REMOTE_URL + ')...');
+    console.log('🚀 Sending data to configured server (' + REMOTE_URL.replace(/\/api\/sync\/users$/i, '') + ')...');
 
     fetch(REMOTE_URL, {
         method: 'POST',

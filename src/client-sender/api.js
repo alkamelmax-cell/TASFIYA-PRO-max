@@ -1,12 +1,16 @@
 const fetch = require('node-fetch');
 
-const DEFAULT_BASE_URL = 'https://tasfiya-pro-max.onrender.com';
+const DEFAULT_BASE_URL = '';
 const SESSION_COOKIE_NAME = 'tasfiya_session';
 
 function normalizeBaseUrl(input = '') {
     let value = String(input || '').trim();
     if (!value) {
         value = DEFAULT_BASE_URL;
+    }
+
+    if (!value) {
+        throw new Error('أدخل رابط الخادم من إعدادات الاتصال أولاً');
     }
 
     if (!/^https?:\/\//i.test(value)) {

@@ -5,7 +5,8 @@ const crypto = require('crypto');
 const fetch = require('node-fetch');
 
 // Configuration
-const REMOTE_URL = 'https://tasfiya-pro-max.onrender.com/api/sync/users'; // Ensure this matches your Render URL
+// لا نستخدم رابط Render القديم كافتراضي. يجب أن تأتي وجهة المزامنة من إعدادات التطبيق.
+const DEFAULT_REMOTE_URL = '';
 const SYNC_INTERVAL_MS = 30000; // 30 seconds
 const FULL_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // Weekly safety refresh
 const MIRROR_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // Daily deletion audit
@@ -20,6 +21,7 @@ const REQUEST_PULL_TIMEOUT_MS = 15000;
 const SYNC_POST_TIMEOUT_MS = 45000;
 
 const SYNC_META_KEYS = {
+    remoteUrl: 'background-sync:remote-url',
     lastFullRefreshAt: 'background-sync:last-full-refresh-at',
     lastMirrorCleanupAt: 'background-sync:last-mirror-cleanup-at',
     lastRequestPullAt: 'background-sync:requests:last-pull-at',
@@ -107,6 +109,34 @@ function resolvePulledRequestStatus(localStatus, remoteStatus) {
     return remote || local || 'pending';
 }
 
+function normalizeRemoteSyncUrl(value) {
+    const rawValue = String(value || '').trim();
+    if (!rawValue) {
+        return '';
+    }
+
+    try {
+        const parsedUrl = new URL(rawValue);
+        if (parsedUrl.protocol !== 'https:') {
+            return '';
+        }
+
+        parsedUrl.hash = '';
+        parsedUrl.search = '';
+        let pathname = parsedUrl.pathname.replace(/\/+$/, '');
+        pathname = pathname
+            .replace(/\/api\/sync\/users$/i, '')
+            .replace(/\/api$/i, '')
+            .replace(/\/+$/, '');
+
+        const originAndBasePath = `${parsedUrl.origin}${pathname && pathname !== '/' ? pathname : ''}`
+            .replace(/\/+$/, '');
+        return `${originAndBasePath}/api/sync/users`;
+    } catch (_error) {
+        return '';
+    }
+}
+
 class BackgroundSync {
     constructor(dbManager) {
         this.dbManager = dbManager;
@@ -116,6 +146,53 @@ class BackgroundSync {
         this.requestPullPromise = null;
         this.syncStateWarningShown = false;
         this.nonRetryablePayloads = new Map();
+        this.lastResolvedRemoteUrl = null;
+        this.remoteUrlMissingWarningShown = false;
+    }
+
+    getRemoteUrl() {
+        try {
+            const row = this.dbManager?.db?.prepare(`
+                SELECT setting_value
+                FROM system_settings
+                WHERE category = 'general'
+                  AND setting_key = 'sync_server_url'
+                  AND setting_value IS NOT NULL
+                  AND TRIM(setting_value) <> ''
+                ORDER BY id DESC
+                LIMIT 1
+            `).get();
+            const remoteUrl = normalizeRemoteSyncUrl(row?.setting_value);
+            if (remoteUrl) {
+                if (remoteUrl !== this.lastResolvedRemoteUrl) {
+                    console.log(`🌐 [SYNC] Remote target: ${remoteUrl.replace(/\/api\/sync\/users$/i, '')}`);
+                    this.lastResolvedRemoteUrl = remoteUrl;
+                    this.remoteUrlMissingWarningShown = false;
+                }
+                return remoteUrl;
+            }
+        } catch (_error) {
+            // تظهر رسالة واضحة في requireRemoteUrl/fetchRemoteRequests بدون الرجوع لخادم قديم.
+        }
+        return DEFAULT_REMOTE_URL;
+    }
+
+    requireRemoteUrl(operationName = 'sync') {
+        const remoteUrl = this.getRemoteUrl();
+        if (remoteUrl) {
+            return remoteUrl;
+        }
+
+        const error = new Error('لم يتم ضبط رابط خادم المزامنة. افتح الإعدادات العامة واحفظ رابط الخادم الجديد.');
+        error.code = 'SYNC_REMOTE_URL_MISSING';
+        error.nonRetryable = true;
+        error.suppressCooldown = true;
+        error.operationName = operationName;
+        if (!this.remoteUrlMissingWarningShown) {
+            console.warn(`⚠️ [SYNC] ${error.message}`);
+            this.remoteUrlMissingWarningShown = true;
+        }
+        throw error;
     }
 
     getNowIso() {
@@ -183,6 +260,56 @@ class BackgroundSync {
             return true;
         }
         return Date.now() - lastTime >= intervalMs;
+    }
+
+    hasExistingSyncState(db) {
+        try {
+            const rowState = db.prepare('SELECT 1 AS present FROM sync_row_state LIMIT 1').get();
+            if (rowState) return true;
+        } catch (_error) {
+            // Fall through to metadata checks.
+        }
+
+        return [
+            SYNC_META_KEYS.lastFullRefreshAt,
+            SYNC_META_KEYS.lastMirrorCleanupAt,
+            SYNC_META_KEYS.lastRequestPullAt,
+            SYNC_META_KEYS.lastRequestFullPullAt
+        ].some((key) => Boolean(this.readSyncMeta(db, key)));
+    }
+
+    ensureRemoteSyncScope(db) {
+        const currentRemoteUrl = this.getRemoteUrl();
+        if (!currentRemoteUrl) {
+            return false;
+        }
+
+        const previousRemoteUrl = this.readSyncMeta(db, SYNC_META_KEYS.remoteUrl);
+        const changedRemote = Boolean(previousRemoteUrl) && previousRemoteUrl !== currentRemoteUrl;
+        const legacyStateForAnotherRemote = !previousRemoteUrl
+            && currentRemoteUrl !== DEFAULT_REMOTE_URL
+            && this.hasExistingSyncState(db);
+
+        if (changedRemote || legacyStateForAnotherRemote) {
+            const resetState = () => {
+                db.prepare('DELETE FROM sync_row_state').run();
+                db.prepare("DELETE FROM sync_metadata WHERE key LIKE 'background-sync:%'").run();
+            };
+
+            if (typeof db.transaction === 'function') {
+                db.transaction(resetState)();
+            } else {
+                resetState();
+            }
+
+            console.log('🔄 [SYNC] Remote server changed; rebuilding the sync baseline once.');
+        }
+
+        if (previousRemoteUrl !== currentRemoteUrl || legacyStateForAnotherRemote) {
+            this.writeSyncMeta(db, SYNC_META_KEYS.remoteUrl, currentRemoteUrl);
+        }
+
+        return changedRemote || legacyStateForAnotherRemote;
     }
 
     loadRowStateMap(db, tableName) {
@@ -632,6 +759,9 @@ class BackgroundSync {
 
     async pushLocalData(db) {
         const stateAvailable = this.ensureSyncStateSchema(db);
+        if (stateAvailable) {
+            this.ensureRemoteSyncScope(db);
+        }
         const fullRefresh = !stateAvailable
             || this.isIntervalDue(db, SYNC_META_KEYS.lastFullRefreshAt, FULL_REFRESH_INTERVAL_MS);
         const cleanupDue = !stateAvailable
@@ -767,7 +897,8 @@ class BackgroundSync {
 
         for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt++) {
             try {
-                const res = await this.fetchWithTimeout(REMOTE_URL, {
+                const remoteUrl = this.requireRemoteUrl(`sync upload (${payloadKeys})`);
+                const res = await this.fetchWithTimeout(remoteUrl, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(dataToSend)
@@ -802,7 +933,9 @@ class BackgroundSync {
             } catch (error) {
                 lastError = error;
                 if (error && error.nonRetryable) {
-                    this.nonRetryablePayloads.set(payloadKeys, Date.now() + NON_RETRYABLE_PAYLOAD_COOLDOWN_MS);
+                    if (!error.suppressCooldown) {
+                        this.nonRetryablePayloads.set(payloadKeys, Date.now() + NON_RETRYABLE_PAYLOAD_COOLDOWN_MS);
+                    }
                     console.error(`❌ [SYNC] Non-retryable error sending ${payloadKeys}:`, error.message);
                     break;
                 }
@@ -837,6 +970,17 @@ class BackgroundSync {
     async fetchRemoteRequests(db) {
         try {
             const stateAvailable = this.ensureSyncStateSchema(db);
+            if (stateAvailable) {
+                this.ensureRemoteSyncScope(db);
+            }
+            const remoteUrl = this.getRemoteUrl();
+            if (!remoteUrl) {
+                if (!this.remoteUrlMissingWarningShown) {
+                    console.warn('⚠️ [SYNC] لم يتم سحب طلبات التصفيات لأن رابط خادم المزامنة غير مضبوط.');
+                    this.remoteUrlMissingWarningShown = true;
+                }
+                return { success: false, skipped: true, reason: 'missing_remote_url', count: 0 };
+            }
             const fullPull = !stateAvailable
                 || this.isIntervalDue(db, SYNC_META_KEYS.lastRequestFullPullAt, REQUEST_FULL_PULL_INTERVAL_MS);
             const lastPullAt = stateAvailable && !fullPull
@@ -853,7 +997,7 @@ class BackgroundSync {
                 query.set('updated_after', updatedAfter);
             }
 
-            const reqUrl = REMOTE_URL.replace('/sync/users', `/reconciliation-requests?${query.toString()}`);
+            const reqUrl = remoteUrl.replace('/sync/users', `/reconciliation-requests?${query.toString()}`);
             console.log(`📥 [SYNC] Pulling requests from: ${reqUrl}`);
 
             const res = await this.fetchWithTimeout(

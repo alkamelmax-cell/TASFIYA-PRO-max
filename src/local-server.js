@@ -95,6 +95,54 @@ function normalizeCustomerCodeValue(value) {
     return ['', '-', '–', '—'].includes(normalized) ? '' : normalized;
 }
 
+function normalizeSyncServerBaseUrl(value) {
+    const rawValue = String(value || '').trim();
+    if (!rawValue) {
+        return '';
+    }
+
+    try {
+        const parsedUrl = new URL(rawValue);
+        if (parsedUrl.protocol !== 'https:') {
+            return '';
+        }
+
+        parsedUrl.hash = '';
+        parsedUrl.search = '';
+        let pathname = parsedUrl.pathname.replace(/\/+$/, '');
+        pathname = pathname
+            .replace(/\/api\/sync\/users$/i, '')
+            .replace(/\/api$/i, '')
+            .replace(/\/+$/, '');
+
+        return `${parsedUrl.origin}${pathname && pathname !== '/' ? pathname : ''}`.replace(/\/+$/, '');
+    } catch (_error) {
+        return '';
+    }
+}
+
+function readConfiguredSyncServerBaseUrl(dbManager) {
+    if (!dbManager || !dbManager.db || typeof dbManager.db.prepare !== 'function') {
+        return '';
+    }
+
+    try {
+        const row = dbManager.db.prepare(`
+            SELECT setting_value
+            FROM system_settings
+            WHERE category = 'general'
+              AND setting_key = 'sync_server_url'
+              AND setting_value IS NOT NULL
+              AND TRIM(setting_value) <> ''
+            ORDER BY id DESC
+            LIMIT 1
+        `).get();
+        return normalizeSyncServerBaseUrl(row && row.setting_value);
+    } catch (_error) {
+        return '';
+    }
+}
+
 function normalizePositiveInteger(value) {
     const numeric = Number(value);
     return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : null;
@@ -2423,10 +2471,23 @@ class LocalWebServer {
                     .run(id);
             }
 
-            // Check if sync is enabled before deleting from cloud
+            // In PostgreSQL/Neon mode this server is already the authoritative target.
+            // Do not forward deletes to any historical cloud URL.
+            if (pool) {
+                this.sendJson(res, { success: true });
+                return;
+            }
+
+            // Check if sync is enabled before deleting from the configured remote server.
             let syncEnabled = true;
             try {
-                const settingRow = this.dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
+                const settingRow = this.dbManager.db.prepare(`
+                    SELECT setting_value
+                    FROM system_settings
+                    WHERE category = 'general' AND setting_key = 'sync_enabled'
+                    ORDER BY id DESC
+                    LIMIT 1
+                `).get();
                 if (settingRow && settingRow.setting_value === 'false') {
                     syncEnabled = false;
                 }
@@ -2434,19 +2495,26 @@ class LocalWebServer {
                 // If table doesn't exist or error, assume sync is enabled
             }
 
-            // CRITICAL: Also delete from remote server to prevent re-sync (only if sync is enabled)
+            // CRITICAL: Also delete from configured remote server to prevent re-sync (only if sync is enabled)
             if (syncEnabled) {
+                const configuredBaseUrl = readConfiguredSyncServerBaseUrl(this.dbManager);
+                if (!configuredBaseUrl) {
+                    console.warn(`⚠️ [DELETE] Sync server URL is not configured - skipping remote deletion for ID ${id}`);
+                    this.sendJson(res, { success: true });
+                    return;
+                }
+
                 try {
-                    const remoteUrl = 'https://tasfiya-pro-max.onrender.com/api/reconciliation-requests/' + id;
+                    const remoteUrl = `${configuredBaseUrl}/api/reconciliation-requests/${encodeURIComponent(id)}`;
                     const fetch = require('node-fetch');
                     await fetch(remoteUrl, { method: 'DELETE' });
-                    console.log(`✅ [DELETE] Also deleted from cloud: ID ${id}`);
+                    console.log(`✅ [DELETE] Also deleted from configured server: ID ${id}`);
                 } catch (cloudErr) {
-                    console.warn(`⚠️ [DELETE] Cloud deletion failed (ID ${id}):`, cloudErr.message);
-                    // Don't fail the whole request if cloud is down, but log it
+                    console.warn(`⚠️ [DELETE] Configured server deletion failed (ID ${id}):`, cloudErr.message);
+                    // Don't fail the whole request if the configured server is down, but log it
                 }
             } else {
-                console.log(`⛔ [DELETE] Sync disabled - skipping cloud deletion for ID ${id}`);
+                console.log(`⛔ [DELETE] Sync disabled - skipping configured server deletion for ID ${id}`);
             }
 
             this.sendJson(res, { success: true });

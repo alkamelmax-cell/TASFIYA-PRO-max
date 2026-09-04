@@ -722,7 +722,7 @@ async function promptVerifyAdminAccess() {
         html: `
             <div class="client-dialog-stack">
                 <div class="client-dialog-caption">أدخل رابط الخادم وبيانات نفس الأدمن المعتمد في التطبيق الأساسي.</div>
-                <input id="verifyAdminBaseUrlInput" class="client-dialog-input" type="text" dir="ltr" placeholder="https://tasfiya-pro-max.onrender.com">
+                <input id="verifyAdminBaseUrlInput" class="client-dialog-input" type="text" dir="ltr" placeholder="https://server.example.com">
                 <input id="verifyAdminUsernameInput" class="client-dialog-input" type="text" autocomplete="username" placeholder="اسم المستخدم">
                 <input id="verifyAdminPasswordInput" class="client-dialog-input" type="password" autocomplete="current-password" placeholder="كلمة المرور">
             </div>
