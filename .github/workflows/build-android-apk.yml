@@ -72,11 +72,11 @@ jobs:
             cp app/build/outputs/apk/release/app-release.apk output/Tasfiya-Pro-release.apk
             echo "artifact_name=Tasfiya-Pro-release" >> "$GITHUB_OUTPUT"
           else
-            echo "Signing secrets are absent: producing a debug APK for installation/testing only."
-            build_apk ./gradlew --no-daemon :app:assembleDebug --stacktrace
+            echo "Signing secrets are absent: producing a debug-key signed release APK with the production package id."
+            build_apk ./gradlew --no-daemon :app:assembleRelease --stacktrace
             mkdir -p output
-            cp app/build/outputs/apk/debug/app-debug.apk output/Tasfiya-Pro-debug.apk
-            echo "artifact_name=Tasfiya-Pro-debug" >> "$GITHUB_OUTPUT"
+            cp app/build/outputs/apk/release/app-release.apk output/Tasfiya-Pro-release-local-signed.apk
+            echo "artifact_name=Tasfiya-Pro-release-local-signed" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Upload APK

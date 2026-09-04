@@ -18,6 +18,7 @@ import android.webkit.WebViewClient;
 public final class MainActivity extends Activity {
     private static final String APP_HOST = "server.tail22db51.ts.net";
     private WebView webView;
+    private TasfiyaOneSignalBridge oneSignalBridge;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -41,10 +42,8 @@ public final class MainActivity extends Activity {
         CookieManager cookies = CookieManager.getInstance();
         cookies.setAcceptCookie(true);
         CookieManager.setAcceptFileSchemeCookies(false);
-        webView.addJavascriptInterface(
-            new TasfiyaOneSignalBridge(this, getString(R.string.onesignal_app_id)),
-            "TasfiyaNativeOneSignal"
-        );
+        oneSignalBridge = new TasfiyaOneSignalBridge(this, getString(R.string.onesignal_app_id));
+        webView.addJavascriptInterface(oneSignalBridge, "TasfiyaNativeOneSignal");
         webView.setWebViewClient(new TasfiyaWebViewClient());
         if (savedInstanceState == null) {
             webView.loadUrl(getString(R.string.launch_url));
@@ -57,6 +56,14 @@ public final class MainActivity extends Activity {
     protected void onSaveInstanceState(Bundle outState) {
         webView.saveState(outState);
         super.onSaveInstanceState(outState);
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (oneSignalBridge != null) {
+            oneSignalBridge.onAndroidNotificationPermissionResult(requestCode, grantResults);
+        }
     }
 
     @Override

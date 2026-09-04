@@ -90,7 +90,7 @@ public final class TasfiyaOneSignalBridge {
             status.put("subscriptionId", pushSubscription == null ? "" : stringOrEmpty(pushSubscription.getId()));
             status.put("tokenPresent", pushSubscription != null && !stringOrEmpty(pushSubscription.getToken()).isEmpty());
             status.put("optedIn", pushSubscription != null && pushSubscription.getOptedIn());
-            status.put("permission", hasAndroidNotificationPermission());
+            status.put("permission", hasNotificationPermission());
             status.put("lastConfiguredAt", lastConfiguredAt);
             status.put("lastError", lastError);
         } catch (Exception error) {
@@ -100,7 +100,7 @@ public final class TasfiyaOneSignalBridge {
                 status.put("initialized", initialized);
                 status.put("appId", appId);
                 status.put("externalId", configuredExternalId);
-                status.put("permission", hasAndroidNotificationPermission());
+                status.put("permission", hasNotificationPermission());
                 status.put("lastConfiguredAt", lastConfiguredAt);
                 status.put("lastError", error.getClass().getSimpleName() + ": " + safeMessage(error));
             } catch (Exception ignored) {
@@ -109,6 +109,23 @@ public final class TasfiyaOneSignalBridge {
         }
 
         return status.toString();
+    }
+
+    public void onAndroidNotificationPermissionResult(int requestCode, int[] grantResults) {
+        if (requestCode != 5120) {
+            return;
+        }
+
+        try {
+            IPushSubscription pushSubscription = OneSignal.getUser().getPushSubscription();
+            if (pushSubscription != null && hasNotificationPermission()) {
+                pushSubscription.optIn();
+            }
+            lastConfiguredAt = System.currentTimeMillis();
+            lastError = "";
+        } catch (Exception error) {
+            lastError = error.getClass().getSimpleName() + ": " + safeMessage(error);
+        }
     }
 
     private void initialize() {
@@ -135,13 +152,17 @@ public final class TasfiyaOneSignalBridge {
         return tags;
     }
 
-    private boolean hasAndroidNotificationPermission() {
-        return Build.VERSION.SDK_INT < 33
-            || activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+    private boolean hasNotificationPermission() {
+        try {
+            return OneSignal.getNotifications().getPermission();
+        } catch (Exception ignored) {
+            return Build.VERSION.SDK_INT < 33
+                || activity.checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED;
+        }
     }
 
     private void requestAndroidNotificationPermission() {
-        if (Build.VERSION.SDK_INT < 33 || hasAndroidNotificationPermission()) {
+        if (Build.VERSION.SDK_INT < 33 || hasNotificationPermission()) {
             return;
         }
 

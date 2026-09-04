@@ -10,8 +10,8 @@ android {
         applicationId 'com.tasfiyapro.app'
         minSdk 23
         targetSdk 35
-        versionCode 4
-        versionName '1.1.1'
+        versionCode 5
+        versionName '1.1.2'
     }
 
     signingConfigs {
@@ -36,6 +36,13 @@ android {
             shrinkResources false
             if (System.getenv('ANDROID_KEYSTORE_PATH')) {
                 signingConfig signingConfigs.release
+            } else {
+                // Keep the production applicationId even when no private
+                // signing secrets are available locally/GitHub. A debug APK
+                // uses a different package name and therefore creates a
+                // different OneSignal/Firebase identity that cannot receive
+                // the intended production Android push notifications.
+                signingConfig signingConfigs.debug
             }
         }
     }
