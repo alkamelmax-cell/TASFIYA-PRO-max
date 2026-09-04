@@ -100,7 +100,10 @@
             windowObj.__tasfiyaNativeOneSignalStatus = status;
 
             const subscriptionId = String(status && status.subscriptionId ? status.subscriptionId : '').trim();
-            if (subscriptionId) {
+            const tokenPresent = Boolean(status && status.tokenPresent);
+            const permissionGranted = Boolean(status && status.permission);
+            const optedIn = Boolean(status && status.optedIn !== false);
+            if (subscriptionId && tokenPresent && permissionGranted && optedIn) {
                 const appId = String((status && status.appId) || await getOneSignalAppId()).trim();
                 const response = await windowObj.fetch('/api/notifications/register', {
                     method: 'POST',
@@ -113,12 +116,12 @@
                         appId,
                         integrationVersion: 'android-native-v1',
                         role,
-                        optedIn: status && status.optedIn !== false,
-                        permission: Boolean(status && status.permission),
+                        optedIn,
+                        permission: permissionGranted,
                         platform: 'android-native',
                         nativeStatus: {
                             initialized: Boolean(status && status.initialized),
-                            tokenPresent: Boolean(status && status.tokenPresent),
+                            tokenPresent,
                             oneSignalId: String((status && status.oneSignalId) || ''),
                             lastError: String((status && status.lastError) || '')
                         }
@@ -132,6 +135,12 @@
 
                 console.info('[Tasfiya OneSignal] Native Android subscription registered with server');
                 return true;
+            }
+
+            if (attempt === 1 || attempt === 6 || attempt === 12 || attempt === 18) {
+                console.info(
+                    `[Tasfiya OneSignal] Waiting for native Android push readiness: subscription=${Boolean(subscriptionId)} token=${tokenPresent} permission=${permissionGranted} optedIn=${optedIn}`
+                );
             }
 
             await wait(Math.min(700 + attempt * 250, 2500));
