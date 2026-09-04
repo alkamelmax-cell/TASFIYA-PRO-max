@@ -5241,6 +5241,7 @@ class LocalWebServer {
             return { success: false, code: 'ONESIGNAL_NO_TARGETS', error };
         }
 
+        const notificationIconUrl = this.buildNotificationWebUrl('assets/icon-192.png?v=appicon-20260831-v2');
         const notificationPayload = {
             app_id: config.appId,
             target_channel: 'push',
@@ -5249,8 +5250,14 @@ class LocalWebServer {
             data,
             priority: 10,
             android_visibility: 1,
-            lockscreen_visibility: 1
+            lockscreen_visibility: 1,
+            small_icon: 'ic_stat_onesignal_default',
+            android_accent_color: 'FF14C8B8'
         };
+
+        if (notificationIconUrl) {
+            notificationPayload.large_icon = notificationIconUrl;
+        }
 
         if (subscriptionIds.length > 0) {
             // Send directly to the known browser subscription.
@@ -5270,7 +5277,6 @@ class LocalWebServer {
         // publicly reachable icon.  This keeps the Tasfiya identity in the
         // lock-screen notification instead of falling back to Chrome's generic
         // site icon when the installed PWA is closed.
-        const notificationIconUrl = this.buildNotificationWebUrl('assets/icon-192.png?v=appicon-20260831-v2');
         if (notificationIconUrl) {
             notificationPayload.chrome_web_icon = notificationIconUrl;
             notificationPayload.chrome_web_badge = notificationIconUrl;
