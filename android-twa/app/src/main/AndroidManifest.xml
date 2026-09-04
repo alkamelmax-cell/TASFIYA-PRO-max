@@ -12,6 +12,13 @@
         android:theme="@style/Theme.TasfiyaPro"
         android:usesCleartextTraffic="false">
 
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_icon"
+            android:resource="@drawable/ic_stat_onesignal_default" />
+        <meta-data
+            android:name="com.google.firebase.messaging.default_notification_color"
+            android:resource="@color/tasfiya_notification_accent" />
+
         <activity
             android:name=".MainActivity"
             android:alwaysRetainTaskState="true"

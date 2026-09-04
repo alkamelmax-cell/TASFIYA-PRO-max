@@ -2,5 +2,7 @@
 <resources>
     <color name="tasfiya_navy">#071F44</color>
     <color name="tasfiya_mint">#55D4C5</color>
+    <color name="tasfiya_notification_accent">#14C8B8</color>
+    <color name="onesignal_notification_accent_color">#14C8B8</color>
     <color name="icon_background">#FFFFFF</color>
 </resources>
