@@ -1123,8 +1123,9 @@ class LocalWebServer {
                 params.push(query.status);
             }
 
-            // Sort by ID DESC to ensure latest entries show first regardless of date typos
-            sql += ` ORDER BY r.id DESC`;
+            // ترتيب العرض يجب أن يعتمد على تاريخ/رقم التصفية لا على id.
+            // بعد إلغاء الأرشفة قد تعود سجلات قديمة بـ id أحدث، فيظهر عام قديم في الصفحة الأولى.
+            sql += ` ORDER BY r.reconciliation_date DESC NULLS LAST, r.reconciliation_number DESC NULLS LAST, r.id DESC`;
 
             // Add LIMIT if specified (for performance with large datasets)
             if (query.limit) {

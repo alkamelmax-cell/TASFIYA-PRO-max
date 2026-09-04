@@ -5,9 +5,9 @@
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
 // Service Worker for Tasfiya Pro PWA
-// Version: 4.7 - Harden notification registration after domain/app migration.
+// Version: 4.8 - Prefer native Android PDF sharing for large reports.
 
-const CACHE_NAME = 'tasfiya-pro-v4.7-notification-registration';
+const CACHE_NAME = 'tasfiya-pro-v4.8-native-pdf-share';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',

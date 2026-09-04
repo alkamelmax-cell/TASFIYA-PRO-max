@@ -592,7 +592,7 @@
             // Create params for stats (exact copy of filters BUT WITHOUT limit)
             const statsParams = new URLSearchParams(params);
 
-            // If no filters are active, limit main list to last 100 records
+            // If no filters are active, limit main list to the newest 100 by reconciliation date
             if (!hasFilters) {
                 params.append('limit', '100');
             }
@@ -614,7 +614,7 @@
                     // Show info message if showing limited results
                     if (!hasFilters) {
                         const countEl = document.getElementById('recordCount');
-                        countEl.innerHTML = `${listResult.data.length} سجل <small class="text-muted">(آخر 100 تصفية)</small>`;
+                        countEl.innerHTML = `${listResult.data.length} سجل <small class="text-muted">(أحدث 100 حسب تاريخ التصفية)</small>`;
                     }
                 }
 
@@ -885,6 +885,21 @@
             document.getElementById('modalBody').innerHTML = html;
         }
 
+        function tryNativePdfShare(reportUrl, fileName, title) {
+            const nativeBridge = window.TasfiyaAndroid;
+            if (!nativeBridge || typeof nativeBridge.sharePdfFromUrl !== 'function') {
+                return false;
+            }
+
+            try {
+                const absoluteReportUrl = new URL(reportUrl, window.location.href).href;
+                return nativeBridge.sharePdfFromUrl(absoluteReportUrl, fileName, title) === true;
+            } catch (error) {
+                console.warn('[PDF SHARE] Native bridge rejected URL:', error?.message || error);
+                return false;
+            }
+        }
+
         async function shareReconciliationReport() {
             if (!activeReconciliationDetails || !activeReconciliationDetails.reconciliation) {
                 alert('لا تتوفر بيانات تصفية لإنشاء التقرير.');
@@ -903,6 +918,10 @@
             // Opening the server-produced PDF preserves the usual back button and print controls.
             if (!isMobile) {
                 window.open(reportUrl, '_blank', 'noopener');
+                return;
+            }
+
+            if (tryNativePdfShare(reportUrl, fileName, `تقرير تصفية #${reportNumber}`)) {
                 return;
             }
 

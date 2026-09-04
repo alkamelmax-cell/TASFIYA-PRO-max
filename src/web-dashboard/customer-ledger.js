@@ -324,6 +324,28 @@ async function loadCustomerLedger(customerName) {
     }
 }
 
+function tryNativePdfShare(reportUrl, fileName, title) {
+    const nativeBridge = window.TasfiyaAndroid;
+    if (!nativeBridge || typeof nativeBridge.sharePdfFromUrl !== 'function') {
+        return false;
+    }
+
+    try {
+        const absoluteReportUrl = new URL(reportUrl, window.location.href).href;
+        return nativeBridge.sharePdfFromUrl(absoluteReportUrl, fileName, title) === true;
+    } catch (error) {
+        console.warn('[CUSTOMER LEDGER PDF] Native bridge rejected URL:', error?.message || error);
+        return false;
+    }
+}
+
+function safePdfNamePart(value, fallback) {
+    return String(value || fallback || 'تقرير')
+        .replace(/[\\/:*?"<>|\r\n]+/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim();
+}
+
 async function shareCustomerLedgerReport() {
     const customerName = (document.getElementById('currentCustomerName')?.value || '').trim();
     if (!customerName) return;
@@ -335,9 +357,14 @@ async function shareCustomerLedgerReport() {
     if (dateTo) params.set('dateTo', dateTo);
 
     const reportUrl = `${API_URL}/customer-ledger/report.pdf?${params.toString()}`;
+    const fileName = `كشف-حساب-${safePdfNamePart(customerName, 'عميل')}.pdf`;
     const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.matchMedia('(pointer: coarse)').matches;
     if (!isMobile) {
         window.open(reportUrl, '_blank', 'noopener');
+        return;
+    }
+
+    if (tryNativePdfShare(reportUrl, fileName, `كشف حساب ${customerName}`)) {
         return;
     }
 
@@ -351,7 +378,6 @@ async function shareCustomerLedgerReport() {
         if (!response.ok) throw new Error(`PDF request failed with ${response.status}`);
         const blob = await response.blob();
         if (blob.type !== 'application/pdf' || blob.size === 0) throw new Error('Invalid PDF response');
-        const fileName = 'كشف-حساب-عميل.pdf';
         const file = new File([blob], fileName, { type: 'application/pdf' });
 
         if (window.TasfiyaAndroid && typeof window.TasfiyaAndroid.sharePdf === 'function') {
