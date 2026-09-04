@@ -1123,9 +1123,9 @@ class LocalWebServer {
                 params.push(query.status);
             }
 
-            // ترتيب العرض يجب أن يعتمد على تاريخ/رقم التصفية لا على id.
-            // بعد إلغاء الأرشفة قد تعود سجلات قديمة بـ id أحدث، فيظهر عام قديم في الصفحة الأولى.
-            sql += ` ORDER BY r.reconciliation_date DESC NULLS LAST, r.reconciliation_number DESC NULLS LAST, r.id DESC`;
+            // ترتيب العرض الرسمي يعتمد على رقم التصفية، لا على id الداخلي.
+            // بعد إلغاء الأرشفة قد تعود سجلات قديمة بـ id أحدث، لذلك يبقى id مجرد فاصل أخير عند التساوي.
+            sql += ` ORDER BY r.reconciliation_number DESC NULLS LAST, r.reconciliation_date DESC NULLS LAST, r.id DESC`;
 
             // Add LIMIT if specified (for performance with large datasets)
             if (query.limit) {

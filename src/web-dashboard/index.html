@@ -592,7 +592,7 @@
             // Create params for stats (exact copy of filters BUT WITHOUT limit)
             const statsParams = new URLSearchParams(params);
 
-            // If no filters are active, limit main list to the newest 100 by reconciliation date
+            // If no filters are active, limit main list to the latest 100 by reconciliation number
             if (!hasFilters) {
                 params.append('limit', '100');
             }
@@ -614,7 +614,7 @@
                     // Show info message if showing limited results
                     if (!hasFilters) {
                         const countEl = document.getElementById('recordCount');
-                        countEl.innerHTML = `${listResult.data.length} سجل <small class="text-muted">(أحدث 100 حسب تاريخ التصفية)</small>`;
+                        countEl.innerHTML = `${listResult.data.length} سجل <small class="text-muted">(أحدث 100 حسب رقم التصفية)</small>`;
                     }
                 }
 
