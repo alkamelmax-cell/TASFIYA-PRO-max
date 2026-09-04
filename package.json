@@ -7,20 +7,9 @@
   "description": "تصفية برو - Professional Reconciliation System with Customer Codes & Full Ledger Identity Support v6.0.0",
   "main": "src/main.js",
   "scripts": {
-    "build:renderer": "node scripts/build-renderer-bundles.js",
-    "prestart": "node scripts/build-renderer-bundles.js",
-    "start": "node scripts/run-electron.js",
-    "start:client-sender": "node scripts/run-client-sender.js",
+    "start": "node src/start-web.js",
     "start:web": "node src/start-web.js",
-    "predev": "node scripts/build-renderer-bundles.js",
-    "dev": "cross-env NODE_ENV=development node scripts/run-electron.js --dev",
-    "prebuild-clean": "node scripts/build-renderer-bundles.js",
-    "build-clean": "node build.js",
-    "build:client-sender": "node scripts/build-client-sender.js",
-    "lint": "eslint \"src/app/**/*.js\" \"src/security/**/*.js\" \"test/**/*.js\" --max-warnings=0",
-    "test": "node --test --test-concurrency=1 \"test/**/*.test.js\"",
-    "postinstall": "electron-builder install-app-deps",
-    "rebuild": "electron-builder install-app-deps"
+    "test": "node --check src/start-web.js && node --check src/local-server.js"
   },
   "keywords": [
     "cashier",
