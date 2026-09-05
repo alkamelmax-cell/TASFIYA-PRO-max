@@ -19,6 +19,106 @@ const { createSecureWebPreferences } = require('./window-security');
 const { hashSecret, verifySecret } = require('./security/auth-service');
 const { startBackgroundSync, stopBackgroundSync, getSyncStatus, setSyncEnabled, getSyncEnabled, pullRemoteRequestsNow } = require('./background-sync');
 
+let postSaveSyncTimer = null;
+let postSaveSyncRunning = false;
+let postSaveSyncQueued = false;
+
+function parseSyncEnabledSetting(value) {
+    if (value === undefined || value === null) {
+        return true;
+    }
+
+    const normalized = String(value).trim().toLowerCase();
+    if (!normalized) {
+        return true;
+    }
+
+    return !['false', '0', 'no', 'off', 'disabled', 'معطل'].includes(normalized);
+}
+
+function isBackgroundSyncEnabledInDb() {
+    if (!dbManager || !dbManager.db) {
+        return false;
+    }
+
+    try {
+        const row = dbManager.db.prepare(`
+            SELECT setting_value
+            FROM system_settings
+            WHERE category = 'general'
+              AND setting_key = 'sync_enabled'
+            ORDER BY id DESC
+            LIMIT 1
+        `).get();
+
+        return !row || parseSyncEnabledSetting(row.setting_value);
+    } catch (error) {
+        console.warn('⚠️ [SYNC] Could not read sync_enabled setting; assuming enabled:', error?.message || error);
+        return true;
+    }
+}
+
+function ensureBackgroundSyncStarted(reason = 'manual') {
+    if (!dbManager || !dbManager.db) {
+        console.warn(`⚠️ [SYNC] Cannot start background sync for ${reason}: database is not ready`);
+        return false;
+    }
+
+    if (!isBackgroundSyncEnabledInDb()) {
+        setSyncEnabled(false);
+        console.log(`⏸️ [SYNC] Background sync is disabled; skipped ${reason}`);
+        return false;
+    }
+
+    setSyncEnabled(true);
+    startBackgroundSync(dbManager);
+    return true;
+}
+
+function schedulePostSaveSync(reason = 'save') {
+    postSaveSyncQueued = true;
+
+    if (postSaveSyncTimer) {
+        clearTimeout(postSaveSyncTimer);
+    }
+
+    postSaveSyncTimer = setTimeout(async () => {
+        postSaveSyncTimer = null;
+
+        if (postSaveSyncRunning) {
+            return;
+        }
+
+        postSaveSyncRunning = true;
+        postSaveSyncQueued = false;
+
+        try {
+            if (!ensureBackgroundSyncStarted(`post-save:${reason}`)) {
+                return;
+            }
+
+            const { triggerInstantSync } = require('./background-sync');
+            const syncResult = await triggerInstantSync();
+            if (syncResult && syncResult.success) {
+                console.log('⚡ [MAIN] Background sync completed after reconciliation save');
+            } else {
+                console.warn('⚠️ [MAIN] Reconciliation saved locally; background sync did not complete:', {
+                    reason: syncResult?.reason || 'push_failed',
+                    errors: syncResult?.errors || []
+                });
+            }
+        } catch (syncErr) {
+            console.warn('⚠️ [MAIN] Reconciliation saved locally; background sync failed:', syncErr?.message || syncErr);
+        } finally {
+            postSaveSyncRunning = false;
+
+            if (postSaveSyncQueued) {
+                schedulePostSaveSync(`${reason}:queued`);
+            }
+        }
+    }, 1000);
+}
+
 /**
  * Safe console logging that won't crash on EPIPE errors
  */
@@ -507,7 +607,7 @@ function createWindow() {
         }),
         icon: path.join(__dirname, '../assets/icon.png'),
         title: 'تصفية برو - Tasfiya Pro',
-        show: true,
+        show: false,
         autoHideMenuBar: IS_CLIENT_BUILD
     });
 
@@ -732,108 +832,6 @@ ipcMain.handle('add-statement-transaction', async (event, data) => {
         console.error('Error in add-statement-transaction:', error);
         return { success: false, error: error.message };
     }
-});
-
-// Add print manager to window for renderer access
-app.whenReady().then(() => {
-    // --- SYNC INITIALIZATION ---
-    // Ensure dbManager is initialized if it hasn't been already
-    if (!dbManager) {
-        try {
-            console.log('🔄 [APP] Initializing DatabaseManager for Background Sync...');
-            const DatabaseManager = require('./database');
-            dbManager = new DatabaseManager();
-            dbManager.initialize();
-        } catch (dbError) {
-            console.error('❌ [APP] Failed to initialize DatabaseManager:', dbError);
-        }
-    }
-
-    // Start background synchronization
-    // Start background synchronization
-    try {
-        if (dbManager) {
-            // Check if sync is enabled in settings (Default: true)
-            const syncSetting = dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
-            const isSyncEnabled = !syncSetting || syncSetting.setting_value === 'true';
-
-            if (isSyncEnabled) {
-                const { startBackgroundSync } = require('./background-sync');
-                startBackgroundSync(dbManager);
-                console.log('✅ [APP] Background Sync Service Started (Auto)');
-            } else {
-                console.log('⏸️ [APP] Background Sync is disabled in settings');
-            }
-        } else {
-            console.error('❌ [APP] Cannot start sync: dbManager is null');
-        }
-    } catch (syncError) {
-        console.error('❌ [APP] Failed to start Background Sync Service:', syncError);
-    }
-
-    // Start Local Web Server (localhost:4000)
-    try {
-        if (dbManager) {
-            webServer = new LocalWebServer(dbManager, 4000);
-            webServer.start();
-            console.log('✅ [APP] Local Web Server Started on port 4000');
-        } else {
-            console.error('❌ [APP] Cannot start web server: dbManager is null');
-        }
-    } catch (webError) {
-        if (webError.code === 'EADDRINUSE') {
-            console.log('⚠️ [APP] Port 4000 is already in use. Assuming server is running externally or by another instance.');
-        } else {
-            console.error('❌ [APP] Failed to start Local Web Server:', webError);
-        }
-    }
-    // ---------------------------
-
-    // Create print manager instance
-    printManager = new PrintManager();
-    printManager.initialize();
-
-    // Initialize thermal printer for 80mm receipts
-    thermalPrinter = new ThermalPrinter80mm();
-
-    // Load saved thermal printer settings from database after a short delay
-    setTimeout(() => {
-        if (dbManager) {
-            try {
-                const query = `SELECT setting_key, setting_value FROM system_settings WHERE category = 'thermal_printer'`;
-                const results = dbManager.db.prepare(query).all();
-
-                if (results && results.length > 0) {
-                    const settings = {};
-                    for (const row of results) {
-                        const key = row.setting_key;
-                        const value = row.setting_value;
-
-                        // Convert string values back to proper types
-                        if (value === 'true') {
-                            settings[key] = true;
-                        } else if (value === 'false') {
-                            settings[key] = false;
-                        } else if (!isNaN(value) && value !== '') {
-                            settings[key] = parseInt(value);
-                        } else {
-                            settings[key] = value;
-                        }
-                    }
-
-                    if (Object.keys(settings).length > 0) {
-                        thermalPrinter.updateSettings(settings);
-                        safeLog('✅ [THERMAL-PRINTER] تم تحميل الإعدادات المحفوظة من قاعدة البيانات');
-                    }
-                }
-            } catch (loadError) {
-                safeWarn('⚠️ [THERMAL-PRINTER] فشل تحميل الإعدادات المحفوظة: ' + loadError.message);
-            }
-        }
-    }, 500);
-
-    // Make print manager available to renderer process
-    ipcMain.handle('get-print-manager', () => printManager);
 });
 
 // Helper function to get font size for print
@@ -1932,16 +1930,6 @@ function initializeDatabase() {
 
         console.log('✅ [INIT] تم تهيئة قاعدة البيانات بنجاح');
 
-        // Fix reconciliation numbering
-        try {
-            console.log('🔄 [INIT] بدء إصلاح ترقيم التصفيات...');
-            dbManager.fixAllReconciliationNumbers();
-            console.log('✅ [INIT] تم إصلاح ترقيم التصفيات بنجاح');
-        } catch (fixError) {
-            console.error('⚠️ [INIT] حدث خطأ أثناء إصلاح ترقيم التصفيات:', fixError);
-            // Don't fail initialization, but log the error
-        }
-
         return true;
 
     } catch (error) {
@@ -1950,6 +1938,36 @@ function initializeDatabase() {
     }
 }
 
+function initializeThermalPrinter() {
+    thermalPrinter = new ThermalPrinter80mm();
+
+    // Loading saved settings is deferred so opening the application never waits
+    // for printer configuration work.
+    setTimeout(() => {
+        try {
+            const query = `SELECT setting_key, setting_value FROM system_settings WHERE category = 'thermal_printer'`;
+            const results = dbManager?.db?.prepare(query).all() || [];
+            const settings = {};
+
+            for (const row of results) {
+                const key = row.setting_key;
+                const value = row.setting_value;
+                settings[key] = value === 'true'
+                    ? true
+                    : value === 'false'
+                        ? false
+                        : (!isNaN(value) && value !== '' ? parseInt(value, 10) : value);
+            }
+
+            if (Object.keys(settings).length > 0 && thermalPrinter) {
+                thermalPrinter.updateSettings(settings);
+                safeLog('✅ [THERMAL-PRINTER] تم تحميل الإعدادات المحفوظة من قاعدة البيانات');
+            }
+        } catch (loadError) {
+            safeWarn('⚠️ [THERMAL-PRINTER] فشل تحميل الإعدادات المحفوظة: ' + loadError.message);
+        }
+    }, 500);
+}
 
 
 // App event handlers
@@ -1963,23 +1981,32 @@ app.whenReady().then(() => {
         // Initialize PDF generator
         pdfGenerator = new PDFGenerator(dbManager);
 
-        // Initialize Print manager
+        // Register the print manager immediately, but discover Windows printers
+        // after the main window is visible so printer drivers cannot delay launch.
         printManager = new PrintManager();
-        printManager.initialize();
+        ipcMain.handle('get-print-manager', () => printManager);
+
+        // Initialize thermal printer once. Its saved settings are loaded after
+        // the main window begins loading, so startup remains responsive.
+        initializeThermalPrinter();
 
         createWindow();
+
+        setTimeout(() => {
+            void printManager.initialize();
+        }, 1500);
 
         // Initialize automatic backup
         initializeAutoBackup();
 
-        // Start Background Sync to Cloud (only if enabled)
-        // Check if sync is enabled in settings (Default: true)
-        const syncSetting = dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
-        const isSyncEnabled = !syncSetting || syncSetting.setting_value === 'true';
-
-        if (isSyncEnabled) {
-            startBackgroundSync(dbManager);
-            console.log('✅ [APP] Background Sync Service Started (Auto)');
+        // Start Background Sync to Cloud (only if enabled).
+        // Default is enabled. Accept true/1/yes/on and only disable on explicit false-like values.
+        if (isBackgroundSyncEnabledInDb()) {
+            setTimeout(() => {
+                if (ensureBackgroundSyncStarted('launch')) {
+                    console.log('✅ [APP] Background Sync Service Started after launch');
+                }
+            }, 10000);
         } else {
             console.log('⏸️ [APP] Background Sync is disabled in settings, not starting');
             // Ensure the enabled flag is set to false in the sync instance
@@ -1987,13 +2014,15 @@ app.whenReady().then(() => {
         }
 
         // Start Local Web Server
-        try {
-            console.log('🌐 Starting Local Web Server...');
-            webServer = new LocalWebServer(dbManager);
-            webServer.start();
-        } catch (error) {
-            console.error('❌ Failed to start Web Server:', error);
-        }
+        setTimeout(() => {
+            try {
+                console.log('🌐 Starting Local Web Server after desktop launch...');
+                webServer = new LocalWebServer(dbManager);
+                void webServer.start();
+            } catch (error) {
+                console.error('❌ Failed to start Web Server:', error);
+            }
+        }, 3000);
     } else {
         console.error('Failed to initialize database, exiting...');
         app.quit();
@@ -2419,8 +2448,10 @@ app.whenReady().then(() => {
         bootstrapAutoBackupDefaults();
         runAutoBackupCheckNow = runAutoBackupCycle;
 
-        // Immediate check on startup (do not wait one hour).
-        void runAutoBackupCycle('startup');
+        // Keep disk copying away from the critical launch path.
+        setTimeout(() => {
+            void runAutoBackupCycle('startup');
+        }, 30000);
 
         if (autoBackupIntervalId) {
             clearInterval(autoBackupIntervalId);
@@ -2429,7 +2460,7 @@ app.whenReady().then(() => {
             void runAutoBackupCycle('interval');
         }, CHECK_INTERVAL_MS);
 
-        console.log('✅ [AUTO-BACKUP] تم تفعيل الفحص التلقائي كل ساعة مع فحص فوري عند التشغيل');
+        console.log('✅ [AUTO-BACKUP] تم تفعيل الفحص التلقائي كل ساعة مع فحص مؤجل بعد التشغيل');
     }
 
     /**
@@ -2510,6 +2541,7 @@ app.whenReady().then(() => {
                 'cash_receipts',
                 'postpaid_sales',
                 'customer_receipts',
+                'customer_fiscal_opening_balances',
                 'return_invoices',
                 'suppliers',
                 'manual_postpaid_sales',
@@ -2527,6 +2559,8 @@ app.whenReady().then(() => {
                 'archived_cash_receipts',
                 'archived_postpaid_sales',
                 'archived_customer_receipts',
+                'archived_manual_postpaid_sales',
+                'archived_manual_customer_receipts',
                 'archived_return_invoices',
                 'archived_suppliers',
                 'reconciliation_custom_table_definitions',
@@ -2917,14 +2951,9 @@ ipcMain.handle('complete-reconciliation', async (
             console.warn('⚠️ [MAIN] Auto cashbox sync failed after reconciliation completion:', cashboxSyncError.message);
         }
 
-        // Trigger instant sync after completion
-        try {
-            const { triggerInstantSync } = require('./background-sync');
-            triggerInstantSync();
-            console.log('⚡ [MAIN] Instant sync triggered after reconciliation completion');
-        } catch (syncErr) {
-            console.warn('⚠️ [MAIN] Failed to trigger instant sync:', syncErr);
-        }
+        // حفظ التصفية يجب أن يبقى محلياً وسريعاً.
+        // لا ننتظر المزامنة هنا حتى لا يعلق زر "جاري الحفظ" إذا كان الرابط بطيئاً أو توجد مزامنة جارية.
+        schedulePostSaveSync('complete-reconciliation');
 
         return result;
     } catch (error) {
@@ -3638,7 +3667,7 @@ ipcMain.handle('get-sync-status', async () => {
         let isEnabled = true;
         if (dbManager) {
             const row = dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
-            if (row && row.setting_value === 'false') isEnabled = false;
+            isEnabled = !row || parseSyncEnabledSetting(row.setting_value);
         }
 
         // Combine both checks
@@ -3657,16 +3686,9 @@ ipcMain.handle('pull-reconciliation-requests', async () => {
             throw new Error('Database not initialized');
         }
 
-        const row = dbManager.db
-            .prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'")
-            .get();
-
-        if (row && row.setting_value === 'false') {
-            return { success: false, skipped: true, reason: 'disabled' };
-        }
-
-        await pullRemoteRequestsNow(dbManager);
-        return { success: true };
+        // This is an explicit, inbound-only refresh initiated by the requests screen.
+        // It must remain available while the heavier periodic table sync is disabled.
+        return await pullRemoteRequestsNow(dbManager, { allowWhenDisabled: true });
     } catch (error) {
         console.error('Error pulling reconciliation requests:', error);
         return { success: false, error: error.message };
@@ -3704,6 +3726,24 @@ ipcMain.handle('toggle-sync', async (event, enable) => {
     } catch (e) {
         console.error('Error toggling sync:', e);
         return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('clear-offline-indexeddb', async (event) => {
+    try {
+        const targetSession = event.sender && event.sender.session;
+        if (!targetSession || typeof targetSession.clearStorageData !== 'function') {
+            return { success: false, error: 'session_unavailable' };
+        }
+
+        await targetSession.clearStorageData({
+            storages: ['indexeddb']
+        });
+
+        return { success: true };
+    } catch (error) {
+        console.error('❌ Failed to clear offline IndexedDB storage:', error);
+        return { success: false, error: error.message };
     }
 });
 

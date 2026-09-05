@@ -5,7 +5,8 @@ const crypto = require('crypto');
 const fetch = require('node-fetch');
 
 // Configuration
-// لا نستخدم رابط Render القديم كافتراضي. يجب أن تأتي وجهة المزامنة من إعدادات التطبيق.
+// لا نستخدم رابطاً افتراضياً قديماً هنا. وجهة المزامنة يجب أن تأتي من إعدادات التطبيق
+// حتى لا يرسل سطح المكتب بياناته بصمت إلى خادم سابق بعد تغيير الرابط.
 const DEFAULT_REMOTE_URL = '';
 const SYNC_INTERVAL_MS = 30000; // 30 seconds
 const FULL_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // Weekly safety refresh
@@ -21,11 +22,13 @@ const REQUEST_PULL_TIMEOUT_MS = 15000;
 const SYNC_POST_TIMEOUT_MS = 45000;
 
 const SYNC_META_KEYS = {
+    sourceId: 'sync-client:source-id',
     remoteUrl: 'background-sync:remote-url',
     lastFullRefreshAt: 'background-sync:last-full-refresh-at',
     lastMirrorCleanupAt: 'background-sync:last-mirror-cleanup-at',
     lastRequestPullAt: 'background-sync:requests:last-pull-at',
-    lastRequestFullPullAt: 'background-sync:requests:last-full-pull-at'
+    lastRequestFullPullAt: 'background-sync:requests:last-full-pull-at',
+    lastRequestId: 'background-sync:requests:last-id'
 };
 
 const MIRROR_ID_TABLES = [
@@ -37,10 +40,25 @@ const MIRROR_ID_TABLES = [
     'customer_fiscal_opening_balances',
     'cash_receipts',
     'bank_receipts',
+    'return_invoices',
+    'suppliers',
     'branch_cashboxes',
     'cashbox_vouchers',
     'cashbox_voucher_audit_log'
 ];
+
+const EXPLICIT_DELETE_ID_TABLES = new Set([
+    'reconciliations',
+    'postpaid_sales',
+    'customer_receipts',
+    'manual_postpaid_sales',
+    'manual_customer_receipts',
+    'customer_fiscal_opening_balances',
+    'cash_receipts',
+    'bank_receipts',
+    'return_invoices',
+    'suppliers'
+]);
 
 function stableSerialize(value) {
     if (value instanceof Date) {
@@ -63,6 +81,10 @@ function stableSerialize(value) {
 
 function hashRow(row) {
     return crypto.createHash('sha256').update(stableSerialize(row || {})).digest('hex');
+}
+
+function hashPayload(payload) {
+    return crypto.createHash('sha256').update(stableSerialize(payload || {})).digest('hex');
 }
 
 function subtractIsoDate(value, offsetMs) {
@@ -142,26 +164,28 @@ class BackgroundSync {
         this.dbManager = dbManager;
         this.interval = null;
         this.isSyncing = false;
+        this.syncPromise = null;
         this.enabled = true; // Global flag to control sync
         this.requestPullPromise = null;
         this.syncStateWarningShown = false;
         this.nonRetryablePayloads = new Map();
         this.lastResolvedRemoteUrl = null;
         this.remoteUrlMissingWarningShown = false;
+        this.syncSourceId = null;
     }
 
     getRemoteUrl() {
         try {
-            const row = this.dbManager?.db?.prepare(`
-                SELECT setting_value
-                FROM system_settings
-                WHERE category = 'general'
-                  AND setting_key = 'sync_server_url'
-                  AND setting_value IS NOT NULL
-                  AND TRIM(setting_value) <> ''
-                ORDER BY id DESC
-                LIMIT 1
-            `).get();
+            const row = this.dbManager?.db?.prepare(
+                `SELECT setting_value
+                 FROM system_settings
+                 WHERE category = 'general'
+                   AND setting_key = 'sync_server_url'
+                   AND setting_value IS NOT NULL
+                   AND TRIM(setting_value) <> ''
+                 ORDER BY id DESC
+                 LIMIT 1`
+            ).get();
             const remoteUrl = normalizeRemoteSyncUrl(row?.setting_value);
             if (remoteUrl) {
                 if (remoteUrl !== this.lastResolvedRemoteUrl) {
@@ -253,6 +277,31 @@ class BackgroundSync {
         }
     }
 
+    getSyncSourceId() {
+        if (this.syncSourceId) {
+            return this.syncSourceId;
+        }
+
+        const db = this.dbManager?.db;
+        if (db) {
+            this.ensureSyncStateSchema(db);
+            const storedSourceId = this.readSyncMeta(db, SYNC_META_KEYS.sourceId);
+            if (storedSourceId && /^[A-Za-z0-9._:-]{8,160}$/.test(storedSourceId)) {
+                this.syncSourceId = storedSourceId;
+                return this.syncSourceId;
+            }
+        }
+
+        const uniquePart = typeof crypto.randomUUID === 'function'
+            ? crypto.randomUUID()
+            : crypto.randomBytes(16).toString('hex');
+        this.syncSourceId = `desktop:${uniquePart}`;
+        if (db) {
+            this.writeSyncMeta(db, SYNC_META_KEYS.sourceId, this.syncSourceId);
+        }
+        return this.syncSourceId;
+    }
+
     isIntervalDue(db, key, intervalMs) {
         const lastValue = this.readSyncMeta(db, key);
         const lastTime = lastValue ? Date.parse(lastValue) : NaN;
@@ -274,8 +323,19 @@ class BackgroundSync {
             SYNC_META_KEYS.lastFullRefreshAt,
             SYNC_META_KEYS.lastMirrorCleanupAt,
             SYNC_META_KEYS.lastRequestPullAt,
-            SYNC_META_KEYS.lastRequestFullPullAt
+            SYNC_META_KEYS.lastRequestFullPullAt,
+            SYNC_META_KEYS.lastRequestId
         ].some((key) => Boolean(this.readSyncMeta(db, key)));
+    }
+
+    readLocalMaxRequestId(db) {
+        try {
+            const row = db.prepare('SELECT MAX(id) AS max_id FROM reconciliation_requests').get();
+            const maxId = this.parseInteger(row?.max_id);
+            return maxId !== null && maxId > 0 ? maxId : null;
+        } catch (_error) {
+            return null;
+        }
     }
 
     ensureRemoteSyncScope(db) {
@@ -283,7 +343,6 @@ class BackgroundSync {
         if (!currentRemoteUrl) {
             return false;
         }
-
         const previousRemoteUrl = this.readSyncMeta(db, SYNC_META_KEYS.remoteUrl);
         const changedRemote = Boolean(previousRemoteUrl) && previousRemoteUrl !== currentRemoteUrl;
         const legacyStateForAnotherRemote = !previousRemoteUrl
@@ -454,13 +513,13 @@ class BackgroundSync {
     }
 
     // Force immediate sync (for instant updates on critical events)
-    forceSyncNow() {
+    async forceSyncNow() {
         if (!this.enabled) {
             console.log('⛔ [SYNC] Force sync blocked - sync is disabled');
-            return;
+            return { success: false, skipped: true, reason: 'disabled' };
         }
         console.log('⚡ [SYNC] Force sync triggered...');
-        this.doSync();
+        return this.doSync();
     }
 
     get isRunning() {
@@ -470,29 +529,52 @@ class BackgroundSync {
     async doSync() {
         if (!this.enabled) {
             console.log('⛔ [SYNC] Sync attempt blocked - sync is disabled');
-            return;
+            return { success: false, skipped: true, reason: 'disabled' };
         }
-        if (this.isSyncing) return;
+        if (this.syncPromise) {
+            return this.syncPromise;
+        }
+
         this.isSyncing = true;
 
-        try {
-            const db = this.dbManager.db;
+        this.syncPromise = (async () => {
+            const result = {
+                success: true,
+                pull: null,
+                push: null,
+                errors: []
+            };
+
             try {
-                await this.pullRemoteRequests();
+                result.pull = await this.pullRemoteRequests();
             } catch (pullError) {
                 console.error('⚠️ [SYNC] Pull phase failed:', pullError.message);
+                result.errors.push({ phase: 'pull', message: pullError.message });
             }
 
             try {
-                await this.pushLocalData(db);
+                result.push = await this.pushLocalData(this.dbManager.db);
+                if (result.push && result.push.success === false) {
+                    result.success = false;
+                    result.errors.push({
+                        phase: 'push',
+                        message: `Failed tables: ${(result.push.failedTables || []).join(', ') || 'unknown'}`
+                    });
+                }
             } catch (pushError) {
                 console.error('⚠️ [SYNC] Push phase failed:', pushError.message);
+                result.success = false;
+                result.errors.push({ phase: 'push', message: pushError.message });
             }
 
-        } catch (error) {
-            console.error('⚠️ [SYNC] Error:', error.message);
+            return result;
+        })();
+
+        try {
+            return await this.syncPromise;
         } finally {
             this.isSyncing = false;
+            this.syncPromise = null;
         }
     }
 
@@ -584,8 +666,9 @@ class BackgroundSync {
         return Boolean(normalized) && !['{}', '[]', 'null'].includes(normalized);
     }
 
-    async pullRemoteRequests() {
-        if (!this.enabled) {
+    async pullRemoteRequests(options = {}) {
+        const allowWhenDisabled = options && options.allowWhenDisabled === true;
+        if (!this.enabled && !allowWhenDisabled) {
             console.log('⛔ [SYNC] Remote request pull skipped - sync is disabled');
             return { success: false, skipped: true, reason: 'disabled' };
         }
@@ -600,8 +683,8 @@ class BackgroundSync {
         }
 
         this.requestPullPromise = (async () => {
-            await this.fetchRemoteRequests(db);
-            return { success: true };
+            const result = await this.fetchRemoteRequests(db);
+            return { success: true, ...(result || {}) };
         })();
 
         try {
@@ -683,6 +766,9 @@ class BackgroundSync {
     buildMirrorCleanupPayload(db, cleanupTables, cachedRows = {}, context = {}) {
         const payload = {};
         const shouldIncludeAll = cleanupTables.has('*');
+        const deletedStateByTable = context.deletedStateByTable instanceof Map
+            ? context.deletedStateByTable
+            : new Map();
 
         for (const table of MIRROR_ID_TABLES) {
             if (!shouldIncludeAll && !cleanupTables.has(table)) {
@@ -710,6 +796,24 @@ class BackgroundSync {
                         .filter((syncKey) => typeof syncKey === 'string' && syncKey.length > 0)
                 )
             );
+        }
+
+        for (const [tableName, rowKeys] of deletedStateByTable.entries()) {
+            if (!EXPLICIT_DELETE_ID_TABLES.has(tableName)) {
+                continue;
+            }
+
+            const deletedIds = Array.from(
+                new Set(
+                    (Array.isArray(rowKeys) ? rowKeys : [])
+                        .map((rowKey) => this.parseInteger(rowKey))
+                        .filter((rowId) => rowId !== null && rowId > 0)
+                )
+            );
+
+            if (deletedIds.length > 0) {
+                payload[`deleted_${tableName}_ids`] = deletedIds;
+            }
         }
 
         return payload;
@@ -759,14 +863,15 @@ class BackgroundSync {
 
     async pushLocalData(db) {
         const stateAvailable = this.ensureSyncStateSchema(db);
-        if (stateAvailable) {
-            this.ensureRemoteSyncScope(db);
-        }
+        const remoteScopeReset = stateAvailable ? this.ensureRemoteSyncScope(db) : false;
         const fullRefresh = !stateAvailable
+            || remoteScopeReset
             || this.isIntervalDue(db, SYNC_META_KEYS.lastFullRefreshAt, FULL_REFRESH_INTERVAL_MS);
         const cleanupDue = !stateAvailable
-            || fullRefresh
-            || this.isIntervalDue(db, SYNC_META_KEYS.lastMirrorCleanupAt, MIRROR_CLEANUP_INTERVAL_MS);
+            || (!remoteScopeReset && (
+                fullRefresh
+                || this.isIntervalDue(db, SYNC_META_KEYS.lastMirrorCleanupAt, MIRROR_CLEANUP_INTERVAL_MS)
+            ));
 
         const tableSpecs = [
             { key: 'admins', query: 'SELECT * FROM admins', batchSize: DEFAULT_SYNC_BATCH_SIZE },
@@ -786,6 +891,8 @@ class BackgroundSync {
             { key: 'customer_fiscal_opening_balances', query: 'SELECT * FROM customer_fiscal_opening_balances ORDER BY fiscal_year DESC, id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
             { key: 'cash_receipts', query: 'SELECT * FROM cash_receipts ORDER BY id DESC LIMIT 10000', batchSize: DEFAULT_SYNC_BATCH_SIZE },
             { key: 'bank_receipts', query: 'SELECT * FROM bank_receipts ORDER BY id DESC LIMIT 10000', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'return_invoices', query: 'SELECT * FROM return_invoices ORDER BY id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'suppliers', query: 'SELECT * FROM suppliers ORDER BY id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
             { key: 'reconciliation_requests', query: 'SELECT * FROM reconciliation_requests', batchSize: DEFAULT_SYNC_BATCH_SIZE }
         ];
 
@@ -800,6 +907,7 @@ class BackgroundSync {
         const deletedStateByTable = new Map();
         let totalSent = 0;
         let cleanupFailed = false;
+        const failedTables = [];
 
         console.log(
             `🔍 [SYNC] Local counts: ${tableSpecs.map((spec) => `${spec.key}=${cachedRows[spec.key].length}`).join(', ')}`
@@ -815,6 +923,7 @@ class BackgroundSync {
 
             totalSent += result?.sentCount || 0;
             if (result?.failed) {
+                failedTables.push(spec.key);
                 continue;
             }
 
@@ -826,7 +935,10 @@ class BackgroundSync {
 
         let cleanupSent = false;
         try {
-            cleanupSent = await this.sendMirrorCleanup(db, cleanupTables, cachedRows, context);
+            cleanupSent = await this.sendMirrorCleanup(db, cleanupTables, cachedRows, {
+                ...context,
+                deletedStateByTable
+            });
             if (cleanupSent) {
                 for (const [tableName, rowKeys] of deletedStateByTable.entries()) {
                     this.clearDeletedRowStates(db, tableName, rowKeys);
@@ -842,12 +954,22 @@ class BackgroundSync {
             if (fullRefresh) {
                 this.writeSyncMeta(db, SYNC_META_KEYS.lastFullRefreshAt, nowIso);
             }
-            if ((cleanupSent || cleanupDue) && !cleanupFailed) {
+            if (remoteScopeReset) {
+                // A device moving to a new server may only hold a subset of the shared
+                // database. Seed the target without deleting rows owned by other devices.
+                this.writeSyncMeta(db, SYNC_META_KEYS.lastMirrorCleanupAt, nowIso);
+            } else if ((cleanupSent || cleanupDue) && !cleanupFailed) {
                 this.writeSyncMeta(db, SYNC_META_KEYS.lastMirrorCleanupAt, nowIso);
             }
         }
 
         console.log(`✅ [SYNC] Push completed: ${totalSent} changed rows sent${cleanupSent ? ' + cleanup audit' : ''}`);
+        return {
+            success: failedTables.length === 0 && !cleanupFailed,
+            totalSent,
+            failedTables,
+            cleanupFailed
+        };
     }
 
     // Helper: Send a specific payload
@@ -884,15 +1006,21 @@ class BackgroundSync {
             return;
         }
 
-        const payloadKeys = Object.keys(dataToSend).join(', ');
-        const blockedUntil = this.nonRetryablePayloads.get(payloadKeys) || 0;
+        const dataKeys = Object.keys(dataToSend);
+        const payloadKeys = dataKeys.join(', ');
+        dataToSend._sync = {
+            protocol_version: 2,
+            source_id: this.getSyncSourceId()
+        };
+        const payloadCooldownKey = `${payloadKeys}:${hashPayload(dataToSend).slice(0, 16)}`;
+        const blockedUntil = this.nonRetryablePayloads.get(payloadCooldownKey) || 0;
         if (blockedUntil > Date.now()) {
-            const error = new Error(`Non-retryable sync failure cooldown active for ${payloadKeys}`);
+            const error = new Error(`Non-retryable sync failure cooldown active for this ${payloadKeys} payload`);
             error.suppressLog = true;
             throw error;
         }
 
-        console.log(`📤 [SYNC] Sending: ${Object.keys(dataToSend).map(k => `${k}(${dataToSend[k].length})`).join(', ')}`);
+        console.log(`📤 [SYNC] Sending: ${dataKeys.map(k => `${k}(${dataToSend[k].length})`).join(', ')}`);
         let lastError = null;
 
         for (let attempt = 0; attempt <= SEND_RETRY_DELAYS_MS.length; attempt++) {
@@ -934,7 +1062,7 @@ class BackgroundSync {
                 lastError = error;
                 if (error && error.nonRetryable) {
                     if (!error.suppressCooldown) {
-                        this.nonRetryablePayloads.set(payloadKeys, Date.now() + NON_RETRYABLE_PAYLOAD_COOLDOWN_MS);
+                        this.nonRetryablePayloads.set(payloadCooldownKey, Date.now() + NON_RETRYABLE_PAYLOAD_COOLDOWN_MS);
                     }
                     console.error(`❌ [SYNC] Non-retryable error sending ${payloadKeys}:`, error.message);
                     break;
@@ -986,6 +1114,13 @@ class BackgroundSync {
             const lastPullAt = stateAvailable && !fullPull
                 ? this.readSyncMeta(db, SYNC_META_KEYS.lastRequestPullAt)
                 : null;
+            const storedLastRequestId = stateAvailable && !fullPull
+                ? this.parseInteger(this.readSyncMeta(db, SYNC_META_KEYS.lastRequestId))
+                : null;
+            const localMaxRequestId = this.readLocalMaxRequestId(db);
+            const lastRequestId = [storedLastRequestId, localMaxRequestId]
+                .filter((value) => value !== null && value > 0)
+                .reduce((maxValue, value) => Math.max(maxValue, value), 0) || null;
             const updatedAfter = lastPullAt ? subtractIsoDate(lastPullAt, REQUEST_PULL_OVERLAP_MS) : null;
             const query = new URLSearchParams({
                 status: 'all',
@@ -995,6 +1130,9 @@ class BackgroundSync {
 
             if (updatedAfter) {
                 query.set('updated_after', updatedAfter);
+            }
+            if (lastRequestId) {
+                query.set('after_id', String(lastRequestId));
             }
 
             const reqUrl = remoteUrl.replace('/sync/users', `/reconciliation-requests?${query.toString()}`);
@@ -1007,11 +1145,15 @@ class BackgroundSync {
                 'reconciliation requests pull'
             );
             if (!res.ok) {
-                console.error(`❌ [SYNC] Pull failed: ${res.status} ${res.statusText}`);
-                return;
+                const error = new Error(`Pull failed: ${res.status} ${res.statusText}`);
+                error.statusCode = res.status;
+                throw error;
             }
 
             const json = await res.json();
+            if (!json || json.success !== true || !Array.isArray(json.data)) {
+                throw new Error(json && json.error ? json.error : 'Invalid reconciliation requests response');
+            }
             console.log(`📥 [SYNC] Pull Response: ${json.data ? json.data.length : 0} items found`);
 
             if (json.success && json.data && Array.isArray(json.data)) {
@@ -1120,16 +1262,35 @@ class BackgroundSync {
                         .reduce((maxValue, timestamp) => Math.max(maxValue, timestamp), 0);
                     const watermark = maxRemoteTimestamp > 0
                         ? new Date(maxRemoteTimestamp).toISOString()
-                        : this.getNowIso();
+                        : lastPullAt;
 
-                    this.writeSyncMeta(db, SYNC_META_KEYS.lastRequestPullAt, watermark);
+                    // Never advance an empty pull using the desktop clock. A clock skew
+                    // between the device and Neon could otherwise hide newer requests.
+                    if (watermark) {
+                        this.writeSyncMeta(db, SYNC_META_KEYS.lastRequestPullAt, watermark);
+                    }
                     if (fullPull) {
                         this.writeSyncMeta(db, SYNC_META_KEYS.lastRequestFullPullAt, this.getNowIso());
                     }
+
+                    const maxRequestId = requests
+                        .map((request) => this.parseInteger(request && request.id))
+                        .filter((requestId) => requestId !== null && requestId > 0)
+                        .reduce((maxValue, requestId) => Math.max(maxValue, requestId), lastRequestId || 0);
+                    if (maxRequestId > 0) {
+                        this.writeSyncMeta(db, SYNC_META_KEYS.lastRequestId, String(maxRequestId));
+                    }
                 }
+
+                return {
+                    receivedCount: requests.length,
+                    insertedCount: newCount,
+                    updatedCount: updateCount
+                };
             }
         } catch (e) {
             console.error('⚠️ [SYNC] Failed to fetch requests:', e.message);
+            throw e;
         }
     }
 }
@@ -1176,19 +1337,21 @@ function setSyncEnabled(enabled) {
     }
 }
 
-function triggerInstantSync() {
+async function triggerInstantSync() {
     if (syncInstance) {
-        syncInstance.forceSyncNow();
+        return syncInstance.forceSyncNow();
     }
+
+    return { success: false, skipped: true, reason: 'not_initialized' };
 }
 
-async function pullRemoteRequestsNow(dbManager) {
+async function pullRemoteRequestsNow(dbManager, options = {}) {
     const instance = getOrCreateSyncInstance(dbManager);
     if (!instance) {
         throw new Error('Background sync is not initialized');
     }
 
-    return instance.pullRemoteRequests();
+    return instance.pullRemoteRequests(options);
 }
 
 module.exports = {

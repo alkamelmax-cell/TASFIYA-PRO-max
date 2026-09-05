@@ -5,7 +5,6 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const zlib = require('zlib');
-const puppeteer = require('puppeteer');
 const { parse } = require('url');
 const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
 const { WebSessionStore } = require('./security/web-session-store');
@@ -15,7 +14,6 @@ const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 512 * 1024;
 const LARGE_JSON_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
 const JSON_COMPRESSION_MIN_BYTES = 1024;
-const ONESIGNAL_UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 function isTruthyQueryValue(value) {
     return value === true || value === '1' || value === 'true';
@@ -50,19 +48,6 @@ function parseNumericDbValue(value, fallback = 0) {
 
     const normalized = Number.parseFloat(String(value).replace(/,/g, '').trim());
     return Number.isFinite(normalized) ? normalized : fallback;
-}
-
-function escapeReportHtml(value) {
-    return String(value ?? '').replace(/[&<>"']/g, (character) => ({
-        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
-    }[character]));
-}
-
-function formatReportAmount(value) {
-    return parseNumericDbValue(value, 0).toLocaleString('en-US', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2
-    });
 }
 
 function normalizeDetailsJsonPayload(value) {
@@ -251,8 +236,6 @@ class LocalWebServer {
         this.port = port;
         this.server = null;
         this.sessionStore = new WebSessionStore({ ttlMs: SESSION_TTL_MS });
-        this.pdfBrowser = null;
-        this.pdfBrowserPromise = null;
     }
 
     async readJsonBody(req, options = {}) {
@@ -608,8 +591,6 @@ class LocalWebServer {
     }
 
     async start() {
-        await this.ensureNotificationSubscriptionStore();
-
         // Optimize Database Performance on Startup
         await this.ensureIndexes();
         await this.ensurePostgresSerialSequences();
@@ -720,6 +701,8 @@ class LocalWebServer {
                     return;
                 }
 
+
+
                 // API endpoints
                 if (pathname === '/api/reconciliations/stats') {
                     await this.handleGetReconciliationsStats(res, parsedUrl.query);
@@ -741,11 +724,6 @@ class LocalWebServer {
                     await this.handleGetCashboxReport(res, parsedUrl.query);
                     return;
                 }
-                else if (pathname.match(/^\/api\/reconciliation\/\d+\/report\.pdf$/) && req.method === 'GET') {
-                    const id = pathname.split('/')[3];
-                    await this.handleGetReconciliationPdf(res, id);
-                    return;
-                }
                 else if (pathname.match(/^\/api\/reconciliation\/\d+$/)) {
                     const id = pathname.split('/').pop();
                     await this.handleGetReconciliationDetails(res, id);
@@ -757,10 +735,6 @@ class LocalWebServer {
                 }
                 else if (pathname === '/api/customer-ledger') {
                     await this.handleGetCustomerLedger(res, parsedUrl.query);
-                    return;
-                }
-                else if (pathname === '/api/customer-ledger/report.pdf' && req.method === 'GET') {
-                    await this.handleGetCustomerLedgerPdf(res, parsedUrl.query);
                     return;
                 }
                 else if (pathname === '/api/update-manual-transaction' && req.method === 'POST') {
@@ -859,8 +833,12 @@ class LocalWebServer {
                     return;
                 }
 
-                else if (pathname === '/api/notifications/register' && req.method === 'POST') {
-                    await this.handleRegisterNotificationSubscription(req, res, authContext.user);
+                else if (pathname === '/api/notifications/status' && req.method === 'GET') {
+                    this.handleNotificationStatus(res);
+                    return;
+                }
+                else if (pathname === '/api/notifications/test' && req.method === 'POST') {
+                    await this.handleNotificationTest(req, res);
                     return;
                 }
                 else {
@@ -897,12 +875,6 @@ class LocalWebServer {
                 console.log('🌐 [WEB APP] Server stopped');
             });
             this.server = null;
-        }
-
-        if (this.pdfBrowser) {
-            this.pdfBrowser.close().catch(() => {});
-            this.pdfBrowser = null;
-            this.pdfBrowserPromise = null;
         }
     }
 
@@ -948,6 +920,9 @@ class LocalWebServer {
     }
 
     serveAndroidAssetLinks(res) {
+        // The certificate fingerprint is deliberately configured on the server,
+        // not committed in source control. This is required to verify the Android
+        // Trusted Web Activity for the public host.
         const fingerprint = String(process.env.ANDROID_TWA_SHA256_CERT_FINGERPRINT || '')
             .trim()
             .toUpperCase();
@@ -1536,171 +1511,6 @@ class LocalWebServer {
         }
     }
 
-    async getPdfBrowser() {
-        if (this.pdfBrowser) {
-            return this.pdfBrowser;
-        }
-
-        if (!this.pdfBrowserPromise) {
-            this.pdfBrowserPromise = puppeteer.launch({
-                headless: true,
-                args: ['--no-sandbox', '--disable-setuid-sandbox']
-            }).then((browser) => {
-                this.pdfBrowser = browser;
-                browser.on('disconnected', () => {
-                    this.pdfBrowser = null;
-                    this.pdfBrowserPromise = null;
-                });
-                return browser;
-            }).catch((error) => {
-                this.pdfBrowserPromise = null;
-                throw error;
-            });
-        }
-
-        return this.pdfBrowserPromise;
-    }
-
-    async loadReconciliationReportData(id) {
-        const rec = await this.dbManager.db.prepare(`
-            SELECT r.*, c.name as cashier_name, a.name as accountant_name
-            FROM reconciliations r
-            LEFT JOIN cashiers c ON r.cashier_id = c.id
-            LEFT JOIN accountants a ON r.accountant_id = a.id
-            WHERE r.id = ?
-        `).get(id);
-
-        if (!rec) {
-            return null;
-        }
-
-        const [cashReceipts, bankReceipts, customerReceipts, postpaidSales] = await Promise.all([
-            this.dbManager.db.prepare('SELECT * FROM cash_receipts WHERE reconciliation_id = ?').all(id),
-            this.dbManager.db.prepare(`
-                SELECT b.*, tm.name as atm_name
-                FROM bank_receipts b
-                LEFT JOIN atms tm ON b.atm_id = tm.id
-                WHERE b.reconciliation_id = ?
-            `).all(id),
-            this.dbManager.db.prepare('SELECT * FROM customer_receipts WHERE reconciliation_id = ?').all(id),
-            this.dbManager.db.prepare('SELECT * FROM postpaid_sales WHERE reconciliation_id = ?').all(id)
-        ]);
-
-        return { reconciliation: rec, cashReceipts, bankReceipts, customerReceipts, postpaidSales };
-    }
-
-    buildReconciliationPdfHtml(data) {
-        const rec = data.reconciliation || {};
-        const customerRows = new Map();
-        const customerKey = (row) => {
-            const id = Number(row?.customer_id || 0);
-            const code = String(row?.customer_code || '').trim().toUpperCase();
-            const name = String(row?.customer_name || '').trim().toLocaleLowerCase('ar');
-            return id > 0 ? `id:${id}` : (code ? `code:${code}` : `name:${name || 'unknown'}`);
-        };
-        const addCustomer = (row, field) => {
-            const key = customerKey(row);
-            const existing = customerRows.get(key) || {
-                name: String(row?.customer_name || '').trim() || 'عميل غير مسمى',
-                code: String(row?.customer_code || '').trim(),
-                postpaidSales: 0,
-                customerReceipts: 0
-            };
-            existing[field] += parseNumericDbValue(row?.amount, 0);
-            if (!existing.code && row?.customer_code) existing.code = String(row.customer_code).trim();
-            customerRows.set(key, existing);
-        };
-
-        (data.postpaidSales || []).forEach((row) => addCustomer(row, 'postpaidSales'));
-        (data.customerReceipts || []).forEach((row) => addCustomer(row, 'customerReceipts'));
-        const customers = Array.from(customerRows.values())
-            .map((customer) => ({ ...customer, balance: customer.postpaidSales - customer.customerReceipts }))
-            .sort((left, right) => (right.postpaidSales + right.customerReceipts) - (left.postpaidSales + left.customerReceipts));
-        const totalPostpaid = customers.reduce((sum, customer) => sum + customer.postpaidSales, 0);
-        const totalCustomerReceipts = customers.reduce((sum, customer) => sum + customer.customerReceipts, 0);
-        const totalCash = (data.cashReceipts || []).reduce((sum, row) => sum + parseNumericDbValue(row.total_amount, 0), 0);
-        const totalBank = (data.bankReceipts || []).reduce((sum, row) => sum + parseNumericDbValue(row.amount, 0), 0);
-        const reportNumber = rec.reconciliation_number || rec.id;
-        const reportDate = String(rec.reconciliation_date || rec.created_at || '').slice(0, 10) || '-';
-        const isCompleted = String(rec.status || '').toLowerCase() === 'completed';
-        let logoSource = '';
-        try {
-            const logoPath = path.join(__dirname, 'web-dashboard', 'assets', 'logo-tasfia-pro.png');
-            logoSource = `data:image/png;base64,${fs.readFileSync(logoPath).toString('base64')}`;
-        } catch (_error) {
-            logoSource = '';
-        }
-
-        const customerBody = customers.length
-            ? customers.map((customer) => `
-                <tr>
-                    <td><strong>${escapeReportHtml(customer.name)}</strong>${customer.code ? `<small>${escapeReportHtml(customer.code)}</small>` : ''}</td>
-                    <td>${formatReportAmount(customer.postpaidSales)}</td>
-                    <td>${formatReportAmount(customer.customerReceipts)}</td>
-                    <td class="${customer.balance < 0 ? 'credit' : customer.balance > 0 ? 'debit' : ''}">${formatReportAmount(customer.balance)}</td>
-                </tr>`).join('')
-            : '<tr><td colspan="4" class="empty">لا توجد عمليات عملاء ضمن هذه التصفية</td></tr>';
-        const cashBody = (data.cashReceipts || []).length
-            ? data.cashReceipts.map((row) => `<tr><td>${escapeReportHtml(row.denomination)}</td><td>${escapeReportHtml(row.quantity)}</td><td>${formatReportAmount(row.total_amount)}</td></tr>`).join('')
-            : '<tr><td colspan="3" class="empty">لا توجد تفاصيل نقدية</td></tr>';
-        const bankBody = (data.bankReceipts || []).length
-            ? data.bankReceipts.map((row) => `<tr><td>${escapeReportHtml(row.operation_type || 'بطاقة')}</td><td>${escapeReportHtml(row.atm_name || '-')}</td><td>${formatReportAmount(row.amount)}</td></tr>`).join('')
-            : '<tr><td colspan="3" class="empty">لا توجد عمليات شبكة</td></tr>';
-
-        return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>
-            @page { size: A4; margin: 13mm; }
-            * { box-sizing: border-box; }
-            body { margin: 0; color: #16364b; font-family: Tahoma, Arial, sans-serif; font-size: 11px; background: #fff; }
-            .header { display:flex; align-items:center; justify-content:space-between; border-bottom:3px solid #4bcfc6; padding-bottom:12px; margin-bottom:16px; }
-            .brand { display:flex; align-items:center; gap:10px; } .brand img { width:44px; height:44px; object-fit:contain; } .brand h1 { margin:0; font-size:20px; color:#244b64; } .brand p { margin:3px 0 0; color:#5e8397; font-size:10px; }
-            .document-title { text-align:left; } .document-title strong { display:block; font-size:16px; color:#244b64; } .document-title span { color:#638497; }
-            .meta { display:grid; grid-template-columns:repeat(4, 1fr); gap:8px; margin-bottom:14px; } .meta-card,.summary-card { border:1px solid #d7e5e8; border-radius:9px; padding:9px; background:#f8fbfb; }
-            .label { display:block; color:#698495; font-size:9px; margin-bottom:4px; } .value { font-weight:700; color:#183c52; font-size:12px; } .status { color:${isCompleted ? '#07875a' : '#ad7a00'}; }
-            .summary { display:grid; grid-template-columns:repeat(3, 1fr); gap:9px; margin:14px 0 18px; } .summary-card { text-align:center; background:linear-gradient(135deg,#f5fbfb,#eef8f7); } .summary-card .value { font-size:17px; color:#1d5873; direction:ltr; } .summary-card.success .value { color:#0b9b68; } .summary-card.warning .value { color:#b17b00; }
-            h2 { font-size:14px; margin:17px 0 8px; color:#214b62; border-right:4px solid #55cfc6; padding-right:7px; } table { width:100%; border-collapse:separate; border-spacing:0; border:1px solid #d9e7e9; border-radius:8px; overflow:hidden; margin-bottom:12px; } th { background:#244b64; color:white; padding:8px; font-size:10px; text-align:right; } td { padding:8px; border-top:1px solid #e4edef; text-align:right; direction:ltr; } td:first-child { direction:rtl; } tr:nth-child(even) td { background:#f8fbfb; } td small { display:block; color:#6c8795; font-size:9px; margin-top:2px; } .credit { color:#07875a; font-weight:bold; } .debit { color:#b17b00; font-weight:bold; } .empty { text-align:center; direction:rtl; color:#718998; padding:12px; } .total-row td { background:#eef9f5 !important; color:#067d56; font-weight:bold; } .footer { margin-top:20px; padding-top:9px; border-top:1px solid #d8e5e8; display:flex; justify-content:space-between; color:#718998; font-size:9px; }
-        </style></head><body>
-            <section class="header"><div class="brand">${logoSource ? `<img src="${logoSource}" alt="Tasfiya Pro">` : ''}<div><h1>تصفية برو</h1><p>تقرير تصفية تفصيلي</p></div></div><div class="document-title"><strong>تقرير التصفية #${escapeReportHtml(reportNumber)}</strong><span>تم إنشاؤه ${escapeReportHtml(new Date().toLocaleString('en-GB'))}</span></div></section>
-            <section class="meta"><div class="meta-card"><span class="label">رقم التصفية</span><span class="value">#${escapeReportHtml(reportNumber)}</span></div><div class="meta-card"><span class="label">التاريخ</span><span class="value">${escapeReportHtml(reportDate)}</span></div><div class="meta-card"><span class="label">الكاشير</span><span class="value">${escapeReportHtml(rec.cashier_name || '-')}</span></div><div class="meta-card"><span class="label">الحالة</span><span class="value status">${isCompleted ? 'مكتملة' : 'مسودة'}</span></div></section>
-            <section class="summary"><div class="summary-card"><span class="label">مبيعات النظام</span><span class="value">${formatReportAmount(rec.system_sales)}</span></div><div class="summary-card success"><span class="label">إجمالي المقبوضات</span><span class="value">${formatReportAmount(rec.total_receipts)}</span></div><div class="summary-card ${parseNumericDbValue(rec.surplus_deficit) < 0 ? 'warning' : 'success'}"><span class="label">الفرق</span><span class="value">${formatReportAmount(rec.surplus_deficit)}</span></div></section>
-            <h2>حسابات العملاء</h2><section class="summary"><div class="summary-card warning"><span class="label">مبيعات الآجل</span><span class="value">${formatReportAmount(totalPostpaid)}</span></div><div class="summary-card success"><span class="label">مقبوضات العملاء</span><span class="value">${formatReportAmount(totalCustomerReceipts)}</span></div><div class="summary-card"><span class="label">الصافي المستحق</span><span class="value">${formatReportAmount(totalPostpaid - totalCustomerReceipts)}</span></div></section>
-            <table><thead><tr><th>العميل</th><th>مبيعات الآجل</th><th>المقبوض</th><th>الصافي</th></tr></thead><tbody>${customerBody}</tbody></table>
-            <h2>تفاصيل النقدية</h2><table><thead><tr><th>الفئة</th><th>العدد</th><th>القيمة</th></tr></thead><tbody>${cashBody}<tr class="total-row"><td colspan="2">إجمالي الكاش</td><td>${formatReportAmount(totalCash)}</td></tr></tbody></table>
-            <h2>عمليات الشبكة</h2><table><thead><tr><th>النوع</th><th>الجهاز</th><th>المبلغ</th></tr></thead><tbody>${bankBody}<tr class="total-row"><td colspan="2">إجمالي الشبكة</td><td>${formatReportAmount(totalBank)}</td></tr></tbody></table>
-            <footer class="footer"><span>تم تطوير هذا النظام بواسطة محمد أمين الكامل</span><span>جميع الحقوق محفوظة © تصفية برو - Tasfiya Pro</span></footer>
-        </body></html>`;
-    }
-
-    async handleGetReconciliationPdf(res, id) {
-        let page = null;
-        try {
-            const data = await this.loadReconciliationReportData(id);
-            if (!data) {
-                this.sendJson(res, { success: false, error: 'Not found' }, { statusCode: 404 });
-                return;
-            }
-
-            const browser = await this.getPdfBrowser();
-            page = await browser.newPage();
-            await page.setContent(this.buildReconciliationPdfHtml(data), { waitUntil: 'load' });
-            const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });
-            const reportNumber = String(data.reconciliation.reconciliation_number || data.reconciliation.id).replace(/[^a-zA-Z0-9_-]/g, '');
-            res.writeHead(200, {
-                'Content-Type': 'application/pdf',
-                'Content-Length': pdf.length,
-                'Content-Disposition': `inline; filename="tasfiya-reconciliation-${reportNumber}.pdf"`,
-                'Cache-Control': 'no-store, max-age=0'
-            });
-            res.end(pdf);
-        } catch (error) {
-            console.error('[PDF Report] Generation failed:', error.message);
-            this.sendJson(res, { success: false, error: 'تعذر إنشاء ملف التقرير' }, { statusCode: 500 });
-        } finally {
-            if (page) {
-                await page.close().catch(() => {});
-            }
-        }
-    }
-
     getYearFromDateValue(value) {
         const match = String(value || '').match(/^(\d{4})/);
         return match ? match[1] : '';
@@ -1745,7 +1555,7 @@ class LocalWebServer {
         const openingStartDate = openingRow?.fiscal_year ? `${openingRow.fiscal_year}-01-01` : '';
         let openingBalance = parseNumericDbValue(openingRow?.opening_balance, 0);
 
-        if (dateFrom) {
+        if (dateFrom && openingStartDate) {
             openingBalance += await this.calculateCustomerLedgerPreperiod(customerName, dateFrom, openingStartDate, pool);
         }
 
@@ -1763,12 +1573,11 @@ class LocalWebServer {
 
         if (pool) {
             const params = lowerDate ? [customerName, lowerDate, upperDate] : [customerName, upperDate];
-            const salesSql = lowerDate ? 'AND DATE(ps.created_at) >= $2 AND DATE(ps.created_at) < $3' : 'AND DATE(ps.created_at) < $2';
-            const receiptsSql = lowerDate ? 'AND DATE(cr.created_at) >= $2 AND DATE(cr.created_at) < $3' : 'AND DATE(cr.created_at) < $2';
+            const recSql = lowerDate ? 'AND r.reconciliation_date >= $2 AND r.reconciliation_date < $3' : 'AND r.reconciliation_date < $2';
             const manualSql = lowerDate ? 'AND DATE(created_at) >= $2 AND DATE(created_at) < $3' : 'AND DATE(created_at) < $2';
             const [postpaid, receipts, manualPostpaid, manualReceipts] = await Promise.all([
-                pool.query(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps WHERE ps.customer_name = $1 ${salesSql}`, params),
-                pool.query(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr WHERE cr.customer_name = $1 ${receiptsSql}`, params),
+                pool.query(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id WHERE ps.customer_name = $1 ${recSql}`, params),
+                pool.query(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id WHERE cr.customer_name = $1 ${recSql}`, params),
                 pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_postpaid_sales WHERE customer_name = $1 ${manualSql}`, params),
                 pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_customer_receipts WHERE customer_name = $1 ${manualSql}`, params)
             ]);
@@ -1779,11 +1588,10 @@ class LocalWebServer {
         }
 
         const params = lowerDate ? [customerName, lowerDate, upperDate] : [customerName, upperDate];
-        const salesSql = lowerDate ? 'AND DATE(ps.created_at) >= ? AND DATE(ps.created_at) < ?' : 'AND DATE(ps.created_at) < ?';
-        const receiptsSql = lowerDate ? 'AND DATE(cr.created_at) >= ? AND DATE(cr.created_at) < ?' : 'AND DATE(cr.created_at) < ?';
+        const recSql = lowerDate ? 'AND r.reconciliation_date >= ? AND r.reconciliation_date < ?' : 'AND r.reconciliation_date < ?';
         const manualSql = lowerDate ? 'AND DATE(created_at) >= ? AND DATE(created_at) < ?' : 'AND DATE(created_at) < ?';
-        const postpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps WHERE ps.customer_name = ? ${salesSql}`).get(params);
-        const receipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr WHERE cr.customer_name = ? ${receiptsSql}`).get(params);
+        const postpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id WHERE ps.customer_name = ? ${recSql}`).get(params);
+        const receipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id WHERE cr.customer_name = ? ${recSql}`).get(params);
         const manualPostpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_postpaid_sales WHERE customer_name = ? ${manualSql}`).get(params);
         const manualReceipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_customer_receipts WHERE customer_name = ? ${manualSql}`).get(params);
 
@@ -1800,11 +1608,10 @@ class LocalWebServer {
         }
         return {
             id: 'opening-balance',
-            is_opening_balance: true,
             amount: Math.abs(openingBalance),
             created_at: `${dateFrom || openingContext.openingStartDate || '1970-01-01'} 00:00:00`,
-            type: dateFrom ? 'رصيد سابق' : 'رصيد افتتاحي',
-            description: dateFrom ? 'رصيد العميل قبل بداية الفترة المحددة' : 'رصيد مرحل من سنة مؤرشفة',
+            type: 'رصيد افتتاحي',
+            description: 'رصيد مرحل من سنة مؤرشفة',
             cashier_name: 'النظام',
             reconciliation_number: null,
             debit: openingBalance >= 0 ? openingBalance : 0,
@@ -1967,88 +1774,6 @@ class LocalWebServer {
             this.sendJson(res, { success: false, error: error.message });
         }
     }
-
-    async loadCustomerLedgerReportData(query = {}) {
-        let payload = null;
-        const captureResponse = {
-            headersSent: false,
-            writeHead(_statusCode, _headers) {
-                this.headersSent = true;
-            },
-            end(body) {
-                payload = JSON.parse(Buffer.isBuffer(body) ? body.toString('utf8') : String(body || '{}'));
-            }
-        };
-        await this.handleGetCustomerLedger(captureResponse, query);
-        if (!payload?.success) {
-            throw new Error(payload?.error || 'تعذر تحميل كشف الحساب');
-        }
-        return Array.isArray(payload.data) ? payload.data : [];
-    }
-
-    buildCustomerLedgerPdfHtml(customerName, dateFrom, dateTo, ledger) {
-        let runningBalance = 0;
-        const rows = ledger.map((row) => {
-            const debit = parseNumericDbValue(row.debit, 0);
-            const credit = parseNumericDbValue(row.credit, 0);
-            runningBalance += debit - credit;
-            return { ...row, debit, credit, runningBalance };
-        });
-        const openingBalance = rows
-            .filter((row) => row.is_opening_balance || row.id === 'opening-balance')
-            .reduce((sum, row) => sum + row.debit - row.credit, 0);
-        const periodRows = rows.filter((row) => !(row.is_opening_balance || row.id === 'opening-balance'));
-        const totalDebit = periodRows.reduce((sum, row) => sum + row.debit, 0);
-        const totalCredit = periodRows.reduce((sum, row) => sum + row.credit, 0);
-        const closingBalance = openingBalance + totalDebit - totalCredit;
-        const period = dateFrom && dateTo ? `من ${dateFrom} إلى ${dateTo}` : dateFrom ? `من ${dateFrom}` : dateTo ? `حتى ${dateTo}` : 'كل الفترات';
-        let logoSource = '';
-        try {
-            logoSource = `data:image/png;base64,${fs.readFileSync(path.join(__dirname, 'web-dashboard', 'assets', 'logo-tasfia-pro.png')).toString('base64')}`;
-        } catch (_error) {}
-        const body = rows.length
-            ? rows.map((row, index) => {
-                const isOpeningBalance = row.is_opening_balance || row.id === 'opening-balance';
-                const cashierName = isOpeningBalance ? '-' : (row.cashier_name || '-');
-                const reconciliationNumber = !isOpeningBalance && row.reconciliation_number
-                    ? `<small>#${escapeReportHtml(row.reconciliation_number)}</small>`
-                    : '';
-                return `<tr>
-                    <td>${index + 1}</td><td>${escapeReportHtml(String(row.created_at || '').slice(0, 10))}</td>
-                    <td>${escapeReportHtml(row.type || '-')}</td><td>${escapeReportHtml(row.description || '-')}</td>
-                    <td class="cashier-cell"><strong>${escapeReportHtml(cashierName)}</strong>${reconciliationNumber}</td>
-                    <td class="debit">${row.debit ? formatReportAmount(row.debit) : '-'}</td><td class="credit">${row.credit ? formatReportAmount(row.credit) : '-'}</td>
-                    <td class="balance">${formatReportAmount(row.runningBalance)}</td></tr>`;
-            }).join('')
-            : '<tr><td class="empty" colspan="8">لا توجد حركات ضمن الفترة المحددة</td></tr>';
-        return `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><style>
-            @page { size:A4; margin:13mm; } *{box-sizing:border-box} body{margin:0;font-family:Tahoma,Arial,sans-serif;color:#183c52;font-size:10px;background:#fff}.header{display:flex;justify-content:space-between;align-items:center;border-bottom:3px solid #4bcfc6;padding-bottom:11px;margin-bottom:15px}.brand{display:flex;align-items:center;gap:10px}.brand img{width:42px;height:42px;object-fit:contain}.brand h1{font-size:19px;margin:0;color:#244b64}.brand p{margin:3px 0 0;color:#688798}.title{text-align:left}.title strong{font-size:16px;display:block}.title span{color:#688798}.meta,.summary{display:grid;gap:8px}.meta{grid-template-columns:repeat(2,1fr);margin-bottom:12px}.summary{grid-template-columns:repeat(4,1fr);margin:14px 0 18px}.card{border:1px solid #d7e5e8;background:#f8fbfb;border-radius:8px;padding:9px}.summary .card{text-align:center;background:linear-gradient(135deg,#f5fbfb,#eef8f7)}.label{display:block;color:#698495;font-size:9px;margin-bottom:4px}.value{font-weight:700;font-size:14px;color:#1d5873;direction:ltr}.debit{color:#b17b00;font-weight:bold}.credit{color:#07875a;font-weight:bold}.balance{font-weight:bold;color:#244b64}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #d9e7e9;border-radius:8px;overflow:hidden}th{background:#244b64;color:#fff;padding:8px 6px;text-align:right;font-size:9px}td{padding:7px 6px;border-top:1px solid #e5edef;text-align:right;direction:ltr}td:nth-child(3),td:nth-child(4),td:nth-child(5){direction:rtl}.cashier-cell strong{display:block;color:#1d5873;font-weight:700}.cashier-cell small{display:block;margin-top:2px;color:#78909b;font-size:8px;font-weight:400;direction:ltr}tr:nth-child(even) td{background:#f8fbfb}.empty{text-align:center;direction:rtl;color:#718998;padding:14px}.footer{margin-top:18px;padding-top:9px;border-top:1px solid #d8e5e8;color:#718998;display:flex;justify-content:space-between;font-size:9px}
-        </style></head><body><section class="header"><div class="brand">${logoSource ? `<img src="${logoSource}" alt="Tasfiya Pro">` : ''}<div><h1>تصفية برو</h1><p>كشف حساب عميل</p></div></div><div class="title"><strong>كشف حساب</strong><span>تم إنشاؤه ${escapeReportHtml(new Date().toLocaleString('en-GB'))}</span></div></section><section class="meta"><div class="card"><span class="label">العميل</span><strong>${escapeReportHtml(customerName)}</strong></div><div class="card"><span class="label">الفترة</span><strong>${escapeReportHtml(period)}</strong></div></section><section class="summary"><div class="card"><span class="label">الرصيد السابق</span><span class="value">${formatReportAmount(openingBalance)}</span></div><div class="card"><span class="label">مبيعات الفترة</span><span class="value debit">${formatReportAmount(totalDebit)}</span></div><div class="card"><span class="label">سداد الفترة</span><span class="value credit">${formatReportAmount(totalCredit)}</span></div><div class="card"><span class="label">الرصيد المتبقي</span><span class="value">${formatReportAmount(closingBalance)}</span></div></section><table><thead><tr><th>#</th><th>التاريخ</th><th>نوع الحركة</th><th>البيان</th><th>الكاشير</th><th>مدين</th><th>دائن</th><th>الرصيد</th></tr></thead><tbody>${body}</tbody></table><footer class="footer"><span>تم تطوير هذا النظام بواسطة محمد أمين الكامل</span><span>جميع الحقوق محفوظة © تصفية برو - Tasfiya Pro</span></footer></body></html>`;
-    }
-
-    async handleGetCustomerLedgerPdf(res, query = {}) {
-        let page = null;
-        try {
-            const customerName = String(query.customerName || '').trim();
-            if (!customerName) {
-                this.sendJson(res, { success: false, error: 'اسم العميل مطلوب' }, { statusCode: 400 });
-                return;
-            }
-            const ledger = await this.loadCustomerLedgerReportData(query);
-            const browser = await this.getPdfBrowser();
-            page = await browser.newPage();
-            await page.setContent(this.buildCustomerLedgerPdfHtml(customerName, query.dateFrom || '', query.dateTo || '', ledger), { waitUntil: 'load' });
-            const pdf = await page.pdf({ format: 'A4', printBackground: true, preferCSSPageSize: true, margin: { top: '0', right: '0', bottom: '0', left: '0' } });
-            res.writeHead(200, { 'Content-Type': 'application/pdf', 'Content-Length': pdf.length, 'Content-Disposition': 'inline; filename="tasfiya-customer-ledger.pdf"', 'Cache-Control': 'no-store, max-age=0' });
-            res.end(pdf);
-        } catch (error) {
-            console.error('[Customer Ledger PDF] Generation failed:', error.message);
-            this.sendJson(res, { success: false, error: 'تعذر إنشاء كشف الحساب' }, { statusCode: 500 });
-        } finally {
-            if (page) await page.close().catch(() => {});
-        }
-    }
-
     async handleGetCustomersSummary(res, query = {}) {
         try {
             // Determine DB type for compatibility
@@ -2430,17 +2155,12 @@ class LocalWebServer {
 
                 // Send notification
                 try {
-                    const requestLink = this.buildNotificationWebUrl(
-                        `reconciliation-requests.html?request_id=${encodeURIComponent(id)}`
-                    );
-                    await this.sendVerifiedReconciliationNotification(
+                    await this.sendOneSignalNotification(
                         '✅  تصفية جديدة مكتملة',
                         `تم اعتماد تصفية للكاشير ${cashierName}`,
                         {
                             type: 'reconciliation_approved',
-                            cashier_name: cashierName,
-                            request_id: Number(id),
-                            web_url: requestLink
+                            cashier_name: cashierName
                         }
                     );
                 } catch (e) { console.warn('Notification failed', e); }
@@ -3537,6 +3257,13 @@ class LocalWebServer {
                 // **ROOT FIX**: Use pool.query() directly for PostgreSQL
                 const pool = this.dbManager.pool || this.dbManager.db.pool;
                 const syncFailures = [];
+                const requestedSyncProtocol = Number(data?._sync?.protocol_version || 0);
+                const requestedSyncSourceId = String(data?._sync?.source_id || '').trim();
+                const syncSourceId = requestedSyncProtocol >= 2
+                    && /^[A-Za-z0-9._:-]{8,160}$/.test(requestedSyncSourceId)
+                    ? requestedSyncSourceId
+                    : null;
+                const sourceScopedSync = Boolean(syncSourceId);
 
                 if (!pool) {
                     throw new Error('Database pool not available');
@@ -3576,6 +3303,35 @@ class LocalWebServer {
                         "ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
                         'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
                         "ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+                        'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS formula_profile_id INTEGER',
+                        'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS formula_settings TEXT',
+                        'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS cashbox_posting_enabled INTEGER',
+                        'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS invoice_number TEXT',
+                        'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS notes TEXT',
+                        'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
                         `CREATE TABLE IF NOT EXISTS customer_fiscal_opening_balances (
                             id SERIAL PRIMARY KEY,
                             fiscal_year TEXT NOT NULL,
@@ -3669,6 +3425,33 @@ class LocalWebServer {
                         'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_id ON manual_customer_receipts(customer_id)',
                         'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_code_norm ON manual_customer_receipts(UPPER(TRIM(customer_code)))',
                         'CREATE INDEX IF NOT EXISTS idx_manual_receipts_created_date ON manual_customer_receipts(DATE(created_at))',
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliations_sync_source_row_unique
+                         ON reconciliations(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_receipts_sync_source_row_unique
+                         ON cash_receipts(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_receipts_sync_source_row_unique
+                         ON bank_receipts(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_postpaid_sales_sync_source_row_unique
+                         ON postpaid_sales(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_receipts_sync_source_row_unique
+                         ON customer_receipts(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_postpaid_sync_source_row_unique
+                         ON manual_postpaid_sales(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_receipts_sync_source_row_unique
+                         ON manual_customer_receipts(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_return_invoices_sync_source_row_unique
+                         ON return_invoices(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_suppliers_sync_source_row_unique
+                         ON suppliers(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
                         'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_year_key ON customer_fiscal_opening_balances(fiscal_year, balance_key)',
                         'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_customer_id ON customer_fiscal_opening_balances(customer_id)',
                         'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_code ON customer_fiscal_opening_balances(customer_code)',
@@ -3729,7 +3512,20 @@ class LocalWebServer {
                     || data.active_customer_fiscal_opening_balances_ids
                 );
 
-                if (hasCashboxPayload || hasCustomerIdentityPayload) {
+                const hasSourceScopedPayload = sourceScopedSync && Boolean(
+                    data.reconciliations
+                    || data.cash_receipts
+                    || data.bank_receipts
+                    || data.postpaid_sales
+                    || data.customer_receipts
+                    || data.manual_postpaid_sales
+                    || data.manual_customer_receipts
+                    || data.return_invoices
+                    || data.suppliers
+                    || data.deleted_reconciliations_ids
+                );
+
+                if (hasCashboxPayload || hasCustomerIdentityPayload || hasSourceScopedPayload) {
                     await ensureCashboxSyncSchema();
                 }
 
@@ -3742,10 +3538,22 @@ class LocalWebServer {
                             // Delete records NOT in the activeIds list (Mirror Sync)
                             // "DELETE FROM table WHERE id NOT IN (...)"
                             // Optimized for Postgres using ANY/ALL
-                            const result = await pool.query(
-                                `DELETE FROM ${table} WHERE id != ALL($1::int[])`,
-                                [activeIds]
-                            );
+                            const scopedTables = new Set([
+                                'reconciliations', 'postpaid_sales', 'customer_receipts',
+                                'manual_postpaid_sales', 'manual_customer_receipts',
+                                'cash_receipts', 'bank_receipts', 'return_invoices', 'suppliers'
+                            ]);
+                            const result = sourceScopedSync && scopedTables.has(table)
+                                ? await pool.query(
+                                    `DELETE FROM ${table}
+                                     WHERE sync_source_id = $1
+                                       AND source_row_id != ALL($2::bigint[])`,
+                                    [syncSourceId, activeIds]
+                                )
+                                : await pool.query(
+                                    `DELETE FROM ${table} WHERE id != ALL($1::int[])`,
+                                    [activeIds]
+                                );
                             if (result.rowCount > 0) {
                                 console.log(`🧹 [SYNC] Cleaned ${result.rowCount} orphaned records from ${table}.`);
                             }
@@ -3762,6 +3570,95 @@ class LocalWebServer {
                     const numeric = Number(value);
                     if (!Number.isFinite(numeric)) return null;
                     return Math.trunc(numeric);
+                };
+
+                const sanitizeIdArray = (values = []) => Array.from(new Set(
+                    (Array.isArray(values) ? values : [])
+                        .map(parseInteger)
+                        .filter(id => id !== null && id > 0)
+                ));
+
+                const runInTransaction = async (callback) => {
+                    if (typeof pool.connect !== 'function') {
+                        return callback(pool.query.bind(pool));
+                    }
+
+                    const client = await pool.connect();
+                    try {
+                        await client.query('BEGIN');
+                        const result = await callback(client.query.bind(client));
+                        await client.query('COMMIT');
+                        return result;
+                    } catch (error) {
+                        try {
+                            await client.query('ROLLBACK');
+                        } catch (_rollbackError) {
+                            // Keep the original failure as the sync error.
+                        }
+                        throw error;
+                    } finally {
+                        client.release();
+                    }
+                };
+
+                const deleteReconciliationsByIds = async (rawIds = []) => {
+                    const ids = sanitizeIdArray(rawIds);
+                    if (ids.length === 0) return 0;
+
+                    return runInTransaction(async (query) => {
+                        let canonicalIds = ids;
+                        if (sourceScopedSync) {
+                            const canonicalResult = await query(
+                                `SELECT id FROM reconciliations
+                                 WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])`,
+                                [syncSourceId, ids]
+                            );
+                            canonicalIds = (canonicalResult.rows || []).map(row => Number(row.id)).filter(Number.isFinite);
+                            if (canonicalIds.length === 0) return 0;
+                        }
+
+                        await query('DELETE FROM cashbox_vouchers WHERE source_reconciliation_id = ANY($1::int[]) AND COALESCE(is_auto_generated, 0) = 1', [canonicalIds]);
+                        await query('DELETE FROM cash_receipts WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        await query('DELETE FROM bank_receipts WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        await query('DELETE FROM postpaid_sales WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        await query('DELETE FROM customer_receipts WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        await query('DELETE FROM return_invoices WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        await query('DELETE FROM suppliers WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        const result = sourceScopedSync
+                            ? await query(
+                                'DELETE FROM reconciliations WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])',
+                                [syncSourceId, ids]
+                            )
+                            : await query('DELETE FROM reconciliations WHERE id = ANY($1::int[])', [ids]);
+                        return result.rowCount || 0;
+                    });
+                };
+
+                const explicitDeleteTables = new Set([
+                    'postpaid_sales',
+                    'customer_receipts',
+                    'manual_postpaid_sales',
+                    'manual_customer_receipts',
+                    'customer_fiscal_opening_balances',
+                    'cash_receipts',
+                    'bank_receipts',
+                    'return_invoices',
+                    'suppliers'
+                ]);
+
+                const deleteTableRowsByIds = async (table, rawIds = []) => {
+                    if (!explicitDeleteTables.has(table)) return 0;
+
+                    const ids = sanitizeIdArray(rawIds);
+                    if (ids.length === 0) return 0;
+
+                    const result = sourceScopedSync
+                        ? await pool.query(
+                            `DELETE FROM ${table} WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])`,
+                            [syncSourceId, ids]
+                        )
+                        : await pool.query(`DELETE FROM ${table} WHERE id = ANY($1::int[])`, [ids]);
+                    return result.rowCount || 0;
                 };
 
                 const parseNumber = (value, fallback = 0) => {
@@ -3918,6 +3815,9 @@ class LocalWebServer {
                         .map(columnName => `${columnName} = EXCLUDED.${columnName}`)
                         .join(', ');
 
+                    const canonicalReconciliationIds = sourceScopedSync
+                        ? await loadCanonicalReconciliationIds(items.map(item => item?.source_reconciliation_id))
+                        : new Map();
                     const normalizedItems = [];
                     for (const item of items) {
                         const localCashboxId = parseInteger(item?.cashbox_id);
@@ -3945,8 +3845,25 @@ class LocalWebServer {
                             continue;
                         }
 
+                        const localSourceReconciliationId = parseInteger(item?.source_reconciliation_id);
+                        let canonicalSourceReconciliationId = localSourceReconciliationId;
+                        let canonicalSyncKey = buildCashboxVoucherSyncKey(item, branchId);
+                        if (sourceScopedSync && localSourceReconciliationId !== null) {
+                            canonicalSourceReconciliationId = canonicalReconciliationIds.get(localSourceReconciliationId);
+                            if (!Number.isFinite(canonicalSourceReconciliationId)) {
+                                syncFailures.push({
+                                    table: 'cashbox_vouchers',
+                                    id: item?.id ?? null,
+                                    error: `Parent reconciliation ${localSourceReconciliationId} is not synced for this device`
+                                });
+                                continue;
+                            }
+                            const sourceEntryKey = toOptionalText(item?.source_entry_key) || `row:${parseInteger(item?.id) ?? 'unknown'}`;
+                            canonicalSyncKey = `recon:${canonicalSourceReconciliationId}:${sourceEntryKey}`;
+                        }
+
                         normalizedItems.push({
-                            sync_key: buildCashboxVoucherSyncKey(item, branchId),
+                            sync_key: canonicalSyncKey,
                             voucher_number: parseInteger(item?.voucher_number),
                             voucher_sequence_number: parseInteger(item?.voucher_sequence_number),
                             voucher_type: toOptionalText(item?.voucher_type),
@@ -3962,7 +3879,7 @@ class LocalWebServer {
                             created_by: toOptionalText(item?.created_by),
                             created_at: item?.created_at || null,
                             updated_at: item?.updated_at || null,
-                            source_reconciliation_id: parseInteger(item?.source_reconciliation_id),
+                            source_reconciliation_id: canonicalSourceReconciliationId,
                             source_entry_key: toOptionalText(item?.source_entry_key),
                             is_auto_generated: parseInteger(item?.is_auto_generated) === 1 ? 1 : 0
                         });
@@ -4053,6 +3970,12 @@ class LocalWebServer {
 
                 const handleCashboxVoucherCleanupBySyncKeys = async (activeSyncKeys) => {
                     if (!Array.isArray(activeSyncKeys)) return;
+                    if (sourceScopedSync) {
+                        // Voucher keys from old desktop builds can contain local reconciliation
+                        // ids. A global mirror delete here could erase another device's vouchers.
+                        console.log('ℹ️ [SYNC] Skipping global voucher mirror cleanup for a device-scoped upload.');
+                        return;
+                    }
                     const normalizedSyncKeys = Array.from(
                         new Set(
                             activeSyncKeys
@@ -4180,6 +4103,156 @@ class LocalWebServer {
                     console.log(`✅ [SYNC] ${table}: Processed ${successCount} items.${errorCount > 0 ? ` Failed ${errorCount} items.` : ''}`);
                 };
 
+                const scopedSyncTables = new Set([
+                    'reconciliations',
+                    'cash_receipts',
+                    'bank_receipts',
+                    'postpaid_sales',
+                    'customer_receipts',
+                    'manual_postpaid_sales',
+                    'manual_customer_receipts',
+                    'return_invoices',
+                    'suppliers'
+                ]);
+
+                const loadCanonicalReconciliationIds = async (rawLocalIds = []) => {
+                    const localIds = sanitizeIdArray(rawLocalIds);
+                    if (!sourceScopedSync || localIds.length === 0) return new Map();
+                    const result = await pool.query(
+                        `SELECT id, source_row_id
+                         FROM reconciliations
+                         WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])`,
+                        [syncSourceId, localIds]
+                    );
+                    return new Map((result.rows || []).map(row => [Number(row.source_row_id), Number(row.id)]));
+                };
+
+                // Local SQLite ids are only unique inside one desktop installation.  This
+                // upsert keeps the PostgreSQL primary key canonical and uses the stable
+                // installation id + local row id as the idempotency key.
+                const syncSourceScopedTable = async (table, items, columns, options = {}) => {
+                    if (!sourceScopedSync || !scopedSyncTables.has(table)) {
+                        return syncTable(table, items, columns);
+                    }
+                    if (!Array.isArray(items) || items.length === 0) return;
+
+                    const validItems = items.filter(item => {
+                        const localId = parseInteger(item?.id);
+                        if (localId !== null && localId > 0) return true;
+                        syncFailures.push({ table, id: item?.id ?? null, error: 'Missing valid local source row id' });
+                        return false;
+                    });
+                    if (validItems.length === 0) return;
+
+                    let reconciliationIdMap = new Map();
+                    if (options.remapReconciliationId) {
+                        reconciliationIdMap = await loadCanonicalReconciliationIds(
+                            validItems.map(item => item?.reconciliation_id)
+                        );
+                    }
+
+                    const normalizedItems = [];
+                    for (const item of validItems) {
+                        const localId = parseInteger(item.id);
+                        const normalized = { ...item };
+                        if (options.remapReconciliationId) {
+                            const localReconciliationId = parseInteger(item?.reconciliation_id);
+                            const canonicalReconciliationId = reconciliationIdMap.get(localReconciliationId);
+                            if (!Number.isFinite(canonicalReconciliationId)) {
+                                syncFailures.push({
+                                    table,
+                                    id: localId,
+                                    error: `Parent reconciliation ${localReconciliationId ?? '?'} is not synced for this device`
+                                });
+                                continue;
+                            }
+                            normalized.reconciliation_id = canonicalReconciliationId;
+                        }
+                        normalized.source_row_id = localId;
+                        normalized.sync_source_id = syncSourceId;
+                        normalizedItems.push(normalized);
+                    }
+                    if (normalizedItems.length === 0) return;
+
+                    const localIds = normalizedItems.map(item => item.source_row_id);
+                    // Adopt the matching legacy row once, avoiding duplicates during the
+                    // upgrade from the old global-id protocol. No values are deleted.
+                    await pool.query(
+                        `UPDATE ${table}
+                         SET sync_source_id = $1, source_row_id = id
+                         WHERE id = ANY($2::int[]) AND sync_source_id IS NULL`,
+                        [syncSourceId, localIds]
+                    );
+
+                    const dataColumns = columns.map(column => column.name).filter(name => name !== 'id');
+                    const cols = ['sync_source_id', 'source_row_id', ...dataColumns];
+                    const updateSets = dataColumns.map(name => `${name} = EXCLUDED.${name}`).join(', ');
+                    const BATCH_SIZE = 100;
+                    let successCount = 0;
+                    let errorCount = 0;
+
+                    const valuesForItem = item => cols.map(name => {
+                        const value = item[name];
+                        if (value === undefined) return null;
+                        if (value && typeof value === 'object') return JSON.stringify(value);
+                        return value;
+                    });
+
+                    const insertSingle = async item => {
+                        const values = valuesForItem(item);
+                        const placeholders = values.map((_, index) => `$${index + 1}`).join(', ');
+                        await pool.query(
+                            `INSERT INTO ${table} (${cols.join(', ')})
+                             VALUES (${placeholders})
+                             ON CONFLICT (sync_source_id, source_row_id)
+                             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL
+                             DO UPDATE SET ${updateSets}`,
+                            values
+                        );
+                    };
+
+                    for (let offset = 0; offset < normalizedItems.length; offset += BATCH_SIZE) {
+                        const batch = normalizedItems.slice(offset, offset + BATCH_SIZE);
+                        const values = [];
+                        const rowsSql = batch.map(item => {
+                            const rowValues = valuesForItem(item);
+                            const start = values.length;
+                            values.push(...rowValues);
+                            return `(${rowValues.map((_, index) => `$${start + index + 1}`).join(', ')})`;
+                        });
+                        try {
+                            await pool.query(
+                                `INSERT INTO ${table} (${cols.join(', ')})
+                                 VALUES ${rowsSql.join(', ')}
+                                 ON CONFLICT (sync_source_id, source_row_id)
+                                 WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL
+                                 DO UPDATE SET ${updateSets}`,
+                                values
+                            );
+                            successCount += batch.length;
+                        } catch (batchError) {
+                            for (const item of batch) {
+                                try {
+                                    await insertSingle(item);
+                                    successCount += 1;
+                                } catch (rowError) {
+                                    errorCount += 1;
+                                    syncFailures.push({ table, id: item.source_row_id, error: rowError.message });
+                                    console.error('❌ [SYNC] Scoped row insert failed:', {
+                                        table,
+                                        source_id: syncSourceId,
+                                        record_id: item.source_row_id,
+                                        code: rowError.code || null,
+                                        message: rowError.message
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    console.log(`✅ [SYNC] ${table}: device-scoped upsert processed ${successCount} items.${errorCount ? ` Failed ${errorCount}.` : ''}`);
+                };
+
                 // Sync all tables in dependency order
                 if (data.branches) {
                     await syncTable('branches', data.branches, [
@@ -4209,6 +4282,48 @@ class LocalWebServer {
                     ]);
                 }
 
+                // Explicit deletes are used for incremental sync when a row was removed locally.
+                // This avoids relying on empty active-id lists, which are intentionally ignored for safety.
+                if (Array.isArray(data.deleted_reconciliations_ids)) {
+                    try {
+                        const deletedCount = await deleteReconciliationsByIds(data.deleted_reconciliations_ids);
+                        if (deletedCount > 0) {
+                            console.log(`🧹 [SYNC] Deleted ${deletedCount} reconciliations by explicit delete payload.`);
+                        }
+                    } catch (deleteError) {
+                        syncFailures.push({
+                            table: 'reconciliations',
+                            id: null,
+                            error: deleteError.message
+                        });
+                        console.error('❌ [SYNC] explicit reconciliation delete failed:', deleteError.message);
+                    }
+                }
+
+                for (const tableName of explicitDeleteTables) {
+                    const payloadKey = `deleted_${tableName}_ids`;
+                    if (!Array.isArray(data[payloadKey])) {
+                        continue;
+                    }
+
+                    try {
+                        const deletedCount = await deleteTableRowsByIds(tableName, data[payloadKey]);
+                        if (deletedCount > 0) {
+                            console.log(`🧹 [SYNC] Deleted ${deletedCount} rows from ${tableName} by explicit delete payload.`);
+                        }
+                    } catch (deleteError) {
+                        syncFailures.push({
+                            table: tableName,
+                            id: null,
+                            error: deleteError.message
+                        });
+                        console.error('❌ [SYNC] explicit row delete failed:', {
+                            table: tableName,
+                            message: deleteError.message
+                        });
+                    }
+                }
+
                 // --- 1. PERFORM CLEANUP (Mirror Logic) ---
                 if (data.active_reconciliations_ids) await handleCleanup('reconciliations', data.active_reconciliations_ids);
                 if (data.active_postpaid_sales_ids) await handleCleanup('postpaid_sales', data.active_postpaid_sales_ids);
@@ -4218,6 +4333,8 @@ class LocalWebServer {
                 if (data.active_customer_fiscal_opening_balances_ids) await handleCleanup('customer_fiscal_opening_balances', data.active_customer_fiscal_opening_balances_ids);
                 if (data.active_cash_receipts_ids) await handleCleanup('cash_receipts', data.active_cash_receipts_ids);
                 if (data.active_bank_receipts_ids) await handleCleanup('bank_receipts', data.active_bank_receipts_ids);
+                if (data.active_return_invoices_ids) await handleCleanup('return_invoices', data.active_return_invoices_ids);
+                if (data.active_suppliers_ids) await handleCleanup('suppliers', data.active_suppliers_ids);
                 if (data.active_cashbox_voucher_audit_log_ids) {
                     console.log('ℹ️ [SYNC] Ignoring legacy active_cashbox_voucher_audit_log_ids cleanup on PostgreSQL; local audit-log ids are not globally stable.');
                 }
@@ -4272,7 +4389,7 @@ class LocalWebServer {
 
 
                 // --- MIRROR SYNC: Delete Removed Reconciliations ---
-                if (data.active_reconciliation_ids && Array.isArray(data.active_reconciliation_ids)) {
+                if (!sourceScopedSync && data.active_reconciliation_ids && Array.isArray(data.active_reconciliation_ids)) {
                     const activeIds = data.active_reconciliation_ids;
                     if (activeIds.length > 0) {
                         try {
@@ -4341,18 +4458,24 @@ class LocalWebServer {
                     if (incomingIds.length > 0) {
                         try {
                             const pool = this.dbManager.pool || this.dbManager.db.pool;
-                            // Create placeholders like $1, $2, $3...
-                            // IMPORTANT: PostgreSQL uses $1, $2... syntax
-                            const placeholders = incomingIds.map((_, i) => `$${i + 1}`).join(',');
-
-                            // Query existing IDs and their statuses
-                            const existingResult = await pool.query(
-                                `SELECT id, status FROM reconciliations WHERE id IN (${placeholders})`,
-                                incomingIds
-                            );
+                            const existingResult = sourceScopedSync
+                                ? await pool.query(
+                                    `SELECT source_row_id AS id, status
+                                     FROM reconciliations
+                                     WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])
+                                     UNION ALL
+                                     SELECT id, status
+                                     FROM reconciliations
+                                     WHERE sync_source_id IS NULL AND id = ANY($2::bigint[])`,
+                                    [syncSourceId, incomingIds]
+                                )
+                                : await pool.query(
+                                    'SELECT id, status FROM reconciliations WHERE id = ANY($1::int[])',
+                                    [incomingIds]
+                                );
 
                             const existingMap = new Map();
-                            existingResult.rows.forEach(row => existingMap.set(row.id, row.status));
+                            existingResult.rows.forEach(row => existingMap.set(Number(row.id), row.status));
 
                             // Filter items that need notification:
                             // 1. It is 'completed'
@@ -4374,10 +4497,13 @@ class LocalWebServer {
                     }
 
                     // 3. Perform the Sync (Save Data) - USE FILTERED LIST
-                    await syncTable('reconciliations', validReconciliations, [
+                    await syncSourceScopedTable('reconciliations', validReconciliations, [
                         { name: 'id' }, { name: 'reconciliation_number' }, { name: 'cashier_id' },
                         { name: 'accountant_id' }, { name: 'reconciliation_date' }, { name: 'system_sales' },
-                        { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' }
+                        { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' },
+                        { name: 'formula_profile_id' }, { name: 'formula_settings' },
+                        { name: 'cashbox_posting_enabled' }, { name: 'created_at' },
+                        { name: 'updated_at' }, { name: 'last_modified_date' }
                     ]);
 
                     // 4. Send Notification ONLY if we found NEW items
@@ -4435,34 +4561,30 @@ class LocalWebServer {
                         }
 
                         // Send async notification
-                        const reconciliationId = Number(firstNewRec.id);
-                        const reconciliationLink = newReconciliationsCount === 1 && Number.isInteger(reconciliationId) && reconciliationId > 0
-                            ? this.buildNotificationWebUrl(`index.html?reconciliation_id=${encodeURIComponent(reconciliationId)}`)
-                            : '';
-                        this.sendVerifiedReconciliationNotification(title, msg, {
+                        this.sendOneSignalNotification(title, msg, {
                             type: 'new_reconciliation',
                             count: newReconciliationsCount,
-                            reconciliation_id: Number.isInteger(reconciliationId) && reconciliationId > 0 ? reconciliationId : null,
                             rec_number: firstNewRec.reconciliation_number,
                             cashier_name: cashierName,
-                            surplus_deficit: surplusDeficit,
-                            web_url: reconciliationLink
+                            surplus_deficit: surplusDeficit
                         }).catch(e => console.error('Notification send failed:', e));
                     }
                 }
 
                 if (data.cash_receipts) {
-                    await syncTable('cash_receipts', data.cash_receipts, [
+                    await syncSourceScopedTable('cash_receipts', data.cash_receipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'denomination' },
-                        { name: 'quantity' }, { name: 'total_amount' }
-                    ]);
+                        { name: 'quantity' }, { name: 'total_amount' }, { name: 'is_modified' },
+                        { name: 'created_at' }
+                    ], { remapReconciliationId: true });
                 }
 
                 if (data.bank_receipts) {
-                    await syncTable('bank_receipts', data.bank_receipts, [
+                    await syncSourceScopedTable('bank_receipts', data.bank_receipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'operation_type' },
-                        { name: 'atm_id' }, { name: 'amount' }
-                    ]);
+                        { name: 'atm_id' }, { name: 'amount' }, { name: 'is_modified' },
+                        { name: 'created_at' }
+                    ], { remapReconciliationId: true });
                 }
 
                 if (Array.isArray(data.cashbox_vouchers) && data.cashbox_vouchers.length > 0) {
@@ -4483,23 +4605,39 @@ class LocalWebServer {
                 }
 
                 if (data.postpaid_sales) {
-                    await syncTable('postpaid_sales', data.postpaid_sales, [
+                    await syncSourceScopedTable('postpaid_sales', data.postpaid_sales, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_id' },
                         { name: 'customer_name' }, { name: 'customer_code' }, { name: 'amount' },
-                        { name: 'notes' }
-                    ]);
+                        { name: 'notes' }, { name: 'is_modified' }, { name: 'created_at' }
+                    ], { remapReconciliationId: true });
+                }
+
+                if (data.return_invoices) {
+                    await syncSourceScopedTable('return_invoices', data.return_invoices, [
+                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'invoice_number' },
+                        { name: 'amount' }, { name: 'is_modified' }, { name: 'created_at' }
+                    ], { remapReconciliationId: true });
+                }
+
+                if (data.suppliers) {
+                    await syncSourceScopedTable('suppliers', data.suppliers, [
+                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'supplier_name' },
+                        { name: 'invoice_number' }, { name: 'amount' }, { name: 'notes' },
+                        { name: 'is_modified' }, { name: 'created_at' }
+                    ], { remapReconciliationId: true });
                 }
 
                 if (data.customer_receipts) {
-                    await syncTable('customer_receipts', data.customer_receipts, [
+                    await syncSourceScopedTable('customer_receipts', data.customer_receipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_id' },
                         { name: 'customer_name' }, { name: 'customer_code' }, { name: 'amount' },
-                        { name: 'payment_type' }, { name: 'notes' }
-                    ]);
+                        { name: 'payment_type' }, { name: 'notes' }, { name: 'is_modified' },
+                        { name: 'created_at' }
+                    ], { remapReconciliationId: true });
                 }
 
                 if (data.manual_postpaid_sales) {
-                    await syncTable('manual_postpaid_sales', data.manual_postpaid_sales, [
+                    await syncSourceScopedTable('manual_postpaid_sales', data.manual_postpaid_sales, [
                         { name: 'id' }, { name: 'customer_id' }, { name: 'customer_name' },
                         { name: 'customer_code' }, { name: 'amount' }, { name: 'reason' },
                         { name: 'created_at' }
@@ -4507,7 +4645,7 @@ class LocalWebServer {
                 }
 
                 if (data.manual_customer_receipts) {
-                    await syncTable('manual_customer_receipts', data.manual_customer_receipts, [
+                    await syncSourceScopedTable('manual_customer_receipts', data.manual_customer_receipts, [
                         { name: 'id' }, { name: 'customer_id' }, { name: 'customer_name' },
                         { name: 'customer_code' }, { name: 'amount' }, { name: 'reason' },
                         { name: 'created_at' }
@@ -4798,275 +4936,13 @@ class LocalWebServer {
         });
     }
 
-    async ensureNotificationSubscriptionStore() {
-        try {
-            if (this.dbManager.pool) {
-                await this.dbManager.pool.query(`
-                    CREATE TABLE IF NOT EXISTS notification_subscriptions (
-                        subscription_id TEXT PRIMARY KEY,
-                        user_id INTEGER NOT NULL,
-                        user_role TEXT DEFAULT 'admin',
-                        external_id TEXT NOT NULL,
-                        one_signal_app_id TEXT DEFAULT '',
-                        integration_version TEXT DEFAULT '',
-                        user_agent TEXT DEFAULT '',
-                        opted_in INTEGER DEFAULT 1,
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        last_seen_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                    )
-                `);
-                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, user_role)');
-                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_external_id ON notification_subscriptions(external_id)');
-                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_app ON notification_subscriptions(one_signal_app_id, opted_in)');
-                await this.dbManager.pool.query("ALTER TABLE notification_subscriptions ADD COLUMN IF NOT EXISTS integration_version TEXT DEFAULT ''");
-                await this.dbManager.pool.query('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_delivery_protocol ON notification_subscriptions(one_signal_app_id, integration_version, opted_in)');
-            } else {
-                this.dbManager.db.exec(`
-                    CREATE TABLE IF NOT EXISTS notification_subscriptions (
-                        subscription_id TEXT PRIMARY KEY,
-                        user_id INTEGER NOT NULL,
-                        user_role TEXT DEFAULT 'admin',
-                        external_id TEXT NOT NULL,
-                        one_signal_app_id TEXT DEFAULT '',
-                        integration_version TEXT DEFAULT '',
-                        user_agent TEXT DEFAULT '',
-                        opted_in INTEGER DEFAULT 1,
-                        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                        last_seen_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                    );
-                    CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_user ON notification_subscriptions(user_id, user_role);
-                    CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_external_id ON notification_subscriptions(external_id);
-                    CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_app ON notification_subscriptions(one_signal_app_id, opted_in);
-                `);
-                const sqliteColumns = this.dbManager.db.prepare('PRAGMA table_info(notification_subscriptions)').all();
-                if (!sqliteColumns.some((column) => column.name === 'integration_version')) {
-                    this.dbManager.db.exec("ALTER TABLE notification_subscriptions ADD COLUMN integration_version TEXT DEFAULT ''");
-                }
-                this.dbManager.db.exec('CREATE INDEX IF NOT EXISTS idx_notification_subscriptions_delivery_protocol ON notification_subscriptions(one_signal_app_id, integration_version, opted_in)');
-            }
-            console.log('✅ [PUSH] Notification subscription store is ready');
-        } catch (error) {
-            console.error(`❌ [PUSH] Failed to prepare notification subscriptions: ${error && error.message ? error.message : error}`);
-        }
-    }
-
-    async resolveAdminNotificationUserId(sessionUser) {
-        const sourceUser = sessionUser || {};
-        let userId = Number(sourceUser.id);
-        if (Number.isInteger(userId) && userId > 0) {
-            return userId;
-        }
-
-        if (!sourceUser.username) {
-            return 0;
-        }
-
-        try {
-            const username = String(sourceUser.username).trim();
-            const row = this.dbManager.pool
-                ? (await this.dbManager.pool.query(
-                    'SELECT id FROM admins WHERE username = $1 LIMIT 1',
-                    [username]
-                )).rows[0]
-                : this.dbManager.db.prepare(
-                    'SELECT id FROM admins WHERE username = ? LIMIT 1'
-                ).get(username);
-            userId = Number(row && row.id);
-            return Number.isInteger(userId) && userId > 0 ? userId : 0;
-        } catch (error) {
-            console.warn(`⚠️ [PUSH] Unable to resolve admin id for notifications: ${error && error.message ? error.message : error}`);
-            return 0;
-        }
-    }
-
-    async registerNotificationSubscription(sessionUser, data = {}, req = null) {
-        const sourceUser = sessionUser || {};
-        if (!sourceUser || sourceUser.role === 'cashier') {
-            return {
-                success: false,
-                statusCode: 403,
-                code: 'NOTIFICATION_REGISTRATION_FORBIDDEN',
-                error: 'تسجيل اشتراك الإشعارات متاح للإدارة فقط.'
-            };
-        }
-
-        const config = this.getOneSignalConfig();
-        if (!ONESIGNAL_UUID_REGEX.test(config.appId)) {
-            return {
-                success: false,
-                statusCode: 500,
-                code: 'ONESIGNAL_APP_ID_MISSING',
-                error: 'OneSignal App ID غير مضبوط في الخادم.'
-            };
-        }
-
-        const userId = await this.resolveAdminNotificationUserId(sourceUser);
-        if (!Number.isInteger(userId) || userId <= 0) {
-            return {
-                success: false,
-                statusCode: 401,
-                code: 'NOTIFICATION_REGISTRATION_IDENTITY_MISSING',
-                error: 'تعذر تحديد هوية المدير لتسجيل الإشعارات. سجّل الدخول مرة أخرى.'
-            };
-        }
-
-        const subscriptionId = String(data.subscriptionId || data.subscription_id || '').trim();
-        if (!ONESIGNAL_UUID_REGEX.test(subscriptionId)) {
-            return {
-                success: false,
-                statusCode: 400,
-                code: 'NOTIFICATION_SUBSCRIPTION_ID_INVALID',
-                error: 'لم يرسل المتصفح معرّف اشتراك OneSignal صالحًا.'
-            };
-        }
-
-        const externalId = `tasfiya-admin-${userId}`;
-        const integrationVersion = String(data.integrationVersion || data.integration_version || '').trim();
-        const isNativeAndroidIntegration = integrationVersion === 'android-native-v1';
-        const isCurrentIntegration = integrationVersion === 'onesignal-root-worker-v2' || isNativeAndroidIntegration;
-        const platformLabel = isNativeAndroidIntegration ? 'Android native' : 'browser';
-        const userAgent = String((req && req.headers && req.headers['user-agent']) || '').slice(0, 500);
-        const optedIn = data.optedIn === false || data.opted_in === false ? 0 : 1;
-
-        if (this.dbManager.pool) {
-            await this.dbManager.pool.query(
-                `
-                    INSERT INTO notification_subscriptions (
-                        subscription_id, user_id, user_role, external_id,
-                        one_signal_app_id, integration_version, user_agent, opted_in,
-                        created_at, updated_at, last_seen_at
-                    )
-                    VALUES ($1, $2, 'admin', $3, $4, $5, $6, $7, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    ON CONFLICT (subscription_id) DO UPDATE SET
-                        user_id = EXCLUDED.user_id,
-                        user_role = EXCLUDED.user_role,
-                        external_id = EXCLUDED.external_id,
-                        one_signal_app_id = EXCLUDED.one_signal_app_id,
-                        integration_version = EXCLUDED.integration_version,
-                        user_agent = EXCLUDED.user_agent,
-                        opted_in = EXCLUDED.opted_in,
-                        updated_at = CURRENT_TIMESTAMP,
-                        last_seen_at = CURRENT_TIMESTAMP
-                `,
-                [subscriptionId, userId, externalId, config.appId, integrationVersion, userAgent, optedIn]
-            );
-        } else {
-            this.dbManager.db.prepare(`
-                INSERT INTO notification_subscriptions (
-                    subscription_id, user_id, user_role, external_id,
-                    one_signal_app_id, integration_version, user_agent, opted_in,
-                    created_at, updated_at, last_seen_at
-                )
-                VALUES (?, ?, 'admin', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                ON CONFLICT(subscription_id) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    user_role = excluded.user_role,
-                    external_id = excluded.external_id,
-                    one_signal_app_id = excluded.one_signal_app_id,
-                    integration_version = excluded.integration_version,
-                    user_agent = excluded.user_agent,
-                    opted_in = excluded.opted_in,
-                    updated_at = CURRENT_TIMESTAMP,
-                    last_seen_at = CURRENT_TIMESTAMP
-            `).run(subscriptionId, userId, externalId, config.appId, integrationVersion, userAgent, optedIn);
-        }
-
-        console.log(`✅ [PUSH] Registered ${platformLabel} subscription for admin ${userId}; current_integration=${isCurrentIntegration}`);
-        return {
-            success: true,
-            userId,
-            externalId,
-            subscriptionId,
-            platform: platformLabel,
-            currentWorker: isCurrentIntegration
-        };
-    }
-
-    async handleRegisterNotificationSubscription(req, res, authenticatedUser) {
-        try {
-            const data = await this.readJsonBody(req, {
-                maxBytes: DEFAULT_JSON_BODY_LIMIT_BYTES,
-                routeLabel: '/api/notifications/register payload'
-            });
-            const result = await this.registerNotificationSubscription(
-                authenticatedUser || req.authUser || this.getAuthenticatedUser(req),
-                data,
-                req
-            );
-
-            this.sendJson(res, result, {
-                statusCode: result.success ? 200 : (result.statusCode || 400)
-            });
-        } catch (error) {
-            this.sendJson(
-                res,
-                { success: false, code: 'NOTIFICATION_REGISTRATION_FAILED', error: error.message },
-                { statusCode: error.statusCode || 500 }
-            );
-        }
-    }
-
-    async getNotificationTargetSubscriptionIds() {
-        const config = this.getOneSignalConfig();
-        if (!ONESIGNAL_UUID_REGEX.test(config.appId)) {
-            return [];
-        }
-
-        try {
-            const activeExternalIds = new Set(await this.getNotificationTargetExternalIds());
-            if (activeExternalIds.size === 0) {
-                return [];
-            }
-            const rows = this.dbManager.pool
-                ? (await this.dbManager.pool.query(
-                    `
-                        SELECT subscription_id, external_id
-                        FROM notification_subscriptions
-                        WHERE user_role = 'admin'
-                          AND COALESCE(opted_in, 1) = 1
-                          AND one_signal_app_id = $1
-                        ORDER BY
-                          CASE WHEN integration_version = 'android-native-v1' THEN 0 ELSE 1 END,
-                          CASE WHEN integration_version = 'onesignal-root-worker-v2' THEN 0 ELSE 1 END,
-                          last_seen_at DESC
-                        LIMIT 200
-                    `,
-                    [config.appId]
-                )).rows
-                : this.dbManager.db.prepare(`
-                    SELECT subscription_id, external_id
-                    FROM notification_subscriptions
-                    WHERE user_role = 'admin'
-                      AND COALESCE(opted_in, 1) = 1
-                      AND one_signal_app_id = ?
-                    ORDER BY
-                      CASE WHEN integration_version = 'android-native-v1' THEN 0 ELSE 1 END,
-                      CASE WHEN integration_version = 'onesignal-root-worker-v2' THEN 0 ELSE 1 END,
-                      last_seen_at DESC
-                    LIMIT 200
-                `).all(config.appId);
-
-            const subscriptionIds = this.normalizeOneSignalIds(
-                rows
-                    .filter((row) => activeExternalIds.has(String(row.external_id || '')))
-                    .map((row) => row.subscription_id)
-            )
-                .filter((id) => ONESIGNAL_UUID_REGEX.test(id));
-            console.log(`🔔 [PUSH] Resolved ${subscriptionIds.length} active registered notification subscription target(s)`);
-            return subscriptionIds;
-        } catch (error) {
-            console.error(`❌ [PUSH] Unable to resolve registered notification subscriptions: ${error && error.message ? error.message : error}`);
-            return [];
-        }
-    }
-
     getOneSignalConfig() {
-        const appId = String(process.env.ONESIGNAL_APP_ID || '').trim();
+        const appId = String(
+            process.env.ONESIGNAL_APP_ID || '1b7778f5-0f25-4df8-a281-611b682a964c'
+        ).trim();
         const appApiKey = String(process.env.ONESIGNAL_REST_API_KEY || '').trim();
         const publicUrl = String(process.env.TASFIYA_PUBLIC_URL || '').trim().replace(/\/+$/, '');
-        const hasValidAppId = ONESIGNAL_UUID_REGEX.test(appId);
+        const hasValidAppId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(appId);
         const hasValidApiKey = appApiKey.length > 20 && !appApiKey.includes('YOUR_REST_API_KEY_HERE');
 
         return {
@@ -5101,6 +4977,23 @@ class LocalWebServer {
             : fallbackMessage;
     }
 
+    handleNotificationStatus(res) {
+        const config = this.getOneSignalConfig();
+        this.sendJson(res, {
+            success: true,
+            configured: config.configured,
+            provider: 'OneSignal',
+            apiEndpoint: 'https://api.onesignal.com/notifications?c=push',
+            targeting: 'external_id for system notifications; subscription_id for delivery tests',
+            hasAppId: Boolean(config.appId),
+            hasApiKey: Boolean(config.appApiKey),
+            hasPublicUrl: Boolean(config.publicUrl),
+            message: config.configured
+                ? 'إعداد الإرسال موجود. استخدم اختبار الإشعارات للتحقق من وصوله إلى OneSignal.'
+                : 'مفتاح OneSignal أو App ID غير مضبوط بشكل صحيح في بيئة الخادم.'
+        });
+    }
+
     handlePublicClientConfig(res) {
         const config = this.getOneSignalConfig();
         this.sendJson(res, {
@@ -5109,32 +5002,57 @@ class LocalWebServer {
         });
     }
 
+    async handleNotificationTest(req, res) {
+        let body = {};
+        try {
+            body = await this.readJsonBody(req, {
+                maxBytes: 8 * 1024,
+                routeLabel: 'notification test request'
+            });
+        } catch (error) {
+            this.sendJson(res, {
+                success: false,
+                code: 'INVALID_NOTIFICATION_TEST_REQUEST',
+                error: error && error.message ? error.message : 'تعذر قراءة بيانات اختبار الإشعار.'
+            }, { statusCode: 400 });
+            return;
+        }
+
+        const subscriptionId = String(body.subscriptionId || '').trim();
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subscriptionId)) {
+            this.sendJson(res, {
+                success: false,
+                code: 'BROWSER_SUBSCRIPTION_MISSING',
+                error: 'لم يرسل المتصفح معرّف اشتراك OneSignal صالحًا. أعد فتح الموقع وانتظر ثوانٍ ثم حاول مرة أخرى.'
+            }, { statusCode: 409 });
+            return;
+        }
+
+        console.log('🔔 [PUSH] Admin requested a notification delivery test');
+        const result = await this.sendOneSignalNotification(
+            '🔔 اختبار إشعارات تصفية برو',
+            'تم إرسال هذا الاختبار من لوحة الإدارة للتحقق من وصول الإشعارات.',
+            { type: 'notification_test', source: 'admin_dashboard' },
+            { subscriptionIds: [subscriptionId] }
+        );
+
+        this.sendJson(res, result, {
+            statusCode: result.success ? 200 : 502
+        });
+    }
+
     async getNotificationTargetExternalIds() {
         try {
             const rows = this.dbManager.pool
-                ? (await this.dbManager.pool.query('SELECT id, active FROM admins ORDER BY id')).rows
-                : this.dbManager.db.prepare('SELECT id, active FROM admins ORDER BY id').all();
+                ? (await this.dbManager.pool.query('SELECT id FROM admins WHERE active = 1 ORDER BY id')).rows
+                : this.dbManager.db.prepare('SELECT id FROM admins WHERE active = 1 ORDER BY id').all();
 
-            // Older installations can have NULL activity flags, while Neon
-            // migrations may represent the flag as a boolean instead of 0/1.
-            // Resolve it in JavaScript so a valid subscribed administrator is
-            // never excluded merely by a database-type difference.
-            const isActiveAdmin = (value) => {
-                if (value === null || value === undefined || value === '') return true;
-                if (value === true || value === 1) return true;
-                const normalized = String(value).trim().toLowerCase();
-                return normalized === '1' || normalized === 'true' || normalized === 'yes';
-            };
-
-            const externalIds = [...new Set(
+            return [...new Set(
                 rows
-                    .filter((row) => isActiveAdmin(row && row.active))
                     .map((row) => Number(row && row.id))
                     .filter((id) => Number.isInteger(id) && id > 0)
                     .map((id) => `tasfiya-admin-${id}`)
             )];
-            console.log(`🔔 [PUSH] Resolved ${externalIds.length} active administrator target(s)`);
-            return externalIds;
         } catch (error) {
             console.error(`❌ [PUSH] Unable to resolve notification recipients: ${error && error.message ? error.message : error}`);
             return [];
@@ -5149,140 +5067,6 @@ class LocalWebServer {
         )];
     }
 
-    mergeNotificationResults(primaryResult, fallbackResult) {
-        const primary = primaryResult || {};
-        const fallback = fallbackResult || {};
-        const primaryDelivery = primary.delivery && typeof primary.delivery === 'object'
-            ? primary.delivery
-            : {};
-        const fallbackDelivery = fallback.delivery && typeof fallback.delivery === 'object'
-            ? fallback.delivery
-            : {};
-        const primaryPlatformStats = primaryDelivery.platformDeliveryStats || {};
-        const fallbackPlatformStats = fallbackDelivery.platformDeliveryStats || {};
-        const mergedChromeStats = [
-            primaryPlatformStats.chrome_web_push,
-            fallbackPlatformStats.chrome_web_push
-        ].filter(Boolean).reduce((acc, stats) => {
-            acc.successful += Number(stats.successful || 0);
-            acc.failed += Number(stats.failed || 0);
-            acc.errored += Number(stats.errored || 0);
-            acc.converted += Number(stats.converted || 0);
-            acc.received += Number(stats.received || 0);
-            return acc;
-        }, { successful: 0, failed: 0, errored: 0, converted: 0, received: 0 });
-
-        return {
-            success: Boolean(primary.success || fallback.success),
-            code: primary.success ? null : (fallback.code || primary.code || null),
-            error: primary.success || fallback.success ? null : (fallback.error || primary.error || null),
-            messageId: primary.messageId || fallback.messageId || null,
-            messageIds: [primary.messageId, fallback.messageId].filter(Boolean),
-            target: primary.success ? primary.target : (fallback.target || primary.target || null),
-            targetCount: Number(primary.targetCount || 0) + Number(fallback.targetCount || 0),
-            fallbackUsed: Boolean(!primary.success && fallbackResult),
-            delivery: {
-                available: Boolean(primaryDelivery.available || fallbackDelivery.available),
-                completed: Boolean(primaryDelivery.completed || fallbackDelivery.completed),
-                successful: Number(primaryDelivery.successful || 0) + Number(fallbackDelivery.successful || 0),
-                failed: Number(primaryDelivery.failed || 0) + Number(fallbackDelivery.failed || 0),
-                errored: Number(primaryDelivery.errored || 0) + Number(fallbackDelivery.errored || 0),
-                received: Number(primaryDelivery.received || 0) + Number(fallbackDelivery.received || 0),
-                remaining: Number(primaryDelivery.remaining || 0) + Number(fallbackDelivery.remaining || 0),
-                platformDeliveryStats: {
-                    chrome_web_push: mergedChromeStats
-                }
-            }
-        };
-    }
-
-    async sendVerifiedReconciliationNotification(title, message, data = {}) {
-        // Reconciliation alerts must survive domain/app migrations.  The
-        // stable external_id path is the primary delivery route because it is
-        // tied to the authenticated admin identity.  Registered browser
-        // subscription IDs remain a precise fallback for devices that have
-        // already reported themselves to this server.
-        const externalIds = await this.getNotificationTargetExternalIds();
-        const subscriptionIds = await this.getNotificationTargetSubscriptionIds();
-        console.log(
-            `🔔 [PUSH] Reconciliation alert targets external_id=${externalIds.length}, subscription_id=${subscriptionIds.length}`
-        );
-
-        if (externalIds.length === 0 && subscriptionIds.length === 0) {
-            return {
-                success: false,
-                code: 'ONESIGNAL_NO_TARGETS',
-                error: 'لا توجد هوية إدارية أو اشتراكات أجهزة صالحة لتلقي الإشعار.',
-                target: 'none',
-                targetCount: 0
-            };
-        }
-
-        let primaryResult = null;
-        if (externalIds.length > 0) {
-            primaryResult = await this.sendOneSignalNotification(
-                title,
-                message,
-                data,
-                {
-                    externalIds,
-                    webUrl: data.web_url || ''
-                }
-            );
-            if (primaryResult && primaryResult.success) {
-                return primaryResult;
-            }
-        }
-
-        let fallbackResult = null;
-        if (subscriptionIds.length > 0) {
-            fallbackResult = await this.sendOneSignalNotification(
-                title,
-                message,
-                data,
-                {
-                    subscriptionIds,
-                    webUrl: data.web_url || ''
-                }
-            );
-        }
-
-        return this.mergeNotificationResults(primaryResult, fallbackResult);
-    }
-
-    buildNotificationWebUrl(relativePath = '') {
-        const config = this.getOneSignalConfig();
-        if (!config.publicUrl) {
-            return '';
-        }
-
-        try {
-            const baseUrl = new URL(`${config.publicUrl}/`);
-            const targetUrl = new URL(String(relativePath || ''), baseUrl);
-            // Notification URLs are always kept on this Tasfiya server. This
-            // prevents an alert payload from becoming an open redirect.
-            return targetUrl.origin === baseUrl.origin ? targetUrl.toString() : config.publicUrl;
-        } catch (_) {
-            return config.publicUrl;
-        }
-    }
-
-    getNotificationWebUrl(config, requestedUrl) {
-        const fallbackUrl = config && config.publicUrl ? config.publicUrl : '';
-        const candidate = String(requestedUrl || '').trim();
-        if (!candidate) {
-            return fallbackUrl;
-        }
-
-        try {
-            const baseUrl = new URL(`${fallbackUrl}/`);
-            const targetUrl = new URL(candidate, baseUrl);
-            return targetUrl.origin === baseUrl.origin ? targetUrl.toString() : fallbackUrl;
-        } catch (_) {
-            return fallbackUrl;
-        }
-    }
-
     async sendOneSignalNotification(title, message, data = {}, options = {}) {
         const config = this.getOneSignalConfig();
         if (!config.configured) {
@@ -5291,18 +5075,12 @@ class LocalWebServer {
             return { success: false, code: 'ONESIGNAL_NOT_CONFIGURED', error };
         }
 
-        let subscriptionIds = this.normalizeOneSignalIds(options.subscriptionIds)
-            .filter((id) => ONESIGNAL_UUID_REGEX.test(id));
+        const subscriptionIds = this.normalizeOneSignalIds(options.subscriptionIds)
+            .filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
         const explicitExternalIds = this.normalizeOneSignalIds(options.externalIds);
-        let externalIds = [];
-
-        // Operational alerts use registered subscription IDs when supplied.
-        // The external-id path remains a safe fallback for other callers.
-        if (subscriptionIds.length === 0) {
-            externalIds = explicitExternalIds.length > 0
-                ? explicitExternalIds
-                : await this.getNotificationTargetExternalIds();
-        }
+        const externalIds = subscriptionIds.length > 0
+            ? []
+            : (explicitExternalIds.length > 0 ? explicitExternalIds : await this.getNotificationTargetExternalIds());
 
         if (subscriptionIds.length === 0 && externalIds.length === 0) {
             const error = 'لا يوجد إداريون نشطون أو اشتراكات صالحة لتلقي الإشعار.';
@@ -5310,7 +5088,9 @@ class LocalWebServer {
             return { success: false, code: 'ONESIGNAL_NO_TARGETS', error };
         }
 
-        const notificationIconUrl = this.buildNotificationWebUrl('assets/icon-192.png?v=appicon-20260831-v2');
+        const notificationIconUrl = config.publicUrl
+            ? `${String(config.publicUrl).replace(/\/+$/, '')}/assets/icon-192.png?v=appicon-20260831-v2`
+            : null;
         const notificationPayload = {
             app_id: config.appId,
             target_channel: 'push',
@@ -5326,10 +5106,13 @@ class LocalWebServer {
 
         if (notificationIconUrl) {
             notificationPayload.large_icon = notificationIconUrl;
+            notificationPayload.chrome_web_icon = notificationIconUrl;
+            notificationPayload.chrome_web_badge = notificationIconUrl;
         }
 
         if (subscriptionIds.length > 0) {
-            // Send directly to the known browser subscription.
+            // Delivery tests target the exact subscription shown in OneSignal,
+            // eliminating ambiguous segment membership from the diagnosis.
             notificationPayload.include_subscription_ids = subscriptionIds;
         } else {
             // Production notifications target authenticated Tasfiya admins.
@@ -5337,18 +5120,8 @@ class LocalWebServer {
             notificationPayload.include_aliases = { external_id: externalIds };
         }
 
-        const notificationWebUrl = this.getNotificationWebUrl(config, options.webUrl);
-        if (notificationWebUrl) {
-            notificationPayload.web_url = notificationWebUrl;
-        }
-
-        // Web Push clients (including Chrome on Android) need an explicit,
-        // publicly reachable icon.  This keeps the Tasfiya identity in the
-        // lock-screen notification instead of falling back to Chrome's generic
-        // site icon when the installed PWA is closed.
-        if (notificationIconUrl) {
-            notificationPayload.chrome_web_icon = notificationIconUrl;
-            notificationPayload.chrome_web_badge = notificationIconUrl;
+        if (config.publicUrl) {
+            notificationPayload.web_url = config.publicUrl;
         }
 
         try {
@@ -5393,23 +5166,13 @@ class LocalWebServer {
                 return { success: false, code: 'ONESIGNAL_NO_RECIPIENTS', error };
             }
 
-            // OneSignal's Create Message API confirms creation with a non-empty
-            // id. Some API responses or account views do not include a reliable
-            // recipients count immediately, so do not convert a missing count to
-            // zero and falsely report failure after OneSignal accepted the push.
-            const hasRecipientsCount = Object.prototype.hasOwnProperty.call(result, 'recipients');
-            const parsedRecipients = hasRecipientsCount ? Number(result.recipients) : null;
-            const recipients = Number.isFinite(parsedRecipients) ? parsedRecipients : null;
-            const recipientSummary = recipients === null ? 'unknown' : recipients;
-
-            console.log(`✅ [PUSH] OneSignal accepted message=${result.id} recipients=${recipientSummary}; target=${subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'}`);
+            const recipients = Number(result.recipients || 0);
+            console.log(`✅ [PUSH] Sent message=${result.id} recipients=${recipients}; target=${subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'}`);
             return {
                 success: true,
                 messageId: result.id,
                 recipients,
-                recipientCountKnown: recipients !== null,
-                target: subscriptionIds.length > 0 ? 'subscription_id' : 'external_id',
-                targetCount: subscriptionIds.length > 0 ? subscriptionIds.length : externalIds.length
+                target: subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'
             };
         } catch (error) {
             const messageText = error && error.message ? error.message : 'تعذر الاتصال بـ OneSignal.';
@@ -5549,14 +5312,6 @@ class LocalWebServer {
             console.log('✅ [API] Reconciliation Request Saved. ID:', insertedId);
 
                 // --- TRIGGER NOTIFICATION (Notify Admin using OneSignal) ---
-                // Saving the reconciliation and notifying an administrator are
-                // intentionally separate operations.  The response includes a
-                // safe diagnostic result so the sender never confuses a saved
-                // request with a confirmed notification.
-                let notification = {
-                    success: false,
-                    code: 'NOTIFICATION_NOT_ATTEMPTED'
-                };
                 try {
                     let cashierName = `كاشير ${data.cashier_id}`;
 
@@ -5573,41 +5328,13 @@ class LocalWebServer {
                         console.warn('⚠️ Could not fetch cashier name for notification:', dbErr);
                     }
 
-                    notification = await this.sendVerifiedReconciliationNotification(
+                    await this.sendOneSignalNotification(
                         'طلب تصفية جديد 🔔',
-                        `قام ${cashierName} بإرسال طلب تصفية جديد. اضغط للمراجعة.`,
-                        {
-                            type: 'reconciliation_request',
-                            request_id: insertedId,
-                            web_url: this.buildNotificationWebUrl(
-                                `reconciliation-requests.html?request_id=${encodeURIComponent(insertedId)}`
-                            )
-                        }
+                        `قام ${cashierName} بإرسال طلب تصفية جديد. اضغط للمراجعة.`
                     );
-                    if (!notification.success) {
-                        console.warn(`⚠️ [PUSH] Request ${insertedId} was saved but notification was not queued: ${notification.code || 'UNKNOWN_ERROR'}`);
-                    }
-                } catch (e) {
-                    notification = {
-                        success: false,
-                        code: 'NOTIFICATION_UNEXPECTED_ERROR',
-                        error: e && e.message ? e.message : 'تعذر إنشاء الإشعار.'
-                    };
-                    console.error('Notification Error', e);
-                }
+                } catch (e) { console.error('Notification Error', e); }
 
-            this.sendJson(res, {
-                success: true,
-                id: insertedId,
-                notification: {
-                    success: Boolean(notification.success),
-                    code: notification.code || null,
-                    error: notification.success ? null : (notification.error || null),
-                    messageId: notification.messageId || null,
-                    target: notification.target || null,
-                    delivery: notification.delivery || null
-                }
-            });
+            this.sendJson(res, { success: true, id: insertedId });
         } catch (error) {
             console.error('❌ [API] Error creating reconciliation request:', error);
             this.sendJson(

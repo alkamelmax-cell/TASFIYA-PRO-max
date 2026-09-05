@@ -272,12 +272,16 @@ class PostgresManager {
     }
 
     // `CREATE TABLE IF NOT EXISTS` does not update tables that were created by
-    // an older application release. The index creation below therefore has to
-    // be preceded by additive migrations, otherwise PostgreSQL stops at the
-    // first index whose new column is absent (SQLSTATE 42703).
+    // an older application release.  The index creation below therefore has
+    // to be preceded by these additive migrations; otherwise PostgreSQL stops
+    // at the first index whose new column is absent (SQLSTATE 42703).
+    //
+    // Keep this list deliberately additive.  It must never delete, rename, or
+    // rewrite existing data while a shared Neon database is being upgraded.
     async ensureColumnsRequiredByIndexes() {
         const statements = [
             "ALTER TABLE branches ADD COLUMN IF NOT EXISTS customer_code_prefix TEXT DEFAULT ''",
+
             "ALTER TABLE customers ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
             'ALTER TABLE customers ADD COLUMN IF NOT EXISTS branch_id INTEGER',
             "ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''",
@@ -288,6 +292,7 @@ class PostgresManager {
             'ALTER TABLE customers ADD COLUMN IF NOT EXISTS merged_at TIMESTAMP',
             'ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
             'ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+
             'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
             "ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
             'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
@@ -300,6 +305,37 @@ class PostgresManager {
             'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
             "ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
             'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+
+            'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS formula_profile_id INTEGER',
+            'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS formula_settings TEXT',
+            'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS cashbox_posting_enabled INTEGER',
+            'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS invoice_number TEXT',
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS notes TEXT',
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+
             "ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS fiscal_year TEXT DEFAULT ''",
             "ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS closed_year TEXT DEFAULT ''",
             "ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS balance_key TEXT DEFAULT ''",
@@ -314,6 +350,7 @@ class PostgresManager {
             'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS movements_count INTEGER DEFAULT 0',
             'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
             'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+
             'ALTER TABLE branch_cashboxes ADD COLUMN IF NOT EXISTS branch_id INTEGER',
             'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS cashbox_id INTEGER',
             'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS branch_id INTEGER',
@@ -329,6 +366,7 @@ class PostgresManager {
             'ALTER TABLE cashbox_voucher_audit_log ADD COLUMN IF NOT EXISTS branch_id INTEGER',
             "ALTER TABLE cashbox_voucher_audit_log ADD COLUMN IF NOT EXISTS action_type TEXT DEFAULT ''",
             'ALTER TABLE cashbox_voucher_audit_log ADD COLUMN IF NOT EXISTS action_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+
             "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS supplier_name TEXT DEFAULT ''",
             'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
         ];
@@ -451,6 +489,8 @@ class PostgresManager {
             )`,
             `CREATE TABLE IF NOT EXISTS reconciliations (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_number INTEGER NULL,
                 cashier_id INTEGER NOT NULL REFERENCES cashiers(id),
                 accountant_id INTEGER NOT NULL REFERENCES accountants(id),
@@ -460,6 +500,9 @@ class PostgresManager {
                 surplus_deficit DECIMAL(10,2) DEFAULT 0,
                 status TEXT DEFAULT 'draft',
                 notes TEXT,
+                formula_profile_id INTEGER,
+                formula_settings TEXT,
+                cashbox_posting_enabled INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_modified_date TIMESTAMP
@@ -488,18 +531,24 @@ class PostgresManager {
             )`,
             `CREATE TABLE IF NOT EXISTS bank_receipts (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 operation_type TEXT NOT NULL,
                 atm_id INTEGER REFERENCES atms(id),
                 amount DECIMAL(10,2) NOT NULL,
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS cash_receipts (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 denomination DECIMAL(10,2) NOT NULL,
                 quantity INTEGER NOT NULL,
                 total_amount DECIMAL(10,2) NOT NULL,
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS cashbox_vouchers (
@@ -539,16 +588,21 @@ class PostgresManager {
             )`,
             `CREATE TABLE IF NOT EXISTS postpaid_sales (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 customer_id INTEGER,
                 customer_name TEXT NOT NULL,
                 customer_code TEXT DEFAULT '',
                 amount DECIMAL(10,2) NOT NULL,
                 notes TEXT DEFAULT '',
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS customer_receipts (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 customer_id INTEGER,
                 customer_name TEXT NOT NULL,
@@ -556,10 +610,13 @@ class PostgresManager {
                 amount DECIMAL(10,2) NOT NULL,
                 payment_type TEXT NOT NULL,
                 notes TEXT DEFAULT '',
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS manual_postpaid_sales (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 customer_name TEXT NOT NULL,
                 amount DECIMAL(10,2) NOT NULL,
                 reason TEXT,
@@ -567,6 +624,8 @@ class PostgresManager {
             )`,
             `CREATE TABLE IF NOT EXISTS manual_customer_receipts (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 customer_name TEXT NOT NULL,
                 amount DECIMAL(10,2) NOT NULL,
                 reason TEXT,
@@ -574,16 +633,24 @@ class PostgresManager {
             )`,
             `CREATE TABLE IF NOT EXISTS return_invoices (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 invoice_number TEXT NOT NULL,
                 amount DECIMAL(10,2) NOT NULL,
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS suppliers (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 supplier_name TEXT NOT NULL,
+                invoice_number TEXT,
                 amount DECIMAL(10,2) NOT NULL,
+                notes TEXT,
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS settings (
@@ -599,8 +666,8 @@ class PostgresManager {
             await this.pool.query(q);
         }
 
-        // Existing databases must receive additive column upgrades before the
-        // first index is created during startup.
+        // This must run here (not only in migrateSchema), because the indexes
+        // below run before migrateSchema during startup.
         await this.ensureColumnsRequiredByIndexes();
 
         const indexQueries = [
@@ -626,6 +693,33 @@ class PostgresManager {
             'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_id ON manual_customer_receipts(customer_id)',
             'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_code_norm ON manual_customer_receipts(UPPER(TRIM(customer_code)))',
             'CREATE INDEX IF NOT EXISTS idx_manual_receipts_created_date ON manual_customer_receipts(DATE(created_at))',
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliations_sync_source_row_unique
+             ON reconciliations(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_receipts_sync_source_row_unique
+             ON cash_receipts(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_receipts_sync_source_row_unique
+             ON bank_receipts(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_postpaid_sales_sync_source_row_unique
+             ON postpaid_sales(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_receipts_sync_source_row_unique
+             ON customer_receipts(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_postpaid_sync_source_row_unique
+             ON manual_postpaid_sales(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_receipts_sync_source_row_unique
+             ON manual_customer_receipts(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_return_invoices_sync_source_row_unique
+             ON return_invoices(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_suppliers_sync_source_row_unique
+             ON suppliers(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
             'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_year_key ON customer_fiscal_opening_balances(fiscal_year, balance_key)',
             'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_customer_id ON customer_fiscal_opening_balances(customer_id)',
             'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_code ON customer_fiscal_opening_balances(customer_code)',
