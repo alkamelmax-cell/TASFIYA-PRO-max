@@ -17,7 +17,107 @@ const ThermalPrinter80mm = require('./thermal-printer-80mm');
 const LocalWebServer = require('./local-server');
 const { createSecureWebPreferences } = require('./window-security');
 const { hashSecret, verifySecret } = require('./security/auth-service');
-const { startBackgroundSync, stopBackgroundSync, getSyncStatus, setSyncEnabled, getSyncEnabled } = require('./background-sync');
+const { startBackgroundSync, stopBackgroundSync, getSyncStatus, setSyncEnabled, getSyncEnabled, pullRemoteRequestsNow } = require('./background-sync');
+
+let postSaveSyncTimer = null;
+let postSaveSyncRunning = false;
+let postSaveSyncQueued = false;
+
+function parseSyncEnabledSetting(value) {
+    if (value === undefined || value === null) {
+        return true;
+    }
+
+    const normalized = String(value).trim().toLowerCase();
+    if (!normalized) {
+        return true;
+    }
+
+    return !['false', '0', 'no', 'off', 'disabled', 'معطل'].includes(normalized);
+}
+
+function isBackgroundSyncEnabledInDb() {
+    if (!dbManager || !dbManager.db) {
+        return false;
+    }
+
+    try {
+        const row = dbManager.db.prepare(`
+            SELECT setting_value
+            FROM system_settings
+            WHERE category = 'general'
+              AND setting_key = 'sync_enabled'
+            ORDER BY id DESC
+            LIMIT 1
+        `).get();
+
+        return !row || parseSyncEnabledSetting(row.setting_value);
+    } catch (error) {
+        console.warn('⚠️ [SYNC] Could not read sync_enabled setting; assuming enabled:', error?.message || error);
+        return true;
+    }
+}
+
+function ensureBackgroundSyncStarted(reason = 'manual') {
+    if (!dbManager || !dbManager.db) {
+        console.warn(`⚠️ [SYNC] Cannot start background sync for ${reason}: database is not ready`);
+        return false;
+    }
+
+    if (!isBackgroundSyncEnabledInDb()) {
+        setSyncEnabled(false);
+        console.log(`⏸️ [SYNC] Background sync is disabled; skipped ${reason}`);
+        return false;
+    }
+
+    setSyncEnabled(true);
+    startBackgroundSync(dbManager);
+    return true;
+}
+
+function schedulePostSaveSync(reason = 'save') {
+    postSaveSyncQueued = true;
+
+    if (postSaveSyncTimer) {
+        clearTimeout(postSaveSyncTimer);
+    }
+
+    postSaveSyncTimer = setTimeout(async () => {
+        postSaveSyncTimer = null;
+
+        if (postSaveSyncRunning) {
+            return;
+        }
+
+        postSaveSyncRunning = true;
+        postSaveSyncQueued = false;
+
+        try {
+            if (!ensureBackgroundSyncStarted(`post-save:${reason}`)) {
+                return;
+            }
+
+            const { triggerInstantSync } = require('./background-sync');
+            const syncResult = await triggerInstantSync();
+            if (syncResult && syncResult.success) {
+                console.log('⚡ [MAIN] Background sync completed after reconciliation save');
+            } else {
+                console.warn('⚠️ [MAIN] Reconciliation saved locally; background sync did not complete:', {
+                    reason: syncResult?.reason || 'push_failed',
+                    errors: syncResult?.errors || []
+                });
+            }
+        } catch (syncErr) {
+            console.warn('⚠️ [MAIN] Reconciliation saved locally; background sync failed:', syncErr?.message || syncErr);
+        } finally {
+            postSaveSyncRunning = false;
+
+            if (postSaveSyncQueued) {
+                schedulePostSaveSync(`${reason}:queued`);
+            }
+        }
+    }, 1000);
+}
 
 /**
  * Safe console logging that won't crash on EPIPE errors
@@ -61,6 +161,33 @@ function sanitizeFileName(name) {
         .slice(0, 120) || 'report';
 }
 
+function getDefaultReportsSavePath() {
+    try {
+        const basePath = app.getPath('documents') || app.getPath('home');
+        return path.join(basePath, 'Tasfiya Pro', 'reports');
+    } catch (error) {
+        void error;
+        return path.join(process.cwd(), 'reports');
+    }
+}
+
+function prepareDirectoryForDialog(directoryPath) {
+    const normalizedPath = String(directoryPath || '').trim();
+    if (!normalizedPath) {
+        return '';
+    }
+
+    try {
+        if (!fs.existsSync(normalizedPath)) {
+            fs.mkdirSync(normalizedPath, { recursive: true });
+        }
+        return normalizedPath;
+    } catch (error) {
+        console.warn(`⚠️ [IPC] تعذر تجهيز مجلد الحفظ: ${normalizedPath}`, error.message);
+        return '';
+    }
+}
+
 async function getReportsDefaultSavePath() {
     try {
         const savedPath = await dbManager.get(
@@ -73,13 +200,16 @@ async function getReportsDefaultSavePath() {
         );
 
         if (savedPath && savedPath.setting_value) {
-            return savedPath.setting_value;
+            const preparedSavedPath = prepareDirectoryForDialog(savedPath.setting_value);
+            if (preparedSavedPath) {
+                return preparedSavedPath;
+            }
         }
     } catch (error) {
         console.log('ℹ️ [IPC] لم يتم العثور على مسار افتراضي محفوظ للتقارير');
     }
 
-    return null;
+    return prepareDirectoryForDialog(getDefaultReportsSavePath()) || null;
 }
 
 async function getReportsBehaviorSettings() {
@@ -467,16 +597,17 @@ app.on('web-contents-created', (_event, contents) => {
 function createWindow() {
     // Create the browser window with Arabic RTL support
     mainWindow = new BrowserWindow({
-        width: 1400,
-        height: 900,
-        minWidth: 1200,
-        minHeight: 800,
+        width: 1280,
+        height: 820,
+        minWidth: 980,
+        minHeight: 680,
+        resizable: true,
         webPreferences: createSecureWebPreferences(__dirname, {
             devTools: IS_DEV_MODE
         }),
         icon: path.join(__dirname, '../assets/icon.ico'),
         title: 'تصفية برو - Tasfiya Pro',
-        show: true,
+        show: false,
         autoHideMenuBar: IS_CLIENT_BUILD
     });
 
@@ -568,7 +699,15 @@ function createPrintPreviewWindow(printData) {
 // Handle adding new transaction to customer statement
 ipcMain.handle('add-statement-transaction', async (event, data) => {
     try {
-        const { customerName, type, amount, reason } = data;
+        const {
+            customerName,
+            customerCode = '',
+            customerId = null,
+            branchId = null,
+            type,
+            amount,
+            reason
+        } = data;
 
         if (!customerName || !type || amount <= 0) {
             return { success: false, error: 'بيانات غير كاملة' };
@@ -605,6 +744,23 @@ ipcMain.handle('add-statement-transaction', async (event, data) => {
         await dbManager.run("BEGIN TRANSACTION");
 
         try {
+            let customerIdentity = null;
+            const numericCustomerId = Number(customerId);
+            if (Number.isFinite(numericCustomerId) && numericCustomerId > 0) {
+                customerIdentity = dbManager.get(
+                    'SELECT id, customer_name, customer_code, branch_id FROM customers WHERE id = ?',
+                    [numericCustomerId]
+                );
+            }
+
+            if (!customerIdentity && customerName && typeof dbManager.ensureCustomerRegistryRecord === 'function') {
+                customerIdentity = dbManager.ensureCustomerRegistryRecord({
+                    customerName,
+                    customerCode,
+                    branchId
+                });
+            }
+
             const recResult = await dbManager.run(recInsertQuery, recParams);
 
             // Get the last inserted ID
@@ -619,17 +775,21 @@ ipcMain.handle('add-statement-transaction', async (event, data) => {
                 const receiptInsertQuery = `
           INSERT INTO customer_receipts (
             reconciliation_id, 
+            customer_id,
             customer_name, 
+            customer_code,
             amount, 
             payment_type,
             notes,
             created_at
-          ) VALUES (?, ?, ?, 'manual', ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, 'manual', ?, ?)
         `;
 
                 await dbManager.run(receiptInsertQuery, [
                     recId,
-                    customerName,
+                    customerIdentity?.id || null,
+                    customerIdentity?.customer_name || customerName,
+                    customerIdentity?.customer_code || String(customerCode || '').trim().toUpperCase(),
                     amount,
                     reason || '',
                     currentDateTime
@@ -639,16 +799,20 @@ ipcMain.handle('add-statement-transaction', async (event, data) => {
                 const postInsertQuery = `
           INSERT INTO postpaid_sales (
             reconciliation_id, 
+            customer_id,
             customer_name, 
+            customer_code,
             amount, 
             notes,
             created_at
-          ) VALUES (?, ?, ?, ?, ?)
+          ) VALUES (?, ?, ?, ?, ?, ?, ?)
         `;
 
                 await dbManager.run(postInsertQuery, [
                     recId,
-                    customerName,
+                    customerIdentity?.id || null,
+                    customerIdentity?.customer_name || customerName,
+                    customerIdentity?.customer_code || String(customerCode || '').trim().toUpperCase(),
                     amount,
                     reason || '',
                     currentDateTime
@@ -1766,16 +1930,6 @@ function initializeDatabase() {
 
         console.log('✅ [INIT] تم تهيئة قاعدة البيانات بنجاح');
 
-        // Fix reconciliation numbering
-        try {
-            console.log('🔄 [INIT] بدء إصلاح ترقيم التصفيات...');
-            dbManager.fixAllReconciliationNumbers();
-            console.log('✅ [INIT] تم إصلاح ترقيم التصفيات بنجاح');
-        } catch (fixError) {
-            console.error('⚠️ [INIT] حدث خطأ أثناء إصلاح ترقيم التصفيات:', fixError);
-            // Don't fail initialization, but log the error
-        }
-
         return true;
 
     } catch (error) {
@@ -1784,6 +1938,36 @@ function initializeDatabase() {
     }
 }
 
+function initializeThermalPrinter() {
+    thermalPrinter = new ThermalPrinter80mm();
+
+    // Loading saved settings is deferred so opening the application never waits
+    // for printer configuration work.
+    setTimeout(() => {
+        try {
+            const query = `SELECT setting_key, setting_value FROM system_settings WHERE category = 'thermal_printer'`;
+            const results = dbManager?.db?.prepare(query).all() || [];
+            const settings = {};
+
+            for (const row of results) {
+                const key = row.setting_key;
+                const value = row.setting_value;
+                settings[key] = value === 'true'
+                    ? true
+                    : value === 'false'
+                        ? false
+                        : (!isNaN(value) && value !== '' ? parseInt(value, 10) : value);
+            }
+
+            if (Object.keys(settings).length > 0 && thermalPrinter) {
+                thermalPrinter.updateSettings(settings);
+                safeLog('✅ [THERMAL-PRINTER] تم تحميل الإعدادات المحفوظة من قاعدة البيانات');
+            }
+        } catch (loadError) {
+            safeWarn('⚠️ [THERMAL-PRINTER] فشل تحميل الإعدادات المحفوظة: ' + loadError.message);
+        }
+    }, 500);
+}
 
 
 // App event handlers
@@ -1797,65 +1981,32 @@ app.whenReady().then(() => {
         // Initialize PDF generator
         pdfGenerator = new PDFGenerator(dbManager);
 
-        // Initialize Print manager
+        // Register the print manager immediately, but discover Windows printers
+        // after the main window is visible so printer drivers cannot delay launch.
         printManager = new PrintManager();
-        printManager.initialize();
-
-        // Make print manager available to renderer process
         ipcMain.handle('get-print-manager', () => printManager);
 
-        // Initialize thermal printer for 80mm receipts
-        thermalPrinter = new ThermalPrinter80mm();
-
-        // Load saved thermal printer settings from database after a short delay
-        setTimeout(() => {
-            if (dbManager) {
-                try {
-                    const query = `SELECT setting_key, setting_value FROM system_settings WHERE category = 'thermal_printer'`;
-                    const results = dbManager.db.prepare(query).all();
-
-                    if (results && results.length > 0) {
-                        const settings = {};
-                        for (const row of results) {
-                            const key = row.setting_key;
-                            const value = row.setting_value;
-
-                            // Convert string values back to proper types
-                            if (value === 'true') {
-                                settings[key] = true;
-                            } else if (value === 'false') {
-                                settings[key] = false;
-                            } else if (!isNaN(value) && value !== '') {
-                                settings[key] = parseInt(value);
-                            } else {
-                                settings[key] = value;
-                            }
-                        }
-
-                        if (Object.keys(settings).length > 0) {
-                            thermalPrinter.updateSettings(settings);
-                            safeLog('✅ [THERMAL-PRINTER] تم تحميل الإعدادات المحفوظة من قاعدة البيانات');
-                        }
-                    }
-                } catch (loadError) {
-                    safeWarn('⚠️ [THERMAL-PRINTER] فشل تحميل الإعدادات المحفوظة: ' + loadError.message);
-                }
-            }
-        }, 500);
+        // Initialize thermal printer once. Its saved settings are loaded after
+        // the main window begins loading, so startup remains responsive.
+        initializeThermalPrinter();
 
         createWindow();
+
+        setTimeout(() => {
+            void printManager.initialize();
+        }, 1500);
 
         // Initialize automatic backup
         initializeAutoBackup();
 
-        // Start Background Sync to Cloud (only if enabled)
-        // Check if sync is enabled in settings (Default: true)
-        const syncSetting = dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
-        const isSyncEnabled = !syncSetting || syncSetting.setting_value === 'true';
-
-        if (isSyncEnabled) {
-            startBackgroundSync(dbManager);
-            console.log('✅ [APP] Background Sync Service Started (Auto)');
+        // Start Background Sync to Cloud (only if enabled).
+        // Default is enabled. Accept true/1/yes/on and only disable on explicit false-like values.
+        if (isBackgroundSyncEnabledInDb()) {
+            setTimeout(() => {
+                if (ensureBackgroundSyncStarted('launch')) {
+                    console.log('✅ [APP] Background Sync Service Started after launch');
+                }
+            }, 10000);
         } else {
             console.log('⏸️ [APP] Background Sync is disabled in settings, not starting');
             // Ensure the enabled flag is set to false in the sync instance
@@ -1863,13 +2014,15 @@ app.whenReady().then(() => {
         }
 
         // Start Local Web Server
-        try {
-            console.log('🌐 Starting Local Web Server...');
-            webServer = new LocalWebServer(dbManager);
-            webServer.start();
-        } catch (error) {
-            console.error('❌ Failed to start Web Server:', error);
-        }
+        setTimeout(() => {
+            try {
+                console.log('🌐 Starting Local Web Server after desktop launch...');
+                webServer = new LocalWebServer(dbManager);
+                void webServer.start();
+            } catch (error) {
+                console.error('❌ Failed to start Web Server:', error);
+            }
+        }, 3000);
     } else {
         console.error('Failed to initialize database, exiting...');
         app.quit();
@@ -2037,6 +2190,90 @@ app.whenReady().then(() => {
             }
         }
 
+        function getAutoBackupIntervalHours(frequency) {
+            switch (frequency) {
+                case 'daily':
+                    return 24;
+                case 'weekly':
+                    return 24 * 7;
+                case 'monthly':
+                    return 24 * 30;
+                default:
+                    return 0;
+            }
+        }
+
+        function getNextAutoBackupAt(frequency, lastBackupAt) {
+            const intervalHours = getAutoBackupIntervalHours(frequency);
+            if (!intervalHours || !lastBackupAt) {
+                return '';
+            }
+
+            const lastBackupDate = new Date(lastBackupAt);
+            if (Number.isNaN(lastBackupDate.getTime())) {
+                return '';
+            }
+
+            return new Date(lastBackupDate.getTime() + (intervalHours * 60 * 60 * 1000)).toISOString();
+        }
+
+        function areSameBackupPath(firstPath, secondPath) {
+            if (!firstPath || !secondPath) {
+                return false;
+            }
+
+            try {
+                return path.resolve(firstPath).toLowerCase() === path.resolve(secondPath).toLowerCase();
+            } catch (_error) {
+                return String(firstPath).trim().toLowerCase() === String(secondPath).trim().toLowerCase();
+            }
+        }
+
+        async function resolveWritableAutoBackupPath(configuredBackupPath) {
+            const configuredPathReady = await verifyBackupDirectory(configuredBackupPath);
+            if (configuredPathReady) {
+                upsertBackupRuntimeSetting('last_auto_backup_effective_path', configuredBackupPath);
+                upsertBackupRuntimeSetting('last_auto_backup_warning', '');
+                return {
+                    success: true,
+                    backupPath: configuredBackupPath,
+                    configuredBackupPath,
+                    fallbackBackupPath: '',
+                    usedFallback: false,
+                    warning: ''
+                };
+            }
+
+            const fallbackBackupPath = getDefaultAutoBackupPath();
+            if (fallbackBackupPath && !areSameBackupPath(configuredBackupPath, fallbackBackupPath)) {
+                const fallbackPathReady = await verifyBackupDirectory(fallbackBackupPath);
+                if (fallbackPathReady) {
+                    const warning = `تعذر استخدام مجلد النسخ الاحتياطي المحدد (${configuredBackupPath})، تم استخدام المجلد الافتراضي مؤقتاً: ${fallbackBackupPath}`;
+                    upsertBackupRuntimeSetting('last_auto_backup_effective_path', fallbackBackupPath);
+                    upsertBackupRuntimeSetting('last_auto_backup_warning', warning);
+                    return {
+                        success: true,
+                        backupPath: fallbackBackupPath,
+                        configuredBackupPath,
+                        fallbackBackupPath,
+                        usedFallback: true,
+                        warning
+                    };
+                }
+            }
+
+            return {
+                success: false,
+                backupPath: configuredBackupPath,
+                configuredBackupPath,
+                fallbackBackupPath: '',
+                usedFallback: false,
+                warning: '',
+                reason: 'path-not-writable',
+                error: `مجلد النسخ الاحتياطي غير قابل للكتابة أو غير متصل: ${configuredBackupPath}`
+            };
+        }
+
         async function runAutoBackupCycle(trigger = 'interval') {
             if (autoBackupInProgress) {
                 return { success: true, skipped: true, reason: 'in-progress' };
@@ -2067,13 +2304,25 @@ app.whenReady().then(() => {
                     return { success: false, skipped: true, reason: 'path-missing', error: message };
                 }
 
-                const backupPathReady = await verifyBackupDirectory(backupPath);
-                if (!backupPathReady) {
-                    const message = 'مجلد النسخ الاحتياطي غير قابل للكتابة';
+                const pathResolution = await resolveWritableAutoBackupPath(backupPath);
+                if (!pathResolution.success) {
+                    const message = pathResolution.error || 'مجلد النسخ الاحتياطي غير قابل للكتابة';
                     upsertBackupRuntimeSetting('last_auto_backup_status', 'failed');
                     upsertBackupRuntimeSetting('last_auto_backup_error', message);
-                    notifyAutoBackupStatus('error', message, { trigger, frequency, backupPath });
-                    return { success: false, skipped: true, reason: 'path-not-writable', error: message };
+                    notifyAutoBackupStatus('error', message, {
+                        trigger,
+                        frequency,
+                        backupPath,
+                        configuredBackupPath: backupPath
+                    });
+                    return {
+                        success: false,
+                        skipped: true,
+                        reason: pathResolution.reason || 'path-not-writable',
+                        error: message,
+                        backupPath,
+                        configuredBackupPath: backupPath
+                    };
                 }
 
                 let lastSuccessfulBackupAt = readSystemSettingValue('backup', 'last_auto_backup_at');
@@ -2093,15 +2342,40 @@ app.whenReady().then(() => {
 
                 const now = new Date();
                 const backupDue = shouldRunAutoBackup(frequency, lastSuccessfulBackupAt, now);
+                const nextBackupAt = getNextAutoBackupAt(frequency, lastSuccessfulBackupAt);
+                upsertBackupRuntimeSetting('last_auto_backup_next_at', nextBackupAt || '');
                 if (!backupDue) {
                     console.log(`⏭️ [AUTO-BACKUP] لا حاجة لنسخ احتياطي ${frequency}`);
-                    return { success: true, skipped: true, reason: 'not-due' };
+                    const result = {
+                        success: true,
+                        skipped: true,
+                        reason: 'not-due',
+                        frequency,
+                        lastBackupAt: lastSuccessfulBackupAt,
+                        nextBackupAt,
+                        backupPath: pathResolution.backupPath,
+                        configuredBackupPath: pathResolution.configuredBackupPath,
+                        fallbackBackupPath: pathResolution.fallbackBackupPath,
+                        warning: pathResolution.warning
+                    };
+                    if (pathResolution.usedFallback && trigger !== 'interval') {
+                        notifyAutoBackupStatus('warning', pathResolution.warning, {
+                            trigger,
+                            frequency,
+                            backupPath: pathResolution.backupPath,
+                            configuredBackupPath: pathResolution.configuredBackupPath,
+                            fallbackBackupPath: pathResolution.fallbackBackupPath,
+                            lastBackupAt: lastSuccessfulBackupAt,
+                            nextBackupAt
+                        });
+                    }
+                    return result;
                 }
 
                 console.log(`🔄 [AUTO-BACKUP] تنفيذ نسخة احتياطية ${frequency}...`);
                 const timestamp = now.toISOString().replace(/\..+$/, '').replace(/:/g, '-').replace('T', '_');
                 const backupFileName = `casher_auto_backup_${frequency}_${timestamp}.json`;
-                const backupFilePath = path.join(backupPath, backupFileName);
+                const backupFilePath = path.join(pathResolution.backupPath, backupFileName);
 
                 const backupData = await collectDatabaseData();
                 const result = await saveBackupFile(backupFilePath, backupData);
@@ -2115,7 +2389,9 @@ app.whenReady().then(() => {
                     notifyAutoBackupStatus('error', `فشل إنشاء النسخة الاحتياطية التلقائية: ${failMessage}`, {
                         trigger,
                         frequency,
-                        backupPath
+                        backupPath: pathResolution.backupPath,
+                        configuredBackupPath: pathResolution.configuredBackupPath,
+                        fallbackBackupPath: pathResolution.fallbackBackupPath
                     });
                     return { success: false, created: false, error: failMessage };
                 }
@@ -2125,14 +2401,36 @@ app.whenReady().then(() => {
                 upsertBackupRuntimeSetting('last_auto_backup_file', backupFilePath);
                 upsertBackupRuntimeSetting('last_auto_backup_status', 'success');
                 upsertBackupRuntimeSetting('last_auto_backup_error', '');
+                upsertBackupRuntimeSetting('last_auto_backup_next_at', getNextAutoBackupAt(frequency, now.toISOString()));
+                upsertBackupRuntimeSetting('last_auto_backup_effective_path', pathResolution.backupPath);
+                upsertBackupRuntimeSetting('last_auto_backup_warning', pathResolution.warning || '');
                 upsertBackupRuntimeSetting(`backup_${frequency}`, 'success');
-                notifyAutoBackupStatus('success', 'تم إنشاء نسخة احتياطية تلقائية بنجاح', {
-                    trigger,
-                    frequency,
-                    backupFilePath
-                });
+                notifyAutoBackupStatus(
+                    'success',
+                    pathResolution.usedFallback
+                        ? 'تم إنشاء نسخة احتياطية تلقائية في المجلد الافتراضي لأن المجلد المحدد غير متاح'
+                        : 'تم إنشاء نسخة احتياطية تلقائية بنجاح',
+                    {
+                        trigger,
+                        frequency,
+                        backupFilePath,
+                        backupPath: pathResolution.backupPath,
+                        configuredBackupPath: pathResolution.configuredBackupPath,
+                        fallbackBackupPath: pathResolution.fallbackBackupPath,
+                        warning: pathResolution.warning
+                    }
+                );
 
-                return { success: true, created: true, backupFilePath, frequency };
+                return {
+                    success: true,
+                    created: true,
+                    backupFilePath,
+                    frequency,
+                    backupPath: pathResolution.backupPath,
+                    configuredBackupPath: pathResolution.configuredBackupPath,
+                    fallbackBackupPath: pathResolution.fallbackBackupPath,
+                    warning: pathResolution.warning
+                };
             } catch (error) {
                 const failMessage = error && error.message ? error.message : 'خطأ غير معروف';
                 console.error('❌ [AUTO-BACKUP] خطأ في النسخ الاحتياطي التلقائي:', error);
@@ -2150,8 +2448,10 @@ app.whenReady().then(() => {
         bootstrapAutoBackupDefaults();
         runAutoBackupCheckNow = runAutoBackupCycle;
 
-        // Immediate check on startup (do not wait one hour).
-        void runAutoBackupCycle('startup');
+        // Keep disk copying away from the critical launch path.
+        setTimeout(() => {
+            void runAutoBackupCycle('startup');
+        }, 30000);
 
         if (autoBackupIntervalId) {
             clearInterval(autoBackupIntervalId);
@@ -2160,7 +2460,7 @@ app.whenReady().then(() => {
             void runAutoBackupCycle('interval');
         }, CHECK_INTERVAL_MS);
 
-        console.log('✅ [AUTO-BACKUP] تم تفعيل الفحص التلقائي كل ساعة مع فحص فوري عند التشغيل');
+        console.log('✅ [AUTO-BACKUP] تم تفعيل الفحص التلقائي كل ساعة مع فحص مؤجل بعد التشغيل');
     }
 
     /**
@@ -2241,6 +2541,7 @@ app.whenReady().then(() => {
                 'cash_receipts',
                 'postpaid_sales',
                 'customer_receipts',
+                'customer_fiscal_opening_balances',
                 'return_invoices',
                 'suppliers',
                 'manual_postpaid_sales',
@@ -2249,7 +2550,21 @@ app.whenReady().then(() => {
                 'branch_cashboxes',
                 'cashbox_vouchers',
                 'cashbox_voucher_audit_log',
-                'system_settings'
+                'system_settings',
+                'settings',
+                'reconciliation_requests',
+                'archived_years',
+                'archived_reconciliations',
+                'archived_bank_receipts',
+                'archived_cash_receipts',
+                'archived_postpaid_sales',
+                'archived_customer_receipts',
+                'archived_manual_postpaid_sales',
+                'archived_manual_customer_receipts',
+                'archived_return_invoices',
+                'archived_suppliers',
+                'reconciliation_custom_table_definitions',
+                'reconciliation_custom_entries'
             ];
 
             // Get data for each table
@@ -2317,18 +2632,49 @@ app.on('window-all-closed', () => {
 
 // Manual transaction handlers
 ipcMain.handle('add-manual-transaction', async (event, data) => {
-    const { customerName, type, amount, reason, date } = data;
+    const { customerName, customerCode = '', customerId = null, branchId = null, type, amount, reason, date } = data;
 
     try {
+        let customerIdentity = null;
+        const numericCustomerId = Number(customerId);
+        if (Number.isFinite(numericCustomerId) && numericCustomerId > 0) {
+            customerIdentity = dbManager.get(
+                'SELECT id, customer_name, customer_code, branch_id FROM customers WHERE id = ?',
+                [numericCustomerId]
+            );
+        }
+
+        if (!customerIdentity && customerName && typeof dbManager.ensureCustomerRegistryRecord === 'function') {
+            customerIdentity = dbManager.ensureCustomerRegistryRecord({
+                customerName,
+                customerCode,
+                branchId
+            });
+        }
+
         if (type === 'receipt') {
             await dbManager.run(
-                'INSERT INTO manual_customer_receipts (customer_name, amount, reason, created_at) VALUES (?, ?, ?, ?)',
-                [customerName, amount, reason, date]
+                'INSERT INTO manual_customer_receipts (customer_id, customer_name, customer_code, amount, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+                [
+                    customerIdentity?.id || null,
+                    customerIdentity?.customer_name || customerName,
+                    customerIdentity?.customer_code || String(customerCode || '').trim().toUpperCase(),
+                    amount,
+                    reason,
+                    date
+                ]
             );
         } else if (type === 'postpaid') {
             await dbManager.run(
-                'INSERT INTO manual_postpaid_sales (customer_name, amount, reason, created_at) VALUES (?, ?, ?, ?)',
-                [customerName, amount, reason, date]
+                'INSERT INTO manual_postpaid_sales (customer_id, customer_name, customer_code, amount, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+                [
+                    customerIdentity?.id || null,
+                    customerIdentity?.customer_name || customerName,
+                    customerIdentity?.customer_code || String(customerCode || '').trim().toUpperCase(),
+                    amount,
+                    reason,
+                    date
+                ]
             );
         }
 
@@ -2605,14 +2951,9 @@ ipcMain.handle('complete-reconciliation', async (
             console.warn('⚠️ [MAIN] Auto cashbox sync failed after reconciliation completion:', cashboxSyncError.message);
         }
 
-        // Trigger instant sync after completion
-        try {
-            const { triggerInstantSync } = require('./background-sync');
-            triggerInstantSync();
-            console.log('⚡ [MAIN] Instant sync triggered after reconciliation completion');
-        } catch (syncErr) {
-            console.warn('⚠️ [MAIN] Failed to trigger instant sync:', syncErr);
-        }
+        // حفظ التصفية يجب أن يبقى محلياً وسريعاً.
+        // لا ننتظر المزامنة هنا حتى لا يعلق زر "جاري الحفظ" إذا كان الرابط بطيئاً أو توجد مزامنة جارية.
+        schedulePostSaveSync('complete-reconciliation');
 
         return result;
     } catch (error) {
@@ -3326,7 +3667,7 @@ ipcMain.handle('get-sync-status', async () => {
         let isEnabled = true;
         if (dbManager) {
             const row = dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
-            if (row && row.setting_value === 'false') isEnabled = false;
+            isEnabled = !row || parseSyncEnabledSetting(row.setting_value);
         }
 
         // Combine both checks
@@ -3336,6 +3677,21 @@ ipcMain.handle('get-sync-status', async () => {
     } catch (e) {
         console.error('Error checking sync status:', e);
         return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('pull-reconciliation-requests', async () => {
+    try {
+        if (!dbManager) {
+            throw new Error('Database not initialized');
+        }
+
+        // This is an explicit, inbound-only refresh initiated by the requests screen.
+        // It must remain available while the heavier periodic table sync is disabled.
+        return await pullRemoteRequestsNow(dbManager, { allowWhenDisabled: true });
+    } catch (error) {
+        console.error('Error pulling reconciliation requests:', error);
+        return { success: false, error: error.message };
     }
 });
 
@@ -3370,6 +3726,24 @@ ipcMain.handle('toggle-sync', async (event, enable) => {
     } catch (e) {
         console.error('Error toggling sync:', e);
         return { success: false, error: e.message };
+    }
+});
+
+ipcMain.handle('clear-offline-indexeddb', async (event) => {
+    try {
+        const targetSession = event.sender && event.sender.session;
+        if (!targetSession || typeof targetSession.clearStorageData !== 'function') {
+            return { success: false, error: 'session_unavailable' };
+        }
+
+        await targetSession.clearStorageData({
+            storages: ['indexeddb']
+        });
+
+        return { success: true };
+    } catch (error) {
+        console.error('❌ Failed to clear offline IndexedDB storage:', error);
+        return { success: false, error: error.message };
     }
 });
 
@@ -3614,30 +3988,135 @@ ipcMain.handle('update-customer-data', async (event, data) => {
             throw new Error('قاعدة البيانات غير متاحة');
         }
 
-        const { oldCustomerName, newName } = data;
+        const {
+            oldCustomerName,
+            newName,
+            customerId = null,
+            customerCode = '',
+            branchId = null
+        } = data;
 
         if (oldCustomerName !== newName) {
-            // تحديث اسم العميل في جميع الجداول
             await dbManager.run('BEGIN TRANSACTION');
 
             try {
+                const normalizedCode = String(customerCode || '').trim().toUpperCase();
+                const numericCustomerId = Number(customerId);
+                const normalizedBranchId = Number(branchId);
+                const hasCustomerId = Number.isFinite(numericCustomerId) && numericCustomerId > 0;
+                const hasBranchId = Number.isFinite(normalizedBranchId) && normalizedBranchId > 0;
+                const transactionTables = [
+                    'postpaid_sales',
+                    'customer_receipts',
+                    'manual_postpaid_sales',
+                    'manual_customer_receipts'
+                ];
+
+                if (hasCustomerId) {
+                    await dbManager.run(
+                        `UPDATE customers
+                         SET customer_name = ?, updated_at = CURRENT_TIMESTAMP
+                         WHERE id = ?`,
+                        [newName, numericCustomerId]
+                    );
+
+                    let totalChanges = 0;
+                    for (const tableName of transactionTables) {
+                        const result = await dbManager.run(
+                            `UPDATE ${tableName}
+                             SET customer_name = ?
+                             WHERE customer_id = ?
+                                OR (? <> '' AND UPPER(TRIM(COALESCE(customer_code, ''))) = ?)`,
+                            [newName, numericCustomerId, normalizedCode, normalizedCode]
+                        );
+                        totalChanges += Number(result?.changes || 0);
+                    }
+
+                    await dbManager.run('COMMIT');
+                    console.log('✅ [IPC] تم تحديث بيانات العميل بالمعرف بنجاح');
+                    return { success: true, changes: totalChanges };
+                }
+
+                if (normalizedCode) {
+                    await dbManager.run(
+                        `UPDATE customers
+                         SET customer_name = ?, updated_at = CURRENT_TIMESTAMP
+                         WHERE UPPER(TRIM(COALESCE(customer_code, ''))) = ?`,
+                        [newName, normalizedCode]
+                    );
+
+                    let totalChanges = 0;
+                    for (const tableName of transactionTables) {
+                        const result = await dbManager.run(
+                            `UPDATE ${tableName}
+                             SET customer_name = ?
+                             WHERE UPPER(TRIM(COALESCE(customer_code, ''))) = ?`,
+                            [newName, normalizedCode]
+                        );
+                        totalChanges += Number(result?.changes || 0);
+                    }
+
+                    await dbManager.run('COMMIT');
+                    console.log('✅ [IPC] تم تحديث بيانات العميل بالكود بنجاح');
+                    return { success: true, changes: totalChanges };
+                }
+
                 await dbManager.run(
-                    `UPDATE customer_receipts 
-           SET customer_name = ?
-           WHERE customer_name = ?`,
+                    hasBranchId
+                        ? `UPDATE customers
+                           SET customer_name = ?, updated_at = CURRENT_TIMESTAMP
+                           WHERE TRIM(COALESCE(customer_name, '')) = ?
+                             AND COALESCE(branch_id, 0) = ?`
+                        : `UPDATE customers
+                           SET customer_name = ?, updated_at = CURRENT_TIMESTAMP
+                           WHERE TRIM(COALESCE(customer_name, '')) = ?`,
+                    hasBranchId ? [newName, oldCustomerName, normalizedBranchId] : [newName, oldCustomerName]
+                );
+
+                const reconciledCondition = hasBranchId
+                    ? `WHERE customer_name = ?
+                       AND reconciliation_id IN (
+                         SELECT r.id
+                         FROM reconciliations r
+                         LEFT JOIN cashiers c ON c.id = r.cashier_id
+                         WHERE COALESCE(c.branch_id, 0) = ?
+                       )`
+                    : 'WHERE customer_name = ?';
+
+                const reconciledParams = hasBranchId
+                    ? [newName, oldCustomerName, normalizedBranchId]
+                    : [newName, oldCustomerName];
+
+                const postpaidResult = await dbManager.run(
+                    `UPDATE postpaid_sales SET customer_name = ? ${reconciledCondition}`,
+                    reconciledParams
+                );
+
+                const receiptResult = await dbManager.run(
+                    `UPDATE customer_receipts SET customer_name = ? ${reconciledCondition}`,
+                    reconciledParams
+                );
+
+                const manualPostpaidResult = await dbManager.run(
+                    'UPDATE manual_postpaid_sales SET customer_name = ? WHERE customer_name = ?',
                     [newName, oldCustomerName]
                 );
 
-                await dbManager.run(
-                    `UPDATE postpaid_sales 
-           SET customer_name = ?
-           WHERE customer_name = ?`,
+                const manualReceiptResult = await dbManager.run(
+                    'UPDATE manual_customer_receipts SET customer_name = ? WHERE customer_name = ?',
                     [newName, oldCustomerName]
                 );
 
                 await dbManager.run('COMMIT');
                 console.log('✅ [IPC] تم تحديث بيانات العميل بنجاح');
-                return { success: true };
+                return {
+                    success: true,
+                    changes:
+                        Number(postpaidResult?.changes || 0) +
+                        Number(receiptResult?.changes || 0) +
+                        Number(manualPostpaidResult?.changes || 0) +
+                        Number(manualReceiptResult?.changes || 0)
+                };
             } catch (error) {
                 await dbManager.run('ROLLBACK');
                 console.error('❌ [IPC] خطأ في تحديث بيانات العميل:', error);

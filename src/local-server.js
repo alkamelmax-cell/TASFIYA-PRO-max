@@ -8,24 +8,15 @@ const zlib = require('zlib');
 const { parse } = require('url');
 const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
 const { WebSessionStore } = require('./security/web-session-store');
-const { filterVisibleBranches } = require('./app/branch-visibility');
-const { buildCashboxVoucherSyncKey } = require('./app/cashbox-voucher-utils');
 
 const SESSION_COOKIE_NAME = 'tasfiya_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
 const DEFAULT_JSON_BODY_LIMIT_BYTES = 512 * 1024;
 const LARGE_JSON_BODY_LIMIT_BYTES = 8 * 1024 * 1024;
 const JSON_COMPRESSION_MIN_BYTES = 1024;
-const DEFAULT_LOOKUP_CACHE_TTL_MS = 10 * 60 * 1000;
-const DEFAULT_LOOKUP_CACHE_MAX_STALE_MS = 60 * 60 * 1000;
 
 function isTruthyQueryValue(value) {
     return value === true || value === '1' || value === 'true';
-}
-
-function parsePositiveIntegerSetting(value, fallback) {
-    const numeric = Number(value);
-    return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : fallback;
 }
 
 function createPayloadEtag(payload) {
@@ -89,6 +80,54 @@ function normalizeCustomerCodeValue(value) {
     return ['', '-', '–', '—'].includes(normalized) ? '' : normalized;
 }
 
+function normalizeSyncServerBaseUrl(value) {
+    const rawValue = String(value || '').trim();
+    if (!rawValue) {
+        return '';
+    }
+
+    try {
+        const parsedUrl = new URL(rawValue);
+        if (parsedUrl.protocol !== 'https:') {
+            return '';
+        }
+
+        parsedUrl.hash = '';
+        parsedUrl.search = '';
+        let pathname = parsedUrl.pathname.replace(/\/+$/, '');
+        pathname = pathname
+            .replace(/\/api\/sync\/users$/i, '')
+            .replace(/\/api$/i, '')
+            .replace(/\/+$/, '');
+
+        return `${parsedUrl.origin}${pathname && pathname !== '/' ? pathname : ''}`.replace(/\/+$/, '');
+    } catch (_error) {
+        return '';
+    }
+}
+
+function readConfiguredSyncServerBaseUrl(dbManager) {
+    if (!dbManager || !dbManager.db || typeof dbManager.db.prepare !== 'function') {
+        return '';
+    }
+
+    try {
+        const row = dbManager.db.prepare(`
+            SELECT setting_value
+            FROM system_settings
+            WHERE category = 'general'
+              AND setting_key = 'sync_server_url'
+              AND setting_value IS NOT NULL
+              AND TRIM(setting_value) <> ''
+            ORDER BY id DESC
+            LIMIT 1
+        `).get();
+        return normalizeSyncServerBaseUrl(row && row.setting_value);
+    } catch (_error) {
+        return '';
+    }
+}
+
 function normalizePositiveInteger(value) {
     const numeric = Number(value);
     return Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : null;
@@ -113,14 +152,25 @@ function normalizeCustomerRow(row) {
         customer_id: id,
         customer_name: customerName,
         customer_code: customerCode,
-        branch_id: branchId
+        branch_id: branchId,
+        matched_customer_name: normalizeCustomerNameValue(row.matched_customer_name || customerName),
+        matched_customer_code: normalizeCustomerCodeValue(row.matched_customer_code),
+        matched_customer_id: normalizePositiveInteger(row.matched_customer_id) || id,
+        is_favorite: Number(row.is_favorite || 0) === 1 ? 1 : 0,
+        merged_into_customer_id: normalizePositiveInteger(row.merged_into_customer_id)
     };
 }
 
-function isSameCustomerName(a, b) {
-    const left = normalizeCustomerNameValue(a);
-    const right = normalizeCustomerNameValue(b);
-    return Boolean(left && right && left === right);
+function isCustomerNameMatchOrAlias(customer, name) {
+    const normalizedName = normalizeCustomerNameValue(name);
+    if (!normalizedName) {
+        return false;
+    }
+
+    return (
+        normalizeCustomerNameValue(customer?.customer_name) === normalizedName
+        || normalizeCustomerNameValue(customer?.matched_customer_name) === normalizedName
+    );
 }
 
 function isSameOrOpenBranch(rowBranchId, branchId) {
@@ -153,43 +203,39 @@ function uniqueCustomerRows(rows = []) {
     return result;
 }
 
-class LocalWebServer {
-    constructor(dbManager, port = 4000, options = {}) {
-        const normalizedPort = Number(port);
+function uniqueCustomerAliasRows(rows = []) {
+    const seen = new Set();
+    const result = [];
 
+    rows.forEach((row) => {
+        const normalized = normalizeCustomerRow(row);
+        if (!normalized || !normalized.customer_name) {
+            return;
+        }
+
+        const key = [
+            normalized.id || '',
+            normalized.customer_code || '',
+            normalized.matched_customer_id || '',
+            normalized.matched_customer_name || ''
+        ].join('|');
+        if (seen.has(key)) {
+            return;
+        }
+
+        seen.add(key);
+        result.push(normalized);
+    });
+
+    return result;
+}
+
+class LocalWebServer {
+    constructor(dbManager, port = 4000) {
         this.dbManager = dbManager;
-        this.port = Number.isFinite(normalizedPort) ? normalizedPort : 4000;
-        this.host = options.host || process.env.HOST || '0.0.0.0';
-        this.hasExplicitPort = options.explicitPort !== undefined
-            ? Boolean(options.explicitPort)
-            : Boolean(process.env.PORT);
+        this.port = port;
         this.server = null;
         this.sessionStore = new WebSessionStore({ ttlMs: SESSION_TTL_MS });
-        this.databaseMode = this.dbManager && this.dbManager.pool ? 'postgres' : 'sqlite';
-        this.databaseReady = options.databaseReady !== undefined
-            ? Boolean(options.databaseReady)
-            : Boolean(this.dbManager && this.dbManager.db && typeof this.dbManager.db.prepare === 'function' && !this.dbManager.pool);
-        this.databaseStatus = this.databaseReady ? 'ready' : 'initializing';
-        this.databaseReadyAt = this.databaseReady ? new Date().toISOString() : null;
-        this.lastDatabaseError = null;
-        this.startedAt = null;
-        this.indexesReady = false;
-        this.ensureIndexesInFlight = null;
-        this.lookupCacheTtlMs = parsePositiveIntegerSetting(
-            options.lookupCacheTtlMs || process.env.TASFIYA_LOOKUP_CACHE_TTL_MS,
-            DEFAULT_LOOKUP_CACHE_TTL_MS
-        );
-        this.lookupCacheMaxStaleMs = Math.max(
-            this.lookupCacheTtlMs,
-            parsePositiveIntegerSetting(
-                options.lookupCacheMaxStaleMs || process.env.TASFIYA_LOOKUP_CACHE_MAX_STALE_MS,
-                DEFAULT_LOOKUP_CACHE_MAX_STALE_MS
-            )
-        );
-        this.lookupCache = new Map();
-        this.cashierBranchCache = new Map();
-        this.serialSequencesReady = false;
-        this.ensureSerialSequencesInFlight = null;
     }
 
     async readJsonBody(req, options = {}) {
@@ -258,9 +304,7 @@ class LocalWebServer {
             `${prefix}status`,
             `${prefix}notes`,
             `${prefix}created_at`,
-            `${prefix}updated_at`,
-            `${prefix}restored_at`,
-            `${prefix}restored_reason`
+            `${prefix}updated_at`
         ];
 
         if (includeDetailsMode === 'parsed' || includeDetailsMode === 'raw') {
@@ -282,8 +326,6 @@ class LocalWebServer {
             notes: requestRow.notes,
             created_at: requestRow.created_at,
             updated_at: requestRow.updated_at,
-            restored_at: requestRow.restored_at || null,
-            restored_reason: requestRow.restored_reason || '',
             cashier_name: requestRow.cashier_name || 'غير معروف',
             branch_id: requestRow.branch_id || null
         };
@@ -306,103 +348,6 @@ class LocalWebServer {
         }
 
         return normalizedRow;
-    }
-
-    setDatabaseReady(metadata = {}) {
-        this.databaseReady = true;
-        this.databaseStatus = metadata.status || 'ready';
-        this.databaseReadyAt = new Date().toISOString();
-        this.lastDatabaseError = null;
-
-        if (this.server && this.server.listening) {
-            void this.runDatabaseStartupMaintenance();
-        }
-    }
-
-    setDatabaseUnavailable(error = null, status = 'unavailable') {
-        this.databaseReady = false;
-        this.databaseStatus = status;
-        this.databaseReadyAt = null;
-        this.indexesReady = false;
-        this.ensureIndexesInFlight = null;
-        this.serialSequencesReady = false;
-        this.ensureSerialSequencesInFlight = null;
-        this.lastDatabaseError = error
-            ? {
-                message: error.message || String(error),
-                name: error.name || 'Error',
-                at: new Date().toISOString()
-            }
-            : null;
-    }
-
-    getHealthPayload() {
-        return {
-            success: true,
-            status: 'ok',
-            startedAt: this.startedAt,
-            service: 'tasfiya-web',
-            database: {
-                mode: this.databaseMode,
-                ready: this.databaseReady,
-                status: this.databaseStatus,
-                readyAt: this.databaseReadyAt,
-                lastError: this.lastDatabaseError
-            }
-        };
-    }
-
-    isHealthRoute(pathname) {
-        return pathname === '/health'
-            || pathname === '/healthz'
-            || pathname === '/ready'
-            || pathname === '/readyz';
-    }
-
-    isStaticAssetPath(pathname) {
-        return pathname.endsWith('.js')
-            || pathname.endsWith('.json')
-            || pathname.startsWith('/css/')
-            || pathname.startsWith('/js/')
-            || pathname.startsWith('/assets/');
-    }
-
-    isDatabaseOptionalApi(pathname, method) {
-        return (pathname === '/api/session' && method === 'GET')
-            || (pathname === '/api/logout' && method === 'POST');
-    }
-
-    shouldBlockUntilDatabaseReady(pathname, method) {
-        if (!pathname.startsWith('/api/')) {
-            return false;
-        }
-
-        return !this.isDatabaseOptionalApi(pathname, method);
-    }
-
-    handleHealthRequest(res, pathname) {
-        const readinessRoute = pathname === '/ready' || pathname === '/readyz';
-        const payload = this.getHealthPayload();
-        const statusCode = readinessRoute && !this.databaseReady ? 503 : 200;
-        this.sendJson(res, payload, { statusCode });
-    }
-
-    sendDatabaseUnavailable(res) {
-        this.sendJson(
-            res,
-            {
-                success: false,
-                code: 'SERVICE_INITIALIZING',
-                error: 'الخدمة قيد التهيئة، يرجى المحاولة بعد قليل',
-                database: this.getHealthPayload().database
-            },
-            {
-                statusCode: 503,
-                headers: {
-                    'Retry-After': '5'
-                }
-            }
-        );
     }
 
     parseCookies(req) {
@@ -467,6 +412,7 @@ class LocalWebServer {
             // Desktop-to-cloud sync bridge routes do not carry browser sessions.
             || (pathname === '/api/sync/users' && method === 'POST')
             || (pathname === '/api/reconciliation-requests' && method === 'GET')
+            || (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && method === 'GET')
             || (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && method === 'DELETE')
         );
     }
@@ -559,134 +505,95 @@ class LocalWebServer {
     }
 
     async ensureIndexes() {
-        if (this.indexesReady) {
-            return true;
-        }
+        try {
+            console.log('🚀 [PERF] Checking database indexes...');
+            const pool = this.dbManager.pool; // Check if running on Postgres (Render)
 
-        if (this.ensureIndexesInFlight) {
-            return this.ensureIndexesInFlight;
-        }
+            const indexes = [
+                // Reconciliations
+                "CREATE INDEX IF NOT EXISTS idx_reconciliations_date ON reconciliations(reconciliation_date)",
+                "CREATE INDEX IF NOT EXISTS idx_reconciliations_status ON reconciliations(status)",
+                "CREATE INDEX IF NOT EXISTS idx_reconciliations_cashier ON reconciliations(cashier_id)",
 
-        this.ensureIndexesInFlight = (async () => {
-            try {
-                console.log('🚀 [PERF] Checking database indexes...');
-                const pool = this.dbManager && this.dbManager.pool;
-                const hasPrepare = Boolean(this.dbManager && this.dbManager.db && typeof this.dbManager.db.prepare === 'function');
+                // Sales & Receipts (CRITICAL for Customer Ledger)
+                "CREATE INDEX IF NOT EXISTS idx_postpaid_customer ON postpaid_sales(customer_name)",
+                "CREATE INDEX IF NOT EXISTS idx_postpaid_customer_code_norm ON postpaid_sales(UPPER(TRIM(customer_code)))",
+                "CREATE INDEX IF NOT EXISTS idx_postpaid_created_date ON postpaid_sales(DATE(created_at))",
+                "CREATE INDEX IF NOT EXISTS idx_postpaid_rec_id ON postpaid_sales(reconciliation_id)",
+                "CREATE INDEX IF NOT EXISTS idx_receipts_customer ON customer_receipts(customer_name)",
+                "CREATE INDEX IF NOT EXISTS idx_receipts_customer_code_norm ON customer_receipts(UPPER(TRIM(customer_code)))",
+                "CREATE INDEX IF NOT EXISTS idx_receipts_created_date ON customer_receipts(DATE(created_at))",
+                "CREATE INDEX IF NOT EXISTS idx_receipts_rec_id ON customer_receipts(reconciliation_id)",
 
-                if (!pool && !hasPrepare) {
-                    console.log('⏳ [PERF] Skipping index verification until database is available');
-                    return false;
+                // Suppliers
+                "CREATE INDEX IF NOT EXISTS idx_suppliers_supplier ON suppliers(supplier_name)",
+                "CREATE INDEX IF NOT EXISTS idx_suppliers_supplier_norm ON suppliers(UPPER(TRIM(supplier_name)))",
+                "CREATE INDEX IF NOT EXISTS idx_suppliers_created_date ON suppliers(DATE(created_at))",
+
+                // Manual Transactions
+                "CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer ON manual_postpaid_sales(customer_name)",
+                "CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer_code_norm ON manual_postpaid_sales(UPPER(TRIM(customer_code)))",
+                "CREATE INDEX IF NOT EXISTS idx_manual_postpaid_created_date ON manual_postpaid_sales(DATE(created_at))",
+                "CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer ON manual_customer_receipts(customer_name)",
+                "CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_code_norm ON manual_customer_receipts(UPPER(TRIM(customer_code)))",
+                "CREATE INDEX IF NOT EXISTS idx_manual_receipts_created_date ON manual_customer_receipts(DATE(created_at))"
+            ];
+
+            if (pool) {
+                // Postgres
+                for (const sql of indexes) {
+                    await pool.query(sql);
                 }
-
-                const indexes = [
-                    // Reconciliations
-                    "CREATE INDEX IF NOT EXISTS idx_reconciliations_date ON reconciliations(reconciliation_date)",
-                    "CREATE INDEX IF NOT EXISTS idx_reconciliations_status ON reconciliations(status)",
-                    "CREATE INDEX IF NOT EXISTS idx_reconciliations_cashier ON reconciliations(cashier_id)",
-                    "CREATE INDEX IF NOT EXISTS idx_reconciliations_origin_request_id ON reconciliations(origin_request_id)",
-
-                    // Sales & Receipts (CRITICAL for Customer Ledger)
-                    "CREATE INDEX IF NOT EXISTS idx_postpaid_customer ON postpaid_sales(customer_name)",
-                    "CREATE INDEX IF NOT EXISTS idx_postpaid_rec_id ON postpaid_sales(reconciliation_id)",
-                    "CREATE INDEX IF NOT EXISTS idx_receipts_customer ON customer_receipts(customer_name)",
-                    "CREATE INDEX IF NOT EXISTS idx_receipts_rec_id ON customer_receipts(reconciliation_id)",
-
-                    // Requests
-                    "CREATE INDEX IF NOT EXISTS idx_reconciliation_requests_status_created ON reconciliation_requests(status, created_at DESC)",
-
-                    // Manual Transactions
-                    "CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer ON manual_postpaid_sales(customer_name)",
-                    "CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer ON manual_customer_receipts(customer_name)"
-                ];
-
-                if (pool) {
-                    for (const sql of indexes) {
-                        await pool.query(sql);
-                    }
-                    console.log('✅ [PERF] Indexes verified on PostgreSQL');
-                } else {
-                    for (const sql of indexes) {
-                        this.dbManager.db.prepare(sql).run();
-                    }
-                    console.log('✅ [PERF] Indexes verified on SQLite');
+                console.log('✅ [PERF] Indexes verified on PostgreSQL');
+            } else {
+                // SQLite
+                for (const sql of indexes) {
+                    this.dbManager.db.prepare(sql).run();
                 }
-
-                this.indexesReady = true;
-                return true;
-            } catch (error) {
-                console.error('⚠️ [PERF] Failed to create indexes:', error.message);
-                return false;
-            } finally {
-                this.ensureIndexesInFlight = null;
+                console.log('✅ [PERF] Indexes verified on SQLite');
             }
-        })();
-
-        return this.ensureIndexesInFlight;
+        } catch (error) {
+            console.error('⚠️ [PERF] Failed to create indexes:', error.message);
+        }
     }
 
     async ensurePostgresSerialSequences() {
-        if (this.serialSequencesReady) {
-            return true;
-        }
-
-        if (this.ensureSerialSequencesInFlight) {
-            return this.ensureSerialSequencesInFlight;
-        }
-
         const pool = this.getPostgresPool();
         if (!pool) {
-            return true;
+            return;
         }
 
-        this.ensureSerialSequencesInFlight = (async () => {
-            const serialTables = [
-                'customers',
-                'reconciliation_requests',
-                'reconciliations',
-                'cash_receipts',
-                'bank_receipts',
-                'postpaid_sales',
-                'customer_receipts',
-                'return_invoices',
-                'suppliers',
-                'branch_cashboxes',
-                'cashbox_vouchers',
-                'cashbox_voucher_audit_log',
-                'customer_fiscal_opening_balances'
-            ];
+        const serialTables = [
+            'customers',
+            'reconciliation_requests',
+            'reconciliations',
+            'cash_receipts',
+            'bank_receipts',
+            'postpaid_sales',
+            'customer_receipts',
+            'return_invoices',
+            'suppliers',
+            'branch_cashboxes',
+            'cashbox_vouchers',
+            'cashbox_voucher_audit_log',
+            'customer_fiscal_opening_balances'
+        ];
 
-            console.log('[PERF] Checking PostgreSQL serial sequences...');
-            for (const tableName of serialTables) {
-                try {
-                    await this.refreshPostgresSerialSequence(tableName, 'id');
-                } catch (error) {
-                    console.warn(`[PERF] Failed to refresh ${tableName}.id sequence:`, error && error.message ? error.message : error);
-                }
+        console.log('🔢 [PERF] Checking PostgreSQL serial sequences...');
+        for (const tableName of serialTables) {
+            try {
+                await this.refreshPostgresSerialSequence(tableName, 'id');
+            } catch (error) {
+                console.warn(`⚠️ [PERF] تعذر ضبط تسلسل ${tableName}.id:`, error && error.message ? error.message : error);
             }
-
-            this.serialSequencesReady = true;
-            console.log('[PERF] PostgreSQL serial sequences verified');
-            return true;
-        })().finally(() => {
-            this.ensureSerialSequencesInFlight = null;
-        });
-
-        return this.ensureSerialSequencesInFlight;
-    }
-
-    async runDatabaseStartupMaintenance() {
-        const indexesOk = await this.ensureIndexes();
-        if (indexesOk) {
-            await this.ensurePostgresSerialSequences();
         }
-
-        return indexesOk;
+        console.log('✅ [PERF] PostgreSQL serial sequences verified');
     }
 
     async start() {
-        if (this.server && this.server.listening) {
-            return this;
-        }
+        // Optimize Database Performance on Startup
+        await this.ensureIndexes();
+        await this.ensurePostgresSerialSequences();
 
         this.server = http.createServer(async (req, res) => {
             res._tasfiyaRequest = req;
@@ -707,18 +614,15 @@ class LocalWebServer {
 
             try {
                 console.log(`📨 [REQUEST] ${req.method} ${pathname}`);
-                if (this.isHealthRoute(pathname)) {
-                    this.handleHealthRequest(res, pathname);
+                // Serve Static Files
+                // Serve Static Files
+                if (pathname === '/.well-known/assetlinks.json' && req.method === 'GET') {
+                    this.serveAndroidAssetLinks(res);
                     return;
                 }
 
-                if (this.isStaticAssetPath(pathname)) {
+                if (pathname.endsWith('.js') || pathname.endsWith('.json') || pathname.startsWith('/css/') || pathname.startsWith('/js/') || pathname.startsWith('/assets/')) {
                     this.serveStatic(res, pathname);
-                    return;
-                }
-
-                if (this.shouldBlockUntilDatabaseReady(pathname, req.method) && !this.databaseReady) {
-                    this.sendDatabaseUnavailable(res);
                     return;
                 }
 
@@ -744,13 +648,20 @@ class LocalWebServer {
                     return;
                 }
 
+                // This intentionally exposes only the public OneSignal App ID.
+                // The App API key never leaves the server.
+                if (pathname === '/api/client-config' && req.method === 'GET') {
+                    this.handlePublicClientConfig(res);
+                    return;
+                }
+
                 if (pathname === '/api/logout' && req.method === 'POST') {
                     await this.handleLogout(req, res);
                     return;
                 }
 
                 if (pathname === '/api/cashiers-list' && req.method === 'GET') {
-                    await this.handleGetCashiersList(req, res);
+                    await this.handleGetCashiersList(res);
                     return;
                 }
 
@@ -819,7 +730,7 @@ class LocalWebServer {
                     return;
                 }
                 else if (pathname === '/api/lookups') {
-                    await this.handleGetLookups(res, parsedUrl.query);
+                    await this.handleGetLookups(res);
                     return;
                 }
                 else if (pathname === '/api/customer-ledger') {
@@ -922,17 +833,12 @@ class LocalWebServer {
                     return;
                 }
 
-
-                // DEBUG ROUTE: Test Notification directly
-                else if (pathname === '/api/test-notification') {
-                    console.log('🔔 Manual test notification requested');
-                    const result = await this.sendOneSignalNotification(
-                        '🔔 اختبار الإشعارات',
-                        'إذا وصلت هذه الرسالة، فإن OneSignal يعمل بنجاح!',
-                        { type: 'test' }
-                    );
-                    res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify(result));
+                else if (pathname === '/api/notifications/status' && req.method === 'GET') {
+                    this.handleNotificationStatus(res);
+                    return;
+                }
+                else if (pathname === '/api/notifications/test' && req.method === 'POST') {
+                    await this.handleNotificationTest(req, res);
                     return;
                 }
                 else {
@@ -947,65 +853,29 @@ class LocalWebServer {
             }
         });
 
-        await new Promise((resolve, reject) => {
-            const tryListen = () => {
-                const onError = (error) => {
-                    this.server.off('listening', onListening);
-
-                    if (error.code === 'EADDRINUSE' && !this.hasExplicitPort) {
-                        console.log(`⚠️ [WEB APP] Port ${this.port} is in use, trying ${this.port + 1}...`);
-                        this.port += 1;
-                        setImmediate(tryListen);
-                        return;
-                    }
-
-                    console.error('❌ [WEB APP] Server error:', error);
-                    reject(error);
-                };
-
-                const onListening = () => {
-                    this.server.off('error', onError);
-
-                    const address = this.server.address();
-                    if (address && typeof address === 'object' && typeof address.port === 'number') {
-                        this.port = address.port;
-                    }
-
-                    this.startedAt = new Date().toISOString();
-                    console.log(`🌐 [WEB APP] Server running at http://${this.host}:${this.port}`);
-
-                    if (this.databaseReady) {
-                        void this.runDatabaseStartupMaintenance();
-                    }
-
-                    resolve(this);
-                };
-
-                this.server.once('error', onError);
-                this.server.once('listening', onListening);
-                this.server.listen(this.port, this.host);
-            };
-
-            tryListen();
+        // Handle server errors (e.g. Port in use)
+        this.server.on('error', (e) => {
+            if (e.code === 'EADDRINUSE') {
+                console.log(`⚠️ [WEB APP] Port ${this.port} is in use, trying ${this.port + 1}...`);
+                this.port++;
+                this.server.listen(this.port);
+            } else {
+                console.error('❌ [WEB APP] Server error:', e);
+            }
         });
 
-        return this;
+        this.server.listen(this.port, () => {
+            console.log(`🌐 [WEB APP] Server running at http://localhost:${this.port}`);
+        });
     }
 
     stop() {
-        if (!this.server) {
-            return Promise.resolve();
-        }
-
-        const activeServer = this.server;
-        this.server = null;
-
-        return new Promise((resolve) => {
-            activeServer.close(() => {
+        if (this.server) {
+            this.server.close(() => {
                 console.log('🌐 [WEB APP] Server stopped');
-                resolve();
             });
-        });
+            this.server = null;
+        }
     }
 
     serveFile(res, filePath, contentType) {
@@ -1047,6 +917,33 @@ class LocalWebServer {
         if (path.basename(filePath) === 'manifest.json') contentType = 'application/manifest+json';
 
         this.serveFile(res, filePath, contentType);
+    }
+
+    serveAndroidAssetLinks(res) {
+        // The certificate fingerprint is deliberately configured on the server,
+        // not committed in source control. This is required to verify the Android
+        // Trusted Web Activity for the public host.
+        const fingerprint = String(process.env.ANDROID_TWA_SHA256_CERT_FINGERPRINT || '')
+            .trim()
+            .toUpperCase();
+
+        const statements = fingerprint
+            ? [{
+                relation: ['delegate_permission/common.handle_all_urls'],
+                target: {
+                    namespace: 'android_app',
+                    package_name: 'com.tasfiyapro.app',
+                    sha256_cert_fingerprints: [fingerprint]
+                }
+            }]
+            : [];
+
+        res.writeHead(200, {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Cache-Control': 'no-store, max-age=0',
+            'X-Content-Type-Options': 'nosniff'
+        });
+        res.end(JSON.stringify(statements));
     }
 
     async handleLogin(req, res) {
@@ -1178,7 +1075,6 @@ class LocalWebServer {
                     SET pin_code = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
                 `).run(hashSecret(normalizedPin), cashierId);
-                this.clearLookupCache('cashier pin updated');
                 this.sendJson(res, { success: true });
             } catch (error) {
                 this.sendJson(res, { success: false, error: error.message });
@@ -1186,15 +1082,8 @@ class LocalWebServer {
         });
     }
 
-    async handleGetCashiersList(req, res) {
-        const cacheKey = this.getLookupCacheKey('cashiers', null, 'list');
+    async handleGetCashiersList(res) {
         try {
-            const cached = this.getLookupCacheEntry(cacheKey);
-            if (cached) {
-                this.sendLookupCacheEntry(req, res, cached, cached.stale ? 'stale' : 'hit');
-                return;
-            }
-
             const cashiers = await this.dbManager.db.prepare(`
                 SELECT c.id, c.name, c.cashier_number, c.active, c.pin_code, b.branch_name 
                 FROM cashiers c 
@@ -1209,19 +1098,8 @@ class LocalWebServer {
                 pin_code: undefined // Do not send actual PIN
             }));
 
-            const payload = { success: true, data: safeCashiers };
-            const cacheEntry = this.setLookupCacheEntry(cacheKey, payload);
-            this.sendJson(res, payload, {
-                req,
-                cacheable: true,
-                etag: cacheEntry.etag
-            });
+            this.sendJson(res, { success: true, data: safeCashiers });
         } catch (error) {
-            const stale = this.getLookupCacheEntry(cacheKey, { allowStale: true });
-            if (stale) {
-                this.sendLookupCacheEntry(req, res, stale, 'stale');
-                return;
-            }
             this.sendJson(res, { success: false, error: error.message });
         }
     }
@@ -1268,8 +1146,9 @@ class LocalWebServer {
                 params.push(query.status);
             }
 
-            // Sort by ID DESC to ensure latest entries show first regardless of date typos
-            sql += ` ORDER BY r.id DESC`;
+            // ترتيب العرض الرسمي يعتمد على رقم التصفية، لا على id الداخلي.
+            // بعد إلغاء الأرشفة قد تعود سجلات قديمة بـ id أحدث، لذلك يبقى id مجرد فاصل أخير عند التساوي.
+            sql += ` ORDER BY r.reconciliation_number DESC NULLS LAST, r.reconciliation_date DESC NULLS LAST, r.id DESC`;
 
             // Add LIMIT if specified (for performance with large datasets)
             if (query.limit) {
@@ -1632,6 +1511,114 @@ class LocalWebServer {
         }
     }
 
+    getYearFromDateValue(value) {
+        const match = String(value || '').match(/^(\d{4})/);
+        return match ? match[1] : '';
+    }
+
+    async getCustomerLedgerOpeningContext(customerName, dateFrom = '', pool = null) {
+        const yearLimit = this.getYearFromDateValue(dateFrom);
+        let openingRow = null;
+
+        try {
+            if (pool) {
+                const params = [customerName];
+                const yearSql = yearLimit ? 'AND CAST(fiscal_year AS INTEGER) <= $2' : '';
+                if (yearLimit) params.push(Number(yearLimit));
+                const result = await pool.query(
+                    `SELECT *
+                     FROM customer_fiscal_opening_balances
+                     WHERE TRIM(COALESCE(customer_name, '')) = TRIM($1)
+                     ${yearSql}
+                     ORDER BY CAST(fiscal_year AS INTEGER) DESC, id DESC
+                     LIMIT 1`,
+                    params
+                );
+                openingRow = result.rows?.[0] || null;
+            } else {
+                const params = [customerName];
+                const yearSql = yearLimit ? 'AND CAST(fiscal_year AS INTEGER) <= ?' : '';
+                if (yearLimit) params.push(Number(yearLimit));
+                openingRow = await this.dbManager.db.prepare(
+                    `SELECT *
+                     FROM customer_fiscal_opening_balances
+                     WHERE TRIM(COALESCE(customer_name, '')) = TRIM(?)
+                     ${yearSql}
+                     ORDER BY CAST(fiscal_year AS INTEGER) DESC, id DESC
+                     LIMIT 1`
+                ).get(params);
+            }
+        } catch (_error) {
+            openingRow = null;
+        }
+
+        const openingStartDate = openingRow?.fiscal_year ? `${openingRow.fiscal_year}-01-01` : '';
+        let openingBalance = parseNumericDbValue(openingRow?.opening_balance, 0);
+
+        if (dateFrom && openingStartDate) {
+            openingBalance += await this.calculateCustomerLedgerPreperiod(customerName, dateFrom, openingStartDate, pool);
+        }
+
+        return {
+            hasOpening: !!openingRow,
+            openingStartDate,
+            openingBalance
+        };
+    }
+
+    async calculateCustomerLedgerPreperiod(customerName, dateFrom, openingStartDate = '', pool = null) {
+        const lowerDate = String(openingStartDate || '').trim();
+        const upperDate = String(dateFrom || '').trim();
+        if (!upperDate) return 0;
+
+        if (pool) {
+            const params = lowerDate ? [customerName, lowerDate, upperDate] : [customerName, upperDate];
+            const recSql = lowerDate ? 'AND r.reconciliation_date >= $2 AND r.reconciliation_date < $3' : 'AND r.reconciliation_date < $2';
+            const manualSql = lowerDate ? 'AND DATE(created_at) >= $2 AND DATE(created_at) < $3' : 'AND DATE(created_at) < $2';
+            const [postpaid, receipts, manualPostpaid, manualReceipts] = await Promise.all([
+                pool.query(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id WHERE ps.customer_name = $1 ${recSql}`, params),
+                pool.query(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id WHERE cr.customer_name = $1 ${recSql}`, params),
+                pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_postpaid_sales WHERE customer_name = $1 ${manualSql}`, params),
+                pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_customer_receipts WHERE customer_name = $1 ${manualSql}`, params)
+            ]);
+            return parseNumericDbValue(postpaid.rows?.[0]?.total, 0)
+                + parseNumericDbValue(manualPostpaid.rows?.[0]?.total, 0)
+                - parseNumericDbValue(receipts.rows?.[0]?.total, 0)
+                - parseNumericDbValue(manualReceipts.rows?.[0]?.total, 0);
+        }
+
+        const params = lowerDate ? [customerName, lowerDate, upperDate] : [customerName, upperDate];
+        const recSql = lowerDate ? 'AND r.reconciliation_date >= ? AND r.reconciliation_date < ?' : 'AND r.reconciliation_date < ?';
+        const manualSql = lowerDate ? 'AND DATE(created_at) >= ? AND DATE(created_at) < ?' : 'AND DATE(created_at) < ?';
+        const postpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id WHERE ps.customer_name = ? ${recSql}`).get(params);
+        const receipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id WHERE cr.customer_name = ? ${recSql}`).get(params);
+        const manualPostpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_postpaid_sales WHERE customer_name = ? ${manualSql}`).get(params);
+        const manualReceipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_customer_receipts WHERE customer_name = ? ${manualSql}`).get(params);
+
+        return parseNumericDbValue(postpaid?.total, 0)
+            + parseNumericDbValue(manualPostpaid?.total, 0)
+            - parseNumericDbValue(receipts?.total, 0)
+            - parseNumericDbValue(manualReceipts?.total, 0);
+    }
+
+    buildOpeningLedgerRow(openingContext, dateFrom = '') {
+        const openingBalance = parseNumericDbValue(openingContext?.openingBalance, 0);
+        if (!openingContext?.hasOpening && Math.abs(openingBalance) <= 0.000001) {
+            return null;
+        }
+        return {
+            id: 'opening-balance',
+            amount: Math.abs(openingBalance),
+            created_at: `${dateFrom || openingContext.openingStartDate || '1970-01-01'} 00:00:00`,
+            type: 'رصيد افتتاحي',
+            description: 'رصيد مرحل من سنة مؤرشفة',
+            cashier_name: 'النظام',
+            reconciliation_number: null,
+            debit: openingBalance >= 0 ? openingBalance : 0,
+            credit: openingBalance < 0 ? Math.abs(openingBalance) : 0
+        };
+    }
+
     async handleGetCustomerLedger(res, query) {
         try {
             const { customerName, dateFrom, dateTo } = query;
@@ -1649,6 +1636,8 @@ class LocalWebServer {
                 // ============================================
                 console.log('[Customer Ledger] Using PostgreSQL connection (Synced Data)');
 
+                const openingContext = await this.getCustomerLedgerOpeningContext(customerName, dateFrom, pool);
+                const effectiveDateFrom = (dateFrom && dateFrom.trim() !== '') ? dateFrom : openingContext.openingStartDate;
                 let dateFilterSales = '';
                 let dateFilterReceipts = '';
                 const paramsSales = [customerName];
@@ -1656,11 +1645,11 @@ class LocalWebServer {
                 let pNextSales = 2;
                 let pNextReceipts = 2;
 
-                if (dateFrom && dateFrom.trim() !== '') {
+                if (effectiveDateFrom && effectiveDateFrom.trim() !== '') {
                     dateFilterSales += ` AND ps.created_at >= $${pNextSales++}`;
                     dateFilterReceipts += ` AND cr.created_at >= $${pNextReceipts++}`;
-                    paramsSales.push(dateFrom);
-                    paramsReceipts.push(dateFrom);
+                    paramsSales.push(effectiveDateFrom);
+                    paramsReceipts.push(effectiveDateFrom);
                 }
                 if (dateTo && dateTo.trim() !== '') {
                     dateFilterSales += ` AND ps.created_at <= $${pNextSales++}`;
@@ -1703,11 +1692,12 @@ class LocalWebServer {
                 `, paramsReceipts);
 
                 const ledger = [
+                    this.buildOpeningLedgerRow(openingContext, dateFrom),
                     ...salesResult.rows.map(s => ({ ...s, debit: s.amount, credit: 0 })),
                     ...manualSalesResult.rows.map(s => ({ ...s, debit: s.amount, credit: 0 })),
                     ...receiptsResult.rows.map(r => ({ ...r, debit: 0, credit: r.amount })),
                     ...manualReceiptsResult.rows.map(r => ({ ...r, debit: 0, credit: r.amount }))
-                ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                ].filter(Boolean).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
                 this.sendJson(res, { success: true, data: ledger });
 
@@ -1717,16 +1707,18 @@ class LocalWebServer {
                 // ============================================
                 console.log('[Customer Ledger] Using SQLite connection (Local Data)');
 
+                const openingContext = await this.getCustomerLedgerOpeningContext(customerName, dateFrom);
+                const effectiveDateFrom = (dateFrom && dateFrom.trim() !== '') ? dateFrom : openingContext.openingStartDate;
                 let dateFilterSales = '';
                 let dateFilterReceipts = '';
                 const paramsSales = [customerName];
                 const paramsReceipts = [customerName];
 
-                if (dateFrom && dateFrom.trim() !== '') {
+                if (effectiveDateFrom && effectiveDateFrom.trim() !== '') {
                     dateFilterSales += ' AND ps.created_at >= ?';
                     dateFilterReceipts += ' AND cr.created_at >= ?';
-                    paramsSales.push(dateFrom);
-                    paramsReceipts.push(dateFrom);
+                    paramsSales.push(effectiveDateFrom);
+                    paramsReceipts.push(effectiveDateFrom);
                 }
                 if (dateTo && dateTo.trim() !== '') {
                     dateFilterSales += ' AND ps.created_at <= ?';
@@ -1767,11 +1759,12 @@ class LocalWebServer {
                 `).all(paramsReceipts);
 
                 const ledger = [
+                    this.buildOpeningLedgerRow(openingContext, dateFrom),
                     ...sales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
                     ...manualSales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
                     ...receipts.map(r => ({ ...r, debit: 0, credit: r.amount })),
                     ...manualReceipts.map(r => ({ ...r, debit: 0, credit: r.amount }))
-                ].sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+                ].filter(Boolean).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
 
                 this.sendJson(res, { success: true, data: ledger });
             }
@@ -1788,7 +1781,11 @@ class LocalWebServer {
             // Postgres throws error on empty string for timestamp, SQLite accepts it
             const isPostgres = !!process.env.DATABASE_URL;
             const greatestFunc = isPostgres ? 'GREATEST' : 'MAX';
-            const defaultDate = isPostgres ? "'1970-01-01 00:00:00'" : "''";
+            const defaultDate = isPostgres ? "TIMESTAMP '1970-01-01 00:00:00'" : "''";
+            const transactionCreatedAt = isPostgres ? 'created_at::timestamp' : 'created_at';
+            const openingBalanceCreatedAt = isPostgres
+                ? "make_timestamp(CAST(fiscal_year AS INTEGER), 1, 1, 0, 0, 0)"
+                : "fiscal_year || '-01-01 00:00:00'";
             const dateFrom = typeof query.dateFrom === 'string' ? query.dateFrom.trim() : '';
             const dateToRaw = typeof query.dateTo === 'string' ? query.dateTo.trim() : '';
 
@@ -1828,13 +1825,24 @@ class LocalWebServer {
                         ORDER BY ps.created_at DESC LIMIT 1
                     ) as branch_name 
                 FROM (
-                    SELECT customer_name, amount, 'debit' as type, created_at FROM postpaid_sales WHERE customer_name IS NOT NULL
+                    SELECT customer_name, amount, 'debit' as type, ${transactionCreatedAt} as created_at FROM postpaid_sales WHERE customer_name IS NOT NULL
                     UNION ALL
-                    SELECT customer_name, amount, 'debit' as type, created_at FROM manual_postpaid_sales WHERE customer_name IS NOT NULL
+                    SELECT customer_name, amount, 'debit' as type, ${transactionCreatedAt} as created_at FROM manual_postpaid_sales WHERE customer_name IS NOT NULL
                     UNION ALL
-                    SELECT customer_name, amount, 'credit' as type, created_at FROM customer_receipts WHERE customer_name IS NOT NULL
+                    SELECT customer_name, amount, 'credit' as type, ${transactionCreatedAt} as created_at FROM customer_receipts WHERE customer_name IS NOT NULL
                     UNION ALL
-                    SELECT customer_name, amount, 'credit' as type, created_at FROM manual_customer_receipts WHERE customer_name IS NOT NULL
+                    SELECT customer_name, amount, 'credit' as type, ${transactionCreatedAt} as created_at FROM manual_customer_receipts WHERE customer_name IS NOT NULL
+                    UNION ALL
+                    SELECT customer_name, ABS(opening_balance) as amount,
+                           CASE WHEN opening_balance >= 0 THEN 'debit' ELSE 'credit' END as type,
+                           ${openingBalanceCreatedAt} as created_at
+                    FROM customer_fiscal_opening_balances ob
+                    WHERE customer_name IS NOT NULL
+                      AND CAST(ob.fiscal_year AS INTEGER) = (
+                        SELECT MAX(CAST(ob2.fiscal_year AS INTEGER))
+                        FROM customer_fiscal_opening_balances ob2
+                        WHERE ob2.balance_key = ob.balance_key
+                      )
                 ) t
                 WHERE t.customer_name IS NOT NULL
                 ${dateWhereClause}
@@ -1852,7 +1860,7 @@ class LocalWebServer {
         }
     }
 
-    async handleGetLookups(res, query = {}) {
+    async handleGetLookups(res) {
         try {
             // FIX: Get full cashier details including branch name and pin status
             const cashiers = await this.dbManager.db.prepare(`
@@ -1868,15 +1876,7 @@ class LocalWebServer {
                 WHERE c.active = 1
             `).all();
 
-            const includeExperimentalBranches = String(
-                query?.includeTestBranches
-                ?? query?.includeExperimentalBranches
-                ?? ''
-            ).trim().toLowerCase();
-            const shouldIncludeExperimentalBranches = ['1', 'true', 'yes', 'on'].includes(includeExperimentalBranches);
-
-            const rawBranches = await this.dbManager.db.prepare('SELECT id, branch_name as name FROM branches WHERE is_active = 1').all();
-            const branches = shouldIncludeExperimentalBranches ? rawBranches : filterVisibleBranches(rawBranches);
+            const branches = await this.dbManager.db.prepare('SELECT id, branch_name as name FROM branches WHERE is_active = 1').all();
             const accountants = await this.dbManager.db.prepare('SELECT id, name FROM accountants WHERE active = 1').all();
 
             // Get unique locations from ATMs as "accounts"
@@ -2022,8 +2022,10 @@ class LocalWebServer {
 
                 if (!request) throw new Error('الطلب غير موجود');
 
-                let details = JSON.parse(request.details_json || '{}');
-                details = await this.enrichCustomerRequestDetails(details, request.cashier_id);
+                const details = await this.enrichCustomerRequestDetails(
+                    JSON.parse(request.details_json || '{}'),
+                    request.cashier_id
+                );
 
                 // Helper to sanitize amounts (remove commas, handle strings)
                 const safeFloat = (val) => {
@@ -2064,33 +2066,15 @@ class LocalWebServer {
 
                     console.log(`🛡️ [APPROVAL] Creating Reconciliation #${newRecNum} for Cashier ${cashierId}`);
 
-                    let recInfo;
-                    try {
-                        const insertRec = tx.prepare(`
-                            INSERT INTO reconciliations
-                            (reconciliation_number, cashier_id, accountant_id, reconciliation_date, system_sales, total_receipts, surplus_deficit, status, notes, origin_request_id, created_at)
-                            VALUES(?, ?, ?, ?, ?, ?, ?, 'completed', ?, ?, CURRENT_TIMESTAMP)
-                        `);
+                    const insertRec = tx.prepare(`
+                        INSERT INTO reconciliations
+                        (reconciliation_number, cashier_id, accountant_id, reconciliation_date, system_sales, total_receipts, surplus_deficit, status, notes, created_at)
+                        VALUES(?, ?, ?, ?, ?, ?, ?, 'completed', ?, CURRENT_TIMESTAMP)
+                    `);
 
-                        recInfo = await insertRec.run(
-                            newRecNum, cashierId, accountantId, date, systemSales, totalReceiptsLog, surplus, (request.notes || ''), request.id
-                        );
-                    } catch (insertError) {
-                        if (String(insertError.message || '').includes('origin_request_id')) {
-                            console.warn('⚠️ [APPROVAL] origin_request_id غير متاح، سيتم اعتماد الطلب بدونه مؤقتاً');
-                            const fallbackInsertRec = tx.prepare(`
-                                INSERT INTO reconciliations
-                                (reconciliation_number, cashier_id, accountant_id, reconciliation_date, system_sales, total_receipts, surplus_deficit, status, notes, created_at)
-                                VALUES(?, ?, ?, ?, ?, ?, ?, 'completed', ?, CURRENT_TIMESTAMP)
-                            `);
-
-                            recInfo = await fallbackInsertRec.run(
-                                newRecNum, cashierId, accountantId, date, systemSales, totalReceiptsLog, surplus, (request.notes || '')
-                            );
-                        } else {
-                            throw insertError;
-                        }
-                    }
+                    const recInfo = await insertRec.run(
+                        newRecNum, cashierId, accountantId, date, systemSales, totalReceiptsLog, surplus, (request.notes || '')
+                    );
                     const recId = recInfo.lastInsertRowid;
 
                     console.log(`🛡️ [APPROVAL] Created Parent Record ID: ${recId}`);
@@ -2195,17 +2179,35 @@ class LocalWebServer {
         try {
             const pool = this.dbManager.pool;
             if (pool) {
-                // Postgres Mode
-                await pool.query('DELETE FROM reconciliation_requests WHERE id = $1', [id]);
+                // Postgres Mode: soft-delete to prevent resurrecting rows on next desktop push.
+                await pool.query(
+                    "UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = $1",
+                    [id]
+                );
             } else {
-                // SQLite Mode
-                await this.dbManager.db.prepare("DELETE FROM reconciliation_requests WHERE id = ?").run(id);
+                // SQLite Mode: soft-delete for mirror-safe sync recovery.
+                await this.dbManager.db
+                    .prepare("UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+                    .run(id);
             }
 
-            // Check if sync is enabled before deleting from cloud
+            // In PostgreSQL/Neon mode this server is already the authoritative target.
+            // Do not forward deletes to any historical cloud URL.
+            if (pool) {
+                this.sendJson(res, { success: true });
+                return;
+            }
+
+            // Check if sync is enabled before deleting from the configured remote server.
             let syncEnabled = true;
             try {
-                const settingRow = this.dbManager.db.prepare("SELECT setting_value FROM system_settings WHERE category = 'general' AND setting_key = 'sync_enabled'").get();
+                const settingRow = this.dbManager.db.prepare(`
+                    SELECT setting_value
+                    FROM system_settings
+                    WHERE category = 'general' AND setting_key = 'sync_enabled'
+                    ORDER BY id DESC
+                    LIMIT 1
+                `).get();
                 if (settingRow && settingRow.setting_value === 'false') {
                     syncEnabled = false;
                 }
@@ -2213,19 +2215,26 @@ class LocalWebServer {
                 // If table doesn't exist or error, assume sync is enabled
             }
 
-            // CRITICAL: Also delete from remote server to prevent re-sync (only if sync is enabled)
+            // CRITICAL: Also delete from configured remote server to prevent re-sync (only if sync is enabled)
             if (syncEnabled) {
+                const configuredBaseUrl = readConfiguredSyncServerBaseUrl(this.dbManager);
+                if (!configuredBaseUrl) {
+                    console.warn(`⚠️ [DELETE] Sync server URL is not configured - skipping remote deletion for ID ${id}`);
+                    this.sendJson(res, { success: true });
+                    return;
+                }
+
                 try {
-                    const remoteUrl = 'https://tasfiya-pro-max.onrender.com/api/reconciliation-requests/' + id;
+                    const remoteUrl = `${configuredBaseUrl}/api/reconciliation-requests/${encodeURIComponent(id)}`;
                     const fetch = require('node-fetch');
                     await fetch(remoteUrl, { method: 'DELETE' });
-                    console.log(`✅ [DELETE] Also deleted from cloud: ID ${id}`);
+                    console.log(`✅ [DELETE] Also deleted from configured server: ID ${id}`);
                 } catch (cloudErr) {
-                    console.warn(`⚠️ [DELETE] Cloud deletion failed (ID ${id}):`, cloudErr.message);
-                    // Don't fail the whole request if cloud is down, but log it
+                    console.warn(`⚠️ [DELETE] Configured server deletion failed (ID ${id}):`, cloudErr.message);
+                    // Don't fail the whole request if the configured server is down, but log it
                 }
             } else {
-                console.log(`⛔ [DELETE] Sync disabled - skipping cloud deletion for ID ${id}`);
+                console.log(`⛔ [DELETE] Sync disabled - skipping configured server deletion for ID ${id}`);
             }
 
             this.sendJson(res, { success: true });
@@ -2241,9 +2250,11 @@ class LocalWebServer {
             const pool = this.dbManager.pool;
 
             if (pool) {
-                await pool.query('DELETE FROM reconciliation_requests');
+                await pool.query("UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP");
             } else {
-                this.dbManager.db.prepare('DELETE FROM reconciliation_requests').run();
+                this.dbManager.db
+                    .prepare("UPDATE reconciliation_requests SET status = 'deleted', updated_at = CURRENT_TIMESTAMP")
+                    .run();
             }
 
             this.sendJson(res, { success: true });
@@ -2282,43 +2293,37 @@ class LocalWebServer {
 
 
     async handleGetAtms(req, res, query) {
-        let cacheKey = null;
         try {
             let atms;
             const authUser = req && req.authUser ? req.authUser : null;
             const effectiveCashierId = authUser && authUser.role === 'cashier'
                 ? authUser.id
                 : (query && query.cashierId ? query.cashierId : null);
-            const branchId = await this.resolveLookupBranchId(authUser, effectiveCashierId);
-            cacheKey = this.getLookupCacheKey('atms', branchId);
-            const cached = this.getLookupCacheEntry(cacheKey);
-            if (cached) {
-                this.sendLookupCacheEntry(req, res, cached, cached.stale ? 'stale' : 'hit');
-                return;
-            }
 
             // If cashierId is provided, filter by their branch
-            if (branchId) {
-                atms = await this.dbManager.db.prepare("SELECT * FROM atms WHERE branch_id = ? ORDER BY name").all(branchId);
+            if (effectiveCashierId) {
+                // 1. Get Cashier Branch
+                const cashier = await this.dbManager.db.prepare("SELECT branch_id FROM cashiers WHERE id = ?").get(effectiveCashierId);
+
+                if (cashier && cashier.branch_id) {
+                    // 2. Get ATMs for this branch
+                    atms = await this.dbManager.db.prepare("SELECT * FROM atms WHERE branch_id = ? ORDER BY name").all(cashier.branch_id);
+                } else {
+                    // Cashier has no branch? Fallback to all or empty? Let's fallback to all for safety, or empty.
+                    // Better to fallback to all if branch logic isn't strictly enforced everywhere yet.
+                    atms = await this.dbManager.db.prepare("SELECT * FROM atms ORDER BY name").all();
+                }
             } else {
                 // Admin or no cashier specified -> Get All
                 atms = await this.dbManager.db.prepare("SELECT * FROM atms ORDER BY name").all();
             }
 
-            const payload = { success: true, atms };
-            const cacheEntry = this.setLookupCacheEntry(cacheKey, payload);
-            this.sendJson(res, payload, {
+            this.sendJson(res, { success: true, atms }, {
                 req,
-                cacheable: true,
-                etag: cacheEntry.etag
+                cacheable: true
             });
         } catch (error) {
             console.error('Error fetching ATMs:', error);
-            const stale = cacheKey ? this.getLookupCacheEntry(cacheKey, { allowStale: true }) : null;
-            if (stale) {
-                this.sendLookupCacheEntry(req, res, stale, 'stale');
-                return;
-            }
             this.sendJson(res, { success: false, error: error.message });
         }
     }
@@ -2327,109 +2332,10 @@ class LocalWebServer {
         return this.dbManager?.pool || this.dbManager?.db?.pool || null;
     }
 
-    getLookupCacheKey(kind, branchId = null, variant = 'default') {
-        return `${kind}:${normalizePositiveInteger(branchId) || 'all'}:${variant}`;
-    }
-
-    getLookupCacheEntry(cacheKey, options = {}) {
-        const entry = this.lookupCache.get(cacheKey);
-        if (!entry) {
-            return null;
-        }
-
-        const ageMs = Date.now() - entry.createdAt;
-        const maxAgeMs = options.allowStale ? this.lookupCacheMaxStaleMs : this.lookupCacheTtlMs;
-        if (ageMs <= maxAgeMs) {
-            return {
-                ...entry,
-                stale: ageMs > this.lookupCacheTtlMs
-            };
-        }
-
-        this.lookupCache.delete(cacheKey);
-        return null;
-    }
-
-    setLookupCacheEntry(cacheKey, payload) {
-        const entry = {
-            payload,
-            etag: createPayloadEtag(JSON.stringify(payload)),
-            createdAt: Date.now()
-        };
-        this.lookupCache.set(cacheKey, entry);
-        return entry;
-    }
-
-    sendLookupCacheEntry(req, res, entry, state = 'hit') {
-        this.sendJson(res, entry.payload, {
-            req,
-            cacheable: true,
-            etag: entry.etag,
-            headers: { 'X-Tasfiya-Cache': state }
-        });
-    }
-
-    clearLookupCache(reason = '') {
-        const lookupCount = this.lookupCache.size;
-        const branchCount = this.cashierBranchCache.size;
-        this.lookupCache.clear();
-        this.cashierBranchCache.clear();
-        if (lookupCount > 0 || branchCount > 0) {
-            console.log(`🧹 [LOOKUP-CACHE] Cleared ${lookupCount} lookup entries and ${branchCount} branch entries${reason ? ` (${reason})` : ''}`);
-        }
-    }
-
-    getCachedCashierBranchId(cashierId) {
-        const normalizedCashierId = normalizePositiveInteger(cashierId);
-        if (!normalizedCashierId) {
-            return undefined;
-        }
-
-        const entry = this.cashierBranchCache.get(normalizedCashierId);
-        if (!entry) {
-            return undefined;
-        }
-
-        if (Date.now() - entry.createdAt > this.lookupCacheTtlMs) {
-            this.cashierBranchCache.delete(normalizedCashierId);
-            return undefined;
-        }
-
-        return entry.branchId;
-    }
-
-    setCachedCashierBranchId(cashierId, branchId) {
-        const normalizedCashierId = normalizePositiveInteger(cashierId);
-        if (!normalizedCashierId) {
-            return;
-        }
-
-        this.cashierBranchCache.set(normalizedCashierId, {
-            branchId: normalizePositiveInteger(branchId),
-            createdAt: Date.now()
-        });
-    }
-
-    async resolveLookupBranchId(authUser, cashierId = null) {
-        if (authUser && authUser.role === 'cashier') {
-            const sessionBranchId = normalizePositiveInteger(authUser.branch_id);
-            if (sessionBranchId) {
-                return sessionBranchId;
-            }
-        }
-
-        return this.getCashierBranchId(cashierId);
-    }
-
     async getCashierBranchId(cashierId) {
         const normalizedCashierId = normalizePositiveInteger(cashierId);
         if (!normalizedCashierId) {
             return null;
-        }
-
-        const cachedBranchId = this.getCachedCashierBranchId(normalizedCashierId);
-        if (cachedBranchId !== undefined) {
-            return cachedBranchId;
         }
 
         const pool = this.getPostgresPool();
@@ -2438,17 +2344,13 @@ class LocalWebServer {
                 'SELECT branch_id FROM cashiers WHERE id = $1 LIMIT 1',
                 [normalizedCashierId]
             );
-            const branchId = normalizePositiveInteger(result.rows?.[0]?.branch_id);
-            this.setCachedCashierBranchId(normalizedCashierId, branchId);
-            return branchId;
+            return normalizePositiveInteger(result.rows?.[0]?.branch_id);
         }
 
         const row = this.dbManager.db
             .prepare('SELECT branch_id FROM cashiers WHERE id = ? LIMIT 1')
             .get(normalizedCashierId);
-        const branchId = normalizePositiveInteger(row?.branch_id);
-        this.setCachedCashierBranchId(normalizedCashierId, branchId);
-        return branchId;
+        return normalizePositiveInteger(row?.branch_id);
     }
 
     async listCustomerRowsForBranch(branchId = null) {
@@ -2463,12 +2365,14 @@ class LocalWebServer {
                     SELECT id, customer_name, customer_code, branch_id
                     FROM customers
                     WHERE BTRIM(COALESCE(customer_name, '')) <> ''
+                    AND COALESCE(is_active, 1) = 1
+                    AND COALESCE(merged_into_customer_id, 0) = 0
                     ${whereBranch}
                     ORDER BY customer_name ASC, customer_code ASC, id ASC
                 `,
                 params
             );
-            return uniqueCustomerRows(result.rows || []);
+            return this.filterStaleDuplicateCustomerRows(uniqueCustomerRows(result.rows || []), normalizedBranchId);
         }
 
         const whereBranch = normalizedBranchId ? 'AND COALESCE(branch_id, 0) = ?' : '';
@@ -2478,11 +2382,119 @@ class LocalWebServer {
                 SELECT id, customer_name, customer_code, branch_id
                 FROM customers
                 WHERE TRIM(COALESCE(customer_name, '')) <> ''
+                AND COALESCE(is_active, 1) = 1
+                AND COALESCE(merged_into_customer_id, 0) = 0
                 ${whereBranch}
                 ORDER BY customer_name COLLATE NOCASE ASC, customer_code ASC, id ASC
             `
         ).all(...params);
-        return uniqueCustomerRows(rows);
+        return this.filterStaleDuplicateCustomerRows(uniqueCustomerRows(rows), normalizedBranchId);
+    }
+
+    async listMergedCustomerAliasRowsForBranch(branchId = null) {
+        const normalizedBranchId = normalizePositiveInteger(branchId);
+        const pool = this.getPostgresPool();
+
+        if (pool) {
+            const branchFilter = normalizedBranchId
+                ? 'AND COALESCE(target.branch_id, source.branch_id, 0) = $1'
+                : '';
+            const params = normalizedBranchId ? [normalizedBranchId] : [];
+            const result = await pool.query(
+                `
+                    SELECT
+                        target.id AS id,
+                        target.customer_name AS customer_name,
+                        target.customer_code AS customer_code,
+                        target.branch_id AS branch_id,
+                        source.customer_name AS matched_customer_name,
+                        source.customer_code AS matched_customer_code,
+                        source.id AS matched_customer_id,
+                        source.merged_into_customer_id AS merged_into_customer_id
+                    FROM customers source
+                    JOIN customers target ON target.id = source.merged_into_customer_id
+                    WHERE BTRIM(COALESCE(source.customer_name, '')) <> ''
+                      AND COALESCE(source.merged_into_customer_id, 0) > 0
+                      AND COALESCE(target.is_active, 1) = 1
+                      AND COALESCE(target.merged_into_customer_id, 0) = 0
+                      ${branchFilter}
+                    ORDER BY source.customer_name ASC, target.customer_code ASC, source.id ASC
+                `,
+                params
+            );
+            return uniqueCustomerAliasRows(result.rows || []);
+        }
+
+        const branchFilter = normalizedBranchId
+            ? 'AND COALESCE(target.branch_id, source.branch_id, 0) = ?'
+            : '';
+        const params = normalizedBranchId ? [normalizedBranchId] : [];
+        const rows = this.dbManager.db.prepare(
+            `
+                SELECT
+                    target.id AS id,
+                    target.customer_name AS customer_name,
+                    target.customer_code AS customer_code,
+                    target.branch_id AS branch_id,
+                    source.customer_name AS matched_customer_name,
+                    source.customer_code AS matched_customer_code,
+                    source.id AS matched_customer_id,
+                    source.merged_into_customer_id AS merged_into_customer_id
+                FROM customers source
+                JOIN customers target ON target.id = source.merged_into_customer_id
+                WHERE TRIM(COALESCE(source.customer_name, '')) <> ''
+                  AND COALESCE(source.merged_into_customer_id, 0) > 0
+                  AND COALESCE(target.is_active, 1) = 1
+                  AND COALESCE(target.merged_into_customer_id, 0) = 0
+                  ${branchFilter}
+                ORDER BY source.customer_name COLLATE NOCASE ASC, target.customer_code ASC, source.id ASC
+            `
+        ).all(...params);
+        return uniqueCustomerAliasRows(rows);
+    }
+
+    async filterStaleDuplicateCustomerRows(rows = [], branchId = null) {
+        const safeRows = uniqueCustomerRows(rows);
+        if (safeRows.length <= 1) {
+            return safeRows;
+        }
+
+        const groups = new Map();
+        safeRows.forEach((row) => {
+            const key = `${row.customer_name}|${normalizePositiveInteger(row.branch_id) || normalizePositiveInteger(branchId) || 0}`;
+            if (!groups.has(key)) {
+                groups.set(key, []);
+            }
+            groups.get(key).push(row);
+        });
+
+        const rowsToHide = new Set();
+        for (const groupRows of groups.values()) {
+            if (groupRows.length <= 1) {
+                continue;
+            }
+
+            const rowsWithUsage = [];
+            for (const row of groupRows) {
+                const usageCount = await this.countCustomerIdentityUsage(row, branchId || row.branch_id);
+                if (usageCount > 0) {
+                    rowsWithUsage.push(row);
+                }
+            }
+
+            if (rowsWithUsage.length > 0) {
+                const activeIds = new Set(rowsWithUsage.map((row) => row.id).filter(Boolean));
+                groupRows.forEach((row) => {
+                    if (!activeIds.has(row.id)) {
+                        rowsToHide.add(row.id || `${row.customer_name}|${row.customer_code}|${row.branch_id || ''}`);
+                    }
+                });
+            }
+        }
+
+        return safeRows.filter((row) => (
+            !rowsToHide.has(row.id || `${row.customer_name}|${row.customer_code}|${row.branch_id || ''}`)
+        ));
     }
 
     async listTransactionCustomerRowsForBranch(branchId = null) {
@@ -2554,7 +2566,25 @@ class LocalWebServer {
         const pool = this.getPostgresPool();
         if (pool) {
             const result = await pool.query(
-                'SELECT id, customer_name, customer_code, branch_id FROM customers WHERE id = $1 LIMIT 1',
+                `
+                    SELECT
+                        COALESCE(target.id, c.id) AS id,
+                        COALESCE(target.customer_name, c.customer_name) AS customer_name,
+                        COALESCE(target.customer_code, c.customer_code) AS customer_code,
+                        COALESCE(target.branch_id, c.branch_id) AS branch_id,
+                        c.customer_name AS matched_customer_name,
+                        c.id AS matched_customer_id,
+                        COALESCE(target.is_favorite, c.is_favorite, 0) AS is_favorite,
+                        COALESCE(c.merged_into_customer_id, 0) AS merged_into_customer_id
+                    FROM customers c
+                    LEFT JOIN customers target ON target.id = c.merged_into_customer_id
+                    WHERE c.id = $1
+                      AND (target.id IS NULL OR (
+                        COALESCE(target.is_active, 1) = 1
+                        AND COALESCE(target.merged_into_customer_id, 0) = 0
+                      ))
+                    LIMIT 1
+                `,
                 [normalizedCustomerId]
             );
             return normalizeCustomerRow(result.rows?.[0]);
@@ -2562,7 +2592,25 @@ class LocalWebServer {
 
         return normalizeCustomerRow(
             this.dbManager.db.prepare(
-                'SELECT id, customer_name, customer_code, branch_id FROM customers WHERE id = ? LIMIT 1'
+                `
+                    SELECT
+                        COALESCE(target.id, c.id) AS id,
+                        COALESCE(target.customer_name, c.customer_name) AS customer_name,
+                        COALESCE(target.customer_code, c.customer_code) AS customer_code,
+                        COALESCE(target.branch_id, c.branch_id) AS branch_id,
+                        c.customer_name AS matched_customer_name,
+                        c.id AS matched_customer_id,
+                        COALESCE(target.is_favorite, c.is_favorite, 0) AS is_favorite,
+                        COALESCE(c.merged_into_customer_id, 0) AS merged_into_customer_id
+                    FROM customers c
+                    LEFT JOIN customers target ON target.id = c.merged_into_customer_id
+                    WHERE c.id = ?
+                      AND (target.id IS NULL OR (
+                        COALESCE(target.is_active, 1) = 1
+                        AND COALESCE(target.merged_into_customer_id, 0) = 0
+                      ))
+                    LIMIT 1
+                `
             ).get(normalizedCustomerId)
         );
     }
@@ -2577,10 +2625,28 @@ class LocalWebServer {
         if (pool) {
             const result = await pool.query(
                 `
-                    SELECT id, customer_name, customer_code, branch_id
-                    FROM customers
-                    WHERE UPPER(BTRIM(COALESCE(customer_code, ''))) = $1
-                    ORDER BY id ASC
+                    SELECT
+                        COALESCE(target.id, c.id) AS id,
+                        COALESCE(target.customer_name, c.customer_name) AS customer_name,
+                        COALESCE(target.customer_code, c.customer_code) AS customer_code,
+                        COALESCE(target.branch_id, c.branch_id) AS branch_id,
+                        c.customer_name AS matched_customer_name,
+                        c.id AS matched_customer_id,
+                        COALESCE(target.is_favorite, c.is_favorite, 0) AS is_favorite,
+                        COALESCE(c.merged_into_customer_id, 0) AS merged_into_customer_id
+                    FROM customers c
+                    LEFT JOIN customers target ON target.id = c.merged_into_customer_id
+                    WHERE UPPER(BTRIM(COALESCE(c.customer_code, ''))) = $1
+                      AND (target.id IS NULL OR (
+                        COALESCE(target.is_active, 1) = 1
+                        AND COALESCE(target.merged_into_customer_id, 0) = 0
+                      ))
+                    ORDER BY
+                        CASE
+                            WHEN COALESCE(c.is_active, 1) = 1 AND COALESCE(c.merged_into_customer_id, 0) = 0 THEN 0
+                            ELSE 1
+                        END,
+                        c.id ASC
                     LIMIT 1
                 `,
                 [normalizedCode]
@@ -2591,10 +2657,28 @@ class LocalWebServer {
         return normalizeCustomerRow(
             this.dbManager.db.prepare(
                 `
-                    SELECT id, customer_name, customer_code, branch_id
-                    FROM customers
-                    WHERE UPPER(TRIM(COALESCE(customer_code, ''))) = ?
-                    ORDER BY id ASC
+                    SELECT
+                        COALESCE(target.id, c.id) AS id,
+                        COALESCE(target.customer_name, c.customer_name) AS customer_name,
+                        COALESCE(target.customer_code, c.customer_code) AS customer_code,
+                        COALESCE(target.branch_id, c.branch_id) AS branch_id,
+                        c.customer_name AS matched_customer_name,
+                        c.id AS matched_customer_id,
+                        COALESCE(target.is_favorite, c.is_favorite, 0) AS is_favorite,
+                        COALESCE(c.merged_into_customer_id, 0) AS merged_into_customer_id
+                    FROM customers c
+                    LEFT JOIN customers target ON target.id = c.merged_into_customer_id
+                    WHERE UPPER(TRIM(COALESCE(c.customer_code, ''))) = ?
+                      AND (target.id IS NULL OR (
+                        COALESCE(target.is_active, 1) = 1
+                        AND COALESCE(target.merged_into_customer_id, 0) = 0
+                      ))
+                    ORDER BY
+                        CASE
+                            WHEN COALESCE(c.is_active, 1) = 1 AND COALESCE(c.merged_into_customer_id, 0) = 0 THEN 0
+                            ELSE 1
+                        END,
+                        c.id ASC
                     LIMIT 1
                 `
             ).get(normalizedCode)
@@ -2610,14 +2694,48 @@ class LocalWebServer {
         const normalizedBranchId = normalizePositiveInteger(branchId);
         const pool = this.getPostgresPool();
         if (pool) {
-            const branchFilter = normalizedBranchId ? 'AND COALESCE(branch_id, 0) = $2' : '';
-            const params = normalizedBranchId ? [normalizedName, normalizedBranchId] : [normalizedName];
+            const activeBranchFilter = normalizedBranchId ? 'AND COALESCE(c.branch_id, 0) = $2' : '';
+            const mergedBranchFilter = normalizedBranchId ? 'AND COALESCE(target.branch_id, source.branch_id, 0) = $4' : '';
+            const params = normalizedBranchId
+                ? [normalizedName, normalizedBranchId, normalizedName, normalizedBranchId]
+                : [normalizedName, normalizedName];
             const result = await pool.query(
                 `
-                    SELECT id, customer_name, customer_code, branch_id
-                    FROM customers
-                    WHERE BTRIM(COALESCE(customer_name, '')) = $1
-                    ${branchFilter}
+                    SELECT id, customer_name, customer_code, branch_id, matched_customer_name, matched_customer_id, merged_into_customer_id
+                    FROM (
+                        SELECT
+                            c.id AS id,
+                            c.customer_name AS customer_name,
+                            c.customer_code AS customer_code,
+                            c.branch_id AS branch_id,
+                            c.customer_name AS matched_customer_name,
+                            c.id AS matched_customer_id,
+                            0 AS merged_into_customer_id
+                        FROM customers c
+                        WHERE BTRIM(COALESCE(c.customer_name, '')) = $1
+                          AND COALESCE(c.is_active, 1) = 1
+                          AND COALESCE(c.merged_into_customer_id, 0) = 0
+                          ${activeBranchFilter}
+
+                        UNION ALL
+
+                        SELECT
+                            target.id AS id,
+                            target.customer_name AS customer_name,
+                            target.customer_code AS customer_code,
+                            target.branch_id AS branch_id,
+                            source.customer_name AS matched_customer_name,
+                            source.id AS matched_customer_id,
+                            source.merged_into_customer_id AS merged_into_customer_id
+                        FROM customers source
+                        JOIN customers target ON target.id = source.merged_into_customer_id
+                        WHERE BTRIM(COALESCE(source.customer_name, '')) = ${normalizedBranchId ? '$3' : '$2'}
+                          AND COALESCE(source.merged_into_customer_id, 0) > 0
+                          AND COALESCE(target.is_active, 1) = 1
+                          AND COALESCE(target.merged_into_customer_id, 0) = 0
+                          ${mergedBranchFilter}
+                    ) customer_matches
+                    GROUP BY id, customer_name, customer_code, branch_id, matched_customer_name, matched_customer_id, merged_into_customer_id
                     ORDER BY id ASC
                 `,
                 params
@@ -2625,18 +2743,147 @@ class LocalWebServer {
             return uniqueCustomerRows(result.rows || []);
         }
 
-        const branchFilter = normalizedBranchId ? 'AND COALESCE(branch_id, 0) = ?' : '';
-        const params = normalizedBranchId ? [normalizedName, normalizedBranchId] : [normalizedName];
+        const activeBranchFilter = normalizedBranchId ? 'AND COALESCE(c.branch_id, 0) = ?' : '';
+        const mergedBranchFilter = normalizedBranchId ? 'AND COALESCE(target.branch_id, source.branch_id, 0) = ?' : '';
+        const params = normalizedBranchId
+            ? [normalizedName, normalizedBranchId, normalizedName, normalizedBranchId]
+            : [normalizedName, normalizedName];
         const rows = this.dbManager.db.prepare(
             `
-                SELECT id, customer_name, customer_code, branch_id
-                FROM customers
-                WHERE TRIM(COALESCE(customer_name, '')) = ?
-                ${branchFilter}
+                SELECT id, customer_name, customer_code, branch_id, matched_customer_name, matched_customer_id, merged_into_customer_id
+                FROM (
+                    SELECT
+                        c.id AS id,
+                        c.customer_name AS customer_name,
+                        c.customer_code AS customer_code,
+                        c.branch_id AS branch_id,
+                        c.customer_name AS matched_customer_name,
+                        c.id AS matched_customer_id,
+                        0 AS merged_into_customer_id
+                    FROM customers c
+                    WHERE TRIM(COALESCE(c.customer_name, '')) = ?
+                      AND COALESCE(c.is_active, 1) = 1
+                      AND COALESCE(c.merged_into_customer_id, 0) = 0
+                      ${activeBranchFilter}
+
+                    UNION ALL
+
+                    SELECT
+                        target.id AS id,
+                        target.customer_name AS customer_name,
+                        target.customer_code AS customer_code,
+                        target.branch_id AS branch_id,
+                        source.customer_name AS matched_customer_name,
+                        source.id AS matched_customer_id,
+                        source.merged_into_customer_id AS merged_into_customer_id
+                    FROM customers source
+                    JOIN customers target ON target.id = source.merged_into_customer_id
+                    WHERE TRIM(COALESCE(source.customer_name, '')) = ?
+                      AND COALESCE(source.merged_into_customer_id, 0) > 0
+                      AND COALESCE(target.is_active, 1) = 1
+                      AND COALESCE(target.merged_into_customer_id, 0) = 0
+                      ${mergedBranchFilter}
+                ) customer_matches
+                GROUP BY id
                 ORDER BY id ASC
             `
         ).all(...params);
         return uniqueCustomerRows(rows);
+    }
+
+    buildCustomerIdentityUsageWhere(alias, customer, usePostgresPlaceholders = false) {
+        const customerId = normalizePositiveInteger(customer?.id || customer?.customer_id);
+        const customerCode = normalizeCustomerCodeValue(customer?.customer_code);
+        const clauses = [];
+        const params = [];
+        const nextPlaceholder = () => (usePostgresPlaceholders ? `$${params.length + 1}` : '?');
+
+        if (customerId) {
+            const placeholder = nextPlaceholder();
+            clauses.push(`COALESCE(${alias}.customer_id, 0) = ${placeholder}`);
+            params.push(customerId);
+        }
+
+        if (customerCode) {
+            const placeholder = nextPlaceholder();
+            const trimFn = usePostgresPlaceholders ? 'BTRIM' : 'TRIM';
+            clauses.push(`UPPER(${trimFn}(COALESCE(${alias}.customer_code, ''))) = ${placeholder}`);
+            params.push(customerCode);
+        }
+
+        return {
+            where: clauses.length > 0 ? clauses.map((clause) => `(${clause})`).join(' OR ') : '',
+            params
+        };
+    }
+
+    async countCustomerIdentityUsage(customer, branchId = null) {
+        const normalizedBranchId = normalizePositiveInteger(branchId);
+        const pool = this.getPostgresPool();
+        const usePostgres = Boolean(pool);
+        const sources = [
+            { tableName: 'postpaid_sales', alias: 'ps', reconciled: true },
+            { tableName: 'customer_receipts', alias: 'cr', reconciled: true },
+            { tableName: 'manual_postpaid_sales', alias: 'mps', reconciled: false },
+            { tableName: 'manual_customer_receipts', alias: 'mcr', reconciled: false }
+        ];
+
+        let usageCount = 0;
+        for (const source of sources) {
+            const matcher = this.buildCustomerIdentityUsageWhere(source.alias, customer, usePostgres);
+            if (!matcher.where) {
+                continue;
+            }
+
+            const params = [...matcher.params];
+            const branchSql = source.reconciled && normalizedBranchId
+                ? `AND (COALESCE(c.branch_id, 0) = 0 OR COALESCE(c.branch_id, 0) = ${usePostgres ? `$${params.length + 1}` : '?'})`
+                : '';
+            if (branchSql) {
+                params.push(normalizedBranchId);
+            }
+
+            const joinSql = source.reconciled
+                ? `LEFT JOIN reconciliations r ON r.id = ${source.alias}.reconciliation_id
+                   LEFT JOIN cashiers c ON c.id = r.cashier_id`
+                : '';
+            const countCast = usePostgres ? 'COUNT(*)::int' : 'COUNT(*)';
+            const sql = `
+                SELECT ${countCast} AS usage_count
+                FROM ${source.tableName} ${source.alias}
+                ${joinSql}
+                WHERE (${matcher.where})
+                ${branchSql}
+            `;
+
+            try {
+                const row = usePostgres
+                    ? (await pool.query(sql, params)).rows?.[0]
+                    : this.dbManager.db.prepare(sql).get(...params);
+                usageCount += Number(row?.usage_count || 0);
+            } catch (_error) {
+                // Older local databases may lack identity columns; in that case keep duplicate protection strict.
+            }
+        }
+
+        return usageCount;
+    }
+
+    async selectSingleCustomerByTransactionUsage(customers, branchId = null) {
+        const safeCustomers = Array.isArray(customers) ? customers : [];
+        if (safeCustomers.length <= 1) {
+            return safeCustomers[0] || null;
+        }
+
+        const usageRows = await Promise.all(
+            safeCustomers.map(async (customer) => ({
+                customer,
+                usageCount: await this.countCustomerIdentityUsage(customer, branchId)
+            }))
+        );
+        const usedRows = usageRows.filter((row) => Number(row.usageCount || 0) > 0);
+
+        return usedRows.length === 1 ? usedRows[0].customer : null;
     }
 
     async resolveBranchCustomerCodePrefix(branchId = null) {
@@ -2654,6 +2901,10 @@ class LocalWebServer {
             return normalizeCustomerCodeValue(result.rows?.[0]?.customer_code_prefix) || `C${normalizedBranchId}`;
         }
 
+        if (typeof this.dbManager.resolveCustomerCodePrefix === 'function') {
+            return this.dbManager.resolveCustomerCodePrefix(normalizedBranchId);
+        }
+
         const row = this.dbManager.db.prepare(
             'SELECT customer_code_prefix FROM branches WHERE id = ? LIMIT 1'
         ).get(normalizedBranchId);
@@ -2662,6 +2913,10 @@ class LocalWebServer {
 
     async generateUniqueCustomerCode(branchId = null) {
         const normalizedBranchId = normalizePositiveInteger(branchId);
+        if (!this.getPostgresPool() && typeof this.dbManager.generateUniqueCustomerCode === 'function') {
+            return this.dbManager.generateUniqueCustomerCode(normalizedBranchId);
+        }
+
         const branchPrefix = await this.resolveBranchCustomerCodePrefix(normalizedBranchId);
         const pool = this.getPostgresPool();
         const codeRows = pool
@@ -2751,7 +3006,7 @@ class LocalWebServer {
             const byCode = await this.findCustomerByCode(normalizedCode);
             if (
                 byCode
-                && isSameCustomerName(byCode.customer_name, normalizedName)
+                && isCustomerNameMatchOrAlias(byCode, normalizedName)
                 && isSameOrOpenBranch(byCode.branch_id, normalizedBranchId)
             ) {
                 return byCode;
@@ -2762,13 +3017,22 @@ class LocalWebServer {
             }
         }
 
-        const byName = await this.findCustomersByName(normalizedName, normalizedBranchId);
+        let byName = await this.findCustomersByName(normalizedName, normalizedBranchId);
         if (byName.length > 1 && !normalizedCode) {
-            throw new Error(`customer_code_required_for_duplicate_name:${normalizedName}`);
+            const singleUsedCustomer = await this.selectSingleCustomerByTransactionUsage(byName, normalizedBranchId);
+            if (singleUsedCustomer) {
+                byName = [singleUsedCustomer];
+            } else {
+                throw new Error(`customer_code_required_for_duplicate_name:${normalizedName}`);
+            }
         }
 
         if (byName.length > 0) {
             const existing = byName[0];
+            const existingName = normalizeCustomerNameValue(existing.customer_name) || normalizedName;
+            const nextName = isCustomerNameMatchOrAlias(existing, normalizedName)
+                ? existingName
+                : normalizedName;
             const nextCode = existing.customer_code || normalizedCode || await this.generateUniqueCustomerCode(normalizedBranchId);
             const nextBranchId = normalizedBranchId || existing.branch_id || null;
             const pool = this.getPostgresPool();
@@ -2783,7 +3047,7 @@ class LocalWebServer {
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = $4
                     `,
-                    [normalizedName, nextCode, nextBranchId, existing.id]
+                    [nextName, nextCode, nextBranchId, existing.id]
                 );
             } else {
                 this.dbManager.db.prepare(
@@ -2795,13 +3059,12 @@ class LocalWebServer {
                             updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?
                     `
-                ).run(normalizedName, nextCode, nextBranchId, existing.id);
+                ).run(nextName, nextCode, nextBranchId, existing.id);
             }
 
-            this.clearLookupCache('customer updated');
             return {
                 ...existing,
-                customer_name: normalizedName,
+                customer_name: nextName,
                 customer_code: nextCode,
                 branch_id: nextBranchId
             };
@@ -2825,9 +3088,7 @@ class LocalWebServer {
             const maxInsertAttempts = 3;
             for (let attempt = 1; attempt <= maxInsertAttempts; attempt += 1) {
                 try {
-                    const inserted = await insertCustomer();
-                    this.clearLookupCache('customer created');
-                    return inserted;
+                    return await insertCustomer();
                 } catch (error) {
                     const canRetrySequence = this.isPostgresPrimaryKeySequenceError(error, 'customers')
                         && attempt < maxInsertAttempts;
@@ -2836,7 +3097,7 @@ class LocalWebServer {
                     }
 
                     console.warn(
-                        `[Customers] customers.id sequence was behind; refreshing sequence and retrying insert (${attempt}/${maxInsertAttempts}).`
+                        `⚠️ [Customers] customers.id sequence was behind; refreshing sequence and retrying insert (${attempt}/${maxInsertAttempts}).`
                     );
                     await this.refreshPostgresSerialSequence('customers');
                 }
@@ -2845,13 +3106,20 @@ class LocalWebServer {
             throw new Error('customers_sequence_repair_failed');
         }
 
+        if (typeof this.dbManager.ensureCustomerRegistryRecord === 'function') {
+            return normalizeCustomerRow(this.dbManager.ensureCustomerRegistryRecord({
+                customerName: normalizedName,
+                customerCode: effectiveCode,
+                branchId: normalizedBranchId
+            }));
+        }
+
         const insertResult = this.dbManager.db.prepare(
             `
                 INSERT INTO customers (customer_code, customer_name, branch_id, created_at, updated_at)
                 VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             `
         ).run(effectiveCode, normalizedName, normalizedBranchId);
-        this.clearLookupCache('customer created');
         return {
             id: insertResult.lastInsertRowid,
             customer_id: insertResult.lastInsertRowid,
@@ -2873,7 +3141,7 @@ class LocalWebServer {
             const byId = await this.findCustomerById(inputId);
             if (
                 byId
-                && (!inputName || isSameCustomerName(byId.customer_name, inputName))
+                && (!inputName || isCustomerNameMatchOrAlias(byId, inputName))
                 && (!inputCode || normalizeCustomerCodeValue(byId.customer_code) === inputCode)
                 && isSameOrOpenBranch(byId.branch_id, normalizedBranchId)
             ) {
@@ -2885,7 +3153,7 @@ class LocalWebServer {
             const byCode = await this.findCustomerByCode(inputCode);
             if (
                 byCode
-                && (!inputName || isSameCustomerName(byCode.customer_name, inputName))
+                && (!inputName || isCustomerNameMatchOrAlias(byCode, inputName))
                 && isSameOrOpenBranch(byCode.branch_id, normalizedBranchId)
             ) {
                 resolved = byCode;
@@ -2936,23 +3204,16 @@ class LocalWebServer {
     }
 
     async handleGetCustomerList(req, res, queryParams = {}) {
-        let cacheKey = null;
         try {
             console.log('🔍 [Customers API] Params:', queryParams);
             const authUser = req && req.authUser ? req.authUser : null;
             const effectiveCashierId = authUser && authUser.role === 'cashier'
                 ? authUser.id
                 : (queryParams && queryParams.cashierId ? queryParams.cashierId : null);
-            const branchId = await this.resolveLookupBranchId(authUser, effectiveCashierId);
-            const compactResponse = isTruthyQueryValue(queryParams && queryParams.compact);
-            cacheKey = this.getLookupCacheKey('customers', branchId, compactResponse ? 'compact' : 'full');
-            const cached = this.getLookupCacheEntry(cacheKey);
-            if (cached) {
-                this.sendLookupCacheEntry(req, res, cached, cached.stale ? 'stale' : 'hit');
-                return;
-            }
-
+            const branchId = await this.getCashierBranchId(effectiveCashierId);
             let customerRows = await this.listCustomerRowsForBranch(branchId);
+            const compactResponse = isTruthyQueryValue(queryParams && queryParams.compact);
+            const includeAliases = isTruthyQueryValue(queryParams && queryParams.includeAliases);
 
             if (customerRows.length === 0) {
                 customerRows = await this.listTransactionCustomerRowsForBranch(branchId);
@@ -2965,25 +3226,22 @@ class LocalWebServer {
                 branch_id: branchId
             };
 
+            if (includeAliases) {
+                payload.customer_alias_records = await this.listMergedCustomerAliasRowsForBranch(branchId);
+            }
+
             if (!compactResponse) {
                 payload.customers = customers;
             }
 
             console.log(`✅[Customers API] Returning ${customerRows.length} customers`);
             console.log('🚀 [Customers API] About to call sendJson...');
-            const cacheEntry = this.setLookupCacheEntry(cacheKey, payload);
             this.sendJson(res, payload, {
                 req,
-                cacheable: true,
-                etag: cacheEntry.etag
+                cacheable: true
             });
         } catch (error) {
             console.error('Error fetching customers:', error);
-            const stale = cacheKey ? this.getLookupCacheEntry(cacheKey, { allowStale: true }) : null;
-            if (stale) {
-                this.sendLookupCacheEntry(req, res, stale, 'stale');
-                return;
-            }
             this.sendJson(res, { success: false, error: error.message });
         }
     }
@@ -2999,6 +3257,13 @@ class LocalWebServer {
                 // **ROOT FIX**: Use pool.query() directly for PostgreSQL
                 const pool = this.dbManager.pool || this.dbManager.db.pool;
                 const syncFailures = [];
+                const requestedSyncProtocol = Number(data?._sync?.protocol_version || 0);
+                const requestedSyncSourceId = String(data?._sync?.source_id || '').trim();
+                const syncSourceId = requestedSyncProtocol >= 2
+                    && /^[A-Za-z0-9._:-]{8,160}$/.test(requestedSyncSourceId)
+                    ? requestedSyncSourceId
+                    : null;
+                const sourceScopedSync = Boolean(syncSourceId);
 
                 if (!pool) {
                     throw new Error('Database pool not available');
@@ -3006,7 +3271,6 @@ class LocalWebServer {
 
                 const ensureCashboxSyncSchema = async () => {
                     const statements = [
-                        "ALTER TABLE branches ADD COLUMN IF NOT EXISTS customer_code_prefix TEXT DEFAULT ''",
                         `CREATE TABLE IF NOT EXISTS customers (
                             id SERIAL PRIMARY KEY,
                             customer_code TEXT DEFAULT '',
@@ -3014,6 +3278,10 @@ class LocalWebServer {
                             branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
                             phone TEXT DEFAULT '',
                             address TEXT DEFAULT '',
+                            is_favorite INTEGER DEFAULT 0,
+                            is_active INTEGER DEFAULT 1,
+                            merged_into_customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                            merged_at TIMESTAMP,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         )`,
@@ -3021,6 +3289,10 @@ class LocalWebServer {
                         'ALTER TABLE customers ADD COLUMN IF NOT EXISTS branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL',
                         "ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''",
                         "ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT DEFAULT ''",
+                        'ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_favorite INTEGER DEFAULT 0',
+                        'ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_active INTEGER DEFAULT 1',
+                        'ALTER TABLE customers ADD COLUMN IF NOT EXISTS merged_into_customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL',
+                        'ALTER TABLE customers ADD COLUMN IF NOT EXISTS merged_at TIMESTAMP',
                         'ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
                         'ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
                         'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
@@ -3031,28 +3303,53 @@ class LocalWebServer {
                         "ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
                         'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
                         "ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
-                        `WITH ordered_branches AS (
-                            SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS branch_order
-                            FROM branches
-                        )
-                        UPDATE branches b
-                        SET customer_code_prefix = 'C' || ordered_branches.branch_order,
-                            updated_at = CURRENT_TIMESTAMP
-                        FROM ordered_branches
-                        WHERE b.id = ordered_branches.id
-                          AND TRIM(COALESCE(b.customer_code_prefix, '')) = ''`,
-                        `CREATE INDEX IF NOT EXISTS idx_branches_customer_code_prefix_lookup
-                         ON branches(UPPER(TRIM(customer_code_prefix)))
-                         WHERE TRIM(COALESCE(customer_code_prefix, '')) <> ''`,
-                        'CREATE INDEX IF NOT EXISTS idx_customers_name_branch ON customers(customer_name, branch_id)',
-                        'CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code)',
-                        `CREATE INDEX IF NOT EXISTS idx_customers_customer_code_lookup
-                         ON customers(UPPER(TRIM(customer_code)))
-                         WHERE TRIM(COALESCE(customer_code, '')) <> ''`,
-                        'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_id ON postpaid_sales(customer_id)',
-                        'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code ON postpaid_sales(customer_code)',
-                        'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_id ON customer_receipts(customer_id)',
-                        'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code ON customer_receipts(customer_code)',
+                        'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS formula_profile_id INTEGER',
+                        'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS formula_settings TEXT',
+                        'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS cashbox_posting_enabled INTEGER',
+                        'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+                        'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS invoice_number TEXT',
+                        'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS notes TEXT',
+                        'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        `CREATE TABLE IF NOT EXISTS customer_fiscal_opening_balances (
+                            id SERIAL PRIMARY KEY,
+                            fiscal_year TEXT NOT NULL,
+                            closed_year TEXT NOT NULL,
+                            balance_key TEXT NOT NULL,
+                            customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                            customer_code TEXT DEFAULT '',
+                            customer_name TEXT NOT NULL,
+                            branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+                            branch_name TEXT DEFAULT '',
+                            opening_balance DECIMAL(10,2) NOT NULL DEFAULT 0,
+                            total_postpaid DECIMAL(10,2) NOT NULL DEFAULT 0,
+                            total_receipts DECIMAL(10,2) NOT NULL DEFAULT 0,
+                            movements_count INTEGER NOT NULL DEFAULT 0,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                            UNIQUE(fiscal_year, balance_key)
+                        )`,
                         `CREATE TABLE IF NOT EXISTS branch_cashboxes (
                             id SERIAL PRIMARY KEY,
                             branch_id INTEGER NOT NULL UNIQUE REFERENCES branches(id) ON DELETE CASCADE,
@@ -3066,6 +3363,7 @@ class LocalWebServer {
                             id SERIAL PRIMARY KEY,
                             voucher_number INTEGER NOT NULL UNIQUE,
                             voucher_sequence_number INTEGER,
+                            sync_key TEXT UNIQUE,
                             voucher_type TEXT NOT NULL,
                             cashbox_id INTEGER NOT NULL REFERENCES branch_cashboxes(id) ON DELETE CASCADE,
                             branch_id INTEGER NOT NULL REFERENCES branches(id),
@@ -3081,9 +3379,9 @@ class LocalWebServer {
                             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                             source_reconciliation_id INTEGER,
                             source_entry_key TEXT,
-                            sync_key TEXT,
                             is_auto_generated INTEGER DEFAULT 0
                         )`,
+                        'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT',
                         `CREATE TABLE IF NOT EXISTS cashbox_voucher_audit_log (
                             id SERIAL PRIMARY KEY,
                             voucher_id INTEGER,
@@ -3105,12 +3403,67 @@ class LocalWebServer {
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_counterparty_name ON cashbox_vouchers(counterparty_name)',
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_reconciliation ON cashbox_vouchers(source_reconciliation_id, source_entry_key)',
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_auto_generated ON cashbox_vouchers(is_auto_generated, source_reconciliation_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_customers_name_branch ON customers(customer_name, branch_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code)',
+                        'CREATE INDEX IF NOT EXISTS idx_customers_favorite_active ON customers(is_favorite, is_active, merged_into_customer_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_customers_active_merge ON customers(is_active, merged_into_customer_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_customers_merged_into ON customers(merged_into_customer_id)',
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_customer_code_unique
+                         ON customers(UPPER(TRIM(customer_code)))
+                         WHERE TRIM(COALESCE(customer_code, '')) <> ''`,
+                        'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_id ON postpaid_sales(customer_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code ON postpaid_sales(customer_code)',
+                        'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code_norm ON postpaid_sales(UPPER(TRIM(customer_code)))',
+                        'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_created_date ON postpaid_sales(DATE(created_at))',
+                        'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_id ON customer_receipts(customer_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code ON customer_receipts(customer_code)',
+                        'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code_norm ON customer_receipts(UPPER(TRIM(customer_code)))',
+                        'CREATE INDEX IF NOT EXISTS idx_customer_receipts_created_date ON customer_receipts(DATE(created_at))',
+                        'CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer_id ON manual_postpaid_sales(customer_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer_code_norm ON manual_postpaid_sales(UPPER(TRIM(customer_code)))',
+                        'CREATE INDEX IF NOT EXISTS idx_manual_postpaid_created_date ON manual_postpaid_sales(DATE(created_at))',
+                        'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_id ON manual_customer_receipts(customer_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_code_norm ON manual_customer_receipts(UPPER(TRIM(customer_code)))',
+                        'CREATE INDEX IF NOT EXISTS idx_manual_receipts_created_date ON manual_customer_receipts(DATE(created_at))',
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliations_sync_source_row_unique
+                         ON reconciliations(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_receipts_sync_source_row_unique
+                         ON cash_receipts(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_receipts_sync_source_row_unique
+                         ON bank_receipts(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_postpaid_sales_sync_source_row_unique
+                         ON postpaid_sales(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_receipts_sync_source_row_unique
+                         ON customer_receipts(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_postpaid_sync_source_row_unique
+                         ON manual_postpaid_sales(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_receipts_sync_source_row_unique
+                         ON manual_customer_receipts(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_return_invoices_sync_source_row_unique
+                         ON return_invoices(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_suppliers_sync_source_row_unique
+                         ON suppliers(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+                        'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_year_key ON customer_fiscal_opening_balances(fiscal_year, balance_key)',
+                        'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_customer_id ON customer_fiscal_opening_balances(customer_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_code ON customer_fiscal_opening_balances(customer_code)',
+                        'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_name_branch ON customer_fiscal_opening_balances(customer_name, branch_id)',
+                        'CREATE INDEX IF NOT EXISTS idx_suppliers_supplier_name ON suppliers(supplier_name)',
+                        'CREATE INDEX IF NOT EXISTS idx_suppliers_supplier_name_norm ON suppliers(UPPER(TRIM(supplier_name)))',
+                        'CREATE INDEX IF NOT EXISTS idx_suppliers_created_date ON suppliers(DATE(created_at))',
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_voucher_action ON cashbox_voucher_audit_log(voucher_id, action_at DESC)',
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_branch_action ON cashbox_voucher_audit_log(branch_id, action_at DESC)',
                         'CREATE INDEX IF NOT EXISTS idx_cashbox_audit_log_action_type ON cashbox_voucher_audit_log(action_type, action_at DESC)',
-                        'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT',
                         'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_type_sequence_unique ON cashbox_vouchers(voucher_type, voucher_sequence_number)',
-                        'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_unique ON cashbox_vouchers(source_reconciliation_id, source_entry_key)',
+                        'CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_source_unique ON cashbox_vouchers(source_reconciliation_id, source_entry_key)'
                     ];
 
                     for (const statement of statements) {
@@ -3120,22 +3473,20 @@ class LocalWebServer {
                     const duplicateResult = await pool.query(`
                         SELECT sync_key, COUNT(*)::int AS count
                         FROM cashbox_vouchers
-                        WHERE sync_key IS NOT NULL AND BTRIM(sync_key) <> ''
+                        WHERE sync_key IS NOT NULL AND TRIM(sync_key) <> ''
                         GROUP BY sync_key
                         HAVING COUNT(*) > 1
+                        ORDER BY count DESC, sync_key
                         LIMIT 20
                     `);
                     if (duplicateResult.rowCount > 0) {
-                        const error = new Error(`CASHBOX_SYNC_KEY_DUPLICATES: ${duplicateResult.rowCount} groups. Sync paused; no records were changed.`);
+                        const duplicateCount = duplicateResult.rows.reduce((total, row) => total + Number(row.count), 0);
+                        const error = new Error(
+                            `CASHBOX_SYNC_KEY_DUPLICATES: ${duplicateResult.rowCount} duplicate sync_key groups (${duplicateCount} rows). Sync paused; no records were changed.`
+                        );
+                        error.code = 'CASHBOX_SYNC_KEY_DUPLICATES';
                         error.statusCode = 409;
                         throw error;
-                    }
-                    const currentIndex = await pool.query(`
-                        SELECT indexdef FROM pg_indexes
-                        WHERE schemaname = 'public' AND indexname = 'idx_cashbox_vouchers_sync_key_unique'
-                    `);
-                    if ((currentIndex.rows?.[0]?.indexdef || '').toUpperCase().includes(' WHERE ')) {
-                        await pool.query('DROP INDEX idx_cashbox_vouchers_sync_key_unique');
                     }
                     await pool.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)');
                 };
@@ -3144,181 +3495,65 @@ class LocalWebServer {
                     data.branch_cashboxes
                     || data.cashbox_vouchers
                     || data.cashbox_voucher_audit_log
+                    || data.active_cashbox_voucher_sync_keys
                     || data.active_branch_cashboxes_branch_ids
                     || data.active_branch_cashboxes_ids
-                    || data.active_cashbox_voucher_sync_keys
                     || data.active_cashbox_vouchers_ids
                     || data.active_cashbox_voucher_audit_log_ids
                 );
-                const hasCustomerPayload = Boolean(
-                    data.branches
-                    || data.customers
+
+                const hasCustomerIdentityPayload = Boolean(
+                    data.customers
                     || data.postpaid_sales
                     || data.customer_receipts
                     || data.manual_postpaid_sales
                     || data.manual_customer_receipts
+                    || data.customer_fiscal_opening_balances
+                    || data.active_customer_fiscal_opening_balances_ids
                 );
-                const hasLookupPayload = Boolean(hasCustomerPayload || data.cashiers || data.atms);
 
-                if (hasCashboxPayload || hasCustomerPayload) {
+                const hasSourceScopedPayload = sourceScopedSync && Boolean(
+                    data.reconciliations
+                    || data.cash_receipts
+                    || data.bank_receipts
+                    || data.postpaid_sales
+                    || data.customer_receipts
+                    || data.manual_postpaid_sales
+                    || data.manual_customer_receipts
+                    || data.return_invoices
+                    || data.suppliers
+                    || data.deleted_reconciliations_ids
+                );
+
+                if (hasCashboxPayload || hasCustomerIdentityPayload || hasSourceScopedPayload) {
                     await ensureCashboxSyncSchema();
                 }
 
                 // Helper to perform safe cleanup based on Full ID Lists
-                const normalizeIdList = (list) => (Array.isArray(list)
-                    ? list
-                        .map(value => Number(value))
-                        .filter(value => Number.isInteger(value) && value > 0)
-                    : []);
-
-                const normalizeTextList = (list) => (Array.isArray(list)
-                    ? [...new Set(
-                        list
-                            .map((value) => (value === null || value === undefined ? '' : String(value).trim()))
-                            .filter(Boolean)
-                    )]
-                    : []);
-
-                const normalizeDecimal = (value, fallback = 0) => {
-                    if (value === null || value === undefined || value === '') {
-                        return fallback;
-                    }
-
-                    const numericValue = Number(String(value).replace(/,/g, ''));
-                    return Number.isFinite(numericValue) ? numericValue : fallback;
-                };
-
-                const canonicalCashboxIdByBranchId = new Map();
-                const canonicalVoucherNumbers = {
-                    nextVoucherNumber: null,
-                    nextVoucherSequenceByType: new Map()
-                };
-
-                const refreshCanonicalCashboxMap = async (branchIds = []) => {
-                    const normalizedBranchIds = normalizeIdList(branchIds);
-                    const hasBranchFilter = normalizedBranchIds.length > 0;
-                    const result = hasBranchFilter
-                        ? await pool.query(
-                            'SELECT id, branch_id FROM branch_cashboxes WHERE branch_id = ANY($1::int[])',
-                            [normalizedBranchIds]
-                        )
-                        : await pool.query('SELECT id, branch_id FROM branch_cashboxes');
-
-                    if (hasBranchFilter) {
-                        normalizedBranchIds.forEach((branchId) => canonicalCashboxIdByBranchId.delete(branchId));
-                    } else {
-                        canonicalCashboxIdByBranchId.clear();
-                    }
-
-                    for (const row of result.rows || []) {
-                        const branchId = Number(row.branch_id);
-                        const cashboxId = Number(row.id);
-                        if (Number.isInteger(branchId) && branchId > 0 && Number.isInteger(cashboxId) && cashboxId > 0) {
-                            canonicalCashboxIdByBranchId.set(branchId, cashboxId);
-                        }
-                    }
-
-                    return canonicalCashboxIdByBranchId;
-                };
-
-                const ensureCanonicalCashboxesForBranches = async (branchIds, sourceRows = []) => {
-                    const normalizedBranchIds = normalizeIdList(branchIds);
-                    if (normalizedBranchIds.length === 0) {
-                        return;
-                    }
-
-                    await refreshCanonicalCashboxMap(normalizedBranchIds);
-
-                    const missingBranchIds = normalizedBranchIds.filter((branchId) => !canonicalCashboxIdByBranchId.has(branchId));
-                    if (missingBranchIds.length === 0) {
-                        return;
-                    }
-
-                    const sourceRowsByBranchId = new Map(
-                        (Array.isArray(sourceRows) ? sourceRows : [])
-                            .map((row) => {
-                                const branchId = Number(row && row.branch_id);
-                                return Number.isInteger(branchId) && branchId > 0
-                                    ? [branchId, row]
-                                    : null;
-                            })
-                            .filter(Boolean)
-                    );
-
-                    const branchesResult = await pool.query(
-                        'SELECT id, branch_name, is_active FROM branches WHERE id = ANY($1::int[])',
-                        [missingBranchIds]
-                    );
-
-                    const branchesById = new Map(
-                        (branchesResult.rows || []).map((row) => [Number(row.id), row])
-                    );
-
-                    let createdCount = 0;
-
-                    for (const branchId of missingBranchIds) {
-                        const branchRow = branchesById.get(branchId);
-                        if (!branchRow) {
-                            console.warn(`⚠️ [SYNC] Skipping canonical cashbox creation for missing branch ${branchId}.`);
-                            continue;
-                        }
-
-                        const sourceRow = sourceRowsByBranchId.get(branchId) || {};
-                        const branchName = String(branchRow.branch_name || '').trim() || 'الفرع';
-                        const cashboxName = String(sourceRow.cashbox_name || '').trim() || `صندوق ${branchName}`;
-                        const openingBalance = normalizeDecimal(sourceRow.opening_balance, 0);
-                        const isActive = Number.isInteger(Number(sourceRow.is_active))
-                            ? Number(sourceRow.is_active)
-                            : Number.isInteger(Number(branchRow.is_active))
-                                ? Number(branchRow.is_active)
-                                : 1;
-                        const createdAt = sourceRow.created_at || new Date().toISOString();
-                        const updatedAt = sourceRow.updated_at || createdAt;
-
-                        await pool.query(
-                            `INSERT INTO branch_cashboxes (
-                                branch_id, cashbox_name, opening_balance, is_active, created_at, updated_at
-                            ) VALUES ($1, $2, $3, $4, $5, $6)
-                            ON CONFLICT (branch_id) DO UPDATE SET
-                                cashbox_name = COALESCE(NULLIF(EXCLUDED.cashbox_name, ''), branch_cashboxes.cashbox_name),
-                                opening_balance = COALESCE(EXCLUDED.opening_balance, branch_cashboxes.opening_balance),
-                                is_active = COALESCE(EXCLUDED.is_active, branch_cashboxes.is_active),
-                                updated_at = COALESCE(EXCLUDED.updated_at, CURRENT_TIMESTAMP)`,
-                            [branchId, cashboxName, openingBalance, isActive, createdAt, updatedAt]
-                        );
-                        createdCount += 1;
-                    }
-
-                    if (createdCount > 0) {
-                        console.log(`🧰 [SYNC] Ensured ${createdCount} canonical branch cashboxes for incoming vouchers.`);
-                    }
-
-                    await refreshCanonicalCashboxMap(normalizedBranchIds);
-                };
-
-                const handleCleanup = async (table, activeIds, options = {}) => {
+                const handleCleanup = async (table, activeIds) => {
                     if (!activeIds || !Array.isArray(activeIds)) return;
 
-                    const column = options.column || 'id';
-                    const castType = options.castType || 'int';
-                    const deleteNullOrEmpty = options.deleteNullOrEmpty === true;
-                    const normalizer = typeof options.normalizer === 'function'
-                        ? options.normalizer
-                        : normalizeIdList;
-                    const normalizedIds = normalizer(activeIds);
-
                     try {
-                        if (normalizedIds.length > 0) {
+                        if (activeIds.length > 0) {
                             // Delete records NOT in the activeIds list (Mirror Sync)
                             // "DELETE FROM table WHERE id NOT IN (...)"
                             // Optimized for Postgres using ANY/ALL
-                            const cleanupCondition = deleteNullOrEmpty
-                                ? `(${column} IS NULL OR BTRIM(${column}::text) = '' OR ${column} != ALL($1::${castType}[]))`
-                                : `${column} != ALL($1::${castType}[])`;
-                            const result = await pool.query(
-                                `DELETE FROM ${table} WHERE ${cleanupCondition}`,
-                                [normalizedIds]
-                            );
+                            const scopedTables = new Set([
+                                'reconciliations', 'postpaid_sales', 'customer_receipts',
+                                'manual_postpaid_sales', 'manual_customer_receipts',
+                                'cash_receipts', 'bank_receipts', 'return_invoices', 'suppliers'
+                            ]);
+                            const result = sourceScopedSync && scopedTables.has(table)
+                                ? await pool.query(
+                                    `DELETE FROM ${table}
+                                     WHERE sync_source_id = $1
+                                       AND source_row_id != ALL($2::bigint[])`,
+                                    [syncSourceId, activeIds]
+                                )
+                                : await pool.query(
+                                    `DELETE FROM ${table} WHERE id != ALL($1::int[])`,
+                                    [activeIds]
+                                );
                             if (result.rowCount > 0) {
                                 console.log(`🧹 [SYNC] Cleaned ${result.rowCount} orphaned records from ${table}.`);
                             }
@@ -3327,6 +3562,449 @@ class LocalWebServer {
                         }
                     } catch (err) {
                         console.error(`⚠️ [SYNC] Cleanup failed for ${table}:`, err.message);
+                    }
+                };
+
+                const parseInteger = (value) => {
+                    if (value === null || value === undefined || value === '') return null;
+                    const numeric = Number(value);
+                    if (!Number.isFinite(numeric)) return null;
+                    return Math.trunc(numeric);
+                };
+
+                const sanitizeIdArray = (values = []) => Array.from(new Set(
+                    (Array.isArray(values) ? values : [])
+                        .map(parseInteger)
+                        .filter(id => id !== null && id > 0)
+                ));
+
+                const runInTransaction = async (callback) => {
+                    if (typeof pool.connect !== 'function') {
+                        return callback(pool.query.bind(pool));
+                    }
+
+                    const client = await pool.connect();
+                    try {
+                        await client.query('BEGIN');
+                        const result = await callback(client.query.bind(client));
+                        await client.query('COMMIT');
+                        return result;
+                    } catch (error) {
+                        try {
+                            await client.query('ROLLBACK');
+                        } catch (_rollbackError) {
+                            // Keep the original failure as the sync error.
+                        }
+                        throw error;
+                    } finally {
+                        client.release();
+                    }
+                };
+
+                const deleteReconciliationsByIds = async (rawIds = []) => {
+                    const ids = sanitizeIdArray(rawIds);
+                    if (ids.length === 0) return 0;
+
+                    return runInTransaction(async (query) => {
+                        let canonicalIds = ids;
+                        if (sourceScopedSync) {
+                            const canonicalResult = await query(
+                                `SELECT id FROM reconciliations
+                                 WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])`,
+                                [syncSourceId, ids]
+                            );
+                            canonicalIds = (canonicalResult.rows || []).map(row => Number(row.id)).filter(Number.isFinite);
+                            if (canonicalIds.length === 0) return 0;
+                        }
+
+                        await query('DELETE FROM cashbox_vouchers WHERE source_reconciliation_id = ANY($1::int[]) AND COALESCE(is_auto_generated, 0) = 1', [canonicalIds]);
+                        await query('DELETE FROM cash_receipts WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        await query('DELETE FROM bank_receipts WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        await query('DELETE FROM postpaid_sales WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        await query('DELETE FROM customer_receipts WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        await query('DELETE FROM return_invoices WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        await query('DELETE FROM suppliers WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
+                        const result = sourceScopedSync
+                            ? await query(
+                                'DELETE FROM reconciliations WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])',
+                                [syncSourceId, ids]
+                            )
+                            : await query('DELETE FROM reconciliations WHERE id = ANY($1::int[])', [ids]);
+                        return result.rowCount || 0;
+                    });
+                };
+
+                const explicitDeleteTables = new Set([
+                    'postpaid_sales',
+                    'customer_receipts',
+                    'manual_postpaid_sales',
+                    'manual_customer_receipts',
+                    'customer_fiscal_opening_balances',
+                    'cash_receipts',
+                    'bank_receipts',
+                    'return_invoices',
+                    'suppliers'
+                ]);
+
+                const deleteTableRowsByIds = async (table, rawIds = []) => {
+                    if (!explicitDeleteTables.has(table)) return 0;
+
+                    const ids = sanitizeIdArray(rawIds);
+                    if (ids.length === 0) return 0;
+
+                    const result = sourceScopedSync
+                        ? await pool.query(
+                            `DELETE FROM ${table} WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])`,
+                            [syncSourceId, ids]
+                        )
+                        : await pool.query(`DELETE FROM ${table} WHERE id = ANY($1::int[])`, [ids]);
+                    return result.rowCount || 0;
+                };
+
+                const parseNumber = (value, fallback = 0) => {
+                    if (value === null || value === undefined || value === '') return fallback;
+                    const numeric = Number(value);
+                    return Number.isFinite(numeric) ? numeric : fallback;
+                };
+
+                const toOptionalText = (value) => {
+                    if (value === null || value === undefined) return null;
+                    const normalized = String(value).trim();
+                    return normalized.length > 0 ? normalized : null;
+                };
+
+                const ensureCanonicalCashboxByBranchId = async (branchId, fallbackName = null) => {
+                    if (!Number.isFinite(Number(branchId))) return null;
+                    const normalizedBranchId = Number(branchId);
+                    const cashboxName = toOptionalText(fallbackName) || `Branch ${normalizedBranchId} Cashbox`;
+
+                    await pool.query(
+                        `
+                            INSERT INTO branch_cashboxes (branch_id, cashbox_name, opening_balance, is_active, created_at, updated_at)
+                            VALUES ($1, $2, 0, 1, NOW(), NOW())
+                            ON CONFLICT (branch_id)
+                            DO UPDATE SET
+                                cashbox_name = EXCLUDED.cashbox_name,
+                                updated_at = NOW()
+                        `,
+                        [normalizedBranchId, cashboxName]
+                    );
+
+                    const canonicalResult = await pool.query(
+                        'SELECT id, branch_id FROM branch_cashboxes WHERE branch_id = $1 LIMIT 1',
+                        [normalizedBranchId]
+                    );
+                    return canonicalResult.rows?.[0] || null;
+                };
+
+                const buildCanonicalCashboxIdMap = async () => {
+                    const result = await pool.query('SELECT id, branch_id FROM branch_cashboxes');
+                    const map = new Map();
+                    for (const row of result.rows || []) {
+                        if (Number.isFinite(Number(row.branch_id)) && Number.isFinite(Number(row.id))) {
+                            map.set(Number(row.branch_id), Number(row.id));
+                        }
+                    }
+                    return map;
+                };
+
+                const syncBranchCashboxesCanonical = async (items = []) => {
+                    if (!Array.isArray(items) || items.length === 0) {
+                        return { canonicalMap: await buildCanonicalCashboxIdMap(), localCashboxToBranchMap: new Map() };
+                    }
+
+                    const localCashboxToBranchMap = new Map();
+                    const seenBranchIds = new Set();
+                    for (const item of items) {
+                        const branchId = parseInteger(item?.branch_id);
+                        if (!Number.isFinite(branchId)) continue;
+
+                        if (Number.isFinite(parseInteger(item?.id))) {
+                            localCashboxToBranchMap.set(parseInteger(item.id), branchId);
+                        }
+
+                        if (seenBranchIds.has(branchId)) continue;
+                        seenBranchIds.add(branchId);
+
+                        await ensureCanonicalCashboxByBranchId(branchId, item?.cashbox_name);
+
+                        await pool.query(
+                            `
+                                UPDATE branch_cashboxes
+                                SET
+                                    opening_balance = $2,
+                                    is_active = $3,
+                                    updated_at = COALESCE($4, NOW())
+                                WHERE branch_id = $1
+                            `,
+                            [
+                                branchId,
+                                parseNumber(item?.opening_balance, 0),
+                                parseInteger(item?.is_active) === 0 ? 0 : 1,
+                                item?.updated_at || null
+                            ]
+                        );
+                    }
+
+                    return {
+                        canonicalMap: await buildCanonicalCashboxIdMap(),
+                        localCashboxToBranchMap
+                    };
+                };
+
+                const buildCashboxVoucherSyncKey = (voucher, branchId) => {
+                    const explicitSyncKey = toOptionalText(voucher?.sync_key);
+                    if (explicitSyncKey) return explicitSyncKey;
+
+                    const sourceReconciliationId = parseInteger(voucher?.source_reconciliation_id);
+                    const sourceEntryKey = toOptionalText(voucher?.source_entry_key);
+                    if (sourceReconciliationId !== null && sourceEntryKey) {
+                        return `recon:${sourceReconciliationId}:${sourceEntryKey}`;
+                    }
+
+                    const voucherType = toOptionalText(voucher?.voucher_type) || 'unknown';
+                    const voucherSequence = parseInteger(voucher?.voucher_sequence_number);
+                    if (voucherSequence !== null) {
+                        return `seq:${branchId}:${voucherType}:${voucherSequence}`;
+                    }
+
+                    const voucherNumber = parseInteger(voucher?.voucher_number);
+                    if (voucherNumber !== null) {
+                        return `num:${branchId}:${voucherType}:${voucherNumber}`;
+                    }
+
+                    const voucherDate = toOptionalText(voucher?.voucher_date) || 'na';
+                    const amount = parseNumber(voucher?.amount, 0);
+                    const counterpartyType = toOptionalText(voucher?.counterparty_type) || 'na';
+                    const counterpartyName = toOptionalText(voucher?.counterparty_name) || 'na';
+                    const createdAt = toOptionalText(voucher?.created_at) || 'na';
+                    const localId = toOptionalText(voucher?.id) || 'na';
+
+                    return `fallback:${branchId}:${voucherType}:${voucherDate}:${amount}:${counterpartyType}:${counterpartyName}:${createdAt}:${localId}`;
+                };
+
+                const syncCashboxVouchersCanonical = async (items = [], canonicalMap = new Map(), localCashboxToBranchMap = new Map()) => {
+                    if (!Array.isArray(items) || items.length === 0) return;
+
+                    console.log(`🔄 [SYNC] Syncing cashbox_vouchers (${items.length} items) with canonical sync keys...`);
+
+                    const BATCH_SIZE = 200;
+                    const columns = [
+                        'sync_key',
+                        'voucher_number',
+                        'voucher_sequence_number',
+                        'voucher_type',
+                        'cashbox_id',
+                        'branch_id',
+                        'counterparty_type',
+                        'counterparty_name',
+                        'cashier_id',
+                        'amount',
+                        'reference_no',
+                        'description',
+                        'voucher_date',
+                        'created_by',
+                        'created_at',
+                        'updated_at',
+                        'source_reconciliation_id',
+                        'source_entry_key',
+                        'is_auto_generated'
+                    ];
+                    const updateSet = columns
+                        .filter(columnName => columnName !== 'sync_key' && columnName !== 'created_at')
+                        .map(columnName => `${columnName} = EXCLUDED.${columnName}`)
+                        .join(', ');
+
+                    const canonicalReconciliationIds = sourceScopedSync
+                        ? await loadCanonicalReconciliationIds(items.map(item => item?.source_reconciliation_id))
+                        : new Map();
+                    const normalizedItems = [];
+                    for (const item of items) {
+                        const localCashboxId = parseInteger(item?.cashbox_id);
+                        let branchId = parseInteger(item?.branch_id);
+                        if (branchId === null && localCashboxId !== null && localCashboxToBranchMap.has(localCashboxId)) {
+                            branchId = localCashboxToBranchMap.get(localCashboxId);
+                        }
+                        if (branchId === null) {
+                            const failure = { table: 'cashbox_vouchers', id: item?.id ?? null, error: 'Missing branch_id for cashbox voucher' };
+                            syncFailures.push(failure);
+                            continue;
+                        }
+
+                        if (!canonicalMap.has(branchId)) {
+                            const createdCanonical = await ensureCanonicalCashboxByBranchId(branchId, null);
+                            if (createdCanonical && Number.isFinite(Number(createdCanonical.id))) {
+                                canonicalMap.set(branchId, Number(createdCanonical.id));
+                            }
+                        }
+
+                        const canonicalCashboxId = canonicalMap.get(branchId);
+                        if (!Number.isFinite(Number(canonicalCashboxId))) {
+                            const failure = { table: 'cashbox_vouchers', id: item?.id ?? null, error: `Failed to resolve canonical cashbox for branch ${branchId}` };
+                            syncFailures.push(failure);
+                            continue;
+                        }
+
+                        const localSourceReconciliationId = parseInteger(item?.source_reconciliation_id);
+                        let canonicalSourceReconciliationId = localSourceReconciliationId;
+                        let canonicalSyncKey = buildCashboxVoucherSyncKey(item, branchId);
+                        if (sourceScopedSync && localSourceReconciliationId !== null) {
+                            canonicalSourceReconciliationId = canonicalReconciliationIds.get(localSourceReconciliationId);
+                            if (!Number.isFinite(canonicalSourceReconciliationId)) {
+                                syncFailures.push({
+                                    table: 'cashbox_vouchers',
+                                    id: item?.id ?? null,
+                                    error: `Parent reconciliation ${localSourceReconciliationId} is not synced for this device`
+                                });
+                                continue;
+                            }
+                            const sourceEntryKey = toOptionalText(item?.source_entry_key) || `row:${parseInteger(item?.id) ?? 'unknown'}`;
+                            canonicalSyncKey = `recon:${canonicalSourceReconciliationId}:${sourceEntryKey}`;
+                        }
+
+                        normalizedItems.push({
+                            sync_key: canonicalSyncKey,
+                            voucher_number: parseInteger(item?.voucher_number),
+                            voucher_sequence_number: parseInteger(item?.voucher_sequence_number),
+                            voucher_type: toOptionalText(item?.voucher_type),
+                            cashbox_id: canonicalCashboxId,
+                            branch_id: branchId,
+                            counterparty_type: toOptionalText(item?.counterparty_type),
+                            counterparty_name: toOptionalText(item?.counterparty_name),
+                            cashier_id: parseInteger(item?.cashier_id),
+                            amount: parseNumber(item?.amount, 0),
+                            reference_no: toOptionalText(item?.reference_no),
+                            description: toOptionalText(item?.description),
+                            voucher_date: toOptionalText(item?.voucher_date),
+                            created_by: toOptionalText(item?.created_by),
+                            created_at: item?.created_at || null,
+                            updated_at: item?.updated_at || null,
+                            source_reconciliation_id: canonicalSourceReconciliationId,
+                            source_entry_key: toOptionalText(item?.source_entry_key),
+                            is_auto_generated: parseInteger(item?.is_auto_generated) === 1 ? 1 : 0
+                        });
+                    }
+
+                    let successCount = 0;
+                    let errorCount = 0;
+                    for (let i = 0; i < normalizedItems.length; i += BATCH_SIZE) {
+                        const batch = normalizedItems.slice(i, i + BATCH_SIZE);
+                        const placeholders = [];
+                        const values = [];
+                        let paramCounter = 1;
+
+                        for (const item of batch) {
+                            const rowPlaceholders = [];
+                            for (const columnName of columns) {
+                                values.push(item[columnName] === undefined ? null : item[columnName]);
+                                rowPlaceholders.push(`$${paramCounter++}`);
+                            }
+                            placeholders.push(`(${rowPlaceholders.join(', ')})`);
+                        }
+
+                        const sql = `
+                            INSERT INTO cashbox_vouchers (${columns.join(', ')})
+                            VALUES ${placeholders.join(', ')}
+                            ON CONFLICT (sync_key) DO UPDATE SET ${updateSet}
+                        `;
+
+                        try {
+                            await pool.query(sql, values);
+                            successCount += batch.length;
+                        } catch (err) {
+                            console.error('❌ [SYNC] Batch Error cashbox_vouchers:', err.message);
+                            for (const item of batch) {
+                                try {
+                                    const singleValues = columns.map(columnName => item[columnName] === undefined ? null : item[columnName]);
+                                    const singlePlaceholders = singleValues.map((_, idx) => `$${idx + 1}`).join(', ');
+                                    await pool.query(
+                                        `INSERT INTO cashbox_vouchers (${columns.join(', ')}) VALUES (${singlePlaceholders}) ON CONFLICT (sync_key) DO UPDATE SET ${updateSet}`,
+                                        singleValues
+                                    );
+                                    successCount += 1;
+                                } catch (singleError) {
+                                    errorCount += 1;
+                                    syncFailures.push({
+                                        table: 'cashbox_vouchers',
+                                        id: item.sync_key || item.voucher_number || null,
+                                        error: singleError.message
+                                    });
+                                    console.error('❌ [SYNC] Row insert failed:', {
+                                        table: 'cashbox_vouchers',
+                                        sync_key: item.sync_key || null,
+                                        record_id: item.id || null,
+                                        code: singleError.code || null,
+                                        message: singleError.message
+                                    });
+                                }
+                            }
+                        }
+                    }
+
+                    console.log(`✅ [SYNC] cashbox_vouchers: Processed ${successCount} items.${errorCount > 0 ? ` Failed ${errorCount} items.` : ''}`);
+                };
+
+                const handleBranchCashboxCleanupByBranchId = async (activeBranchIds) => {
+                    if (!Array.isArray(activeBranchIds) || activeBranchIds.length === 0) return;
+                    const normalizedIds = Array.from(
+                        new Set(
+                            activeBranchIds
+                                .map(parseInteger)
+                                .filter(branchId => Number.isFinite(branchId))
+                        )
+                    );
+                    if (normalizedIds.length === 0) return;
+
+                    try {
+                        const result = await pool.query(
+                            'DELETE FROM branch_cashboxes WHERE branch_id != ALL($1::int[])',
+                            [normalizedIds]
+                        );
+                        if (result.rowCount > 0) {
+                            console.log(`🧹 [SYNC] Cleaned ${result.rowCount} orphaned branch_cashboxes via branch_id mirror cleanup.`);
+                        }
+                    } catch (err) {
+                        console.error('⚠️ [SYNC] branch_cashboxes branch_id cleanup failed:', err.message);
+                    }
+                };
+
+                const handleCashboxVoucherCleanupBySyncKeys = async (activeSyncKeys) => {
+                    if (!Array.isArray(activeSyncKeys)) return;
+                    if (sourceScopedSync) {
+                        // Voucher keys from old desktop builds can contain local reconciliation
+                        // ids. A global mirror delete here could erase another device's vouchers.
+                        console.log('ℹ️ [SYNC] Skipping global voucher mirror cleanup for a device-scoped upload.');
+                        return;
+                    }
+                    const normalizedSyncKeys = Array.from(
+                        new Set(
+                            activeSyncKeys
+                                .map(toOptionalText)
+                                .filter((syncKey) => syncKey !== null)
+                        )
+                    );
+
+                    try {
+                        let result;
+                        if (normalizedSyncKeys.length === 0) {
+                            result = await pool.query('DELETE FROM cashbox_vouchers');
+                        } else {
+                            result = await pool.query(
+                                `
+                                    DELETE FROM cashbox_vouchers
+                                    WHERE sync_key IS NULL
+                                       OR TRIM(sync_key) = ''
+                                       OR sync_key != ALL($1::text[])
+                                `,
+                                [normalizedSyncKeys]
+                            );
+                        }
+
+                        if (result.rowCount > 0) {
+                            console.log(`🧹 [SYNC] Cleaned ${result.rowCount} orphaned cashbox_vouchers via sync-key mirror cleanup.`);
+                        }
+                    } catch (err) {
+                        console.error('⚠️ [SYNC] cashbox_vouchers sync-key cleanup failed:', err.message);
                     }
                 };
 
@@ -3412,7 +4090,12 @@ class LocalWebServer {
                                         error: e.message
                                     };
                                     syncFailures.push(failure);
-                                    console.error(`❌ [SYNC] Row insert failed for ${table}:`, e.message, 'Data:', item);
+                                    console.error('❌ [SYNC] Row insert failed:', {
+                                        table,
+                                        record_id: failedItemId,
+                                        code: e.code || null,
+                                        message: e.message
+                                    });
                                 }
                             }
                         }
@@ -3420,299 +4103,177 @@ class LocalWebServer {
                     console.log(`✅ [SYNC] ${table}: Processed ${successCount} items.${errorCount > 0 ? ` Failed ${errorCount} items.` : ''}`);
                 };
 
-                const syncBranchCashboxes = async (items) => {
-                    if (!Array.isArray(items) || items.length === 0) {
-                        return;
-                    }
+                const scopedSyncTables = new Set([
+                    'reconciliations',
+                    'cash_receipts',
+                    'bank_receipts',
+                    'postpaid_sales',
+                    'customer_receipts',
+                    'manual_postpaid_sales',
+                    'manual_customer_receipts',
+                    'return_invoices',
+                    'suppliers'
+                ]);
 
-                    const validBranchCashboxes = items
-                        .map((item) => ({
-                            ...item,
-                            branch_id: Number(item.branch_id)
-                        }))
-                        .filter((item) => Number.isInteger(item.branch_id) && item.branch_id > 0);
-
-                    if (validBranchCashboxes.length === 0) {
-                        console.warn('⚠️ [SYNC] Received branch_cashboxes payload without valid branch_id values.');
-                        return;
-                    }
-
-                    await syncTable('branch_cashboxes', validBranchCashboxes, [
-                        { name: 'branch_id' }, { name: 'cashbox_name' },
-                        { name: 'opening_balance' }, { name: 'is_active' },
-                        { name: 'created_at' }, { name: 'updated_at' }
-                    ], 'branch_id');
-
-                    await refreshCanonicalCashboxMap(validBranchCashboxes.map((item) => item.branch_id));
-                };
-
-                const getNextCanonicalCashboxVoucherNumbers = async (voucherType) => {
-                    const normalizedVoucherType = String(voucherType || 'receipt').trim() || 'receipt';
-
-                    if (canonicalVoucherNumbers.nextVoucherNumber === null) {
-                        const voucherNumberResult = await pool.query(
-                            'SELECT COALESCE(MAX(voucher_number), 0) AS max_number FROM cashbox_vouchers'
-                        );
-                        canonicalVoucherNumbers.nextVoucherNumber = Number(voucherNumberResult.rows?.[0]?.max_number || 0);
-                    }
-
-                    if (!canonicalVoucherNumbers.nextVoucherSequenceByType.has(normalizedVoucherType)) {
-                        const voucherSequenceResult = await pool.query(
-                            'SELECT COALESCE(MAX(voucher_sequence_number), 0) AS max_number FROM cashbox_vouchers WHERE voucher_type = $1',
-                            [normalizedVoucherType]
-                        );
-                        canonicalVoucherNumbers.nextVoucherSequenceByType.set(
-                            normalizedVoucherType,
-                            Number(voucherSequenceResult.rows?.[0]?.max_number || 0)
-                        );
-                    }
-
-                    canonicalVoucherNumbers.nextVoucherNumber += 1;
-                    canonicalVoucherNumbers.nextVoucherSequenceByType.set(
-                        normalizedVoucherType,
-                        Number(canonicalVoucherNumbers.nextVoucherSequenceByType.get(normalizedVoucherType) || 0) + 1
-                    );
-
-                    return {
-                        voucherNumber: canonicalVoucherNumbers.nextVoucherNumber,
-                        voucherSequenceNumber: canonicalVoucherNumbers.nextVoucherSequenceByType.get(normalizedVoucherType)
-                    };
-                };
-
-                const loadExistingCashboxVouchersBySyncKey = async (syncKeys) => {
-                    const normalizedSyncKeys = normalizeTextList(syncKeys);
-                    if (normalizedSyncKeys.length === 0) {
-                        return new Map();
-                    }
-
+                const loadCanonicalReconciliationIds = async (rawLocalIds = []) => {
+                    const localIds = sanitizeIdArray(rawLocalIds);
+                    if (!sourceScopedSync || localIds.length === 0) return new Map();
                     const result = await pool.query(
-                        `SELECT id, sync_key, voucher_number, voucher_sequence_number
-                         FROM cashbox_vouchers
-                         WHERE sync_key = ANY($1::text[])`,
-                        [normalizedSyncKeys]
+                        `SELECT id, source_row_id
+                         FROM reconciliations
+                         WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])`,
+                        [syncSourceId, localIds]
                     );
-
-                    return new Map(
-                        (result.rows || [])
-                            .map((row) => [String(row.sync_key || '').trim(), row])
-                            .filter(([syncKey]) => Boolean(syncKey))
-                    );
+                    return new Map((result.rows || []).map(row => [Number(row.source_row_id), Number(row.id)]));
                 };
 
-                const syncCashboxVouchers = async (items) => {
-                    if (!Array.isArray(items) || items.length === 0) {
-                        return;
+                // Local SQLite ids are only unique inside one desktop installation.  This
+                // upsert keeps the PostgreSQL primary key canonical and uses the stable
+                // installation id + local row id as the idempotency key.
+                const syncSourceScopedTable = async (table, items, columns, options = {}) => {
+                    if (!sourceScopedSync || !scopedSyncTables.has(table)) {
+                        return syncTable(table, items, columns);
+                    }
+                    if (!Array.isArray(items) || items.length === 0) return;
+
+                    const validItems = items.filter(item => {
+                        const localId = parseInteger(item?.id);
+                        if (localId !== null && localId > 0) return true;
+                        syncFailures.push({ table, id: item?.id ?? null, error: 'Missing valid local source row id' });
+                        return false;
+                    });
+                    if (validItems.length === 0) return;
+
+                    let reconciliationIdMap = new Map();
+                    if (options.remapReconciliationId) {
+                        reconciliationIdMap = await loadCanonicalReconciliationIds(
+                            validItems.map(item => item?.reconciliation_id)
+                        );
                     }
 
-                    const voucherBranchIds = normalizeIdList(items.map((voucher) => voucher.branch_id));
-                    if (voucherBranchIds.length > 0) {
-                        await ensureCanonicalCashboxesForBranches(voucherBranchIds, data.branch_cashboxes);
-                        await refreshCanonicalCashboxMap(voucherBranchIds);
-                    }
-
-                    const preparedBySyncKey = new Map();
-
-                    for (const voucher of items) {
-                        const branchId = Number(voucher?.branch_id);
-                        const cashboxId = canonicalCashboxIdByBranchId.get(branchId);
-                        const syncKey = buildCashboxVoucherSyncKey(voucher);
-
-                        if (!Number.isInteger(branchId) || branchId <= 0) {
-                            syncFailures.push({
-                                table: 'cashbox_vouchers',
-                                id: voucher && voucher.id != null ? voucher.id : null,
-                                error: 'INVALID_BRANCH_ID'
-                            });
-                            continue;
+                    const normalizedItems = [];
+                    for (const item of validItems) {
+                        const localId = parseInteger(item.id);
+                        const normalized = { ...item };
+                        if (options.remapReconciliationId) {
+                            const localReconciliationId = parseInteger(item?.reconciliation_id);
+                            const canonicalReconciliationId = reconciliationIdMap.get(localReconciliationId);
+                            if (!Number.isFinite(canonicalReconciliationId)) {
+                                syncFailures.push({
+                                    table,
+                                    id: localId,
+                                    error: `Parent reconciliation ${localReconciliationId ?? '?'} is not synced for this device`
+                                });
+                                continue;
+                            }
+                            normalized.reconciliation_id = canonicalReconciliationId;
                         }
-
-                        if (!cashboxId) {
-                            syncFailures.push({
-                                table: 'cashbox_vouchers',
-                                id: voucher && voucher.id != null ? voucher.id : null,
-                                error: `MISSING_CANONICAL_CASHBOX_FOR_BRANCH_${branchId}`
-                            });
-                            continue;
-                        }
-
-                        if (!syncKey) {
-                            syncFailures.push({
-                                table: 'cashbox_vouchers',
-                                id: voucher && voucher.id != null ? voucher.id : null,
-                                error: 'MISSING_SYNC_KEY'
-                            });
-                            continue;
-                        }
-
-                        preparedBySyncKey.set(syncKey, {
-                            sync_key: syncKey,
-                            voucher_type: voucher.voucher_type,
-                            cashbox_id: cashboxId,
-                            branch_id: branchId,
-                            counterparty_type: voucher.counterparty_type,
-                            counterparty_name: voucher.counterparty_name,
-                            cashier_id: voucher.cashier_id ?? null,
-                            amount: voucher.amount,
-                            reference_no: voucher.reference_no ?? null,
-                            description: voucher.description ?? null,
-                            voucher_date: voucher.voucher_date,
-                            created_by: voucher.created_by ?? null,
-                            created_at: voucher.created_at || voucher.updated_at || new Date().toISOString(),
-                            updated_at: voucher.updated_at || voucher.created_at || new Date().toISOString(),
-                            source_reconciliation_id: voucher.source_reconciliation_id ?? null,
-                            source_entry_key: voucher.source_entry_key ?? null,
-                            is_auto_generated: voucher.is_auto_generated ?? 0
-                        });
+                        normalized.source_row_id = localId;
+                        normalized.sync_source_id = syncSourceId;
+                        normalizedItems.push(normalized);
                     }
+                    if (normalizedItems.length === 0) return;
 
-                    const preparedRows = Array.from(preparedBySyncKey.values());
-                    if (preparedRows.length === 0) {
-                        return;
-                    }
-
-                    const existingVoucherBySyncKey = await loadExistingCashboxVouchersBySyncKey(
-                        preparedRows.map((voucher) => voucher.sync_key)
+                    const localIds = normalizedItems.map(item => item.source_row_id);
+                    // Adopt the matching legacy row once, avoiding duplicates during the
+                    // upgrade from the old global-id protocol. No values are deleted.
+                    await pool.query(
+                        `UPDATE ${table}
+                         SET sync_source_id = $1, source_row_id = id
+                         WHERE id = ANY($2::int[]) AND sync_source_id IS NULL`,
+                        [syncSourceId, localIds]
                     );
 
-                    for (const voucher of preparedRows) {
-                        const existingVoucher = existingVoucherBySyncKey.get(voucher.sync_key);
-                        if (existingVoucher) {
-                            voucher.voucher_number = Number(existingVoucher.voucher_number || 0);
-                            voucher.voucher_sequence_number = Number(existingVoucher.voucher_sequence_number || 0);
-                            continue;
-                        }
-
-                        const nextNumbers = await getNextCanonicalCashboxVoucherNumbers(voucher.voucher_type);
-                        voucher.voucher_number = nextNumbers.voucherNumber;
-                        voucher.voucher_sequence_number = nextNumbers.voucherSequenceNumber;
-                    }
-
-                    console.log(`🔄 [SYNC] Syncing cashbox_vouchers (${preparedRows.length} items) with canonical sync keys...`);
-
-                    const columns = [
-                        'sync_key',
-                        'voucher_number',
-                        'voucher_sequence_number',
-                        'voucher_type',
-                        'cashbox_id',
-                        'branch_id',
-                        'counterparty_type',
-                        'counterparty_name',
-                        'cashier_id',
-                        'amount',
-                        'reference_no',
-                        'description',
-                        'voucher_date',
-                        'created_by',
-                        'created_at',
-                        'updated_at',
-                        'source_reconciliation_id',
-                        'source_entry_key',
-                        'is_auto_generated'
-                    ];
-                    const updateSets = [
-                        'voucher_number = COALESCE(cashbox_vouchers.voucher_number, EXCLUDED.voucher_number)',
-                        'voucher_sequence_number = COALESCE(cashbox_vouchers.voucher_sequence_number, EXCLUDED.voucher_sequence_number)',
-                        'voucher_type = EXCLUDED.voucher_type',
-                        'cashbox_id = EXCLUDED.cashbox_id',
-                        'branch_id = EXCLUDED.branch_id',
-                        'counterparty_type = EXCLUDED.counterparty_type',
-                        'counterparty_name = EXCLUDED.counterparty_name',
-                        'cashier_id = EXCLUDED.cashier_id',
-                        'amount = EXCLUDED.amount',
-                        'reference_no = EXCLUDED.reference_no',
-                        'description = EXCLUDED.description',
-                        'voucher_date = EXCLUDED.voucher_date',
-                        `created_by = COALESCE(NULLIF(EXCLUDED.created_by, ''), cashbox_vouchers.created_by)`,
-                        'updated_at = COALESCE(EXCLUDED.updated_at, CURRENT_TIMESTAMP)',
-                        'source_reconciliation_id = EXCLUDED.source_reconciliation_id',
-                        'source_entry_key = EXCLUDED.source_entry_key',
-                        'is_auto_generated = EXCLUDED.is_auto_generated'
-                    ].join(', ');
-
+                    const dataColumns = columns.map(column => column.name).filter(name => name !== 'id');
+                    const cols = ['sync_source_id', 'source_row_id', ...dataColumns];
+                    const updateSets = dataColumns.map(name => `${name} = EXCLUDED.${name}`).join(', ');
                     const BATCH_SIZE = 100;
                     let successCount = 0;
                     let errorCount = 0;
 
-                    const upsertBatch = async (batch) => {
-                        const placeholders = [];
-                        const values = [];
-                        let paramCounter = 1;
+                    const valuesForItem = item => cols.map(name => {
+                        const value = item[name];
+                        if (value === undefined) return null;
+                        if (value && typeof value === 'object') return JSON.stringify(value);
+                        return value;
+                    });
 
-                        batch.forEach((item) => {
-                            const rowParams = [];
-                            columns.forEach((column) => {
-                                let value = item[column];
-                                if (typeof value === 'object' && value !== null) {
-                                    value = JSON.stringify(value);
-                                }
-                                if (value === undefined) {
-                                    value = null;
-                                }
-                                values.push(value);
-                                rowParams.push(`$${paramCounter++}`);
-                            });
-                            placeholders.push(`(${rowParams.join(', ')})`);
-                        });
-
-                        const sql = `
-                            INSERT INTO cashbox_vouchers (${columns.join(', ')})
-                            VALUES ${placeholders.join(', ')}
-                            ON CONFLICT (sync_key) DO UPDATE SET ${updateSets}
-                        `;
-
-                        await pool.query(sql, values);
+                    const insertSingle = async item => {
+                        const values = valuesForItem(item);
+                        const placeholders = values.map((_, index) => `$${index + 1}`).join(', ');
+                        await pool.query(
+                            `INSERT INTO ${table} (${cols.join(', ')})
+                             VALUES (${placeholders})
+                             ON CONFLICT (sync_source_id, source_row_id)
+                             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL
+                             DO UPDATE SET ${updateSets}`,
+                            values
+                        );
                     };
 
-                    for (let index = 0; index < preparedRows.length; index += BATCH_SIZE) {
-                        const batch = preparedRows.slice(index, index + BATCH_SIZE);
-
+                    for (let offset = 0; offset < normalizedItems.length; offset += BATCH_SIZE) {
+                        const batch = normalizedItems.slice(offset, offset + BATCH_SIZE);
+                        const values = [];
+                        const rowsSql = batch.map(item => {
+                            const rowValues = valuesForItem(item);
+                            const start = values.length;
+                            values.push(...rowValues);
+                            return `(${rowValues.map((_, index) => `$${start + index + 1}`).join(', ')})`;
+                        });
                         try {
-                            await upsertBatch(batch);
+                            await pool.query(
+                                `INSERT INTO ${table} (${cols.join(', ')})
+                                 VALUES ${rowsSql.join(', ')}
+                                 ON CONFLICT (sync_source_id, source_row_id)
+                                 WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL
+                                 DO UPDATE SET ${updateSets}`,
+                                values
+                            );
                             successCount += batch.length;
                         } catch (batchError) {
-                            console.error('❌ [SYNC] Batch Error cashbox_vouchers:', batchError.message);
-                            for (const voucher of batch) {
+                            for (const item of batch) {
                                 try {
-                                    await upsertBatch([voucher]);
+                                    await insertSingle(item);
                                     successCount += 1;
                                 } catch (rowError) {
                                     errorCount += 1;
-                                    syncFailures.push({
-                                        table: 'cashbox_vouchers',
-                                        id: voucher.sync_key,
-                                        error: rowError.message
-                                    });
-                                    console.error('❌ [SYNC] Row insert failed:', {
-                                        table: 'cashbox_vouchers', sync_key: voucher.sync_key || null,
-                                        record_id: voucher.id || null, code: rowError.code || null, message: rowError.message
+                                    syncFailures.push({ table, id: item.source_row_id, error: rowError.message });
+                                    console.error('❌ [SYNC] Scoped row insert failed:', {
+                                        table,
+                                        source_id: syncSourceId,
+                                        record_id: item.source_row_id,
+                                        code: rowError.code || null,
+                                        message: rowError.message
                                     });
                                 }
                             }
                         }
                     }
 
-                    console.log(`✅ [SYNC] cashbox_vouchers: Processed ${successCount} items.${errorCount > 0 ? ` Failed ${errorCount} items.` : ''}`);
+                    console.log(`✅ [SYNC] ${table}: device-scoped upsert processed ${successCount} items.${errorCount ? ` Failed ${errorCount}.` : ''}`);
                 };
 
                 // Sync all tables in dependency order
                 if (data.branches) {
                     await syncTable('branches', data.branches, [
-                        { name: 'id' }, { name: 'branch_name' }, { name: 'customer_code_prefix', preserveIfNull: true }, { name: 'branch_address' },
+                        { name: 'id' }, { name: 'branch_name' }, { name: 'customer_code_prefix' }, { name: 'branch_address' },
                         { name: 'branch_phone' }, { name: 'is_active' }
                     ]);
-                    await pool.query(`
-                        WITH ordered_branches AS (
-                            SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS branch_order
-                            FROM branches
-                        )
-                        UPDATE branches b
-                        SET customer_code_prefix = 'C' || ordered_branches.branch_order,
-                            updated_at = CURRENT_TIMESTAMP
-                        FROM ordered_branches
-                        WHERE b.id = ordered_branches.id
-                          AND TRIM(COALESCE(b.customer_code_prefix, '')) = ''
-                    `);
+                }
+
+                if (data.customers) {
+                    await syncTable('customers', data.customers, [
+                        { name: 'id' }, { name: 'customer_code' }, { name: 'customer_name' },
+                        { name: 'branch_id' }, { name: 'phone' }, { name: 'address' },
+                        { name: 'is_favorite', preserveIfNull: true }, { name: 'is_active', preserveIfNull: true },
+                        { name: 'merged_into_customer_id' }, { name: 'merged_at' },
+                        { name: 'created_at' }, { name: 'updated_at' }
+                    ]);
+                    try {
+                        await this.refreshPostgresSerialSequence('customers');
+                    } catch (sequenceError) {
+                        console.warn('⚠️ [SYNC] customers sequence refresh failed:', sequenceError.message);
+                    }
                 }
 
                 if (data.accountants) {
@@ -3721,53 +4282,73 @@ class LocalWebServer {
                     ]);
                 }
 
+                // Explicit deletes are used for incremental sync when a row was removed locally.
+                // This avoids relying on empty active-id lists, which are intentionally ignored for safety.
+                if (Array.isArray(data.deleted_reconciliations_ids)) {
+                    try {
+                        const deletedCount = await deleteReconciliationsByIds(data.deleted_reconciliations_ids);
+                        if (deletedCount > 0) {
+                            console.log(`🧹 [SYNC] Deleted ${deletedCount} reconciliations by explicit delete payload.`);
+                        }
+                    } catch (deleteError) {
+                        syncFailures.push({
+                            table: 'reconciliations',
+                            id: null,
+                            error: deleteError.message
+                        });
+                        console.error('❌ [SYNC] explicit reconciliation delete failed:', deleteError.message);
+                    }
+                }
+
+                for (const tableName of explicitDeleteTables) {
+                    const payloadKey = `deleted_${tableName}_ids`;
+                    if (!Array.isArray(data[payloadKey])) {
+                        continue;
+                    }
+
+                    try {
+                        const deletedCount = await deleteTableRowsByIds(tableName, data[payloadKey]);
+                        if (deletedCount > 0) {
+                            console.log(`🧹 [SYNC] Deleted ${deletedCount} rows from ${tableName} by explicit delete payload.`);
+                        }
+                    } catch (deleteError) {
+                        syncFailures.push({
+                            table: tableName,
+                            id: null,
+                            error: deleteError.message
+                        });
+                        console.error('❌ [SYNC] explicit row delete failed:', {
+                            table: tableName,
+                            message: deleteError.message
+                        });
+                    }
+                }
+
                 // --- 1. PERFORM CLEANUP (Mirror Logic) ---
                 if (data.active_reconciliations_ids) await handleCleanup('reconciliations', data.active_reconciliations_ids);
                 if (data.active_postpaid_sales_ids) await handleCleanup('postpaid_sales', data.active_postpaid_sales_ids);
                 if (data.active_customer_receipts_ids) await handleCleanup('customer_receipts', data.active_customer_receipts_ids);
                 if (data.active_manual_postpaid_sales_ids) await handleCleanup('manual_postpaid_sales', data.active_manual_postpaid_sales_ids);
                 if (data.active_manual_customer_receipts_ids) await handleCleanup('manual_customer_receipts', data.active_manual_customer_receipts_ids);
+                if (data.active_customer_fiscal_opening_balances_ids) await handleCleanup('customer_fiscal_opening_balances', data.active_customer_fiscal_opening_balances_ids);
                 if (data.active_cash_receipts_ids) await handleCleanup('cash_receipts', data.active_cash_receipts_ids);
                 if (data.active_bank_receipts_ids) await handleCleanup('bank_receipts', data.active_bank_receipts_ids);
-                if (Array.isArray(data.active_cashbox_voucher_audit_log_ids) && data.active_cashbox_voucher_audit_log_ids.length > 0) {
+                if (data.active_return_invoices_ids) await handleCleanup('return_invoices', data.active_return_invoices_ids);
+                if (data.active_suppliers_ids) await handleCleanup('suppliers', data.active_suppliers_ids);
+                if (data.active_cashbox_voucher_audit_log_ids) {
                     console.log('ℹ️ [SYNC] Ignoring legacy active_cashbox_voucher_audit_log_ids cleanup on PostgreSQL; local audit-log ids are not globally stable.');
                 }
-
-                const hasCashboxVoucherSyncKeys = Array.isArray(data.active_cashbox_voucher_sync_keys);
-                const activeCashboxVoucherSyncKeys = normalizeTextList(data.active_cashbox_voucher_sync_keys);
-                if (hasCashboxVoucherSyncKeys) {
-                    if (activeCashboxVoucherSyncKeys.length > 0) {
-                        await handleCleanup('cashbox_vouchers', activeCashboxVoucherSyncKeys, {
-                            column: 'sync_key',
-                            castType: 'text',
-                            normalizer: normalizeTextList,
-                            deleteNullOrEmpty: true
-                        });
-                    } else {
-                        try {
-                            const wipeResult = await pool.query('DELETE FROM cashbox_vouchers');
-                            if (wipeResult.rowCount > 0) {
-                                console.log(`🧹 [SYNC] Removed ${wipeResult.rowCount} cashbox_vouchers because active sync keys payload is empty.`);
-                            }
-                        } catch (wipeError) {
-                            console.error('⚠️ [SYNC] cashbox_vouchers empty-sync-key cleanup failed:', wipeError.message);
-                        }
-                    }
-                } else if (Array.isArray(data.active_cashbox_vouchers_ids) && data.active_cashbox_vouchers_ids.length > 0) {
+                if (Array.isArray(data.active_cashbox_voucher_sync_keys)) {
+                    await handleCashboxVoucherCleanupBySyncKeys(data.active_cashbox_voucher_sync_keys);
+                } else if (data.active_cashbox_vouchers_ids) {
                     console.log('ℹ️ [SYNC] Ignoring legacy active_cashbox_vouchers_ids cleanup on PostgreSQL; voucher ids are local and not globally stable.');
                 }
 
-                const cashboxBranchIds = Array.isArray(data.branch_cashboxes)
-                    ? normalizeIdList(data.branch_cashboxes.map((row) => row.branch_id))
-                    : [];
-                const activeCashboxBranchIds = normalizeIdList(data.active_branch_cashboxes_branch_ids);
-                const cleanupCashboxBranchIds = cashboxBranchIds.length > 0
-                    ? cashboxBranchIds
-                    : activeCashboxBranchIds;
-
-                if (cleanupCashboxBranchIds.length > 0) {
-                    await handleCleanup('branch_cashboxes', cleanupCashboxBranchIds, { column: 'branch_id' });
-                } else if (Array.isArray(data.active_branch_cashboxes_ids) && data.active_branch_cashboxes_ids.length > 0) {
+                if (Array.isArray(data.active_branch_cashboxes_branch_ids)) {
+                    await handleBranchCashboxCleanupByBranchId(data.active_branch_cashboxes_branch_ids);
+                } else if (Array.isArray(data.branch_cashboxes) && data.branch_cashboxes.length > 0) {
+                    await handleBranchCashboxCleanupByBranchId(data.branch_cashboxes.map(row => row && row.branch_id));
+                } else if (data.active_branch_cashboxes_ids) {
                     console.log('ℹ️ [SYNC] Ignoring legacy active_branch_cashboxes_ids for branch_cashboxes cleanup on PostgreSQL; waiting for branch_id-based payload.');
                 }
 
@@ -3795,14 +4376,20 @@ class LocalWebServer {
                     ]);
                 }
 
-                if (data.branch_cashboxes) {
-                    await syncBranchCashboxes(data.branch_cashboxes);
+                let canonicalCashboxByBranchId = new Map();
+                let localCashboxToBranchMap = new Map();
+                if (Array.isArray(data.branch_cashboxes) && data.branch_cashboxes.length > 0) {
+                    const canonicalResult = await syncBranchCashboxesCanonical(data.branch_cashboxes);
+                    canonicalCashboxByBranchId = canonicalResult.canonicalMap;
+                    localCashboxToBranchMap = canonicalResult.localCashboxToBranchMap;
+                } else if (hasCashboxPayload) {
+                    canonicalCashboxByBranchId = await buildCanonicalCashboxIdMap();
                 }
 
 
 
                 // --- MIRROR SYNC: Delete Removed Reconciliations ---
-                if (data.active_reconciliation_ids && Array.isArray(data.active_reconciliation_ids)) {
+                if (!sourceScopedSync && data.active_reconciliation_ids && Array.isArray(data.active_reconciliation_ids)) {
                     const activeIds = data.active_reconciliation_ids;
                     if (activeIds.length > 0) {
                         try {
@@ -3853,14 +4440,6 @@ class LocalWebServer {
                     }
                 }
 
-                if (data.customers) {
-                    await syncTable('customers', data.customers, [
-                        { name: 'id' }, { name: 'customer_code' }, { name: 'customer_name' },
-                        { name: 'branch_id' }, { name: 'phone' }, { name: 'address' },
-                        { name: 'created_at' }, { name: 'updated_at' }
-                    ]);
-                }
-
                 if (data.reconciliations) {
                     // **FIX**: Filter out reconciliations without a valid ID to prevent duplicates
                     const validReconciliations = data.reconciliations.filter(r => r.id && r.id > 0);
@@ -3879,18 +4458,24 @@ class LocalWebServer {
                     if (incomingIds.length > 0) {
                         try {
                             const pool = this.dbManager.pool || this.dbManager.db.pool;
-                            // Create placeholders like $1, $2, $3...
-                            // IMPORTANT: PostgreSQL uses $1, $2... syntax
-                            const placeholders = incomingIds.map((_, i) => `$${i + 1}`).join(',');
-
-                            // Query existing IDs and their statuses
-                            const existingResult = await pool.query(
-                                `SELECT id, status FROM reconciliations WHERE id IN (${placeholders})`,
-                                incomingIds
-                            );
+                            const existingResult = sourceScopedSync
+                                ? await pool.query(
+                                    `SELECT source_row_id AS id, status
+                                     FROM reconciliations
+                                     WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])
+                                     UNION ALL
+                                     SELECT id, status
+                                     FROM reconciliations
+                                     WHERE sync_source_id IS NULL AND id = ANY($2::bigint[])`,
+                                    [syncSourceId, incomingIds]
+                                )
+                                : await pool.query(
+                                    'SELECT id, status FROM reconciliations WHERE id = ANY($1::int[])',
+                                    [incomingIds]
+                                );
 
                             const existingMap = new Map();
-                            existingResult.rows.forEach(row => existingMap.set(row.id, row.status));
+                            existingResult.rows.forEach(row => existingMap.set(Number(row.id), row.status));
 
                             // Filter items that need notification:
                             // 1. It is 'completed'
@@ -3912,10 +4497,13 @@ class LocalWebServer {
                     }
 
                     // 3. Perform the Sync (Save Data) - USE FILTERED LIST
-                    await syncTable('reconciliations', validReconciliations, [
+                    await syncSourceScopedTable('reconciliations', validReconciliations, [
                         { name: 'id' }, { name: 'reconciliation_number' }, { name: 'cashier_id' },
                         { name: 'accountant_id' }, { name: 'reconciliation_date' }, { name: 'system_sales' },
-                        { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' }
+                        { name: 'total_receipts' }, { name: 'surplus_deficit' }, { name: 'status' }, { name: 'notes' },
+                        { name: 'formula_profile_id' }, { name: 'formula_settings' },
+                        { name: 'cashbox_posting_enabled' }, { name: 'created_at' },
+                        { name: 'updated_at' }, { name: 'last_modified_date' }
                     ]);
 
                     // 4. Send Notification ONLY if we found NEW items
@@ -3984,21 +4572,27 @@ class LocalWebServer {
                 }
 
                 if (data.cash_receipts) {
-                    await syncTable('cash_receipts', data.cash_receipts, [
+                    await syncSourceScopedTable('cash_receipts', data.cash_receipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'denomination' },
-                        { name: 'quantity' }, { name: 'total_amount' }
-                    ]);
+                        { name: 'quantity' }, { name: 'total_amount' }, { name: 'is_modified' },
+                        { name: 'created_at' }
+                    ], { remapReconciliationId: true });
                 }
 
                 if (data.bank_receipts) {
-                    await syncTable('bank_receipts', data.bank_receipts, [
+                    await syncSourceScopedTable('bank_receipts', data.bank_receipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'operation_type' },
-                        { name: 'atm_id' }, { name: 'amount' }
-                    ]);
+                        { name: 'atm_id' }, { name: 'amount' }, { name: 'is_modified' },
+                        { name: 'created_at' }
+                    ], { remapReconciliationId: true });
                 }
 
-                if (data.cashbox_vouchers) {
-                    await syncCashboxVouchers(data.cashbox_vouchers);
+                if (Array.isArray(data.cashbox_vouchers) && data.cashbox_vouchers.length > 0) {
+                    await syncCashboxVouchersCanonical(
+                        data.cashbox_vouchers,
+                        canonicalCashboxByBranchId,
+                        localCashboxToBranchMap
+                    );
                 }
 
                 if (data.cashbox_voucher_audit_log) {
@@ -4011,23 +4605,39 @@ class LocalWebServer {
                 }
 
                 if (data.postpaid_sales) {
-                    await syncTable('postpaid_sales', data.postpaid_sales, [
+                    await syncSourceScopedTable('postpaid_sales', data.postpaid_sales, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_id' },
                         { name: 'customer_name' }, { name: 'customer_code' }, { name: 'amount' },
-                        { name: 'notes' }
-                    ]);
+                        { name: 'notes' }, { name: 'is_modified' }, { name: 'created_at' }
+                    ], { remapReconciliationId: true });
+                }
+
+                if (data.return_invoices) {
+                    await syncSourceScopedTable('return_invoices', data.return_invoices, [
+                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'invoice_number' },
+                        { name: 'amount' }, { name: 'is_modified' }, { name: 'created_at' }
+                    ], { remapReconciliationId: true });
+                }
+
+                if (data.suppliers) {
+                    await syncSourceScopedTable('suppliers', data.suppliers, [
+                        { name: 'id' }, { name: 'reconciliation_id' }, { name: 'supplier_name' },
+                        { name: 'invoice_number' }, { name: 'amount' }, { name: 'notes' },
+                        { name: 'is_modified' }, { name: 'created_at' }
+                    ], { remapReconciliationId: true });
                 }
 
                 if (data.customer_receipts) {
-                    await syncTable('customer_receipts', data.customer_receipts, [
+                    await syncSourceScopedTable('customer_receipts', data.customer_receipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_id' },
                         { name: 'customer_name' }, { name: 'customer_code' }, { name: 'amount' },
-                        { name: 'payment_type' }, { name: 'notes' }
-                    ]);
+                        { name: 'payment_type' }, { name: 'notes' }, { name: 'is_modified' },
+                        { name: 'created_at' }
+                    ], { remapReconciliationId: true });
                 }
 
                 if (data.manual_postpaid_sales) {
-                    await syncTable('manual_postpaid_sales', data.manual_postpaid_sales, [
+                    await syncSourceScopedTable('manual_postpaid_sales', data.manual_postpaid_sales, [
                         { name: 'id' }, { name: 'customer_id' }, { name: 'customer_name' },
                         { name: 'customer_code' }, { name: 'amount' }, { name: 'reason' },
                         { name: 'created_at' }
@@ -4035,10 +4645,20 @@ class LocalWebServer {
                 }
 
                 if (data.manual_customer_receipts) {
-                    await syncTable('manual_customer_receipts', data.manual_customer_receipts, [
+                    await syncSourceScopedTable('manual_customer_receipts', data.manual_customer_receipts, [
                         { name: 'id' }, { name: 'customer_id' }, { name: 'customer_name' },
                         { name: 'customer_code' }, { name: 'amount' }, { name: 'reason' },
                         { name: 'created_at' }
+                    ]);
+                }
+
+                if (data.customer_fiscal_opening_balances) {
+                    await syncTable('customer_fiscal_opening_balances', data.customer_fiscal_opening_balances, [
+                        { name: 'id' }, { name: 'fiscal_year' }, { name: 'closed_year' }, { name: 'balance_key' },
+                        { name: 'customer_id' }, { name: 'customer_code' }, { name: 'customer_name' },
+                        { name: 'branch_id' }, { name: 'branch_name' }, { name: 'opening_balance' },
+                        { name: 'total_postpaid' }, { name: 'total_receipts' }, { name: 'movements_count' },
+                        { name: 'created_at' }, { name: 'updated_at' }
                     ]);
                 }
                 // Sync reconciliation requests (especially status updates)
@@ -4055,25 +4675,85 @@ class LocalWebServer {
                         system_sales: safeFloat(r.system_sales),
                         total_cash: safeFloat(r.total_cash),
                         total_bank: safeFloat(r.total_bank),
-                        details_json: (() => {
-                            const normalizedDetails = normalizeDetailsJsonPayload(r.details_json ?? r.details);
-                            if (!normalizedDetails || ['{}', '[]', 'null'].includes(normalizedDetails)) {
-                                return null;
-                            }
-                            return normalizedDetails;
-                        })()
+                        details_json: normalizeDetailsJsonPayload(r.details_json ?? r.details)
                     }));
 
-                    await syncTable('reconciliation_requests', cleanRequests, [
-                        { name: 'id' }, { name: 'cashier_id' }, { name: 'system_sales' },
-                        { name: 'total_cash' }, { name: 'total_bank' }, { name: 'details_json', preserveIfNull: true },
-                        { name: 'notes' }, { name: 'status' }, { name: 'request_date' },
-                        { name: 'created_at' }, { name: 'updated_at' }
-                    ]);
-                }
+                    const BATCH_SIZE = 200;
+                    let successCount = 0;
+                    let errorCount = 0;
 
-                if (hasLookupPayload) {
-                    this.clearLookupCache('sync payload');
+                    for (let i = 0; i < cleanRequests.length; i += BATCH_SIZE) {
+                        const batch = cleanRequests.slice(i, i + BATCH_SIZE);
+                        for (const requestItem of batch) {
+                            try {
+                                await pool.query(
+                                    `
+                                        INSERT INTO reconciliation_requests (
+                                            id,
+                                            cashier_id,
+                                            system_sales,
+                                            total_cash,
+                                            total_bank,
+                                            details_json,
+                                            notes,
+                                            status,
+                                            request_date,
+                                            created_at,
+                                            updated_at
+                                        )
+                                        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                                        ON CONFLICT (id) DO UPDATE SET
+                                            cashier_id = EXCLUDED.cashier_id,
+                                            system_sales = EXCLUDED.system_sales,
+                                            total_cash = EXCLUDED.total_cash,
+                                            total_bank = EXCLUDED.total_bank,
+                                            details_json = CASE
+                                                WHEN EXCLUDED.details_json IS NULL
+                                                     OR BTRIM(EXCLUDED.details_json) = ''
+                                                     OR BTRIM(EXCLUDED.details_json) IN ('{}', '[]', 'null')
+                                                THEN COALESCE(NULLIF(BTRIM(reconciliation_requests.details_json), ''), EXCLUDED.details_json, '{}')
+                                                ELSE EXCLUDED.details_json
+                                            END,
+                                            notes = EXCLUDED.notes,
+                                            request_date = COALESCE(EXCLUDED.request_date, reconciliation_requests.request_date),
+                                            created_at = COALESCE(reconciliation_requests.created_at, EXCLUDED.created_at),
+                                            updated_at = COALESCE(EXCLUDED.updated_at, CURRENT_TIMESTAMP),
+                                            status = CASE
+                                                WHEN reconciliation_requests.status = 'deleted' THEN 'deleted'
+                                                WHEN reconciliation_requests.status IN ('approved', 'completed')
+                                                     AND COALESCE(EXCLUDED.status, 'pending') = 'pending'
+                                                THEN reconciliation_requests.status
+                                                ELSE COALESCE(EXCLUDED.status, reconciliation_requests.status, 'pending')
+                                            END
+                                    `,
+                                    [
+                                        requestItem.id,
+                                        requestItem.cashier_id,
+                                        requestItem.system_sales,
+                                        requestItem.total_cash,
+                                        requestItem.total_bank,
+                                        requestItem.details_json,
+                                        requestItem.notes || '',
+                                        requestItem.status || 'pending',
+                                        requestItem.request_date || requestItem.created_at || null,
+                                        requestItem.created_at || null,
+                                        requestItem.updated_at || null
+                                    ]
+                                );
+                                successCount += 1;
+                            } catch (itemError) {
+                                errorCount += 1;
+                                syncFailures.push({
+                                    table: 'reconciliation_requests',
+                                    id: requestItem.id ?? null,
+                                    error: itemError.message
+                                });
+                                console.error('❌ [SYNC] reconciliation_requests row failed:', itemError.message, 'Data:', requestItem);
+                            }
+                        }
+                    }
+
+                    console.log(`✅ [SYNC] reconciliation_requests: Processed ${successCount} items.${errorCount > 0 ? ` Failed ${errorCount} items.` : ''}`);
                 }
 
                 if (syncFailures.length > 0) {
@@ -4104,93 +4784,20 @@ class LocalWebServer {
         req.on('data', chunk => { body += chunk.toString(); });
         req.on('end', async () => {
             try {
-                const payload = JSON.parse(body || '{}');
-                const id = payload.id;
-                const status = payload.status;
-                const restoredFromReconciliationId = payload.restored_from_reconciliation_id ?? payload.restoredFromReconciliationId ?? null;
-                const restoredReasonRaw = payload.restored_reason ?? payload.restoredReason ?? null;
-                const restoredReason = restoredReasonRaw === null || restoredReasonRaw === undefined
-                    ? null
-                    : String(restoredReasonRaw).trim();
-
-                if (!id || !status) {
-                    throw new Error('Invalid request status payload');
-                }
-
+                const { id, status } = JSON.parse(body);
                 console.log(`🔄 [Real-time Sync] Updating request ${id} to status: ${status}`);
 
                 const pool = this.dbManager.pool; // Check for Postgres (Render)
-                const shouldWriteRestoreMetadata = status === 'pending'
-                    && (restoredFromReconciliationId !== null || restoredReason !== null);
 
                 if (pool) {
-                    if (shouldWriteRestoreMetadata) {
-                        try {
-                            const result = await pool.query(
-                                `UPDATE reconciliation_requests
-                                 SET status = $1,
-                                     restored_at = CURRENT_TIMESTAMP,
-                                     restored_from_reconciliation_id = $2,
-                                     restored_reason = $3,
-                                     updated_at = CURRENT_TIMESTAMP
-                                 WHERE id = $4`,
-                                [status, restoredFromReconciliationId, restoredReason, id]
-                            );
-                            console.log(`✅ [Real-time Sync HOOK] Request ${id} restored on PostgreSQL (Server Mode). RowCount: ${result.rowCount}`);
-                        } catch (restoreError) {
-                            if (
-                                String(restoreError.message || '').includes('restored_at')
-                                || String(restoreError.message || '').includes('restored_from_reconciliation_id')
-                                || String(restoreError.message || '').includes('restored_reason')
-                            ) {
-                                const result = await pool.query(
-                                    "UPDATE reconciliation_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
-                                    [status, id]
-                                );
-                                console.log(`⚠️ [Real-time Sync HOOK] Request ${id} updated without restore metadata on PostgreSQL. RowCount: ${result.rowCount}`);
-                            } else {
-                                throw restoreError;
-                            }
-                        }
-                    } else {
-                        const result = await pool.query(
-                            "UPDATE reconciliation_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2",
-                            [status, id]
-                        );
-                        console.log(`✅ [Real-time Sync HOOK] Request ${id} updated to '${status}' on PostgreSQL (Server Mode). RowCount: ${result.rowCount}`);
-                    }
+                    // Update Server DB (Postgres)
+                    const result = await pool.query("UPDATE reconciliation_requests SET status = $1, updated_at = CURRENT_TIMESTAMP WHERE id = $2", [status, id]);
+                    console.log(`✅ [Real-time Sync HOOK] Request ${id} updated to '${status}' on PostgreSQL (Server Mode). RowCount: ${result.rowCount}`);
                 } else {
-                    if (shouldWriteRestoreMetadata) {
-                        try {
-                            const stmt = this.dbManager.db.prepare(`
-                                UPDATE reconciliation_requests
-                                SET status = ?,
-                                    restored_at = CURRENT_TIMESTAMP,
-                                    restored_from_reconciliation_id = ?,
-                                    restored_reason = ?,
-                                    updated_at = CURRENT_TIMESTAMP
-                                WHERE id = ?
-                            `);
-                            const info = stmt.run(status, restoredFromReconciliationId, restoredReason, id);
-                            console.log(`✅ [Real-time Sync HOOK] Request ${id} restored on SQLite (Local Mode). Changes: ${info.changes}`);
-                        } catch (restoreError) {
-                            if (
-                                String(restoreError.message || '').includes('restored_at')
-                                || String(restoreError.message || '').includes('restored_from_reconciliation_id')
-                                || String(restoreError.message || '').includes('restored_reason')
-                            ) {
-                                const stmt = this.dbManager.db.prepare("UPDATE reconciliation_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-                                const info = stmt.run(status, id);
-                                console.log(`⚠️ [Real-time Sync HOOK] Request ${id} updated without restore metadata on SQLite (Local Mode). Changes: ${info.changes}`);
-                            } else {
-                                throw restoreError;
-                            }
-                        }
-                    } else {
-                        const stmt = this.dbManager.db.prepare("UPDATE reconciliation_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
-                        const info = stmt.run(status, id);
-                        console.log(`✅ [Real-time Sync HOOK] Request ${id} updated to '${status}' on SQLite (Local Mode). Changes: ${info.changes}`);
-                    }
+                    // Update Local DB (SQLite) - fallback
+                    const stmt = this.dbManager.db.prepare("UPDATE reconciliation_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?");
+                    const info = stmt.run(status, id);
+                    console.log(`✅ [Real-time Sync HOOK] Request ${id} updated to '${status}' on SQLite (Local Mode). Changes: ${info.changes}`);
                 }
 
                 this.sendJson(res, { success: true });
@@ -4329,46 +4936,248 @@ class LocalWebServer {
         });
     }
 
-    async sendOneSignalNotification(title, message, data = {}) {
+    getOneSignalConfig() {
+        const appId = String(
+            process.env.ONESIGNAL_APP_ID || '1b7778f5-0f25-4df8-a281-611b682a964c'
+        ).trim();
+        const appApiKey = String(process.env.ONESIGNAL_REST_API_KEY || '').trim();
+        const publicUrl = String(process.env.TASFIYA_PUBLIC_URL || '').trim().replace(/\/+$/, '');
+        const hasValidAppId = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(appId);
+        const hasValidApiKey = appApiKey.length > 20 && !appApiKey.includes('YOUR_REST_API_KEY_HERE');
+
+        return {
+            appId,
+            appApiKey,
+            publicUrl: /^https:\/\//i.test(publicUrl) ? publicUrl : '',
+            configured: hasValidAppId && hasValidApiKey
+        };
+    }
+
+    getOneSignalErrorMessage(result, fallbackMessage) {
+        if (!result || typeof result !== 'object') {
+            return fallbackMessage;
+        }
+
+        const toMessage = (value) => {
+            if (typeof value === 'string' && value.trim()) return value.trim();
+            if (value && typeof value === 'object') {
+                return Object.entries(value)
+                    .map(([key, item]) => `${key}: ${typeof item === 'string' ? item : JSON.stringify(item)}`)
+                    .join(' | ');
+            }
+            return '';
+        };
+        const candidates = [result.errors, result.error, result.message]
+            .flatMap((value) => Array.isArray(value) ? value : [value])
+            .map(toMessage)
+            .filter(Boolean);
+
+        return candidates.length > 0
+            ? candidates.join(' | ').slice(0, 500)
+            : fallbackMessage;
+    }
+
+    handleNotificationStatus(res) {
+        const config = this.getOneSignalConfig();
+        this.sendJson(res, {
+            success: true,
+            configured: config.configured,
+            provider: 'OneSignal',
+            apiEndpoint: 'https://api.onesignal.com/notifications?c=push',
+            targeting: 'external_id for system notifications; subscription_id for delivery tests',
+            hasAppId: Boolean(config.appId),
+            hasApiKey: Boolean(config.appApiKey),
+            hasPublicUrl: Boolean(config.publicUrl),
+            message: config.configured
+                ? 'إعداد الإرسال موجود. استخدم اختبار الإشعارات للتحقق من وصوله إلى OneSignal.'
+                : 'مفتاح OneSignal أو App ID غير مضبوط بشكل صحيح في بيئة الخادم.'
+        });
+    }
+
+    handlePublicClientConfig(res) {
+        const config = this.getOneSignalConfig();
+        this.sendJson(res, {
+            success: true,
+            oneSignalAppId: config.appId
+        });
+    }
+
+    async handleNotificationTest(req, res) {
+        let body = {};
         try {
-            const appId = "1b7778f5-0f25-4df8-a281-611b682a964c";
-            const restApiKey = process.env.ONESIGNAL_REST_API_KEY || "YOUR_REST_API_KEY_HERE";
+            body = await this.readJsonBody(req, {
+                maxBytes: 8 * 1024,
+                routeLabel: 'notification test request'
+            });
+        } catch (error) {
+            this.sendJson(res, {
+                success: false,
+                code: 'INVALID_NOTIFICATION_TEST_REQUEST',
+                error: error && error.message ? error.message : 'تعذر قراءة بيانات اختبار الإشعار.'
+            }, { statusCode: 400 });
+            return;
+        }
 
-            const notificationPayload = {
-                app_id: appId,
-                headings: { en: title, ar: title },
-                contents: { en: message, ar: message },
-                data: data,
-                priority: 10,
-                android_visibility: 1,
-                lockscreen_visibility: 1,
-                // Send to all subscribed users (no filter)
-                included_segments: ["All"]
-            };
+        const subscriptionId = String(body.subscriptionId || '').trim();
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(subscriptionId)) {
+            this.sendJson(res, {
+                success: false,
+                code: 'BROWSER_SUBSCRIPTION_MISSING',
+                error: 'لم يرسل المتصفح معرّف اشتراك OneSignal صالحًا. أعد فتح الموقع وانتظر ثوانٍ ثم حاول مرة أخرى.'
+            }, { statusCode: 409 });
+            return;
+        }
 
-            const response = await fetch('https://onesignal.com/api/v1/notifications', {
+        console.log('🔔 [PUSH] Admin requested a notification delivery test');
+        const result = await this.sendOneSignalNotification(
+            '🔔 اختبار إشعارات تصفية برو',
+            'تم إرسال هذا الاختبار من لوحة الإدارة للتحقق من وصول الإشعارات.',
+            { type: 'notification_test', source: 'admin_dashboard' },
+            { subscriptionIds: [subscriptionId] }
+        );
+
+        this.sendJson(res, result, {
+            statusCode: result.success ? 200 : 502
+        });
+    }
+
+    async getNotificationTargetExternalIds() {
+        try {
+            const rows = this.dbManager.pool
+                ? (await this.dbManager.pool.query('SELECT id FROM admins WHERE active = 1 ORDER BY id')).rows
+                : this.dbManager.db.prepare('SELECT id FROM admins WHERE active = 1 ORDER BY id').all();
+
+            return [...new Set(
+                rows
+                    .map((row) => Number(row && row.id))
+                    .filter((id) => Number.isInteger(id) && id > 0)
+                    .map((id) => `tasfiya-admin-${id}`)
+            )];
+        } catch (error) {
+            console.error(`❌ [PUSH] Unable to resolve notification recipients: ${error && error.message ? error.message : error}`);
+            return [];
+        }
+    }
+
+    normalizeOneSignalIds(values) {
+        const source = Array.isArray(values) ? values : [];
+        return [...new Set(source
+            .map((value) => String(value || '').trim())
+            .filter(Boolean)
+        )];
+    }
+
+    async sendOneSignalNotification(title, message, data = {}, options = {}) {
+        const config = this.getOneSignalConfig();
+        if (!config.configured) {
+            const error = 'OneSignal غير مضبوط: أضف ONESIGNAL_REST_API_KEY الصحيح وأعد تشغيل الخادم.';
+            console.error(`❌ [PUSH] ${error}`);
+            return { success: false, code: 'ONESIGNAL_NOT_CONFIGURED', error };
+        }
+
+        const subscriptionIds = this.normalizeOneSignalIds(options.subscriptionIds)
+            .filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id));
+        const explicitExternalIds = this.normalizeOneSignalIds(options.externalIds);
+        const externalIds = subscriptionIds.length > 0
+            ? []
+            : (explicitExternalIds.length > 0 ? explicitExternalIds : await this.getNotificationTargetExternalIds());
+
+        if (subscriptionIds.length === 0 && externalIds.length === 0) {
+            const error = 'لا يوجد إداريون نشطون أو اشتراكات صالحة لتلقي الإشعار.';
+            console.warn(`⚠️ [PUSH] ${error}`);
+            return { success: false, code: 'ONESIGNAL_NO_TARGETS', error };
+        }
+
+        const notificationIconUrl = config.publicUrl
+            ? `${String(config.publicUrl).replace(/\/+$/, '')}/assets/icon-192.png?v=appicon-20260831-v2`
+            : null;
+        const notificationPayload = {
+            app_id: config.appId,
+            target_channel: 'push',
+            headings: { en: title, ar: title },
+            contents: { en: message, ar: message },
+            data,
+            priority: 10,
+            android_visibility: 1,
+            lockscreen_visibility: 1,
+            small_icon: 'ic_stat_onesignal_default',
+            android_accent_color: 'FF14C8B8'
+        };
+
+        if (notificationIconUrl) {
+            notificationPayload.large_icon = notificationIconUrl;
+            notificationPayload.chrome_web_icon = notificationIconUrl;
+            notificationPayload.chrome_web_badge = notificationIconUrl;
+        }
+
+        if (subscriptionIds.length > 0) {
+            // Delivery tests target the exact subscription shown in OneSignal,
+            // eliminating ambiguous segment membership from the diagnosis.
+            notificationPayload.include_subscription_ids = subscriptionIds;
+        } else {
+            // Production notifications target authenticated Tasfiya admins.
+            // OneSignal.login() creates these stable external IDs per admin.
+            notificationPayload.include_aliases = { external_id: externalIds };
+        }
+
+        if (config.publicUrl) {
+            notificationPayload.web_url = config.publicUrl;
+        }
+
+        try {
+            const response = await fetch('https://api.onesignal.com/notifications?c=push', {
                 method: 'POST',
                 headers: {
+                    Accept: 'application/json',
                     'Content-Type': 'application/json',
-                    'Authorization': `Bearer ${restApiKey}`
+                    // OneSignal's current Create Message API requires the "Key" prefix.
+                    Authorization: `Key ${config.appApiKey}`
                 },
                 body: JSON.stringify(notificationPayload)
             });
 
-
-            const result = await response.json();
-
-            if (response.ok) {
-                // Log only ID to keep console clean
-                // console.log('✅ Notification Sent:', result.id);
-                return { success: true, result };
-            } else {
-                console.error('❌ Notification Failed:', result);
-                return { success: false, error: result };
+            const responseText = await response.text();
+            let result = null;
+            try {
+                result = responseText ? JSON.parse(responseText) : {};
+            } catch (_) {
+                result = { message: responseText.slice(0, 500) };
             }
+
+            if (!response.ok) {
+                const error = this.getOneSignalErrorMessage(
+                    result,
+                    `تعذر إرسال الإشعار (OneSignal HTTP ${response.status}).`
+                );
+                console.error(`❌ [PUSH] OneSignal rejected notification: HTTP ${response.status}; ${error}`);
+                return {
+                    success: false,
+                    code: `ONESIGNAL_HTTP_${response.status}`,
+                    error
+                };
+            }
+
+            if (!result || !result.id) {
+                const error = this.getOneSignalErrorMessage(
+                    result,
+                    'لم يجد OneSignal أي جهاز مشترك صالح لاستقبال الإشعار.'
+                );
+                console.warn(`⚠️ [PUSH] Notification was not created: ${error}`);
+                return { success: false, code: 'ONESIGNAL_NO_RECIPIENTS', error };
+            }
+
+            const recipients = Number(result.recipients || 0);
+            console.log(`✅ [PUSH] Sent message=${result.id} recipients=${recipients}; target=${subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'}`);
+            return {
+                success: true,
+                messageId: result.id,
+                recipients,
+                target: subscriptionIds.length > 0 ? 'subscription_id' : 'external_id'
+            };
         } catch (error) {
-            console.error('❌ Notification Error:', error.message);
-            return { success: false, error: error.message };
+            const messageText = error && error.message ? error.message : 'تعذر الاتصال بـ OneSignal.';
+            console.error(`❌ [PUSH] Network error: ${messageText}`);
+            return { success: false, code: 'ONESIGNAL_NETWORK_ERROR', error: messageText };
         }
     }
 
@@ -4451,15 +5260,16 @@ class LocalWebServer {
                 const totalCash = parseFloat(data.total_cash) || 0;
                 const totalBank = parseFloat(data.total_bank) || 0;
 
-                // Prepare details JSON for all other lists
-                const details = await this.enrichCustomerRequestDetails({
+                // Prepare details JSON for all other lists, then attach stable customer identity.
+                const rawDetails = {
                     cash_breakdown: data.cash_breakdown || [],
                     bank_receipts: data.bank_receipts || [],
                     postpaid_items: data.postpaid_items || [],
                     customer_receipts: data.customer_receipts || [],
                     return_items: data.return_items || [],
                     supplier_items: data.supplier_items || []
-                }, data.cashier_id);
+                };
+                const details = await this.enrichCustomerRequestDetails(rawDetails, data.cashier_id);
 
                 const detailsJson = JSON.stringify(details);
                 const notes = data.notes || '';
@@ -4499,7 +5309,7 @@ class LocalWebServer {
                     insertedId = info.lastInsertRowid;
                 }
 
-                console.log('✅ [API] Reconciliation Request Saved. ID:', insertedId);
+            console.log('✅ [API] Reconciliation Request Saved. ID:', insertedId);
 
                 // --- TRIGGER NOTIFICATION (Notify Admin using OneSignal) ---
                 try {
@@ -4549,6 +5359,9 @@ class LocalWebServer {
             const updatedAfter = query && query.updated_after
                 ? String(query.updated_after).trim()
                 : '';
+            const afterId = query && query.after_id
+                ? Math.max(0, parseInt(query.after_id, 10) || 0)
+                : 0;
             const buildPostgresFilters = () => {
                 const params = [];
                 const clauses = [];
@@ -4560,9 +5373,17 @@ class LocalWebServer {
                     clauses.push("COALESCE(r.status, 'pending') <> 'deleted'");
                 }
 
-                if (updatedAfter) {
+                if (updatedAfter && afterId) {
+                    params.push(updatedAfter);
+                    const updatedAfterIndex = params.length;
+                    params.push(afterId);
+                    clauses.push(`(COALESCE(r.updated_at, r.created_at) > $${updatedAfterIndex} OR r.id > $${params.length})`);
+                } else if (updatedAfter) {
                     params.push(updatedAfter);
                     clauses.push(`COALESCE(r.updated_at, r.created_at) > $${params.length}`);
+                } else if (afterId) {
+                    params.push(afterId);
+                    clauses.push(`r.id > $${params.length}`);
                 }
 
                 return {
@@ -4581,9 +5402,16 @@ class LocalWebServer {
                     clauses.push("COALESCE(r.status, 'pending') <> 'deleted'");
                 }
 
-                if (updatedAfter) {
+                if (updatedAfter && afterId) {
+                    params.push(updatedAfter);
+                    params.push(afterId);
+                    clauses.push('(datetime(COALESCE(r.updated_at, r.created_at)) > datetime(?) OR r.id > ?)');
+                } else if (updatedAfter) {
                     params.push(updatedAfter);
                     clauses.push('datetime(COALESCE(r.updated_at, r.created_at)) > datetime(?)');
+                } else if (afterId) {
+                    params.push(afterId);
+                    clauses.push('r.id > ?');
                 }
 
                 return {

@@ -4,7 +4,6 @@ const { hashSecret, isHashedSecret } = require('./security/auth-service');
 
 class PostgresManager {
     constructor(connectionString) {
-        this.lastInitializationError = null;
         this.pool = new Pool({
             connectionString: connectionString,
             ssl: {
@@ -12,7 +11,7 @@ class PostgresManager {
             },
             max: 10, // Max number of clients in the pool
             idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
-            connectionTimeoutMillis: 15000, // Give cold-started hosted databases more time to accept the first connection
+            connectionTimeoutMillis: 5000, // Return an error after 5 seconds if connection could not be established
         });
 
         // The pool will emit an error on behalf of any idle clients
@@ -33,16 +32,10 @@ class PostgresManager {
             await this.createTables();
             await this.migrateSchema();
             await this.insertDefaultData();
-            try {
-                await this.repairCashboxSyncData();
-            } catch (repairError) {
-                console.error('⚠️ [DB] Cashbox sync repair failed during startup:', repairError);
-            }
+            await this.repairCashboxSyncData();
             await this.migrateSensitiveCredentials();
-            this.lastInitializationError = null;
             return true;
         } catch (error) {
-            this.lastInitializationError = error;
             console.error('❌ [DB] Connection to Neon failed:', error);
             return false;
         }
@@ -54,28 +47,7 @@ class PostgresManager {
             // Fix denomination column type from INTEGER to DECIMAL to support fraction coins (0.5, 0.25)
             // This is safe to run multiple times (it will just set the type)
             await client.query('ALTER TABLE cash_receipts ALTER COLUMN denomination TYPE DECIMAL(10,2)');
-
-            // New request-linking and restoration metadata columns
-            await client.query(`
-              ALTER TABLE reconciliations
-              ADD COLUMN IF NOT EXISTS origin_request_id INTEGER
-            `);
-            await client.query(`
-              ALTER TABLE reconciliation_requests
-              ADD COLUMN IF NOT EXISTS restored_at TIMESTAMP
-            `);
-            await client.query(`
-              ALTER TABLE reconciliation_requests
-              ADD COLUMN IF NOT EXISTS restored_from_reconciliation_id INTEGER
-            `);
-            await client.query(`
-              ALTER TABLE reconciliation_requests
-              ADD COLUMN IF NOT EXISTS restored_reason TEXT
-            `);
-            await client.query(`
-              ALTER TABLE cashbox_vouchers
-              ADD COLUMN IF NOT EXISTS sync_key TEXT
-            `);
+            await client.query('ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT');
             await client.query("ALTER TABLE branches ADD COLUMN IF NOT EXISTS customer_code_prefix TEXT DEFAULT ''");
             await client.query(`
                 CREATE TABLE IF NOT EXISTS customers (
@@ -85,6 +57,10 @@ class PostgresManager {
                     branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
                     phone TEXT DEFAULT '',
                     address TEXT DEFAULT '',
+                    is_favorite INTEGER DEFAULT 0,
+                    is_active INTEGER DEFAULT 1,
+                    merged_into_customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                    merged_at TIMESTAMP,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
@@ -93,6 +69,10 @@ class PostgresManager {
             await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL");
             await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''");
             await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT DEFAULT ''");
+            await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_favorite INTEGER DEFAULT 0");
+            await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_active INTEGER DEFAULT 1");
+            await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS merged_into_customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL");
+            await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS merged_at TIMESTAMP");
             await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
             await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
             await client.query('ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER');
@@ -103,6 +83,26 @@ class PostgresManager {
             await client.query("ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''");
             await client.query('ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER');
             await client.query("ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''");
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS customer_fiscal_opening_balances (
+                    id SERIAL PRIMARY KEY,
+                    fiscal_year TEXT NOT NULL,
+                    closed_year TEXT NOT NULL,
+                    balance_key TEXT NOT NULL,
+                    customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                    customer_code TEXT DEFAULT '',
+                    customer_name TEXT NOT NULL,
+                    branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+                    branch_name TEXT DEFAULT '',
+                    opening_balance DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    total_postpaid DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    total_receipts DECIMAL(10,2) NOT NULL DEFAULT 0,
+                    movements_count INTEGER NOT NULL DEFAULT 0,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(fiscal_year, balance_key)
+                )
+            `);
             await client.query(`
                 WITH ordered_branches AS (
                     SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS branch_order
@@ -116,21 +116,42 @@ class PostgresManager {
                   AND TRIM(COALESCE(b.customer_code_prefix, '')) = ''
             `);
             await client.query(`
-                CREATE INDEX IF NOT EXISTS idx_branches_customer_code_prefix_lookup
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_branches_customer_code_prefix_unique
                 ON branches(UPPER(TRIM(customer_code_prefix)))
                 WHERE TRIM(COALESCE(customer_code_prefix, '')) <> ''
             `);
             await client.query('CREATE INDEX IF NOT EXISTS idx_customers_name_branch ON customers(customer_name, branch_id)');
             await client.query('CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customers_favorite_active ON customers(is_favorite, is_active, merged_into_customer_id)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customers_active_merge ON customers(is_active, merged_into_customer_id)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customers_merged_into ON customers(merged_into_customer_id)');
             await client.query(`
-                CREATE INDEX IF NOT EXISTS idx_customers_customer_code_lookup
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_customer_code_unique
                 ON customers(UPPER(TRIM(customer_code)))
                 WHERE TRIM(COALESCE(customer_code, '')) <> ''
             `);
             await client.query('CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_id ON postpaid_sales(customer_id)');
             await client.query('CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code ON postpaid_sales(customer_code)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code_norm ON postpaid_sales(UPPER(TRIM(customer_code)))');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_postpaid_sales_created_date ON postpaid_sales(DATE(created_at))');
             await client.query('CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_id ON customer_receipts(customer_id)');
             await client.query('CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code ON customer_receipts(customer_code)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code_norm ON customer_receipts(UPPER(TRIM(customer_code)))');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customer_receipts_created_date ON customer_receipts(DATE(created_at))');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer_id ON manual_postpaid_sales(customer_id)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer_code_norm ON manual_postpaid_sales(UPPER(TRIM(customer_code)))');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_manual_postpaid_created_date ON manual_postpaid_sales(DATE(created_at))');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_id ON manual_customer_receipts(customer_id)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_code_norm ON manual_customer_receipts(UPPER(TRIM(customer_code)))');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_manual_receipts_created_date ON manual_customer_receipts(DATE(created_at))');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_year_key ON customer_fiscal_opening_balances(fiscal_year, balance_key)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_customer_id ON customer_fiscal_opening_balances(customer_id)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_code ON customer_fiscal_opening_balances(customer_code)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_name_branch ON customer_fiscal_opening_balances(customer_name, branch_id)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_suppliers_supplier_name ON suppliers(supplier_name)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_suppliers_supplier_name_norm ON suppliers(UPPER(TRIM(supplier_name)))');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_suppliers_created_date ON suppliers(DATE(created_at))');
+
             // Ensure username is UNIQUE for admins (Critical for Sync ON CONFLICT logic)
             try {
                 // First, remove any duplicate usernames (keep the one with highest ID = latest)
@@ -250,6 +271,111 @@ class PostgresManager {
         return this.pool.query(sql);
     }
 
+    // `CREATE TABLE IF NOT EXISTS` does not update tables that were created by
+    // an older application release.  The index creation below therefore has
+    // to be preceded by these additive migrations; otherwise PostgreSQL stops
+    // at the first index whose new column is absent (SQLSTATE 42703).
+    //
+    // Keep this list deliberately additive.  It must never delete, rename, or
+    // rewrite existing data while a shared Neon database is being upgraded.
+    async ensureColumnsRequiredByIndexes() {
+        const statements = [
+            "ALTER TABLE branches ADD COLUMN IF NOT EXISTS customer_code_prefix TEXT DEFAULT ''",
+
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            'ALTER TABLE customers ADD COLUMN IF NOT EXISTS branch_id INTEGER',
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''",
+            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT DEFAULT ''",
+            'ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_favorite INTEGER DEFAULT 0',
+            'ALTER TABLE customers ADD COLUMN IF NOT EXISTS is_active INTEGER DEFAULT 1',
+            'ALTER TABLE customers ADD COLUMN IF NOT EXISTS merged_into_customer_id INTEGER',
+            'ALTER TABLE customers ADD COLUMN IF NOT EXISTS merged_at TIMESTAMP',
+            'ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+            'ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+
+            'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+            "ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+            'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+            "ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+            'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+            "ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+            'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+            "ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+
+            'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS formula_profile_id INTEGER',
+            'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS formula_settings TEXT',
+            'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS cashbox_posting_enabled INTEGER',
+            'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE cash_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE return_invoices ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS invoice_number TEXT',
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS notes TEXT',
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+
+            "ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS fiscal_year TEXT DEFAULT ''",
+            "ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS closed_year TEXT DEFAULT ''",
+            "ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS balance_key TEXT DEFAULT ''",
+            'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS customer_id INTEGER',
+            "ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
+            "ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS customer_name TEXT DEFAULT ''",
+            'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS branch_id INTEGER',
+            "ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS branch_name TEXT DEFAULT ''",
+            'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS opening_balance DECIMAL(10,2) DEFAULT 0',
+            'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS total_postpaid DECIMAL(10,2) DEFAULT 0',
+            'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS total_receipts DECIMAL(10,2) DEFAULT 0',
+            'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS movements_count INTEGER DEFAULT 0',
+            'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+            'ALTER TABLE customer_fiscal_opening_balances ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+
+            'ALTER TABLE branch_cashboxes ADD COLUMN IF NOT EXISTS branch_id INTEGER',
+            'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS cashbox_id INTEGER',
+            'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS branch_id INTEGER',
+            "ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS voucher_type TEXT DEFAULT ''",
+            'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS voucher_sequence_number INTEGER',
+            "ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS counterparty_name TEXT DEFAULT ''",
+            'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS voucher_date DATE',
+            'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS source_reconciliation_id INTEGER',
+            'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS source_entry_key TEXT',
+            'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS is_auto_generated INTEGER DEFAULT 0',
+            'ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT',
+            'ALTER TABLE cashbox_voucher_audit_log ADD COLUMN IF NOT EXISTS voucher_id INTEGER',
+            'ALTER TABLE cashbox_voucher_audit_log ADD COLUMN IF NOT EXISTS branch_id INTEGER',
+            "ALTER TABLE cashbox_voucher_audit_log ADD COLUMN IF NOT EXISTS action_type TEXT DEFAULT ''",
+            'ALTER TABLE cashbox_voucher_audit_log ADD COLUMN IF NOT EXISTS action_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+
+            "ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS supplier_name TEXT DEFAULT ''",
+            'ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP'
+        ];
+
+        for (const statement of statements) {
+            await this.pool.query(statement);
+        }
+    }
+
     async createTables() {
         console.log('🔄 [DB] Syncing Schema to Neon...');
 
@@ -300,8 +426,30 @@ class PostgresManager {
                 branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
                 phone TEXT DEFAULT '',
                 address TEXT DEFAULT '',
+                is_favorite INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                merged_into_customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                merged_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )`,
+            `CREATE TABLE IF NOT EXISTS customer_fiscal_opening_balances (
+                id SERIAL PRIMARY KEY,
+                fiscal_year TEXT NOT NULL,
+                closed_year TEXT NOT NULL,
+                balance_key TEXT NOT NULL,
+                customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                customer_code TEXT DEFAULT '',
+                customer_name TEXT NOT NULL,
+                branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+                branch_name TEXT DEFAULT '',
+                opening_balance DECIMAL(10,2) NOT NULL DEFAULT 0,
+                total_postpaid DECIMAL(10,2) NOT NULL DEFAULT 0,
+                total_receipts DECIMAL(10,2) NOT NULL DEFAULT 0,
+                movements_count INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(fiscal_year, balance_key)
             )`,
             `CREATE TABLE IF NOT EXISTS branch_cashboxes (
                 id SERIAL PRIMARY KEY,
@@ -341,6 +489,8 @@ class PostgresManager {
             )`,
             `CREATE TABLE IF NOT EXISTS reconciliations (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_number INTEGER NULL,
                 cashier_id INTEGER NOT NULL REFERENCES cashiers(id),
                 accountant_id INTEGER NOT NULL REFERENCES accountants(id),
@@ -350,7 +500,9 @@ class PostgresManager {
                 surplus_deficit DECIMAL(10,2) DEFAULT 0,
                 status TEXT DEFAULT 'draft',
                 notes TEXT,
-                origin_request_id INTEGER,
+                formula_profile_id INTEGER,
+                formula_settings TEXT,
+                cashbox_posting_enabled INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 last_modified_date TIMESTAMP
@@ -365,9 +517,6 @@ class PostgresManager {
                 status TEXT DEFAULT 'pending',
                 details_json TEXT,
                 notes TEXT,
-                restored_at TIMESTAMP,
-                restored_from_reconciliation_id INTEGER,
-                restored_reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
@@ -382,24 +531,31 @@ class PostgresManager {
             )`,
             `CREATE TABLE IF NOT EXISTS bank_receipts (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 operation_type TEXT NOT NULL,
                 atm_id INTEGER REFERENCES atms(id),
                 amount DECIMAL(10,2) NOT NULL,
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS cash_receipts (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 denomination DECIMAL(10,2) NOT NULL,
                 quantity INTEGER NOT NULL,
                 total_amount DECIMAL(10,2) NOT NULL,
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS cashbox_vouchers (
                 id SERIAL PRIMARY KEY,
                 voucher_number INTEGER NOT NULL UNIQUE,
                 voucher_sequence_number INTEGER,
+                sync_key TEXT UNIQUE,
                 voucher_type TEXT NOT NULL,
                 cashbox_id INTEGER NOT NULL REFERENCES branch_cashboxes(id) ON DELETE CASCADE,
                 branch_id INTEGER NOT NULL REFERENCES branches(id),
@@ -415,7 +571,6 @@ class PostgresManager {
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 source_reconciliation_id INTEGER,
                 source_entry_key TEXT,
-                sync_key TEXT,
                 is_auto_generated INTEGER DEFAULT 0
             )`,
             `CREATE TABLE IF NOT EXISTS cashbox_voucher_audit_log (
@@ -433,16 +588,21 @@ class PostgresManager {
             )`,
             `CREATE TABLE IF NOT EXISTS postpaid_sales (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 customer_id INTEGER,
                 customer_name TEXT NOT NULL,
                 customer_code TEXT DEFAULT '',
                 amount DECIMAL(10,2) NOT NULL,
                 notes TEXT DEFAULT '',
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS customer_receipts (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 customer_id INTEGER,
                 customer_name TEXT NOT NULL,
@@ -450,38 +610,47 @@ class PostgresManager {
                 amount DECIMAL(10,2) NOT NULL,
                 payment_type TEXT NOT NULL,
                 notes TEXT DEFAULT '',
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS manual_postpaid_sales (
                 id SERIAL PRIMARY KEY,
-                customer_id INTEGER,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 customer_name TEXT NOT NULL,
-                customer_code TEXT DEFAULT '',
                 amount DECIMAL(10,2) NOT NULL,
                 reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS manual_customer_receipts (
                 id SERIAL PRIMARY KEY,
-                customer_id INTEGER,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 customer_name TEXT NOT NULL,
-                customer_code TEXT DEFAULT '',
                 amount DECIMAL(10,2) NOT NULL,
                 reason TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS return_invoices (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 invoice_number TEXT NOT NULL,
                 amount DECIMAL(10,2) NOT NULL,
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS suppliers (
                 id SERIAL PRIMARY KEY,
+                sync_source_id TEXT,
+                source_row_id BIGINT,
                 reconciliation_id INTEGER NOT NULL REFERENCES reconciliations(id) ON DELETE CASCADE,
                 supplier_name TEXT NOT NULL,
+                invoice_number TEXT,
                 amount DECIMAL(10,2) NOT NULL,
+                notes TEXT,
+                is_modified INTEGER DEFAULT 0,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
             `CREATE TABLE IF NOT EXISTS settings (
@@ -497,51 +666,67 @@ class PostgresManager {
             await this.pool.query(q);
         }
 
-        const preIndexSchemaQueries = [
-            "ALTER TABLE branches ADD COLUMN IF NOT EXISTS customer_code_prefix TEXT DEFAULT ''",
-            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
-            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL",
-            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS phone TEXT DEFAULT ''",
-            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS address TEXT DEFAULT ''",
-            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-            "ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP",
-            'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
-            "ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
-            'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
-            "ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
-            'ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
-            "ALTER TABLE manual_postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
-            'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
-            "ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
-            `WITH ordered_branches AS (
-                SELECT id, ROW_NUMBER() OVER (ORDER BY id) AS branch_order
-                FROM branches
-            )
-            UPDATE branches b
-            SET customer_code_prefix = 'C' || ordered_branches.branch_order,
-                updated_at = CURRENT_TIMESTAMP
-            FROM ordered_branches
-            WHERE b.id = ordered_branches.id
-              AND TRIM(COALESCE(b.customer_code_prefix, '')) = ''`
-        ];
-
-        for (const query of preIndexSchemaQueries) {
-            await this.pool.query(query);
-        }
+        // This must run here (not only in migrateSchema), because the indexes
+        // below run before migrateSchema during startup.
+        await this.ensureColumnsRequiredByIndexes();
 
         const indexQueries = [
             'CREATE INDEX IF NOT EXISTS idx_customers_name_branch ON customers(customer_name, branch_id)',
             'CREATE INDEX IF NOT EXISTS idx_customers_code ON customers(customer_code)',
-            `CREATE INDEX IF NOT EXISTS idx_customers_customer_code_lookup
+            'CREATE INDEX IF NOT EXISTS idx_customers_favorite_active ON customers(is_favorite, is_active, merged_into_customer_id)',
+            'CREATE INDEX IF NOT EXISTS idx_customers_active_merge ON customers(is_active, merged_into_customer_id)',
+            'CREATE INDEX IF NOT EXISTS idx_customers_merged_into ON customers(merged_into_customer_id)',
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_customer_code_unique
              ON customers(UPPER(TRIM(customer_code)))
              WHERE TRIM(COALESCE(customer_code, '')) <> ''`,
-            `CREATE INDEX IF NOT EXISTS idx_branches_customer_code_prefix_lookup
-             ON branches(UPPER(TRIM(customer_code_prefix)))
-             WHERE TRIM(COALESCE(customer_code_prefix, '')) <> ''`,
             'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_id ON postpaid_sales(customer_id)',
             'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code ON postpaid_sales(customer_code)',
+            'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code_norm ON postpaid_sales(UPPER(TRIM(customer_code)))',
+            'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_created_date ON postpaid_sales(DATE(created_at))',
             'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_id ON customer_receipts(customer_id)',
             'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code ON customer_receipts(customer_code)',
+            'CREATE INDEX IF NOT EXISTS idx_customer_receipts_customer_code_norm ON customer_receipts(UPPER(TRIM(customer_code)))',
+            'CREATE INDEX IF NOT EXISTS idx_customer_receipts_created_date ON customer_receipts(DATE(created_at))',
+            'CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer_id ON manual_postpaid_sales(customer_id)',
+            'CREATE INDEX IF NOT EXISTS idx_manual_postpaid_customer_code_norm ON manual_postpaid_sales(UPPER(TRIM(customer_code)))',
+            'CREATE INDEX IF NOT EXISTS idx_manual_postpaid_created_date ON manual_postpaid_sales(DATE(created_at))',
+            'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_id ON manual_customer_receipts(customer_id)',
+            'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_code_norm ON manual_customer_receipts(UPPER(TRIM(customer_code)))',
+            'CREATE INDEX IF NOT EXISTS idx_manual_receipts_created_date ON manual_customer_receipts(DATE(created_at))',
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliations_sync_source_row_unique
+             ON reconciliations(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_cash_receipts_sync_source_row_unique
+             ON cash_receipts(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_bank_receipts_sync_source_row_unique
+             ON bank_receipts(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_postpaid_sales_sync_source_row_unique
+             ON postpaid_sales(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_receipts_sync_source_row_unique
+             ON customer_receipts(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_postpaid_sync_source_row_unique
+             ON manual_postpaid_sales(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_manual_receipts_sync_source_row_unique
+             ON manual_customer_receipts(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_return_invoices_sync_source_row_unique
+             ON return_invoices(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_suppliers_sync_source_row_unique
+             ON suppliers(sync_source_id, source_row_id)
+             WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
+            'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_year_key ON customer_fiscal_opening_balances(fiscal_year, balance_key)',
+            'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_customer_id ON customer_fiscal_opening_balances(customer_id)',
+            'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_code ON customer_fiscal_opening_balances(customer_code)',
+            'CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_name_branch ON customer_fiscal_opening_balances(customer_name, branch_id)',
+            'CREATE INDEX IF NOT EXISTS idx_suppliers_supplier_name ON suppliers(supplier_name)',
+            'CREATE INDEX IF NOT EXISTS idx_suppliers_supplier_name_norm ON suppliers(UPPER(TRIM(supplier_name)))',
+            'CREATE INDEX IF NOT EXISTS idx_suppliers_created_date ON suppliers(DATE(created_at))',
             'CREATE INDEX IF NOT EXISTS idx_branch_cashboxes_branch_id ON branch_cashboxes(branch_id)',
             'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_branch_date ON cashbox_vouchers(branch_id, voucher_date)',
             'CREATE INDEX IF NOT EXISTS idx_cashbox_vouchers_cashbox_date ON cashbox_vouchers(cashbox_id, voucher_date)',
@@ -618,121 +803,135 @@ class PostgresManager {
 
     async repairCashboxSyncData() {
         const client = await this.pool.connect();
+        let branchCashboxesCreated = 0;
+        let vouchersRelinked = 0;
+        let voucherSyncKeysBackfilled = 0;
 
         try {
             await client.query('BEGIN');
 
-            const insertedResult = await client.query(`
-                WITH inserted AS (
-                    INSERT INTO branch_cashboxes (
-                        branch_id,
-                        cashbox_name,
-                        opening_balance,
-                        is_active,
-                        created_at,
-                        updated_at
-                    )
-                    SELECT
-                        b.id,
-                        'صندوق ' || COALESCE(NULLIF(TRIM(b.branch_name), ''), 'الفرع'),
-                        0,
-                        COALESCE(b.is_active, 1),
-                        CURRENT_TIMESTAMP,
-                        CURRENT_TIMESTAMP
+            await client.query('ALTER TABLE cashbox_vouchers ADD COLUMN IF NOT EXISTS sync_key TEXT');
+
+            const createMissingCashboxesResult = await client.query(`
+                WITH missing_branches AS (
+                    SELECT b.id AS branch_id, COALESCE(NULLIF(TRIM(b.branch_name), ''), CONCAT('Branch ', b.id)) AS branch_name
                     FROM branches b
                     LEFT JOIN branch_cashboxes cb ON cb.branch_id = b.id
                     WHERE cb.id IS NULL
-                    RETURNING id, branch_id
                 )
-                SELECT COUNT(*)::int AS inserted_count
-                FROM inserted
+                INSERT INTO branch_cashboxes (branch_id, cashbox_name, opening_balance, is_active, created_at, updated_at)
+                SELECT
+                    mb.branch_id,
+                    CONCAT(mb.branch_name, ' - Cashbox'),
+                    0,
+                    1,
+                    NOW(),
+                    NOW()
+                FROM missing_branches mb
+                RETURNING id
             `);
+            branchCashboxesCreated = createMissingCashboxesResult.rowCount || 0;
 
-            const repairedResult = await client.query(`
-                WITH repaired AS (
-                    UPDATE cashbox_vouchers v
-                    SET
-                        cashbox_id = canonical_cb.id,
-                        updated_at = CURRENT_TIMESTAMP
-                    FROM branch_cashboxes canonical_cb
-                    WHERE canonical_cb.branch_id = v.branch_id
-                      AND (
-                          NOT EXISTS (
-                              SELECT 1
-                              FROM branch_cashboxes current_cb
-                              WHERE current_cb.id = v.cashbox_id
-                          )
-                          OR EXISTS (
-                              SELECT 1
-                              FROM branch_cashboxes current_cb
-                              WHERE current_cb.id = v.cashbox_id
-                                AND current_cb.branch_id IS DISTINCT FROM v.branch_id
-                          )
-                      )
-                    RETURNING v.id
+            const relinkVouchersResult = await client.query(`
+                WITH canonical AS (
+                    SELECT branch_id, MIN(id) AS canonical_cashbox_id
+                    FROM branch_cashboxes
+                    GROUP BY branch_id
+                ),
+                invalid_rows AS (
+                    SELECT
+                        v.id,
+                        c.canonical_cashbox_id
+                    FROM cashbox_vouchers v
+                    LEFT JOIN branch_cashboxes current_cb ON current_cb.id = v.cashbox_id
+                    JOIN canonical c ON c.branch_id = v.branch_id
+                    WHERE
+                        current_cb.id IS NULL
+                        OR current_cb.branch_id <> v.branch_id
+                        OR v.cashbox_id <> c.canonical_cashbox_id
                 )
-                SELECT COUNT(*)::int AS repaired_count
-                FROM repaired
+                UPDATE cashbox_vouchers v
+                SET
+                    cashbox_id = invalid_rows.canonical_cashbox_id,
+                    updated_at = NOW()
+                FROM invalid_rows
+                WHERE v.id = invalid_rows.id
+                RETURNING v.id
             `);
+            vouchersRelinked = relinkVouchersResult.rowCount || 0;
 
-            const syncKeyResult = await client.query(`
-                WITH updated AS (
-                    UPDATE cashbox_vouchers v
-                    SET sync_key = CASE
-                        WHEN COALESCE(BTRIM(v.sync_key), '') != '' THEN v.sync_key
-                        WHEN v.source_reconciliation_id IS NOT NULL
-                             AND COALESCE(BTRIM(v.source_entry_key), '') != ''
-                            THEN 'recon:' || CAST(v.source_reconciliation_id AS TEXT) || ':' || REPLACE(BTRIM(v.source_entry_key), ' ', '%20')
-                        ELSE 'manual:' || REPLACE(
-                                COALESCE(
-                                    TO_CHAR(v.created_at, 'YYYY-MM-DD HH24:MI:SS'),
-                                    TO_CHAR(v.voucher_date, 'YYYY-MM-DD'),
-                                    'no-timestamp'
-                                ),
-                                ' ',
-                                '%20'
-                            )
-                             || ':' || CAST(v.id AS TEXT)
-                    END
-                    WHERE COALESCE(BTRIM(v.sync_key), '') = ''
-                    RETURNING v.id
+            const backfillSyncKeysResult = await client.query(`
+                WITH candidates AS (
+                    SELECT
+                        id,
+                        COALESCE(
+                            NULLIF(TRIM(sync_key), ''),
+                            CASE
+                                WHEN source_reconciliation_id IS NOT NULL
+                                     AND source_entry_key IS NOT NULL
+                                     AND TRIM(source_entry_key) <> ''
+                                THEN CONCAT('recon:', source_reconciliation_id, ':', source_entry_key)
+                                WHEN voucher_sequence_number IS NOT NULL
+                                THEN CONCAT('seq:', branch_id, ':', voucher_type, ':', voucher_sequence_number)
+                                WHEN voucher_number IS NOT NULL
+                                THEN CONCAT('num:', branch_id, ':', voucher_type, ':', voucher_number)
+                                ELSE CONCAT('legacy:', id)
+                            END
+                        ) AS candidate_key
+                    FROM cashbox_vouchers
+                ),
+                deduped AS (
+                    SELECT
+                        id,
+                        CASE
+                            WHEN ROW_NUMBER() OVER (PARTITION BY candidate_key ORDER BY id) = 1
+                            THEN candidate_key
+                            ELSE CONCAT(candidate_key, ':dup:', id)
+                        END AS final_sync_key
+                    FROM candidates
                 )
-                SELECT COUNT(*)::int AS updated_count
-                FROM updated
+                UPDATE cashbox_vouchers v
+                SET sync_key = d.final_sync_key
+                FROM deduped d
+                WHERE
+                    v.id = d.id
+                    AND (v.sync_key IS NULL OR TRIM(v.sync_key) = '')
+                RETURNING v.id
             `);
+            voucherSyncKeysBackfilled = backfillSyncKeysResult.rowCount || 0;
 
+            // Do not delete, merge, or silently rewrite existing duplicate keys.  A
+            // duplicate means the remote identity is ambiguous and must be reviewed
+            // before an UPSERT on sync_key can be made safe.
             const duplicateSyncKeys = await client.query(`
                 SELECT sync_key, COUNT(*)::int AS count
                 FROM cashbox_vouchers
-                WHERE sync_key IS NOT NULL AND BTRIM(sync_key) <> ''
+                WHERE sync_key IS NOT NULL AND TRIM(sync_key) <> ''
                 GROUP BY sync_key
                 HAVING COUNT(*) > 1
                 ORDER BY count DESC, sync_key
                 LIMIT 20
             `);
             if (duplicateSyncKeys.rowCount > 0) {
-                throw new Error(`CASHBOX_SYNC_KEY_DUPLICATES: ${duplicateSyncKeys.rowCount} groups. No records were deleted.`);
+                const duplicateCount = duplicateSyncKeys.rows.reduce((total, row) => total + Number(row.count), 0);
+                const error = new Error(
+                    `CASHBOX_SYNC_KEY_DUPLICATES: ${duplicateSyncKeys.rowCount} duplicate sync_key groups (${duplicateCount} rows). No records were deleted.`
+                );
+                error.code = 'CASHBOX_SYNC_KEY_DUPLICATES';
+                throw error;
             }
 
-            const currentIndex = await client.query(`
-                SELECT indexdef FROM pg_indexes
-                WHERE schemaname = 'public' AND indexname = 'idx_cashbox_vouchers_sync_key_unique'
-            `);
-            if ((currentIndex.rows?.[0]?.indexdef || '').toUpperCase().includes(' WHERE ')) {
-                await client.query('DROP INDEX idx_cashbox_vouchers_sync_key_unique');
-            }
+            // This index is the PostgreSQL conflict arbiter for ON CONFLICT (sync_key).
+            // It is deliberately created only after the duplicate audit above.
             await client.query('CREATE UNIQUE INDEX IF NOT EXISTS idx_cashbox_vouchers_sync_key_unique ON cashbox_vouchers(sync_key)');
 
             await client.query('COMMIT');
-
-            const insertedCount = Number(insertedResult.rows?.[0]?.inserted_count || 0);
-            const repairedCount = Number(repairedResult.rows?.[0]?.repaired_count || 0);
-            const syncKeyCount = Number(syncKeyResult.rows?.[0]?.updated_count || 0);
-
-            console.log(`🧰 [DB] Cashbox sync repair complete: branch_cashboxes_created=${insertedCount}, vouchers_relinked=${repairedCount}, voucher_sync_keys_backfilled=${syncKeyCount}`);
+            console.log(
+                `[DB] Cashbox sync repair complete: branch_cashboxes_created=${branchCashboxesCreated}, vouchers_relinked=${vouchersRelinked}, voucher_sync_keys_backfilled=${voucherSyncKeysBackfilled}`
+            );
         } catch (error) {
             await client.query('ROLLBACK');
-            throw error;
+            console.error('⚠️ [DB] Cashbox sync repair failed:', error.message);
         } finally {
             client.release();
         }
