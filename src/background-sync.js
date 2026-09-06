@@ -3,6 +3,10 @@ const { app } = require('electron');
 const { ipcMain } = require('electron');
 const crypto = require('crypto');
 const fetch = require('node-fetch');
+const {
+    clearDeleteTombstones,
+    readDeleteTombstones
+} = require('./sync-delete-tombstones');
 
 // Configuration
 // لا نستخدم رابطاً افتراضياً قديماً هنا. وجهة المزامنة يجب أن تأتي من إعدادات التطبيق
@@ -10,7 +14,10 @@ const fetch = require('node-fetch');
 const DEFAULT_REMOTE_URL = '';
 const SYNC_INTERVAL_MS = 30000; // 30 seconds
 const FULL_REFRESH_INTERVAL_MS = 7 * 24 * 60 * 60 * 1000; // Weekly safety refresh
-const MIRROR_CLEANUP_INTERVAL_MS = 24 * 60 * 60 * 1000; // Daily deletion audit
+// Keep the mirror deletion audit frequent enough to recover stale remote rows
+// even when a delete happened before the local delta baseline was available.
+// The audit sends active row IDs only, not full reconciliation payloads.
+const MIRROR_CLEANUP_INTERVAL_MS = 2 * 60 * 1000; // 2-minute deletion audit
 const REQUEST_FULL_PULL_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const REQUEST_PULL_OVERLAP_MS = 2 * 60 * 1000;
 const TRANSIENT_HTTP_STATUSES = new Set([408, 425, 429, 500, 502, 503, 504]);
@@ -242,6 +249,13 @@ class BackgroundSync {
                     key TEXT PRIMARY KEY,
                     value TEXT,
                     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE TABLE IF NOT EXISTS sync_deleted_rows (
+                    table_name TEXT NOT NULL,
+                    row_key TEXT NOT NULL,
+                    deleted_at DATETIME NOT NULL,
+                    PRIMARY KEY (table_name, row_key)
                 );
             `);
             return true;
@@ -478,6 +492,15 @@ class BackgroundSync {
         } catch (error) {
             console.warn(`⚠️ [SYNC] Failed to clear deleted row state for ${tableName}:`, error.message);
         }
+    }
+
+    addDeletedRowKeys(deletedStateByTable, tableName, rowKeys) {
+        if (!(deletedStateByTable instanceof Map) || !Array.isArray(rowKeys) || rowKeys.length === 0) {
+            return;
+        }
+
+        const existing = deletedStateByTable.get(tableName) || [];
+        deletedStateByTable.set(tableName, Array.from(new Set([...existing, ...rowKeys].map(String))));
     }
 
     /**
@@ -763,6 +786,44 @@ class BackgroundSync {
         }
     }
 
+    parseDeletedReconciliationKey(rowKey) {
+        const fallbackId = this.parseInteger(rowKey);
+        if (fallbackId !== null && fallbackId > 0) {
+            return { id: fallbackId };
+        }
+
+        try {
+            const parsed = JSON.parse(String(rowKey || ''));
+            const id = this.parseInteger(parsed?.id);
+            if (id === null || id <= 0) {
+                return null;
+            }
+
+            const optionalId = (value) => {
+                const normalized = this.parseInteger(value);
+                return normalized !== null && normalized > 0 ? normalized : null;
+            };
+            const optionalText = (value) => {
+                if (value === null || value === undefined) return null;
+                const normalized = String(value).trim();
+                return normalized.length > 0 ? normalized : null;
+            };
+
+            return {
+                id,
+                reconciliation_number: optionalId(parsed.reconciliation_number),
+                cashier_id: optionalId(parsed.cashier_id),
+                accountant_id: optionalId(parsed.accountant_id),
+                reconciliation_date: optionalText(parsed.reconciliation_date),
+                status: optionalText(parsed.status),
+                created_at: optionalText(parsed.created_at),
+                updated_at: optionalText(parsed.updated_at)
+            };
+        } catch (_error) {
+            return null;
+        }
+    }
+
     buildMirrorCleanupPayload(db, cleanupTables, cachedRows = {}, context = {}) {
         const payload = {};
         const shouldIncludeAll = cleanupTables.has('*');
@@ -800,6 +861,25 @@ class BackgroundSync {
 
         for (const [tableName, rowKeys] of deletedStateByTable.entries()) {
             if (!EXPLICIT_DELETE_ID_TABLES.has(tableName)) {
+                continue;
+            }
+
+            if (tableName === 'reconciliations') {
+                const fingerprints = Array.from(new Map(
+                    (Array.isArray(rowKeys) ? rowKeys : [])
+                        .map((rowKey) => this.parseDeletedReconciliationKey(rowKey))
+                        .filter(Boolean)
+                        .map((fingerprint) => [String(fingerprint.id), fingerprint])
+                ).values());
+
+                const deletedIds = fingerprints
+                    .map((fingerprint) => this.parseInteger(fingerprint.id))
+                    .filter((rowId) => rowId !== null && rowId > 0);
+
+                if (deletedIds.length > 0) {
+                    payload.deleted_reconciliations_ids = deletedIds;
+                    payload.deleted_reconciliations = fingerprints;
+                }
                 continue;
             }
 
@@ -905,6 +985,11 @@ class BackgroundSync {
         const context = { localCashboxToBranchMap };
         const cleanupTables = new Set(cleanupDue ? ['*'] : []);
         const deletedStateByTable = new Map();
+        const pendingDeleteTombstones = readDeleteTombstones(db, EXPLICIT_DELETE_ID_TABLES);
+        for (const [tableName, rowKeys] of pendingDeleteTombstones.entries()) {
+            cleanupTables.add(tableName);
+            this.addDeletedRowKeys(deletedStateByTable, tableName, rowKeys);
+        }
         let totalSent = 0;
         let cleanupFailed = false;
         const failedTables = [];
@@ -929,7 +1014,7 @@ class BackgroundSync {
 
             if (Array.isArray(result?.deletedKeys) && result.deletedKeys.length > 0) {
                 cleanupTables.add(spec.key);
-                deletedStateByTable.set(spec.key, result.deletedKeys);
+                this.addDeletedRowKeys(deletedStateByTable, spec.key, result.deletedKeys);
             }
         }
 
@@ -942,6 +1027,7 @@ class BackgroundSync {
             if (cleanupSent) {
                 for (const [tableName, rowKeys] of deletedStateByTable.entries()) {
                     this.clearDeletedRowStates(db, tableName, rowKeys);
+                    clearDeleteTombstones(db, tableName, rowKeys);
                 }
             }
         } catch (cleanupError) {

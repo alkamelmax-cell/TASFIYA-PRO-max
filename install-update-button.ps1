@@ -25,8 +25,25 @@ if ($LASTEXITCODE -ne 0) {
 
 $desktop = [Environment]::GetFolderPath('Desktop')
 $buttonPath = Join-Path $desktop 'تحديث خادم تصفية برو.cmd'
-"@echo off`r`ncall `"$serverRoot\update-tasfiya-server.cmd`"`r`n" |
-    Set-Content -LiteralPath $buttonPath -Encoding ascii
+$buttonContent = @"
+@echo off
+setlocal EnableExtensions
+chcp 65001 >nul
+title تحديث خادم تصفية برو
+cd /d "$serverRoot"
+call "$serverRoot\update-tasfiya-server.cmd"
+set "UPDATE_RESULT=%ERRORLEVEL%"
+echo.
+echo انتهى زر التحديث برمز: %UPDATE_RESULT%
+echo إذا ظهرت مشكلة، افتح مجلد _update-logs داخل:
+echo $serverRoot
+echo.
+echo اضغط أي مفتاح لإغلاق النافذة...
+pause >nul
+exit /b %UPDATE_RESULT%
+"@
+$buttonContent |
+    Set-Content -LiteralPath $buttonPath -Encoding UTF8
 
 Start-ScheduledTask -TaskName $TaskName
 Write-Host "Setup complete. The update button was created on the desktop: $buttonPath" -ForegroundColor Green

@@ -9,6 +9,29 @@ $serverRoot = Split-Path -Parent $PSCommandPath
 $git = Get-Command git -ErrorAction Stop
 $npm = Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
 $wasRunning = $false
+$transcriptStarted = $false
+$transcriptPath = $null
+
+try {
+    $logRoot = Join-Path $serverRoot '_update-logs'
+    New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
+    $transcriptPath = Join-Path $logRoot "server-update-$((Get-Date).ToString('yyyyMMdd-HHmmss')).log"
+    Start-Transcript -Path $transcriptPath -Append | Out-Null
+    $transcriptStarted = $true
+    Write-Host "Update log: $transcriptPath" -ForegroundColor DarkCyan
+} catch {
+    Write-Host "Warning: could not start update log: $($_.Exception.Message)" -ForegroundColor DarkYellow
+}
+
+function Stop-UpdateTranscript {
+    if ($script:transcriptStarted) {
+        try {
+            Stop-Transcript | Out-Null
+        } catch {
+            # The update result is more important than transcript shutdown.
+        }
+    }
+}
 
 function Get-ListeningProcessIds {
     param([int[]]$Ports)
@@ -210,8 +233,12 @@ try {
     }
 
     Write-Host 'The web server was started successfully.' -ForegroundColor Green
+    Stop-UpdateTranscript
 } catch {
     Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
+    if ($transcriptPath) {
+        Write-Host "Update log saved at: $transcriptPath" -ForegroundColor Yellow
+    }
     if ($wasRunning) {
         try {
             Start-ScheduledTask -TaskName $TaskName
@@ -220,5 +247,6 @@ try {
             Write-Host "Could not restart the previous server: $($_.Exception.Message)" -ForegroundColor Red
         }
     }
+    Stop-UpdateTranscript
     exit 1
 }

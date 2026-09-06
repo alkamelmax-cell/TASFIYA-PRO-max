@@ -3522,6 +3522,7 @@ class LocalWebServer {
                     || data.manual_customer_receipts
                     || data.return_invoices
                     || data.suppliers
+                    || data.deleted_reconciliations
                     || data.deleted_reconciliations_ids
                 );
 
@@ -3534,7 +3535,50 @@ class LocalWebServer {
                     if (!activeIds || !Array.isArray(activeIds)) return;
 
                     try {
-                        if (activeIds.length > 0) {
+                        const normalizedActiveIds = sanitizeIdArray(activeIds);
+
+                        if (table === 'reconciliations') {
+                            if (normalizedActiveIds.length === 0 && !sourceScopedSync) return;
+
+                            const staleResult = sourceScopedSync
+                                ? (
+                                    normalizedActiveIds.length > 0
+                                        ? await pool.query(
+                                            `SELECT source_row_id AS delete_id
+                                             FROM reconciliations
+                                             WHERE sync_source_id = $1
+                                               AND source_row_id IS NOT NULL
+                                               AND source_row_id != ALL($2::bigint[])`,
+                                            [syncSourceId, normalizedActiveIds]
+                                        )
+                                        : await pool.query(
+                                            `SELECT source_row_id AS delete_id
+                                             FROM reconciliations
+                                             WHERE sync_source_id = $1
+                                               AND source_row_id IS NOT NULL`,
+                                            [syncSourceId]
+                                        )
+                                )
+                                : await pool.query(
+                                    `SELECT id AS delete_id
+                                     FROM reconciliations
+                                     WHERE id != ALL($1::int[])`,
+                                    [normalizedActiveIds]
+                                );
+
+                            const idsToDelete = (staleResult.rows || [])
+                                .map(row => parseInteger(row.delete_id))
+                                .filter(id => id !== null && id > 0);
+
+                            if (idsToDelete.length > 0) {
+                                const deletedCount = await deleteReconciliationsByIds(idsToDelete);
+                                console.log(`🧹 [SYNC] Cleaned ${deletedCount} orphaned reconciliations with child rows.`);
+                            }
+                            return;
+                        }
+
+                        if (normalizedActiveIds.length > 0) {
+
                             // Delete records NOT in the activeIds list (Mirror Sync)
                             // "DELETE FROM table WHERE id NOT IN (...)"
                             // Optimized for Postgres using ANY/ALL
@@ -3548,11 +3592,11 @@ class LocalWebServer {
                                     `DELETE FROM ${table}
                                      WHERE sync_source_id = $1
                                        AND source_row_id != ALL($2::bigint[])`,
-                                    [syncSourceId, activeIds]
+                                    [syncSourceId, normalizedActiveIds]
                                 )
                                 : await pool.query(
                                     `DELETE FROM ${table} WHERE id != ALL($1::int[])`,
-                                    [activeIds]
+                                    [normalizedActiveIds]
                                 );
                             if (result.rowCount > 0) {
                                 console.log(`🧹 [SYNC] Cleaned ${result.rowCount} orphaned records from ${table}.`);
@@ -3601,36 +3645,152 @@ class LocalWebServer {
                     }
                 };
 
+                const deleteCanonicalReconciliations = async (query, canonicalIds = []) => {
+                    const ids = sanitizeIdArray(canonicalIds);
+                    if (ids.length === 0) return 0;
+
+                    await query('DELETE FROM cashbox_vouchers WHERE source_reconciliation_id = ANY($1::int[]) AND COALESCE(is_auto_generated, 0) = 1', [ids]);
+                    await query('DELETE FROM cash_receipts WHERE reconciliation_id = ANY($1::int[])', [ids]);
+                    await query('DELETE FROM bank_receipts WHERE reconciliation_id = ANY($1::int[])', [ids]);
+                    await query('DELETE FROM postpaid_sales WHERE reconciliation_id = ANY($1::int[])', [ids]);
+                    await query('DELETE FROM customer_receipts WHERE reconciliation_id = ANY($1::int[])', [ids]);
+                    await query('DELETE FROM return_invoices WHERE reconciliation_id = ANY($1::int[])', [ids]);
+                    await query('DELETE FROM suppliers WHERE reconciliation_id = ANY($1::int[])', [ids]);
+
+                    const result = await query('DELETE FROM reconciliations WHERE id = ANY($1::int[])', [ids]);
+                    return result.rowCount || 0;
+                };
+
+                const findCanonicalReconciliationIdsByLocalIds = async (query, rawIds = []) => {
+                    const ids = sanitizeIdArray(rawIds);
+                    if (ids.length === 0) return [];
+
+                    if (!sourceScopedSync) {
+                        return ids;
+                    }
+
+                    const canonicalIds = [];
+                    const canonicalResult = await query(
+                        `SELECT id, source_row_id
+                         FROM reconciliations
+                         WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])`,
+                        [syncSourceId, ids]
+                    );
+                    const matchedSourceIds = new Set();
+                    for (const row of (canonicalResult.rows || [])) {
+                        const canonicalId = Number(row.id);
+                        const sourceRowId = parseInteger(row.source_row_id);
+                        if (Number.isFinite(canonicalId)) {
+                            canonicalIds.push(canonicalId);
+                        }
+                        if (sourceRowId !== null && sourceRowId > 0) {
+                            matchedSourceIds.add(sourceRowId);
+                        }
+                    }
+
+                    const unmatchedIds = ids.filter(id => !matchedSourceIds.has(id));
+                    if (unmatchedIds.length > 0) {
+                        const legacyNumberResult = await query(
+                            `SELECT MIN(id) AS id, reconciliation_number, COUNT(*)::int AS matches
+                             FROM reconciliations
+                             WHERE reconciliation_number = ANY($1::int[])
+                               AND (sync_source_id = $2 OR sync_source_id IS NULL)
+                             GROUP BY reconciliation_number
+                             HAVING COUNT(*) = 1`,
+                            [unmatchedIds, syncSourceId]
+                        );
+                        canonicalIds.push(...(legacyNumberResult.rows || []).map(row => Number(row.id)).filter(Number.isFinite));
+                    }
+
+                    return Array.from(new Set(canonicalIds));
+                };
+
+                const normalizeDeletedReconciliationFingerprint = (item = {}) => {
+                    if (!item || typeof item !== 'object') return null;
+                    const id = parseInteger(item.id);
+                    if (id === null || id <= 0) return null;
+                    const reconciliationNumber = parseInteger(item.reconciliation_number);
+                    const cashierId = parseInteger(item.cashier_id);
+                    const accountantId = parseInteger(item.accountant_id);
+                    const reconciliationDate = toOptionalText(item.reconciliation_date);
+
+                    return {
+                        id,
+                        reconciliationNumber,
+                        cashierId,
+                        accountantId,
+                        reconciliationDate,
+                        status: toOptionalText(item.status)
+                    };
+                };
+
+                const findCanonicalReconciliationIdsByFingerprints = async (query, rawItems = []) => {
+                    const fingerprints = (Array.isArray(rawItems) ? rawItems : [])
+                        .map(normalizeDeletedReconciliationFingerprint)
+                        .filter(Boolean);
+                    if (fingerprints.length === 0) return [];
+
+                    const localIds = fingerprints.map(item => item.id);
+                    const canonicalIds = await findCanonicalReconciliationIdsByLocalIds(query, localIds);
+
+                    for (const item of fingerprints) {
+                        if (
+                            item.reconciliationNumber === null
+                            || item.cashierId === null
+                            || item.accountantId === null
+                            || !item.reconciliationDate
+                        ) {
+                            continue;
+                        }
+
+                        const fingerprintResult = await query(
+                            `SELECT id
+                             FROM reconciliations
+                             WHERE reconciliation_number = $1
+                               AND cashier_id = $2
+                               AND accountant_id = $3
+                               AND reconciliation_date::date = $4::date
+                               AND (sync_source_id = $5 OR sync_source_id IS NULL OR source_row_id = $6)
+                             LIMIT 2`,
+                            [
+                                item.reconciliationNumber,
+                                item.cashierId,
+                                item.accountantId,
+                                item.reconciliationDate,
+                                syncSourceId,
+                                item.id
+                            ]
+                        );
+
+                        if (fingerprintResult.rowCount === 1) {
+                            const matchedId = Number(fingerprintResult.rows[0].id);
+                            if (Number.isFinite(matchedId)) {
+                                canonicalIds.push(matchedId);
+                            }
+                        } else if (fingerprintResult.rowCount > 1) {
+                            console.warn(`⚠️ [SYNC] Skipped ambiguous reconciliation delete fingerprint #${item.reconciliationNumber}.`);
+                        }
+                    }
+
+                    return Array.from(new Set(canonicalIds));
+                };
+
                 const deleteReconciliationsByIds = async (rawIds = []) => {
                     const ids = sanitizeIdArray(rawIds);
                     if (ids.length === 0) return 0;
 
                     return runInTransaction(async (query) => {
-                        let canonicalIds = ids;
-                        if (sourceScopedSync) {
-                            const canonicalResult = await query(
-                                `SELECT id FROM reconciliations
-                                 WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])`,
-                                [syncSourceId, ids]
-                            );
-                            canonicalIds = (canonicalResult.rows || []).map(row => Number(row.id)).filter(Number.isFinite);
-                            if (canonicalIds.length === 0) return 0;
-                        }
+                        const canonicalIds = await findCanonicalReconciliationIdsByLocalIds(query, ids);
+                        return deleteCanonicalReconciliations(query, canonicalIds);
+                    });
+                };
 
-                        await query('DELETE FROM cashbox_vouchers WHERE source_reconciliation_id = ANY($1::int[]) AND COALESCE(is_auto_generated, 0) = 1', [canonicalIds]);
-                        await query('DELETE FROM cash_receipts WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
-                        await query('DELETE FROM bank_receipts WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
-                        await query('DELETE FROM postpaid_sales WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
-                        await query('DELETE FROM customer_receipts WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
-                        await query('DELETE FROM return_invoices WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
-                        await query('DELETE FROM suppliers WHERE reconciliation_id = ANY($1::int[])', [canonicalIds]);
-                        const result = sourceScopedSync
-                            ? await query(
-                                'DELETE FROM reconciliations WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])',
-                                [syncSourceId, ids]
-                            )
-                            : await query('DELETE FROM reconciliations WHERE id = ANY($1::int[])', [ids]);
-                        return result.rowCount || 0;
+                const deleteReconciliationsByFingerprints = async (rawItems = []) => {
+                    if (!Array.isArray(rawItems) || rawItems.length === 0) return 0;
+
+                    return runInTransaction(async (query) => {
+                        const canonicalIds = await findCanonicalReconciliationIdsByFingerprints(query, rawItems);
+                        return deleteCanonicalReconciliations(query, canonicalIds);
                     });
                 };
 
@@ -4284,6 +4444,22 @@ class LocalWebServer {
 
                 // Explicit deletes are used for incremental sync when a row was removed locally.
                 // This avoids relying on empty active-id lists, which are intentionally ignored for safety.
+                if (Array.isArray(data.deleted_reconciliations)) {
+                    try {
+                        const deletedCount = await deleteReconciliationsByFingerprints(data.deleted_reconciliations);
+                        if (deletedCount > 0) {
+                            console.log(`🧹 [SYNC] Deleted ${deletedCount} reconciliations by delete fingerprint payload.`);
+                        }
+                    } catch (deleteError) {
+                        syncFailures.push({
+                            table: 'reconciliations',
+                            id: null,
+                            error: deleteError.message
+                        });
+                        console.error('❌ [SYNC] explicit reconciliation fingerprint delete failed:', deleteError.message);
+                    }
+                }
+
                 if (Array.isArray(data.deleted_reconciliations_ids)) {
                     try {
                         const deletedCount = await deleteReconciliationsByIds(data.deleted_reconciliations_ids);
@@ -4410,27 +4586,8 @@ class LocalWebServer {
 
                             if (idsToDelete.length > 0) {
                                 console.log(`🗑️ [SYNC] Found ${idsToDelete.length} obsolete reconciliations. Deleting...`);
-
-                                // Delete in batches of 50
-                                const DELETE_BATCH = 50;
-                                for (let i = 0; i < idsToDelete.length; i += DELETE_BATCH) {
-                                    const batch = idsToDelete.slice(i, i + DELETE_BATCH);
-                                    const placeholders = batch.map((_, idx) => `$${idx + 1}`).join(',');
-
-                                    // 1. Delete Child Records First
-                                    await pool.query(`DELETE FROM cash_receipts WHERE reconciliation_id IN (${placeholders})`, batch);
-                                    await pool.query(`DELETE FROM bank_receipts WHERE reconciliation_id IN (${placeholders})`, batch);
-                                    await pool.query(`DELETE FROM postpaid_sales WHERE reconciliation_id IN (${placeholders})`, batch);
-                                    await pool.query(`DELETE FROM customer_receipts WHERE reconciliation_id IN (${placeholders})`, batch);
-
-                                    // 2. Delete Details
-                                    await pool.query(`DELETE FROM return_invoices WHERE reconciliation_id IN (${placeholders})`, batch);
-                                    await pool.query(`DELETE FROM suppliers WHERE reconciliation_id IN (${placeholders})`, batch);
-
-                                    // 3. Delete Parent
-                                    await pool.query(`DELETE FROM reconciliations WHERE id IN (${placeholders})`, batch);
-                                }
-                                console.log(`✅ [SYNC] Successfully deleted ${idsToDelete.length} obsolete records.`);
+                                const deletedCount = await deleteReconciliationsByIds(idsToDelete);
+                                console.log(`✅ [SYNC] Successfully deleted ${deletedCount} obsolete records.`);
                             } else {
                                 console.log('✅ [SYNC] No deletions needed. Local DB matches Active IDs.');
                             }

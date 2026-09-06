@@ -18,6 +18,8 @@ const LocalWebServer = require('./local-server');
 const { createSecureWebPreferences } = require('./window-security');
 const { hashSecret, verifySecret } = require('./security/auth-service');
 const { startBackgroundSync, stopBackgroundSync, getSyncStatus, setSyncEnabled, getSyncEnabled, pullRemoteRequestsNow } = require('./background-sync');
+const { getSyncWriteTables } = require('./sync-write-detector');
+const { readIdsToBeDeleted, recordDeleteTombstones } = require('./sync-delete-tombstones');
 
 let postSaveSyncTimer = null;
 let postSaveSyncRunning = false;
@@ -605,7 +607,7 @@ function createWindow() {
         webPreferences: createSecureWebPreferences(__dirname, {
             devTools: IS_DEV_MODE
         }),
-        icon: path.join(__dirname, '../assets/icon.png'),
+        icon: path.join(__dirname, '../assets/icon.ico'),
         title: 'تصفية برو - Tasfiya Pro',
         show: false,
         autoHideMenuBar: IS_CLIENT_BUILD
@@ -2703,7 +2705,24 @@ ipcMain.handle('db-run', async (event, sql, params = []) => {
         if (!dbManager || !dbManager.db) {
             throw new Error('Database not initialized');
         }
-        return dbManager.run(sql, params);
+        const pendingDeleteTombstones = readIdsToBeDeleted(dbManager.db, sql, params);
+        const result = dbManager.run(sql, params);
+        const deleteRecords = Array.isArray(pendingDeleteTombstones.records) && pendingDeleteTombstones.records.length > 0
+            ? pendingDeleteTombstones.records
+            : pendingDeleteTombstones.ids;
+        if (
+            pendingDeleteTombstones.tableName
+            && Array.isArray(deleteRecords)
+            && deleteRecords.length > 0
+            && (!result || typeof result.changes !== 'number' || result.changes > 0)
+        ) {
+            recordDeleteTombstones(dbManager.db, pendingDeleteTombstones.tableName, deleteRecords);
+        }
+        const syncWriteTables = getSyncWriteTables(sql);
+        if (syncWriteTables.length > 0) {
+            schedulePostSaveSync(`db-run:${syncWriteTables.join(',')}`);
+        }
+        return result;
     } catch (error) {
         console.error('Database run error:', error);
         throw error;
