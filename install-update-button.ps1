@@ -1,6 +1,7 @@
 [CmdletBinding()]
 param(
-    [string]$TaskName = 'Tasfiya Local Web Server'
+    [string]$TaskName = 'Tasfiya Local Web Server',
+    [switch]$ConfigureScheduledTask
 )
 
 $ErrorActionPreference = 'Stop'
@@ -8,19 +9,7 @@ $serverRoot = Split-Path -Parent $PSCommandPath
 $savedDatabaseUrl = [Environment]::GetEnvironmentVariable('DATABASE_URL', 'User')
 
 if ([string]::IsNullOrWhiteSpace($savedDatabaseUrl)) {
-    throw 'DATABASE_URL is not saved for this Windows user. Configure the Neon connection before installing automatic updates.'
-}
-
-$task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
-if ($task.State -eq 'Running') {
-    Stop-ScheduledTask -TaskName $TaskName
-    Start-Sleep -Seconds 2
-}
-
-$launcher = Join-Path $serverRoot 'start-server.cmd'
-& schtasks.exe /Change /TN $TaskName /TR $launcher
-if ($LASTEXITCODE -ne 0) {
-    throw 'Could not update the scheduled task launcher.'
+    Write-Warning 'DATABASE_URL is not saved for this Windows user. The update button will still be created, but the server may need DATABASE_URL before it can start.'
 }
 
 $desktop = [Environment]::GetFolderPath('Desktop')
@@ -45,5 +34,29 @@ exit /b %UPDATE_RESULT%
 $buttonContent |
     Set-Content -LiteralPath $buttonPath -Encoding UTF8
 
-Start-ScheduledTask -TaskName $TaskName
+if ($ConfigureScheduledTask) {
+    $launcher = Join-Path $serverRoot 'start-server.cmd'
+    try {
+        $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
+        if ($task.State -eq 'Running') {
+            Stop-ScheduledTask -TaskName $TaskName
+            Start-Sleep -Seconds 2
+        }
+
+        & schtasks.exe /Change /TN $TaskName /TR "`"$launcher`""
+        if ($LASTEXITCODE -ne 0) {
+            throw "schtasks exited with code $LASTEXITCODE"
+        }
+
+        Start-ScheduledTask -TaskName $TaskName
+        Write-Host "Scheduled task updated and started: $TaskName" -ForegroundColor Green
+    } catch {
+        Write-Warning "The desktop update button was created, but the scheduled task was not changed: $($_.Exception.Message)"
+        Write-Warning 'This is usually expected on Windows accounts without a password. Your existing server task can remain unchanged.'
+    }
+} else {
+    Write-Host 'Skipped scheduled task changes to avoid Windows password prompts.' -ForegroundColor Yellow
+    Write-Host 'Your existing server startup task was left unchanged.' -ForegroundColor Yellow
+}
+
 Write-Host "Setup complete. The update button was created on the desktop: $buttonPath" -ForegroundColor Green
