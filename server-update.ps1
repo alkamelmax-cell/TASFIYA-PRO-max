@@ -178,6 +178,72 @@ function Invoke-Git {
     }
 }
 
+function New-UpdateBackup {
+    param(
+        [string]$ServerRoot,
+        [string]$Label,
+        [string]$Revision
+    )
+
+    $backupRoot = Join-Path $ServerRoot '_update-backups'
+    New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
+    $safeRevision = if ([string]::IsNullOrWhiteSpace($Revision)) { 'unknown' } else { $Revision }
+    if ($safeRevision.Length -gt 12) {
+        $safeRevision = $safeRevision.Substring(0, 12)
+    }
+    $backupName = "$Label-$((Get-Date).ToString('yyyyMMdd-HHmmss'))-$safeRevision.zip"
+    $backupPath = Join-Path $backupRoot $backupName
+    $backupItems = @(
+        'src',
+        'assets',
+        'migrations',
+        'tools',
+        'package.json',
+        'package-lock.json',
+        'start-server.cmd',
+        'server-update.ps1',
+        'update-tasfiya-server.cmd',
+        'install-update-button.ps1',
+        'README-SERVER-AUTO-UPDATE.md'
+    ) |
+        ForEach-Object { Join-Path $ServerRoot $_ } |
+        Where-Object { Test-Path $_ }
+
+    if ($backupItems.Count -gt 0) {
+        Compress-Archive -LiteralPath $backupItems -DestinationPath $backupPath -CompressionLevel Optimal -Force
+        return $backupPath
+    }
+
+    return $null
+}
+
+function Save-LocalGitChanges {
+    param(
+        [string]$ServerRoot,
+        [string]$Revision
+    )
+
+    $statusLines = @(& $git.Source status --porcelain --untracked-files=normal)
+    if ($statusLines.Count -eq 0) {
+        return $null
+    }
+
+    Write-Host 'Local release-folder changes were detected. Saving them safely before update...' -ForegroundColor Yellow
+    $backupPath = New-UpdateBackup -ServerRoot $ServerRoot -Label 'local-changes-before-update' -Revision $Revision
+    if ($backupPath) {
+        Write-Host "Local changes backup saved to: $backupPath" -ForegroundColor Yellow
+    }
+
+    $stashName = "tasfiya-auto-update-local-changes-$((Get-Date).ToString('yyyyMMdd-HHmmss'))"
+    & $git.Source stash push --include-untracked -m $stashName
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Could not save local release-folder changes. The update was stopped before changing files.'
+    }
+
+    Write-Host "Local changes were saved in git stash: $stashName" -ForegroundColor Yellow
+    return $backupPath
+}
+
 try {
     if (-not (Test-Path (Join-Path $serverRoot '.git'))) {
         throw 'This folder is not the managed server release. Run the one-time setup first.'
@@ -189,22 +255,15 @@ try {
     Set-Location $serverRoot
     $wasRunning = Stop-ManagedServerProcesses -TaskName $TaskName -ServerRoot $serverRoot
 
-    Invoke-Git diff --quiet
     $before = (& $git.Source rev-parse HEAD).Trim()
     Invoke-Git fetch --prune origin $Branch
     $target = (& $git.Source rev-parse "origin/$Branch").Trim()
+    Save-LocalGitChanges -ServerRoot $serverRoot -Revision $before | Out-Null
 
     if ($before -eq $target) {
         Write-Host 'No new server update is available.' -ForegroundColor Cyan
     } else {
-        $backupRoot = Join-Path $serverRoot '_update-backups'
-        New-Item -ItemType Directory -Force -Path $backupRoot | Out-Null
-        $backupName = "before-update-$((Get-Date).ToString('yyyyMMdd-HHmmss'))-$before.zip"
-        $backupPath = Join-Path $backupRoot $backupName
-        $backupItems = @('src', 'assets', 'package.json', 'package-lock.json', 'start-server.cmd', 'server-update.ps1', 'update-tasfiya-server.cmd') |
-            ForEach-Object { Join-Path $serverRoot $_ } |
-            Where-Object { Test-Path $_ }
-        Compress-Archive -LiteralPath $backupItems -DestinationPath $backupPath -CompressionLevel Optimal
+        $backupPath = New-UpdateBackup -ServerRoot $serverRoot -Label 'before-update' -Revision $before
 
         $packageChanged = @(& $git.Source diff --name-only "$before..$target" -- package.json package-lock.json).Count -gt 0
         Write-Host 'Downloading the server update...' -ForegroundColor Yellow
