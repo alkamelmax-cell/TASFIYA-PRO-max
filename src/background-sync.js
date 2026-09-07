@@ -190,6 +190,7 @@ class BackgroundSync {
         this.syncSourceId = null;
         this.pendingDirtyTables = new Set();
         this.pendingUrgentSync = false;
+        this.pendingForceFullRefresh = false;
     }
 
     getRemoteUrl() {
@@ -581,14 +582,18 @@ class BackgroundSync {
     }
 
     // Force immediate sync (for instant updates on critical events)
-    async forceSyncNow(tables = []) {
+    async forceSyncNow(tables = [], options = {}) {
         if (!this.enabled) {
             console.log('⛔ [SYNC] Force sync blocked - sync is disabled');
             return { success: false, skipped: true, reason: 'disabled' };
         }
 
         const dirtyTables = this.markTablesDirty(tables);
-        console.log(`⚡ [SYNC] Force sync triggered${dirtyTables.size ? ` for ${Array.from(dirtyTables).join(', ')}` : ''}...`);
+        const forceFullRefresh = Boolean(options && options.forceFullRefresh);
+        if (forceFullRefresh) {
+            this.pendingForceFullRefresh = true;
+        }
+        console.log(`⚡ [SYNC] Force sync triggered${dirtyTables.size ? ` for ${Array.from(dirtyTables).join(', ')}` : ''}${forceFullRefresh ? ' with full refresh' : ''}...`);
 
         if (this.syncPromise) {
             const activePromise = this.syncPromise;
@@ -602,7 +607,7 @@ class BackgroundSync {
                 };
             }
 
-            if (this.pendingDirtyTables.size > 0 || this.pendingUrgentSync) {
+            if (this.pendingDirtyTables.size > 0 || this.pendingUrgentSync || this.pendingForceFullRefresh) {
                 // If we resumed before doSync's finally block released the lock,
                 // clear only the promise we were waiting on so the queued urgent
                 // delta really starts now instead of returning the completed sync.
@@ -610,15 +615,26 @@ class BackgroundSync {
                     this.isSyncing = false;
                     this.syncPromise = null;
                 }
+                const queuedForceFullRefresh = this.pendingForceFullRefresh;
+                this.pendingForceFullRefresh = false;
                 this.pendingUrgentSync = false;
-                return this.doSync({ skipPull: true, reason: 'queued-urgent' });
+                return this.doSync({
+                    skipPull: !queuedForceFullRefresh,
+                    reason: queuedForceFullRefresh ? 'queued-force-full' : 'queued-urgent',
+                    forceFullRefresh: queuedForceFullRefresh
+                });
             }
 
             return activeResult;
         }
 
+        const queuedForceFullRefresh = this.pendingForceFullRefresh;
+        this.pendingForceFullRefresh = false;
         this.pendingUrgentSync = false;
-        return this.doSync({ reason: dirtyTables.size ? 'urgent' : 'force' });
+        return this.doSync({
+            reason: queuedForceFullRefresh ? 'force-full' : (dirtyTables.size ? 'urgent' : 'force'),
+            forceFullRefresh: queuedForceFullRefresh
+        });
     }
 
     get isRunning() {
@@ -637,6 +653,7 @@ class BackgroundSync {
         this.isSyncing = true;
         const dirtyTables = this.consumeDirtyTables();
         const skipPull = Boolean(options.skipPull) && dirtyTables.size > 0;
+        const forceFullRefresh = Boolean(options.forceFullRefresh);
 
         this.syncPromise = (async () => {
             const result = {
@@ -644,7 +661,8 @@ class BackgroundSync {
                 pull: null,
                 push: null,
                 errors: [],
-                dirtyTables: Array.from(dirtyTables)
+                dirtyTables: Array.from(dirtyTables),
+                forceFullRefresh
             };
 
             if (!skipPull) {
@@ -657,7 +675,7 @@ class BackgroundSync {
             }
 
             try {
-                result.push = await this.pushLocalData(this.dbManager.db, { dirtyTables });
+                result.push = await this.pushLocalData(this.dbManager.db, { dirtyTables, forceFullRefresh });
                 if (result.push && result.push.success === false) {
                     result.success = false;
                     result.errors.push({
@@ -1159,7 +1177,9 @@ class BackgroundSync {
     async pushLocalData(db, options = {}) {
         const stateAvailable = this.ensureSyncStateSchema(db);
         const remoteScopeReset = stateAvailable ? this.ensureRemoteSyncScope(db) : false;
-        const fullRefresh = !stateAvailable
+        const forceFullRefresh = Boolean(options.forceFullRefresh);
+        const fullRefresh = forceFullRefresh
+            || !stateAvailable
             || remoteScopeReset
             || this.isIntervalDue(db, SYNC_META_KEYS.lastFullRefreshAt, FULL_REFRESH_INTERVAL_MS);
         const cleanupDue = !stateAvailable
@@ -1225,7 +1245,7 @@ class BackgroundSync {
         console.log(
             `🔍 [SYNC] Local counts: ${effectiveTableSpecs.map((spec) => `${spec.key}=${cachedRows[spec.key].length}`).join(', ')}`
         );
-        console.log(`🔄 [SYNC] Push mode: ${targetedPush ? `urgent delta (${Array.from(selectedDirtyTables).join(', ')})` : (fullRefresh ? 'full safety refresh' : 'delta changes only')}`);
+        console.log(`🔄 [SYNC] Push mode: ${targetedPush ? `urgent delta (${Array.from(selectedDirtyTables).join(', ')})` : (forceFullRefresh ? 'forced full refresh' : (fullRefresh ? 'full safety refresh' : 'delta changes only'))}`);
 
         for (const spec of effectiveTableSpecs) {
             const result = await this.safePushStep(spec.key, async () => this.sendTableDelta(db, spec, cachedRows[spec.key], {
@@ -1659,9 +1679,9 @@ function markSyncTablesDirty(tables = []) {
     return [];
 }
 
-async function triggerInstantSync(tables = []) {
+async function triggerInstantSync(tables = [], options = {}) {
     if (syncInstance) {
-        return syncInstance.forceSyncNow(tables);
+        return syncInstance.forceSyncNow(tables, options);
     }
 
     return { success: false, skipped: true, reason: 'not_initialized' };

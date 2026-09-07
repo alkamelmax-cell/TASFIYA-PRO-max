@@ -3737,6 +3737,28 @@ ipcMain.handle('pull-reconciliation-requests', async () => {
     }
 });
 
+ipcMain.handle('trigger-background-sync', async (event, request = {}) => {
+    try {
+        if (!dbManager) {
+            throw new Error('Database not initialized');
+        }
+
+        const tables = Array.isArray(request)
+            ? request
+            : (Array.isArray(request?.tables) ? request.tables : []);
+        const forceFullRefresh = !Array.isArray(request) && Boolean(request?.forceFullRefresh);
+
+        if (!ensureBackgroundSyncStarted(forceFullRefresh ? 'manual-force-full' : 'manual-trigger')) {
+            return { success: false, skipped: true, reason: 'disabled' };
+        }
+
+        return await triggerInstantSync(tables, { forceFullRefresh });
+    } catch (error) {
+        console.error('Error triggering background sync:', error);
+        return { success: false, error: error.message };
+    }
+});
+
 ipcMain.handle('toggle-sync', async (event, enable) => {
     try {
         console.log(`🔄 [APP] Toggling sync to: ${enable}`);

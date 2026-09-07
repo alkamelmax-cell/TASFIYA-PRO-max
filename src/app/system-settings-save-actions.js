@@ -19,6 +19,29 @@ function createSystemSettingsSaveActions(context) {
   const applyTheme = context.applyTheme;
   const logger = context.logger || console;
   const bankFeeUiHelpers = createBankFeeSettingsUiHelpers({ document });
+  const MAX_SYNC_SERVER_URL_HISTORY = 8;
+  const SYNC_FULL_REFRESH_TABLES = [
+    'admins',
+    'branches',
+    'cashiers',
+    'accountants',
+    'atms',
+    'branch_cashboxes',
+    'customers',
+    'cashbox_vouchers',
+    'cashbox_voucher_audit_log',
+    'reconciliations',
+    'manual_postpaid_sales',
+    'manual_customer_receipts',
+    'postpaid_sales',
+    'customer_receipts',
+    'customer_fiscal_opening_balances',
+    'cash_receipts',
+    'bank_receipts',
+    'return_invoices',
+    'suppliers',
+    'reconciliation_requests'
+  ];
   const FORMULA_MODAL_FIELD_IDS = {
     bank_receipts_sign: 'formulaModalBankReceipts',
     cash_receipts_sign: 'formulaModalCashReceipts',
@@ -27,6 +50,146 @@ function createSystemSettingsSaveActions(context) {
     return_invoices_sign: 'formulaModalReturnInvoices',
     suppliers_sign: 'formulaModalSuppliers'
   };
+
+  function normalizeSyncServerOrigin(rawValue) {
+    const candidate = String(rawValue || '').trim();
+    if (!candidate) {
+      return '';
+    }
+
+    let parsedUrl;
+    try {
+      parsedUrl = new URL(candidate);
+    } catch (_error) {
+      return '';
+    }
+
+    if (parsedUrl.protocol !== 'https:' || parsedUrl.pathname !== '/' || parsedUrl.search || parsedUrl.hash) {
+      return '';
+    }
+
+    return parsedUrl.origin;
+  }
+
+  function parseSyncServerUrlHistory(rawValue) {
+    if (!rawValue) {
+      return [];
+    }
+
+    try {
+      const parsed = JSON.parse(rawValue);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+
+      return parsed
+        .map((url) => normalizeSyncServerOrigin(url))
+        .filter(Boolean)
+        .filter((url, index, urls) => urls.indexOf(url) === index)
+        .slice(0, MAX_SYNC_SERVER_URL_HISTORY);
+    } catch (_error) {
+      return [];
+    }
+  }
+
+  function buildSyncServerUrlHistory(activeUrl, savedUrls = []) {
+    return [activeUrl, ...savedUrls]
+      .map((url) => normalizeSyncServerOrigin(url))
+      .filter(Boolean)
+      .filter((url, index, urls) => urls.indexOf(url) === index)
+      .slice(0, MAX_SYNC_SERVER_URL_HISTORY);
+  }
+
+  async function loadSyncServerUrlHistory() {
+    try {
+      const row = await ipcRenderer.invoke(
+        'db-get',
+        `SELECT setting_value
+         FROM system_settings
+         WHERE category = ? AND setting_key = ?
+         ORDER BY id DESC
+         LIMIT 1`,
+        ['general', 'sync_server_url_history']
+      );
+      return parseSyncServerUrlHistory(row && row.setting_value);
+    } catch (error) {
+      const warn = logger && typeof logger.warn === 'function' ? logger.warn.bind(logger) : console.warn.bind(console);
+      warn('⚠️ [SETTINGS] تعذر تحميل روابط خوادم المزامنة المحفوظة:', error && error.message ? error.message : error);
+      return [];
+    }
+  }
+
+  async function saveGeneralSystemSetting(setting) {
+    const settingKey = String(setting && setting.key ? setting.key : '').trim();
+    if (!settingKey) {
+      return;
+    }
+
+    const settingValue = setting.value === null || setting.value === undefined
+      ? ''
+      : String(setting.value);
+
+    const latestRow = await ipcRenderer.invoke(
+      'db-get',
+      `SELECT id
+       FROM system_settings
+       WHERE category = ? AND setting_key = ?
+       ORDER BY id DESC
+       LIMIT 1`,
+      ['general', settingKey]
+    );
+
+    if (latestRow && latestRow.id) {
+      await ipcRenderer.invoke(
+        'db-run',
+        `UPDATE system_settings
+         SET setting_value = ?, updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?`,
+        [settingValue, latestRow.id]
+      );
+      await ipcRenderer.invoke(
+        'db-run',
+        `DELETE FROM system_settings
+         WHERE category = ? AND setting_key = ? AND id <> ?`,
+        ['general', settingKey, latestRow.id]
+      );
+      return;
+    }
+
+    await ipcRenderer.invoke(
+      'db-run',
+      `INSERT INTO system_settings (category, setting_key, setting_value, created_at, updated_at)
+       VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+      ['general', settingKey, settingValue]
+    );
+  }
+
+  function refreshSavedSyncServerUrlsSelect(savedUrls, activeUrl) {
+    const select = document.getElementById('savedSyncServerUrls');
+    const input = document.getElementById('syncServerUrl');
+    if (!select) {
+      return;
+    }
+
+    const urls = buildSyncServerUrlHistory(activeUrl, savedUrls);
+    select.onchange = () => {
+      if (select.value && input) {
+        input.value = select.value;
+      }
+    };
+
+    if (urls.length === 0) {
+      select.innerHTML = '<option value="">لا توجد روابط محفوظة بعد</option>';
+      select.disabled = true;
+      select.value = '';
+      return;
+    }
+
+    select.disabled = false;
+    select.innerHTML = '<option value="">اختر رابطاً محفوظاً...</option>'
+      + urls.map((url) => `<option value="${url}">${url}</option>`).join('');
+    select.value = '';
+  }
 
   function parseFormulaProfileId(rawValue) {
     if (rawValue === null || rawValue === undefined || rawValue === '') {
@@ -656,12 +819,20 @@ async function handleSaveGeneralSettings(event) {
 
         const formData = new FormData(event.target);
         const requestedLanguage = String(formData.get('systemLanguage') || 'ar').trim().toLowerCase();
+        const rawSyncServerUrl = String(formData.get('syncServerUrl') || '').trim();
+        const syncServerUrl = normalizeSyncServerOrigin(rawSyncServerUrl);
+        if (rawSyncServerUrl && !syncServerUrl) {
+            throw new Error('أدخل رابط الخادم الأساسي HTTPS فقط، بدون /api أو أي مسار');
+        }
+        const syncServerUrlHistory = buildSyncServerUrlHistory(syncServerUrl, await loadSyncServerUrlHistory());
         const settings = [
             { key: 'company_name', value: formData.get('companyName') || '' },
             { key: 'company_phone', value: formData.get('companyPhone') || '' },
             { key: 'company_email', value: formData.get('companyEmail') || '' },
             { key: 'company_website', value: formData.get('companyWebsite') || '' },
             { key: 'company_address', value: formData.get('companyAddress') || '' },
+            { key: 'sync_server_url', value: syncServerUrl },
+            { key: 'sync_server_url_history', value: JSON.stringify(syncServerUrlHistory) },
             { key: 'system_language', value: requestedLanguage || 'ar' },
             { key: 'system_theme', value: formData.get('systemTheme') || 'light' }
         ];
@@ -670,10 +841,7 @@ async function handleSaveGeneralSettings(event) {
 
         for (const setting of settings) {
             console.log(`💾 [SETTINGS] حفظ ${setting.key}: ${setting.value}`);
-            await ipcRenderer.invoke('db-run', `
-                INSERT OR REPLACE INTO system_settings (category, setting_key, setting_value, updated_at)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
-            `, ['general', setting.key, setting.value]);
+            await saveGeneralSystemSetting(setting);
             console.log(`✅ [SETTINGS] تم حفظ ${setting.key} بنجاح`);
         }
 
@@ -681,6 +849,29 @@ async function handleSaveGeneralSettings(event) {
 
         // Apply settings immediately
         await applyGeneralSettingsRealTime(settings);
+        refreshSavedSyncServerUrlsSelect(syncServerUrlHistory, syncServerUrl);
+
+        // Switching the sync host must be deterministic: seed the selected server
+        // immediately, then pull requests from the same saved URL. Without this,
+        // a newly-selected server may stay empty until another local write happens.
+        if (syncServerUrl) {
+            try {
+                await ipcRenderer.invoke('trigger-background-sync', {
+                    tables: SYNC_FULL_REFRESH_TABLES,
+                    forceFullRefresh: true
+                });
+            } catch (syncError) {
+                const warn = logger && typeof logger.warn === 'function' ? logger.warn.bind(logger) : console.warn.bind(console);
+                warn('⚠️ [SETTINGS] تم حفظ رابط الخادم، لكن تعذر الإرسال الفوري:', syncError && syncError.message ? syncError.message : syncError);
+            }
+
+            try {
+                await ipcRenderer.invoke('pull-reconciliation-requests');
+            } catch (syncError) {
+                const warn = logger && typeof logger.warn === 'function' ? logger.warn.bind(logger) : console.warn.bind(console);
+                warn('⚠️ [SETTINGS] تم حفظ رابط الخادم، لكن تعذر السحب الفوري:', syncError && syncError.message ? syncError.message : syncError);
+            }
+        }
 
         getDialogUtils().close();
         getDialogUtils().showSuccessToast('تم حفظ الإعدادات العامة بنجاح وتطبيقها على النظام');
