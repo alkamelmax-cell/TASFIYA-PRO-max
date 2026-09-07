@@ -3500,6 +3500,10 @@ class LocalWebServer {
                     || data.active_branch_cashboxes_ids
                     || data.active_cashbox_vouchers_ids
                     || data.active_cashbox_voucher_audit_log_ids
+                    || data.deleted_cashbox_vouchers
+                    || data.deleted_cashbox_voucher_sync_keys
+                    || data.deleted_branch_cashboxes_branch_ids
+                    || data.deleted_branch_cashboxes_ids
                 );
 
                 const hasCustomerIdentityPayload = Boolean(
@@ -3524,6 +3528,10 @@ class LocalWebServer {
                     || data.suppliers
                     || data.deleted_reconciliations
                     || data.deleted_reconciliations_ids
+                    || data.deleted_cashbox_vouchers
+                    || data.deleted_cashbox_voucher_sync_keys
+                    || data.deleted_branch_cashboxes_branch_ids
+                    || data.deleted_branch_cashboxes_ids
                 );
 
                 if (hasCashboxPayload || hasCustomerIdentityPayload || hasSourceScopedPayload) {
@@ -3688,7 +3696,25 @@ class LocalWebServer {
                         }
                     }
 
-                    const unmatchedIds = ids.filter(id => !matchedSourceIds.has(id));
+                    let unmatchedIds = ids.filter(id => !matchedSourceIds.has(id));
+                    if (unmatchedIds.length > 0) {
+                        const legacyIdResult = await query(
+                            `SELECT id
+                             FROM reconciliations
+                             WHERE sync_source_id IS NULL
+                               AND id = ANY($1::int[])`,
+                            [unmatchedIds]
+                        );
+                        for (const row of (legacyIdResult.rows || [])) {
+                            const legacyId = parseInteger(row.id);
+                            if (legacyId !== null && legacyId > 0) {
+                                canonicalIds.push(legacyId);
+                                matchedSourceIds.add(legacyId);
+                            }
+                        }
+                    }
+
+                    unmatchedIds = ids.filter(id => !matchedSourceIds.has(id));
                     if (unmatchedIds.length > 0) {
                         const legacyNumberResult = await query(
                             `SELECT MIN(id) AS id, reconciliation_number, COUNT(*)::int AS matches
@@ -4275,16 +4301,166 @@ class LocalWebServer {
                     'suppliers'
                 ]);
 
-                const loadCanonicalReconciliationIds = async (rawLocalIds = []) => {
+                const loadCanonicalReconciliationIdsForQuery = async (query, rawLocalIds = []) => {
                     const localIds = sanitizeIdArray(rawLocalIds);
                     if (!sourceScopedSync || localIds.length === 0) return new Map();
-                    const result = await pool.query(
+                    const result = await query(
                         `SELECT id, source_row_id
                          FROM reconciliations
                          WHERE sync_source_id = $1 AND source_row_id = ANY($2::bigint[])`,
                         [syncSourceId, localIds]
                     );
-                    return new Map((result.rows || []).map(row => [Number(row.source_row_id), Number(row.id)]));
+                    const canonicalMap = new Map((result.rows || [])
+                        .map(row => [Number(row.source_row_id), Number(row.id)])
+                        .filter(([sourceId, canonicalId]) => Number.isFinite(sourceId) && Number.isFinite(canonicalId)));
+
+                    const unmatchedIds = localIds.filter(id => !canonicalMap.has(id));
+                    if (unmatchedIds.length > 0) {
+                        const legacyResult = await query(
+                            `SELECT id
+                             FROM reconciliations
+                             WHERE sync_source_id IS NULL
+                               AND id = ANY($1::int[])`,
+                            [unmatchedIds]
+                        );
+                        for (const row of (legacyResult.rows || [])) {
+                            const legacyId = parseInteger(row.id);
+                            if (legacyId !== null && legacyId > 0) {
+                                canonicalMap.set(legacyId, legacyId);
+                            }
+                        }
+                    }
+
+                    return canonicalMap;
+                };
+
+                const loadCanonicalReconciliationIds = async (rawLocalIds = []) => (
+                    loadCanonicalReconciliationIdsForQuery(pool.query.bind(pool), rawLocalIds)
+                );
+
+                const normalizeDeletedCashboxVoucherFingerprint = (item = {}) => {
+                    if (!item || typeof item !== 'object') return null;
+                    const id = parseInteger(item.id);
+                    const branchId = parseInteger(item.branch_id);
+                    const sourceReconciliationId = parseInteger(item.source_reconciliation_id);
+                    const sourceEntryKey = toOptionalText(item.source_entry_key);
+                    const syncKey = toOptionalText(item.sync_key);
+
+                    if (!syncKey && id === null && branchId === null && (sourceReconciliationId === null || !sourceEntryKey)) {
+                        return null;
+                    }
+
+                    return {
+                        id,
+                        sync_key: syncKey,
+                        source_reconciliation_id: sourceReconciliationId,
+                        source_entry_key: sourceEntryKey,
+                        voucher_type: toOptionalText(item.voucher_type),
+                        voucher_sequence_number: parseInteger(item.voucher_sequence_number),
+                        voucher_number: parseInteger(item.voucher_number),
+                        branch_id: branchId,
+                        cashbox_id: parseInteger(item.cashbox_id),
+                        voucher_date: toOptionalText(item.voucher_date),
+                        amount: parseNumber(item.amount, 0),
+                        counterparty_type: toOptionalText(item.counterparty_type),
+                        counterparty_name: toOptionalText(item.counterparty_name),
+                        created_at: toOptionalText(item.created_at)
+                    };
+                };
+
+                const deleteCashboxVouchersBySyncKeys = async (rawSyncKeys = [], query = pool.query.bind(pool)) => {
+                    const syncKeys = Array.from(new Set(
+                        (Array.isArray(rawSyncKeys) ? rawSyncKeys : [])
+                            .map(toOptionalText)
+                            .filter(Boolean)
+                    ));
+                    if (syncKeys.length === 0) return 0;
+
+                    const result = await query(
+                        'DELETE FROM cashbox_vouchers WHERE sync_key = ANY($1::text[])',
+                        [syncKeys]
+                    );
+                    return result.rowCount || 0;
+                };
+
+                const deleteCashboxVouchersByFingerprints = async (rawItems = []) => {
+                    const fingerprints = (Array.isArray(rawItems) ? rawItems : [])
+                        .map(normalizeDeletedCashboxVoucherFingerprint)
+                        .filter(Boolean);
+                    if (fingerprints.length === 0) return 0;
+
+                    return runInTransaction(async (query) => {
+                        const syncKeys = new Set();
+                        const sourceItems = [];
+                        const legacyIds = [];
+
+                        for (const item of fingerprints) {
+                            if (item.sync_key) {
+                                syncKeys.add(item.sync_key);
+                            }
+
+                            if (item.branch_id !== null) {
+                                syncKeys.add(buildCashboxVoucherSyncKey(item, item.branch_id));
+                            }
+
+                            if (item.source_reconciliation_id !== null && item.source_entry_key) {
+                                sourceItems.push(item);
+                                if (!sourceScopedSync) {
+                                    syncKeys.add(`recon:${item.source_reconciliation_id}:${item.source_entry_key}`);
+                                }
+                            }
+
+                            if (item.id !== null && item.id > 0) {
+                                legacyIds.push(item.id);
+                            }
+                        }
+
+                        if (sourceScopedSync && sourceItems.length > 0) {
+                            const canonicalMap = await loadCanonicalReconciliationIdsForQuery(
+                                query,
+                                sourceItems.map(item => item.source_reconciliation_id)
+                            );
+                            for (const item of sourceItems) {
+                                const canonicalReconciliationId = canonicalMap.get(item.source_reconciliation_id);
+                                if (Number.isFinite(canonicalReconciliationId)) {
+                                    syncKeys.add(`recon:${canonicalReconciliationId}:${item.source_entry_key}`);
+                                }
+                            }
+                        }
+
+                        let deletedCount = await deleteCashboxVouchersBySyncKeys(Array.from(syncKeys), query);
+                        const normalizedLegacyIds = sanitizeIdArray(legacyIds);
+                        if (normalizedLegacyIds.length > 0) {
+                            const legacyResult = await query(
+                                'DELETE FROM cashbox_vouchers WHERE id = ANY($1::int[])',
+                                [normalizedLegacyIds]
+                            );
+                            deletedCount += legacyResult.rowCount || 0;
+                        }
+
+                        return deletedCount;
+                    });
+                };
+
+                const deleteBranchCashboxesByBranchIds = async (rawBranchIds = []) => {
+                    const branchIds = sanitizeIdArray(rawBranchIds);
+                    if (branchIds.length === 0) return 0;
+                    const result = await pool.query(
+                        'DELETE FROM branch_cashboxes WHERE branch_id = ANY($1::int[])',
+                        [branchIds]
+                    );
+                    return result.rowCount || 0;
+                };
+
+                const deleteBranchCashboxesByLegacyIds = async (rawIds = []) => {
+                    if (sourceScopedSync) return 0;
+                    const ids = sanitizeIdArray(rawIds);
+                    if (ids.length === 0) return 0;
+                    const result = await pool.query(
+                        'DELETE FROM branch_cashboxes WHERE id = ANY($1::int[])',
+                        [ids]
+                    );
+                    return result.rowCount || 0;
                 };
 
                 // Local SQLite ids are only unique inside one desktop installation.  This
@@ -4473,6 +4649,70 @@ class LocalWebServer {
                             error: deleteError.message
                         });
                         console.error('❌ [SYNC] explicit reconciliation delete failed:', deleteError.message);
+                    }
+                }
+
+                if (Array.isArray(data.deleted_cashbox_vouchers)) {
+                    try {
+                        const deletedCount = await deleteCashboxVouchersByFingerprints(data.deleted_cashbox_vouchers);
+                        if (deletedCount > 0) {
+                            console.log(`🧹 [SYNC] Deleted ${deletedCount} cashbox_vouchers by delete fingerprint payload.`);
+                        }
+                    } catch (deleteError) {
+                        syncFailures.push({
+                            table: 'cashbox_vouchers',
+                            id: null,
+                            error: deleteError.message
+                        });
+                        console.error('❌ [SYNC] explicit cashbox voucher delete failed:', deleteError.message);
+                    }
+                }
+
+                if (Array.isArray(data.deleted_cashbox_voucher_sync_keys)) {
+                    try {
+                        const deletedCount = await deleteCashboxVouchersBySyncKeys(data.deleted_cashbox_voucher_sync_keys);
+                        if (deletedCount > 0) {
+                            console.log(`🧹 [SYNC] Deleted ${deletedCount} cashbox_vouchers by explicit sync_key payload.`);
+                        }
+                    } catch (deleteError) {
+                        syncFailures.push({
+                            table: 'cashbox_vouchers',
+                            id: null,
+                            error: deleteError.message
+                        });
+                        console.error('❌ [SYNC] explicit cashbox voucher sync_key delete failed:', deleteError.message);
+                    }
+                }
+
+                if (Array.isArray(data.deleted_branch_cashboxes_branch_ids)) {
+                    try {
+                        const deletedCount = await deleteBranchCashboxesByBranchIds(data.deleted_branch_cashboxes_branch_ids);
+                        if (deletedCount > 0) {
+                            console.log(`🧹 [SYNC] Deleted ${deletedCount} branch_cashboxes by branch_id delete payload.`);
+                        }
+                    } catch (deleteError) {
+                        syncFailures.push({
+                            table: 'branch_cashboxes',
+                            id: null,
+                            error: deleteError.message
+                        });
+                        console.error('❌ [SYNC] explicit branch_cashboxes branch_id delete failed:', deleteError.message);
+                    }
+                }
+
+                if (Array.isArray(data.deleted_branch_cashboxes_ids)) {
+                    try {
+                        const deletedCount = await deleteBranchCashboxesByLegacyIds(data.deleted_branch_cashboxes_ids);
+                        if (deletedCount > 0) {
+                            console.log(`🧹 [SYNC] Deleted ${deletedCount} branch_cashboxes by legacy id delete payload.`);
+                        }
+                    } catch (deleteError) {
+                        syncFailures.push({
+                            table: 'branch_cashboxes',
+                            id: null,
+                            error: deleteError.message
+                        });
+                        console.error('❌ [SYNC] explicit branch_cashboxes id delete failed:', deleteError.message);
                     }
                 }
 

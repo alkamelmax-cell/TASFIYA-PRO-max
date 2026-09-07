@@ -17,13 +17,14 @@ const ThermalPrinter80mm = require('./thermal-printer-80mm');
 const LocalWebServer = require('./local-server');
 const { createSecureWebPreferences } = require('./window-security');
 const { hashSecret, verifySecret } = require('./security/auth-service');
-const { startBackgroundSync, stopBackgroundSync, getSyncStatus, setSyncEnabled, getSyncEnabled, pullRemoteRequestsNow } = require('./background-sync');
+const { startBackgroundSync, stopBackgroundSync, getSyncStatus, setSyncEnabled, getSyncEnabled, pullRemoteRequestsNow, markSyncTablesDirty, triggerInstantSync } = require('./background-sync');
 const { getSyncWriteTables } = require('./sync-write-detector');
 const { readIdsToBeDeleted, recordDeleteTombstones } = require('./sync-delete-tombstones');
 
 let postSaveSyncTimer = null;
 let postSaveSyncRunning = false;
 let postSaveSyncQueued = false;
+let postSaveDirtyTables = new Set();
 
 function parseSyncEnabledSetting(value) {
     if (value === undefined || value === null) {
@@ -77,8 +78,18 @@ function ensureBackgroundSyncStarted(reason = 'manual') {
     return true;
 }
 
-function schedulePostSaveSync(reason = 'save') {
+function schedulePostSaveSync(reason = 'save', dirtyTables = []) {
     postSaveSyncQueued = true;
+
+    const normalizedDirtyTables = Array.isArray(dirtyTables)
+        ? dirtyTables.map(table => String(table || '').trim()).filter(Boolean)
+        : [];
+    for (const tableName of normalizedDirtyTables) {
+        postSaveDirtyTables.add(tableName);
+    }
+    if (normalizedDirtyTables.length > 0) {
+        markSyncTablesDirty(normalizedDirtyTables);
+    }
 
     if (postSaveSyncTimer) {
         clearTimeout(postSaveSyncTimer);
@@ -93,14 +104,15 @@ function schedulePostSaveSync(reason = 'save') {
 
         postSaveSyncRunning = true;
         postSaveSyncQueued = false;
+        const dirtySnapshot = Array.from(postSaveDirtyTables);
+        postSaveDirtyTables.clear();
 
         try {
             if (!ensureBackgroundSyncStarted(`post-save:${reason}`)) {
                 return;
             }
 
-            const { triggerInstantSync } = require('./background-sync');
-            const syncResult = await triggerInstantSync();
+            const syncResult = await triggerInstantSync(dirtySnapshot);
             if (syncResult && syncResult.success) {
                 console.log('⚡ [MAIN] Background sync completed after reconciliation save');
             } else {
@@ -2720,7 +2732,7 @@ ipcMain.handle('db-run', async (event, sql, params = []) => {
         }
         const syncWriteTables = getSyncWriteTables(sql);
         if (syncWriteTables.length > 0) {
-            schedulePostSaveSync(`db-run:${syncWriteTables.join(',')}`);
+            schedulePostSaveSync(`db-run:${syncWriteTables.join(',')}`, syncWriteTables);
         }
         return result;
     } catch (error) {
@@ -2972,7 +2984,18 @@ ipcMain.handle('complete-reconciliation', async (
 
         // حفظ التصفية يجب أن يبقى محلياً وسريعاً.
         // لا ننتظر المزامنة هنا حتى لا يعلق زر "جاري الحفظ" إذا كان الرابط بطيئاً أو توجد مزامنة جارية.
-        schedulePostSaveSync('complete-reconciliation');
+        schedulePostSaveSync('complete-reconciliation', [
+            'reconciliations',
+            'cash_receipts',
+            'bank_receipts',
+            'postpaid_sales',
+            'customer_receipts',
+            'manual_postpaid_sales',
+            'manual_customer_receipts',
+            'return_invoices',
+            'suppliers',
+            'cashbox_vouchers'
+        ]);
 
         return result;
     } catch (error) {

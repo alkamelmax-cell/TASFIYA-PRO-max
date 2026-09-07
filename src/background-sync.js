@@ -7,6 +7,10 @@ const {
     clearDeleteTombstones,
     readDeleteTombstones
 } = require('./sync-delete-tombstones');
+const {
+    EXPLICIT_DELETE_ID_TABLES,
+    SYNC_RELEVANT_TABLES
+} = require('./sync-write-detector');
 
 // Configuration
 // لا نستخدم رابطاً افتراضياً قديماً هنا. وجهة المزامنة يجب أن تأتي من إعدادات التطبيق
@@ -54,18 +58,23 @@ const MIRROR_ID_TABLES = [
     'cashbox_voucher_audit_log'
 ];
 
-const EXPLICIT_DELETE_ID_TABLES = new Set([
-    'reconciliations',
-    'postpaid_sales',
-    'customer_receipts',
-    'manual_postpaid_sales',
-    'manual_customer_receipts',
-    'customer_fiscal_opening_balances',
-    'cash_receipts',
-    'bank_receipts',
-    'return_invoices',
-    'suppliers'
-]);
+const SYNC_TABLE_DEPENDENCIES = {
+    branch_cashboxes: ['branches'],
+    cashbox_vouchers: ['branches', 'cashiers', 'branch_cashboxes', 'reconciliations'],
+    cashbox_voucher_audit_log: ['cashbox_vouchers'],
+    reconciliations: ['branches', 'cashiers', 'accountants'],
+    cash_receipts: ['reconciliations'],
+    bank_receipts: ['reconciliations', 'atms'],
+    postpaid_sales: ['reconciliations', 'customers'],
+    customer_receipts: ['reconciliations', 'customers'],
+    manual_postpaid_sales: ['reconciliations', 'customers'],
+    manual_customer_receipts: ['reconciliations', 'customers'],
+    customer_fiscal_opening_balances: ['customers'],
+    return_invoices: ['reconciliations', 'customers'],
+    suppliers: ['reconciliations']
+};
+
+const SYNC_RELEVANT_TABLE_SET = new Set(SYNC_RELEVANT_TABLES);
 
 function stableSerialize(value) {
     if (value instanceof Date) {
@@ -179,6 +188,8 @@ class BackgroundSync {
         this.lastResolvedRemoteUrl = null;
         this.remoteUrlMissingWarningShown = false;
         this.syncSourceId = null;
+        this.pendingDirtyTables = new Set();
+        this.pendingUrgentSync = false;
     }
 
     getRemoteUrl() {
@@ -224,6 +235,40 @@ class BackgroundSync {
             this.remoteUrlMissingWarningShown = true;
         }
         throw error;
+    }
+
+    expandSyncTables(tables = []) {
+        const expanded = new Set();
+        const visit = (tableName) => {
+            const normalizedTable = String(tableName || '').trim().toLowerCase();
+            if (!SYNC_RELEVANT_TABLE_SET.has(normalizedTable) || expanded.has(normalizedTable)) {
+                return;
+            }
+
+            expanded.add(normalizedTable);
+            const dependencies = SYNC_TABLE_DEPENDENCIES[normalizedTable] || [];
+            dependencies.forEach(visit);
+        };
+
+        (Array.isArray(tables) ? tables : Array.from(tables || [])).forEach(visit);
+        return expanded;
+    }
+
+    markTablesDirty(tables = []) {
+        const expandedTables = this.expandSyncTables(tables);
+        for (const tableName of expandedTables) {
+            this.pendingDirtyTables.add(tableName);
+        }
+        if (expandedTables.size > 0) {
+            this.pendingUrgentSync = true;
+        }
+        return expandedTables;
+    }
+
+    consumeDirtyTables() {
+        const dirtyTables = new Set(this.pendingDirtyTables);
+        this.pendingDirtyTables.clear();
+        return dirtyTables;
     }
 
     getNowIso() {
@@ -536,20 +581,51 @@ class BackgroundSync {
     }
 
     // Force immediate sync (for instant updates on critical events)
-    async forceSyncNow() {
+    async forceSyncNow(tables = []) {
         if (!this.enabled) {
             console.log('⛔ [SYNC] Force sync blocked - sync is disabled');
             return { success: false, skipped: true, reason: 'disabled' };
         }
-        console.log('⚡ [SYNC] Force sync triggered...');
-        return this.doSync();
+
+        const dirtyTables = this.markTablesDirty(tables);
+        console.log(`⚡ [SYNC] Force sync triggered${dirtyTables.size ? ` for ${Array.from(dirtyTables).join(', ')}` : ''}...`);
+
+        if (this.syncPromise) {
+            const activePromise = this.syncPromise;
+            let activeResult;
+            try {
+                activeResult = await activePromise;
+            } catch (error) {
+                activeResult = {
+                    success: false,
+                    errors: [{ phase: 'active_sync', message: error.message }]
+                };
+            }
+
+            if (this.pendingDirtyTables.size > 0 || this.pendingUrgentSync) {
+                // If we resumed before doSync's finally block released the lock,
+                // clear only the promise we were waiting on so the queued urgent
+                // delta really starts now instead of returning the completed sync.
+                if (this.syncPromise === activePromise) {
+                    this.isSyncing = false;
+                    this.syncPromise = null;
+                }
+                this.pendingUrgentSync = false;
+                return this.doSync({ skipPull: true, reason: 'queued-urgent' });
+            }
+
+            return activeResult;
+        }
+
+        this.pendingUrgentSync = false;
+        return this.doSync({ reason: dirtyTables.size ? 'urgent' : 'force' });
     }
 
     get isRunning() {
         return !!this.interval;
     }
 
-    async doSync() {
+    async doSync(options = {}) {
         if (!this.enabled) {
             console.log('⛔ [SYNC] Sync attempt blocked - sync is disabled');
             return { success: false, skipped: true, reason: 'disabled' };
@@ -559,35 +635,46 @@ class BackgroundSync {
         }
 
         this.isSyncing = true;
+        const dirtyTables = this.consumeDirtyTables();
+        const skipPull = Boolean(options.skipPull) && dirtyTables.size > 0;
 
         this.syncPromise = (async () => {
             const result = {
                 success: true,
                 pull: null,
                 push: null,
-                errors: []
+                errors: [],
+                dirtyTables: Array.from(dirtyTables)
             };
 
-            try {
-                result.pull = await this.pullRemoteRequests();
-            } catch (pullError) {
-                console.error('⚠️ [SYNC] Pull phase failed:', pullError.message);
-                result.errors.push({ phase: 'pull', message: pullError.message });
+            if (!skipPull) {
+                try {
+                    result.pull = await this.pullRemoteRequests();
+                } catch (pullError) {
+                    console.error('⚠️ [SYNC] Pull phase failed:', pullError.message);
+                    result.errors.push({ phase: 'pull', message: pullError.message });
+                }
             }
 
             try {
-                result.push = await this.pushLocalData(this.dbManager.db);
+                result.push = await this.pushLocalData(this.dbManager.db, { dirtyTables });
                 if (result.push && result.push.success === false) {
                     result.success = false;
                     result.errors.push({
                         phase: 'push',
                         message: `Failed tables: ${(result.push.failedTables || []).join(', ') || 'unknown'}`
                     });
+                    if (dirtyTables.size > 0) {
+                        this.markTablesDirty(dirtyTables);
+                    }
                 }
             } catch (pushError) {
                 console.error('⚠️ [SYNC] Push phase failed:', pushError.message);
                 result.success = false;
                 result.errors.push({ phase: 'push', message: pushError.message });
+                if (dirtyTables.size > 0) {
+                    this.markTablesDirty(dirtyTables);
+                }
             }
 
             return result;
@@ -824,6 +911,81 @@ class BackgroundSync {
         }
     }
 
+    parseDeletedBranchCashboxKey(rowKey) {
+        const normalized = String(rowKey || '').trim();
+        if (!normalized) {
+            return null;
+        }
+
+        if (normalized.startsWith('branch:')) {
+            const branchId = this.parseInteger(normalized.slice('branch:'.length));
+            return branchId !== null && branchId > 0 ? { branch_id: branchId } : null;
+        }
+
+        const fallbackId = this.parseInteger(normalized);
+        return fallbackId !== null && fallbackId > 0 ? { id: fallbackId } : null;
+    }
+
+    parseDeletedCashboxVoucherKey(rowKey) {
+        const normalized = String(rowKey || '').trim();
+        if (!normalized) {
+            return null;
+        }
+
+        if (normalized.startsWith('sync:')) {
+            const syncKey = this.toOptionalText(normalized.slice('sync:'.length));
+            return syncKey ? { sync_key: syncKey } : null;
+        }
+
+        const fallbackId = this.parseInteger(normalized);
+        if (fallbackId !== null && fallbackId > 0) {
+            return { id: fallbackId };
+        }
+
+        try {
+            const parsed = JSON.parse(normalized);
+            if (!parsed || typeof parsed !== 'object') {
+                return null;
+            }
+
+            const id = this.parseInteger(parsed.id);
+            const syncKey = this.toOptionalText(parsed.sync_key);
+            const sourceReconciliationId = this.parseInteger(parsed.source_reconciliation_id);
+            const sourceEntryKey = this.toOptionalText(parsed.source_entry_key);
+            const voucherType = this.toOptionalText(parsed.voucher_type);
+            const voucherSequenceNumber = this.parseInteger(parsed.voucher_sequence_number);
+            const voucherNumber = this.parseInteger(parsed.voucher_number);
+            const branchId = this.parseInteger(parsed.branch_id);
+            const hasSourceKey = sourceReconciliationId !== null && sourceEntryKey;
+            const hasSequenceKey = branchId !== null && voucherType && (
+                voucherSequenceNumber !== null || voucherNumber !== null
+            );
+
+            if ((id === null || id <= 0) && !syncKey && !hasSourceKey && !hasSequenceKey) {
+                return null;
+            }
+
+            return {
+                id: id !== null && id > 0 ? id : null,
+                sync_key: syncKey,
+                source_reconciliation_id: sourceReconciliationId,
+                source_entry_key: sourceEntryKey,
+                voucher_type: voucherType,
+                voucher_sequence_number: voucherSequenceNumber,
+                voucher_number: voucherNumber,
+                branch_id: branchId,
+                cashbox_id: this.parseInteger(parsed.cashbox_id),
+                voucher_date: this.toOptionalText(parsed.voucher_date),
+                amount: this.parseNumber(parsed.amount, null),
+                counterparty_type: this.toOptionalText(parsed.counterparty_type),
+                counterparty_name: this.toOptionalText(parsed.counterparty_name),
+                created_at: this.toOptionalText(parsed.created_at)
+            };
+        } catch (_error) {
+            return null;
+        }
+    }
+
     buildMirrorCleanupPayload(db, cleanupTables, cachedRows = {}, context = {}) {
         const payload = {};
         const shouldIncludeAll = cleanupTables.has('*');
@@ -861,6 +1023,59 @@ class BackgroundSync {
 
         for (const [tableName, rowKeys] of deletedStateByTable.entries()) {
             if (!EXPLICIT_DELETE_ID_TABLES.has(tableName)) {
+                continue;
+            }
+
+            if (tableName === 'branch_cashboxes') {
+                const fingerprints = (Array.isArray(rowKeys) ? rowKeys : [])
+                    .map((rowKey) => this.parseDeletedBranchCashboxKey(rowKey))
+                    .filter(Boolean);
+                const branchIds = Array.from(new Set(
+                    fingerprints
+                        .map((fingerprint) => this.parseInteger(fingerprint.branch_id))
+                        .filter((branchId) => branchId !== null && branchId > 0)
+                ));
+                const ids = Array.from(new Set(
+                    fingerprints
+                        .map((fingerprint) => this.parseInteger(fingerprint.id))
+                        .filter((rowId) => rowId !== null && rowId > 0)
+                ));
+
+                if (branchIds.length > 0) {
+                    payload.deleted_branch_cashboxes_branch_ids = branchIds;
+                }
+                if (ids.length > 0) {
+                    payload.deleted_branch_cashboxes_ids = ids;
+                }
+                continue;
+            }
+
+            if (tableName === 'cashbox_vouchers') {
+                const fingerprints = Array.from(new Map(
+                    (Array.isArray(rowKeys) ? rowKeys : [])
+                        .map((rowKey) => this.parseDeletedCashboxVoucherKey(rowKey))
+                        .filter(Boolean)
+                        .map((fingerprint) => [
+                            fingerprint.sync_key
+                                || (fingerprint.source_reconciliation_id !== null && fingerprint.source_entry_key
+                                    ? `source:${fingerprint.source_reconciliation_id}:${fingerprint.source_entry_key}`
+                                    : null)
+                                || (fingerprint.id !== null ? `id:${fingerprint.id}` : JSON.stringify(fingerprint)),
+                            fingerprint
+                        ])
+                ).values());
+                const syncKeys = Array.from(new Set(
+                    fingerprints
+                        .map((fingerprint) => this.toOptionalText(fingerprint.sync_key))
+                        .filter(Boolean)
+                ));
+
+                if (fingerprints.length > 0) {
+                    payload.deleted_cashbox_vouchers = fingerprints;
+                }
+                if (syncKeys.length > 0) {
+                    payload.deleted_cashbox_voucher_sync_keys = syncKeys;
+                }
                 continue;
             }
 
@@ -941,7 +1156,7 @@ class BackgroundSync {
         return { sentCount: changedRows.length, deletedKeys };
     }
 
-    async pushLocalData(db) {
+    async pushLocalData(db, options = {}) {
         const stateAvailable = this.ensureSyncStateSchema(db);
         const remoteScopeReset = stateAvailable ? this.ensureRemoteSyncScope(db) : false;
         const fullRefresh = !stateAvailable
@@ -976,16 +1191,29 @@ class BackgroundSync {
             { key: 'reconciliation_requests', query: 'SELECT * FROM reconciliation_requests', batchSize: DEFAULT_SYNC_BATCH_SIZE }
         ];
 
+        const pendingDeleteTombstones = readDeleteTombstones(db, EXPLICIT_DELETE_ID_TABLES);
+        const requestedDirtyTables = this.expandSyncTables(options.dirtyTables || []);
+        const tombstoneTables = this.expandSyncTables(Array.from(pendingDeleteTombstones.keys()));
+        const selectedDirtyTables = this.expandSyncTables([
+            ...Array.from(requestedDirtyTables),
+            ...Array.from(tombstoneTables)
+        ]);
+        const targetedPush = stateAvailable
+            && !remoteScopeReset
+            && !fullRefresh
+            && selectedDirtyTables.size > 0;
+        const effectiveTableSpecs = targetedPush
+            ? tableSpecs.filter((spec) => selectedDirtyTables.has(spec.key))
+            : tableSpecs;
         const cachedRows = {};
-        for (const spec of tableSpecs) {
+        for (const spec of effectiveTableSpecs) {
             cachedRows[spec.key] = this.readTableRows(db, spec.query, spec.key);
         }
 
         const localCashboxToBranchMap = this.buildLocalCashboxToBranchMap(cachedRows.branch_cashboxes);
         const context = { localCashboxToBranchMap };
-        const cleanupTables = new Set(cleanupDue ? ['*'] : []);
+        const cleanupTables = new Set(cleanupDue && !targetedPush ? ['*'] : []);
         const deletedStateByTable = new Map();
-        const pendingDeleteTombstones = readDeleteTombstones(db, EXPLICIT_DELETE_ID_TABLES);
         for (const [tableName, rowKeys] of pendingDeleteTombstones.entries()) {
             cleanupTables.add(tableName);
             this.addDeletedRowKeys(deletedStateByTable, tableName, rowKeys);
@@ -995,11 +1223,11 @@ class BackgroundSync {
         const failedTables = [];
 
         console.log(
-            `🔍 [SYNC] Local counts: ${tableSpecs.map((spec) => `${spec.key}=${cachedRows[spec.key].length}`).join(', ')}`
+            `🔍 [SYNC] Local counts: ${effectiveTableSpecs.map((spec) => `${spec.key}=${cachedRows[spec.key].length}`).join(', ')}`
         );
-        console.log(`🔄 [SYNC] Push mode: ${fullRefresh ? 'full safety refresh' : 'delta changes only'}`);
+        console.log(`🔄 [SYNC] Push mode: ${targetedPush ? `urgent delta (${Array.from(selectedDirtyTables).join(', ')})` : (fullRefresh ? 'full safety refresh' : 'delta changes only')}`);
 
-        for (const spec of tableSpecs) {
+        for (const spec of effectiveTableSpecs) {
             const result = await this.safePushStep(spec.key, async () => this.sendTableDelta(db, spec, cachedRows[spec.key], {
                 stateAvailable,
                 fullRefresh,
@@ -1423,9 +1651,17 @@ function setSyncEnabled(enabled) {
     }
 }
 
-async function triggerInstantSync() {
+function markSyncTablesDirty(tables = []) {
     if (syncInstance) {
-        return syncInstance.forceSyncNow();
+        return Array.from(syncInstance.markTablesDirty(tables));
+    }
+
+    return [];
+}
+
+async function triggerInstantSync(tables = []) {
+    if (syncInstance) {
+        return syncInstance.forceSyncNow(tables);
     }
 
     return { success: false, skipped: true, reason: 'not_initialized' };
@@ -1447,6 +1683,7 @@ module.exports = {
     getSyncStatus,
     getSyncEnabled,
     setSyncEnabled,
+    markSyncTablesDirty,
     triggerInstantSync,
     pullRemoteRequestsNow
 };

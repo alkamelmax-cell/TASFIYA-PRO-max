@@ -27,6 +27,15 @@ function normalizeOptionalText(value) {
   return normalized.length > 0 ? normalized : null;
 }
 
+function normalizeOptionalNumber(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 function normalizeDeletedReconciliation(row = {}) {
   const id = parsePositiveInteger(row.id);
   if (id === null) {
@@ -45,10 +54,78 @@ function normalizeDeletedReconciliation(row = {}) {
   };
 }
 
+function normalizeDeletedCashboxVoucher(row = {}) {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+
+  const id = parsePositiveInteger(row.id);
+  const syncKey = normalizeOptionalText(row.sync_key);
+  const sourceReconciliationId = normalizeOptionalInteger(row.source_reconciliation_id);
+  const sourceEntryKey = normalizeOptionalText(row.source_entry_key);
+  const voucherType = normalizeOptionalText(row.voucher_type);
+  const voucherSequenceNumber = normalizeOptionalInteger(row.voucher_sequence_number);
+  const voucherNumber = normalizeOptionalInteger(row.voucher_number);
+  const branchId = normalizeOptionalInteger(row.branch_id);
+
+  const hasSourceKey = sourceReconciliationId !== null && sourceEntryKey !== null;
+  const hasSequenceKey = branchId !== null && voucherType !== null && (
+    voucherSequenceNumber !== null || voucherNumber !== null
+  );
+
+  if (id === null && !syncKey && !hasSourceKey && !hasSequenceKey) {
+    return null;
+  }
+
+  return {
+    id,
+    sync_key: syncKey,
+    source_reconciliation_id: sourceReconciliationId,
+    source_entry_key: sourceEntryKey,
+    voucher_type: voucherType,
+    voucher_sequence_number: voucherSequenceNumber,
+    voucher_number: voucherNumber,
+    branch_id: branchId,
+    cashbox_id: normalizeOptionalInteger(row.cashbox_id),
+    voucher_date: normalizeOptionalText(row.voucher_date),
+    amount: normalizeOptionalNumber(row.amount),
+    counterparty_type: normalizeOptionalText(row.counterparty_type),
+    counterparty_name: normalizeOptionalText(row.counterparty_name),
+    created_at: normalizeOptionalText(row.created_at)
+  };
+}
+
+function normalizeDeletedBranchCashbox(row = {}) {
+  if (!row || typeof row !== 'object') {
+    return null;
+  }
+
+  const branchId = normalizeOptionalInteger(row.branch_id);
+  const id = parsePositiveInteger(row.id);
+  if (branchId === null && id === null) {
+    return null;
+  }
+
+  return { id, branch_id: branchId };
+}
+
 function encodeDeletedRowKey(tableName, value) {
   if (tableName === 'reconciliations' && value && typeof value === 'object') {
     const normalized = normalizeDeletedReconciliation(value);
     return normalized ? JSON.stringify(normalized) : null;
+  }
+
+  if (tableName === 'cashbox_vouchers' && value && typeof value === 'object') {
+    const normalized = normalizeDeletedCashboxVoucher(value);
+    return normalized ? JSON.stringify(normalized) : null;
+  }
+
+  if (tableName === 'branch_cashboxes' && value && typeof value === 'object') {
+    const normalized = normalizeDeletedBranchCashbox(value);
+    if (!normalized) {
+      return null;
+    }
+    return normalized.branch_id !== null ? `branch:${normalized.branch_id}` : String(normalized.id);
   }
 
   const id = parsePositiveInteger(value && typeof value === 'object' ? value.id : value);
@@ -96,6 +173,14 @@ function buildDeletedRowsSelectSql(sql, tableName) {
     return `SELECT id, reconciliation_number, cashier_id, accountant_id, reconciliation_date, status, created_at, updated_at FROM ${tableName}${suffix}`;
   }
 
+  if (tableName === 'cashbox_vouchers') {
+    return `SELECT id, sync_key, source_reconciliation_id, source_entry_key, voucher_type, voucher_sequence_number, voucher_number, branch_id, cashbox_id, voucher_date, amount, counterparty_type, counterparty_name, created_at FROM ${tableName}${suffix}`;
+  }
+
+  if (tableName === 'branch_cashboxes') {
+    return `SELECT id, branch_id FROM ${tableName}${suffix}`;
+  }
+
   return `SELECT id FROM ${tableName}${suffix}`;
 }
 
@@ -118,6 +203,29 @@ function readIdsToBeDeleted(db, sql, params = []) {
           if (tableName === 'reconciliations') {
             const normalized = normalizeDeletedReconciliation(row);
             return normalized ? [String(normalized.id), normalized] : null;
+          }
+
+          if (tableName === 'cashbox_vouchers') {
+            const normalized = normalizeDeletedCashboxVoucher(row);
+            if (!normalized) {
+              return null;
+            }
+
+            const stableKey = normalized.sync_key
+              || (normalized.source_reconciliation_id !== null && normalized.source_entry_key
+                ? `source:${normalized.source_reconciliation_id}:${normalized.source_entry_key}`
+                : null)
+              || (normalized.id !== null ? String(normalized.id) : null);
+            return stableKey ? [stableKey, normalized] : null;
+          }
+
+          if (tableName === 'branch_cashboxes') {
+            const normalized = normalizeDeletedBranchCashbox(row);
+            if (!normalized) {
+              return null;
+            }
+            const stableKey = normalized.branch_id !== null ? `branch:${normalized.branch_id}` : String(normalized.id);
+            return [stableKey, normalized];
           }
 
           const id = parsePositiveInteger(row && row.id);
@@ -242,6 +350,8 @@ module.exports = {
   encodeDeletedRowKey,
   ensureSyncDeleteTombstoneSchema,
   getDeleteTargetTable,
+  normalizeDeletedBranchCashbox,
+  normalizeDeletedCashboxVoucher,
   normalizeDeletedReconciliation,
   readDeleteTombstones,
   readIdsToBeDeleted,
