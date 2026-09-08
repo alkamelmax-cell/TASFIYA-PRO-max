@@ -3257,6 +3257,7 @@ class LocalWebServer {
                 // **ROOT FIX**: Use pool.query() directly for PostgreSQL
                 const pool = this.dbManager.pool || this.dbManager.db.pool;
                 const syncFailures = [];
+                const syncDeleteCounts = { reconciliations: 0 };
                 const requestedSyncProtocol = Number(data?._sync?.protocol_version || 0);
                 const requestedSyncSourceId = String(data?._sync?.source_id || '').trim();
                 const syncSourceId = requestedSyncProtocol >= 2
@@ -4644,6 +4645,7 @@ class LocalWebServer {
                 if (Array.isArray(data.deleted_reconciliations)) {
                     try {
                         const deletedCount = await deleteReconciliationsByFingerprints(data.deleted_reconciliations);
+                        syncDeleteCounts.reconciliations += deletedCount;
                         if (deletedCount > 0) {
                             console.log(`🧹 [SYNC] Deleted ${deletedCount} reconciliations by delete fingerprint payload.`);
                         }
@@ -4660,6 +4662,7 @@ class LocalWebServer {
                 if (Array.isArray(data.deleted_reconciliations_ids)) {
                     try {
                         const deletedCount = await deleteReconciliationsByIds(data.deleted_reconciliations_ids);
+                        syncDeleteCounts.reconciliations += deletedCount;
                         if (deletedCount > 0) {
                             console.log(`🧹 [SYNC] Deleted ${deletedCount} reconciliations by explicit delete payload.`);
                         }
@@ -5186,7 +5189,7 @@ class LocalWebServer {
                 }
 
             console.log('✅ [SYNC] Full sync completed successfully');
-            this.sendJson(res, { success: true, message: 'Full sync completed' });
+            this.sendJson(res, { success: true, message: 'Full sync completed', deleted: syncDeleteCounts });
         } catch (error) {
             console.error('❌ [SYNC] Fatal error:', error);
             this.sendJson(
