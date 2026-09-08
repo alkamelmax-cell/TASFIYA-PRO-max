@@ -3769,7 +3769,7 @@ class LocalWebServer {
                             continue;
                         }
 
-                        const fingerprintResult = await query(
+                        let fingerprintResult = await query(
                             `SELECT id
                              FROM reconciliations
                              WHERE reconciliation_number = $1
@@ -3787,6 +3787,27 @@ class LocalWebServer {
                                 item.id
                             ]
                         );
+
+                        // A database restored or upgraded from an older desktop can
+                        // retain the same reconciliation number while carrying an old
+                        // sync_source_id and a different canonical PostgreSQL id. In
+                        // that case the strict device-scoped lookup above cannot find
+                        // the row. Reconciliation number + business date is stable
+                        // across that migration; use it only when it identifies one
+                        // unambiguous remote row.
+                        if (fingerprintResult.rowCount === 0) {
+                            fingerprintResult = await query(
+                                `SELECT id
+                                 FROM reconciliations
+                                 WHERE reconciliation_number = $1
+                                   AND reconciliation_date::date = $2::date
+                                 LIMIT 2`,
+                                [item.reconciliationNumber, item.reconciliationDate]
+                            );
+                            if (fingerprintResult.rowCount === 1) {
+                                console.log(`🧹 [SYNC] Matched legacy reconciliation #${item.reconciliationNumber} by number and date.`);
+                            }
+                        }
 
                         if (fingerprintResult.rowCount === 1) {
                             const matchedId = Number(fingerprintResult.rows[0].id);
