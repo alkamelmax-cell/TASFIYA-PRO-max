@@ -663,7 +663,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-09.4',
+                        release: 'server-release-2026-09-09.5',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true
                     });
@@ -5747,8 +5747,8 @@ class LocalWebServer {
             if (pool) {
                 const params=[]; const clauses=[];
                 if(status!=='all'){params.push(status);clauses.push(`r.status = $${params.length}`);} if(cashierId){params.push(cashierId);clauses.push(`r.cashier_id = $${params.length}`);}
-                const result=await pool.query(`SELECT r.*, c.name AS cashier_name, b.name AS branch_name FROM customer_creation_requests r LEFT JOIN cashiers c ON c.id=r.cashier_id LEFT JOIN branches b ON b.id=r.branch_id ${clauses.length?`WHERE ${clauses.join(' AND ')}`:''} ORDER BY r.created_at DESC,r.id DESC LIMIT 500`,params); rows=result.rows;
-            } else { const clauses=[];const params=[];if(status!=='all'){clauses.push('r.status = ?');params.push(status);}if(cashierId){clauses.push('r.cashier_id = ?');params.push(cashierId);} rows=this.dbManager.db.prepare(`SELECT r.*,c.name AS cashier_name,b.name AS branch_name FROM customer_creation_requests r LEFT JOIN cashiers c ON c.id=r.cashier_id LEFT JOIN branches b ON b.id=r.branch_id ${clauses.length?`WHERE ${clauses.join(' AND ')}`:''} ORDER BY r.created_at DESC,r.id DESC LIMIT 500`).all(...params); }
+                const result=await pool.query(`SELECT r.*, c.name AS cashier_name, b.branch_name AS branch_name FROM customer_creation_requests r LEFT JOIN cashiers c ON c.id=r.cashier_id LEFT JOIN branches b ON b.id=r.branch_id ${clauses.length?`WHERE ${clauses.join(' AND ')}`:''} ORDER BY r.created_at DESC,r.id DESC LIMIT 500`,params); rows=result.rows;
+            } else { const clauses=[];const params=[];if(status!=='all'){clauses.push('r.status = ?');params.push(status);}if(cashierId){clauses.push('r.cashier_id = ?');params.push(cashierId);} rows=this.dbManager.db.prepare(`SELECT r.*,c.name AS cashier_name,b.branch_name AS branch_name FROM customer_creation_requests r LEFT JOIN cashiers c ON c.id=r.cashier_id LEFT JOIN branches b ON b.id=r.branch_id ${clauses.length?`WHERE ${clauses.join(' AND ')}`:''} ORDER BY r.created_at DESC,r.id DESC LIMIT 500`).all(...params); }
             this.sendJson(res,{success:true,requests:rows||[]},{req,cacheable:false});
         } catch(error){console.error('❌ [CUSTOMER REQUEST] List failed:',error);this.sendJson(res,{success:false,error:error.message},{statusCode:500});}
     }
