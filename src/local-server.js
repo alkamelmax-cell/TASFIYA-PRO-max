@@ -663,7 +663,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-09.7',
+                        release: 'server-release-2026-09-09.8',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true
                     });
@@ -3172,32 +3172,42 @@ class LocalWebServer {
     async enrichCustomerRequestDetails(details = {}, cashierId = null, clientRequestKey = '') {
         const branchId = await this.getCashierBranchId(cashierId);
         const requestKey = normalizeCustomerNameValue(clientRequestKey).slice(0, 180);
-        const normalizeItems = (items = [], section) => {
+        const normalizeItems = async (items = [], section) => {
             if (!Array.isArray(items)) {
                 return [];
             }
-            return items.map((rawItem, index) => {
+            return Promise.all(items.map(async (rawItem, index) => {
                 const item = rawItem && typeof rawItem === 'object' ? rawItem : {};
                 const customerName = normalizeCustomerNameValue(item.customer_name || item.name);
                 const customerCode = normalizeCustomerCodeValue(item.customer_code || item.code);
+                const canonicalCustomer = customerCode
+                    ? await this.findCustomerByCode(customerCode)
+                    : null;
+                const sameCanonicalName = canonicalCustomer
+                    && normalizeCustomerNameValue(canonicalCustomer.customer_name) === customerName;
+                if (!customerCode || !canonicalCustomer || !sameCanonicalName) {
+                    const error = new Error(`customer_selection_required:${customerName || 'unknown'}`);
+                    error.statusCode = 422;
+                    throw error;
+                }
                 const sourceCustomerRef = normalizeCustomerNameValue(item.source_customer_ref).slice(0, 180)
                     || `${requestKey || 'legacy'}:${section}:${index}`;
                 return {
                     ...item,
                     customer_id: null,
-                    customer_name: customerName,
-                    customer_code: customerCode,
-                    branch_id: normalizePositiveInteger(item.branch_id) || branchId || null,
-                    customer_identity_mode: customerCode ? 'master' : 'new',
+                    customer_name: canonicalCustomer.customer_name,
+                    customer_code: canonicalCustomer.customer_code,
+                    branch_id: canonicalCustomer.branch_id || normalizePositiveInteger(item.branch_id) || branchId || null,
+                    customer_identity_mode: 'master',
                     source_customer_ref: sourceCustomerRef
                 };
-            });
+            }));
         };
 
         return {
             ...details,
-            postpaid_items: normalizeItems(details.postpaid_items, 'postpaid_items'),
-            customer_receipts: normalizeItems(details.customer_receipts, 'customer_receipts')
+            postpaid_items: await normalizeItems(details.postpaid_items, 'postpaid_items'),
+            customer_receipts: await normalizeItems(details.customer_receipts, 'customer_receipts')
         };
     }
 
