@@ -663,8 +663,9 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-09.3',
-                        reconciliation_delete_ack: true
+                        release: 'server-release-2026-09-09.4',
+                        reconciliation_delete_ack: true,
+                        customer_creation_requests: true
                     });
                     return;
                 }
