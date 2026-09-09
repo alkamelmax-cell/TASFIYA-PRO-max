@@ -31,6 +31,7 @@ class PostgresManager {
             client.release();
             await this.createTables();
             await this.migrateSchema();
+            await this.removeLegacySyncTestBranch();
             await this.insertDefaultData();
             await this.repairCashboxSyncData();
             await this.migrateSensitiveCredentials();
@@ -38,6 +39,78 @@ class PostgresManager {
         } catch (error) {
             console.error('❌ [DB] Connection to Neon failed:', error);
             return false;
+        }
+    }
+
+    async removeLegacySyncTestBranch() {
+        const client = await this.pool.connect();
+        const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""')}"`;
+        try {
+            await client.query('BEGIN');
+            const branchResult = await client.query(`
+                SELECT id, branch_name
+                FROM branches
+                WHERE UPPER(TRIM(COALESCE(branch_name, ''))) = 'SYNC TEST BRANCH'
+                FOR UPDATE
+            `);
+
+            for (const branch of branchResult.rows) {
+                const referencesResult = await client.query(`
+                    SELECT
+                        source_namespace.nspname AS schema_name,
+                        source_table.relname AS table_name,
+                        source_column.attname AS column_name
+                    FROM pg_constraint constraint_info
+                    JOIN pg_class source_table ON source_table.oid = constraint_info.conrelid
+                    JOIN pg_namespace source_namespace ON source_namespace.oid = source_table.relnamespace
+                    JOIN pg_class target_table ON target_table.oid = constraint_info.confrelid
+                    JOIN pg_namespace target_namespace ON target_namespace.oid = target_table.relnamespace
+                    JOIN LATERAL unnest(constraint_info.conkey) WITH ORDINALITY AS source_key(attnum, ordinal) ON TRUE
+                    JOIN pg_attribute source_column
+                      ON source_column.attrelid = source_table.oid
+                     AND source_column.attnum = source_key.attnum
+                    WHERE constraint_info.contype = 'f'
+                      AND target_namespace.nspname = current_schema()
+                      AND target_table.relname = 'branches'
+                `);
+
+                let linkedRows = 0;
+                for (const reference of referencesResult.rows) {
+                    const qualifiedTable = `${quoteIdentifier(reference.schema_name)}.${quoteIdentifier(reference.table_name)}`;
+                    const columnName = quoteIdentifier(reference.column_name);
+                    const countResult = await client.query(
+                        `SELECT COUNT(*)::int AS count FROM ${qualifiedTable} WHERE ${columnName} = $1`,
+                        [branch.id]
+                    );
+                    linkedRows += Number(countResult.rows[0]?.count || 0);
+                }
+
+                if (linkedRows === 0) {
+                    await client.query(
+                        `DELETE FROM branches
+                         WHERE id = $1
+                           AND UPPER(TRIM(COALESCE(branch_name, ''))) = 'SYNC TEST BRANCH'`,
+                        [branch.id]
+                    );
+                    console.log(`[DB] Removed unused legacy test branch id=${branch.id}.`);
+                } else {
+                    await client.query(
+                        `UPDATE branches
+                         SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+                         WHERE id = $1
+                           AND UPPER(TRIM(COALESCE(branch_name, ''))) = 'SYNC TEST BRANCH'`,
+                        [branch.id]
+                    );
+                    console.warn(`[DB] Legacy test branch id=${branch.id} has ${linkedRows} linked rows; deactivated without deleting history.`);
+                }
+            }
+
+            await client.query('COMMIT');
+        } catch (error) {
+            await client.query('ROLLBACK');
+            throw error;
+        } finally {
+            client.release();
         }
     }
 
