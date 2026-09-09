@@ -75,6 +75,13 @@ class PostgresManager {
             await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS merged_at TIMESTAMP");
             await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
             await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
+            await client.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS sync_source_id TEXT');
+            await client.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS source_row_id BIGINT');
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_sync_source_row
+                ON customers(sync_source_id, source_row_id)
+                WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL
+            `);
             await client.query('ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER');
             await client.query("ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''");
             await client.query('ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER');

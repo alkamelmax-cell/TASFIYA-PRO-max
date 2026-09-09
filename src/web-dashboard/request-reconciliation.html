@@ -735,7 +735,9 @@
                 customer_id: Number.isFinite(customerId) && customerId > 0 ? customerId : null,
                 customer_name: customerName,
                 customer_code: normalizeCustomerCode(row.customer_code || row.code),
-                branch_id: Number.isFinite(branchId) && branchId > 0 ? branchId : null
+                branch_id: Number.isFinite(branchId) && branchId > 0 ? branchId : null,
+                customer_sync_source_id: String(row.customer_sync_source_id || row.sync_source_id || '').trim(),
+                customer_source_row_id: Number(row.customer_source_row_id || row.source_row_id || 0) || null
             };
         }
 
@@ -771,6 +773,8 @@
                 customer_name: normalized.customer_name,
                 customer_code: normalized.customer_code,
                 branch_id: normalized.branch_id,
+                customer_sync_source_id: normalized.customer_sync_source_id,
+                customer_source_row_id: normalized.customer_source_row_id,
                 customer_display: getCustomerDisplayValue(normalized)
             };
         }
@@ -1493,6 +1497,8 @@
                     customer_name: i.customer_name,
                     customer_code: i.customer_code || '',
                     branch_id: i.branch_id || null,
+                    customer_sync_source_id: i.customer_sync_source_id || '',
+                    customer_source_row_id: i.customer_source_row_id || null,
                     amount: i.amount
                 })),
                 customer_receipts: custReceiptItems.map(i => ({
@@ -1500,6 +1506,8 @@
                     customer_name: i.customer_name,
                     customer_code: i.customer_code || '',
                     branch_id: i.branch_id || null,
+                    customer_sync_source_id: i.customer_sync_source_id || '',
+                    customer_source_row_id: i.customer_source_row_id || null,
                     payment_type: i.type,
                     amount: i.amount
                 })),

@@ -153,6 +153,8 @@ function normalizeCustomerRow(row) {
         customer_name: customerName,
         customer_code: customerCode,
         branch_id: branchId,
+        sync_source_id: String(row.sync_source_id || '').trim(),
+        source_row_id: normalizePositiveInteger(row.source_row_id),
         matched_customer_name: normalizeCustomerNameValue(row.matched_customer_name || customerName),
         matched_customer_code: normalizeCustomerCodeValue(row.matched_customer_code),
         matched_customer_id: normalizePositiveInteger(row.matched_customer_id) || id,
@@ -658,7 +660,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-09.1',
+                        release: 'server-release-2026-09-09.2',
                         reconciliation_delete_ack: true
                     });
                     return;
@@ -2371,7 +2373,7 @@ class LocalWebServer {
             const params = normalizedBranchId ? [normalizedBranchId] : [];
             const result = await pool.query(
                 `
-                    SELECT id, customer_name, customer_code, branch_id
+                    SELECT id, customer_name, customer_code, branch_id, sync_source_id, source_row_id
                     FROM customers
                     WHERE BTRIM(COALESCE(customer_name, '')) <> ''
                     AND COALESCE(is_active, 1) = 1
@@ -2388,7 +2390,7 @@ class LocalWebServer {
         const params = normalizedBranchId ? [normalizedBranchId] : [];
         const rows = this.dbManager.db.prepare(
             `
-                SELECT id, customer_name, customer_code, branch_id
+                SELECT id, customer_name, customer_code, branch_id, sync_source_id, source_row_id
                 FROM customers
                 WHERE TRIM(COALESCE(customer_name, '')) <> ''
                 AND COALESCE(is_active, 1) = 1
@@ -3305,6 +3307,8 @@ class LocalWebServer {
                         'ALTER TABLE customers ADD COLUMN IF NOT EXISTS merged_at TIMESTAMP',
                         'ALTER TABLE customers ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
                         'ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
+                        'ALTER TABLE customers ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
+                        'ALTER TABLE customers ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
                         'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER',
                         "ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
                         'ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER',
@@ -3418,6 +3422,9 @@ class LocalWebServer {
                         'CREATE INDEX IF NOT EXISTS idx_customers_favorite_active ON customers(is_favorite, is_active, merged_into_customer_id)',
                         'CREATE INDEX IF NOT EXISTS idx_customers_active_merge ON customers(is_active, merged_into_customer_id)',
                         'CREATE INDEX IF NOT EXISTS idx_customers_merged_into ON customers(merged_into_customer_id)',
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_sync_source_row
+                         ON customers(sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
                         `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_customer_code_unique
                          ON customers(UPPER(TRIM(customer_code)))
                          WHERE TRIM(COALESCE(customer_code, '')) <> ''`,
