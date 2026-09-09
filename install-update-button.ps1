@@ -35,7 +35,7 @@ $utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
 [System.IO.File]::WriteAllText($buttonPath, $buttonContent, $utf8WithoutBom)
 
 if ($ConfigureScheduledTask) {
-    $launcher = Join-Path $serverRoot 'start-server.cmd'
+    $launcher = Join-Path $serverRoot 'start-server-hidden.vbs'
     try {
         $task = Get-ScheduledTask -TaskName $TaskName -ErrorAction Stop
         if ($task.State -eq 'Running') {
@@ -43,7 +43,8 @@ if ($ConfigureScheduledTask) {
             Start-Sleep -Seconds 2
         }
 
-        & schtasks.exe /Change /TN $TaskName /TR "`"$launcher`""
+        $wscript = Join-Path $env:SystemRoot 'System32\wscript.exe'
+        & schtasks.exe /Change /TN $TaskName /TR "`"$wscript`" `"$launcher`""
         if ($LASTEXITCODE -ne 0) {
             throw "schtasks exited with code $LASTEXITCODE"
         }

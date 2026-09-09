@@ -201,6 +201,7 @@ function New-UpdateBackup {
         'package.json',
         'package-lock.json',
         'start-server.cmd',
+        'start-server-hidden.vbs',
         'server-update.ps1',
         'update-tasfiya-server.cmd',
         'install-update-button.ps1',
