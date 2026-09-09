@@ -1278,6 +1278,10 @@
                 showToast('warning', 'الرجاء إدخال اسم العميل');
                 return;
             }
+            if (!selectedCustomer) {
+                showToast('warning', 'اختر العميل من قائمة العملاء المتزامنة');
+                return;
+            }
             if (!amt || amt <= 0) {
                 showToast('warning', 'الرجاء إدخال المبلغ');
                 return;
@@ -1306,6 +1310,10 @@
 
             if (!customer_name) {
                 showToast('warning', 'الرجاء إدخال اسم العميل');
+                return;
+            }
+            if (!selectedCustomer) {
+                showToast('warning', 'اختر العميل من قائمة العملاء المتزامنة');
                 return;
             }
             if (!amt || amt <= 0) {
