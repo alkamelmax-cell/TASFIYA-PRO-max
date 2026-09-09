@@ -31,8 +31,8 @@ echo اضغط أي مفتاح لإغلاق النافذة...
 pause >nul
 exit /b %UPDATE_RESULT%
 "@
-$buttonContent |
-    Set-Content -LiteralPath $buttonPath -Encoding UTF8
+$utf8WithoutBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText($buttonPath, $buttonContent, $utf8WithoutBom)
 
 if ($ConfigureScheduledTask) {
     $launcher = Join-Path $serverRoot 'start-server.cmd'
