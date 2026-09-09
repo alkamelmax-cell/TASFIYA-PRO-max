@@ -663,7 +663,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-09.6',
+                        release: 'server-release-2026-09-09.7',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true
                     });
