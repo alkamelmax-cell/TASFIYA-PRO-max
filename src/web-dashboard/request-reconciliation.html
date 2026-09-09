@@ -292,6 +292,7 @@
                                 <button class="btn btn-warning w-100 text-dark fw-bold" onclick="addPostpaidItem()"><i
                                         class="fas fa-plus"></i> إضافة</button>
                             </div>
+                            <div class="col-12"><button class="btn btn-outline-info btn-sm" type="button" onclick="requestNewCustomer('postpaidName')"><i class="fas fa-user-plus"></i> العميل غير موجود؟ أرسل طلب إضافة</button> <button class="btn btn-outline-light btn-sm" type="button" onclick="loadCustomers().then(() => showToast('success', 'تم تحديث قائمة العملاء'))"><i class="fas fa-sync"></i> تحديث العملاء</button></div>
                         </div>
                         <div class="table-container pro-card">
                             <table class="custom-table reconciliation-table text-center">
@@ -330,6 +331,7 @@
                                 <button class="btn btn-success w-100 fw-bold" onclick="addCustomerReceiptItem()"><i
                                         class="fas fa-plus"></i> إضافة</button>
                             </div>
+                            <div class="col-12"><button class="btn btn-outline-info btn-sm" type="button" onclick="requestNewCustomer('custReceiptName')"><i class="fas fa-user-plus"></i> العميل غير موجود؟ أرسل طلب إضافة</button> <button class="btn btn-outline-light btn-sm" type="button" onclick="loadCustomers().then(() => showToast('success', 'تم تحديث قائمة العملاء'))"><i class="fas fa-sync"></i> تحديث العملاء</button></div>
                         </div>
                         <div class="table-container pro-card">
                             <table class="custom-table reconciliation-table text-center">
@@ -1299,6 +1301,13 @@
             document.getElementById('postpaidName').focus();
             updateUI();
             showToast('success', 'تمت إضافة المبيعات الآجلة');
+        }
+
+        async function requestNewCustomer(sourceInputId = '') {
+            const suggestedName=String(document.getElementById(sourceInputId)?.value||'').trim();
+            const result=await Swal.fire({title:'طلب إضافة عميل جديد',html:`<div class="text-end mb-2">لن تُسجّل أي حركة حتى يعتمد المحاسب العميل ويظهر بالكود الرسمي.</div><input id="newCustomerNameInput" class="swal2-input" value="${escapeHtml(suggestedName)}" placeholder="اسم العميل الكامل"><input id="newCustomerPhoneInput" class="swal2-input" type="tel" placeholder="رقم الجوال (اختياري)"><textarea id="newCustomerNotesInput" class="swal2-textarea" placeholder="ملاحظة للمحاسب (اختياري)"></textarea>`,icon:'info',showCancelButton:true,confirmButtonText:'إرسال الطلب',cancelButtonText:'إلغاء',focusConfirm:false,preConfirm:()=>{const customerName=String(document.getElementById('newCustomerNameInput')?.value||'').trim();if(customerName.length<2){Swal.showValidationMessage('أدخل اسم العميل بشكل واضح');return false;}return{customer_name:customerName,phone:String(document.getElementById('newCustomerPhoneInput')?.value||'').trim(),notes:String(document.getElementById('newCustomerNotesInput')?.value||'').trim(),client_request_key:`customer:${Date.now()}:${Math.random().toString(36).slice(2,10)}`};}});
+            if(!result.isConfirmed)return; Swal.fire({title:'جاري إرسال الطلب...',allowOutsideClick:false,didOpen:()=>Swal.showLoading()});
+            try{const response=await fetchWithSessionGuard('/api/customer-creation-requests',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(result.value)});const data=await response.json().catch(()=>({}));if(!response.ok||!data.success)throw new Error(data.error||'تعذر إرسال الطلب');await Swal.fire({title:`تم إرسال الطلب #${data.request.id}`,text:'بعد اعتماد المحاسب حدّث قائمة العملاء ثم اختر العميل بالكود الرسمي.',icon:'success',confirmButtonText:'حسنًا'});}catch(error){if(error&&error.code===401)return;Swal.fire({title:'تعذر الإرسال',text:error.message,icon:'error',confirmButtonText:'حسنًا'});}
         }
 
         function addCustomerReceiptItem() {

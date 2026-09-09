@@ -413,6 +413,8 @@ class LocalWebServer {
             || (pathname === '/api/logout' && method === 'POST')
             // Desktop-to-cloud sync bridge routes do not carry browser sessions.
             || (pathname === '/api/sync/users' && method === 'POST')
+            || (pathname === '/api/customer-creation-requests' && method === 'GET')
+            || (pathname.match(/^\/api\/customer-creation-requests\/\d+\/decision$/) && method === 'POST')
             || (pathname === '/api/reconciliation-requests' && method === 'GET')
             || (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && method === 'GET')
             || (pathname.match(/^\/api\/reconciliation-requests\/\d+$/) && method === 'DELETE')
@@ -428,6 +430,7 @@ class LocalWebServer {
             pathname === '/request-reconciliation.html'
             || (pathname === '/api/customers' && method === 'GET')
             || (pathname === '/api/atms' && method === 'GET')
+            || (pathname === '/api/customer-creation-requests' && method === 'POST')
             || (pathname === '/api/reconciliation-requests' && method === 'POST')
         ) {
             return 'authenticated';
@@ -660,7 +663,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-09.2',
+                        release: 'server-release-2026-09-09.3',
                         reconciliation_delete_ack: true
                     });
                     return;
@@ -789,6 +792,16 @@ class LocalWebServer {
                     if (req.method === 'GET') await this.handleGetReconciliationRequests(res, parsedUrl.query);
                     else if (req.method === 'POST') await this.handleCreateReconciliationRequest(req, res);
                     else if (req.method === 'DELETE') await this.handleDeleteAllReconciliationRequests(res);
+                    return;
+                }
+                else if (pathname === '/api/customer-creation-requests') {
+                    if (req.method === 'GET') await this.handleGetCustomerCreationRequests(req, res, parsedUrl.query);
+                    else if (req.method === 'POST') await this.handleCreateCustomerCreationRequest(req, res);
+                    return;
+                }
+                else if (pathname.match(/^\/api\/customer-creation-requests\/\d+\/decision$/) && req.method === 'POST') {
+                    const id = pathname.split('/')[3];
+                    await this.handleCustomerCreationRequestDecision(req, res, id);
                     return;
                 }
                 // Reset sequence endpoint
@@ -3145,72 +3158,45 @@ class LocalWebServer {
         const normalizedBranchId = normalizePositiveInteger(source.branch_id) || normalizePositiveInteger(branchId);
         const inputName = normalizeCustomerNameValue(source.customer_name || source.name);
         const inputCode = normalizeCustomerCodeValue(source.customer_code || source.code);
-        const inputId = normalizePositiveInteger(source.customer_id || source.id);
-
-        let resolved = null;
-        if (inputId) {
-            const byId = await this.findCustomerById(inputId);
-            if (
-                byId
-                && (!inputName || isCustomerNameMatchOrAlias(byId, inputName))
-                && (!inputCode || normalizeCustomerCodeValue(byId.customer_code) === inputCode)
-                && isSameOrOpenBranch(byId.branch_id, normalizedBranchId)
-            ) {
-                resolved = byId;
-            }
-        }
-
-        if (!resolved && inputCode) {
-            const byCode = await this.findCustomerByCode(inputCode);
-            if (
-                byCode
-                && (!inputName || isCustomerNameMatchOrAlias(byCode, inputName))
-                && isSameOrOpenBranch(byCode.branch_id, normalizedBranchId)
-            ) {
-                resolved = byCode;
-            }
-        }
-
-        if (!resolved && inputName) {
-            resolved = await this.createOrUpdateServerCustomer({
-                customerName: inputName,
-                customerCode: inputCode,
-                branchId: normalizedBranchId
-            });
-        }
-
-        const finalName = resolved?.customer_name || inputName;
-        if (!finalName) {
-            return { ...source };
-        }
-
         return {
             ...source,
-            customer_id: resolved?.id || resolved?.customer_id || inputId || null,
-            customer_code: resolved?.customer_code || inputCode || '',
-            customer_name: finalName,
-            branch_id: resolved?.branch_id || normalizedBranchId || null
+            customer_id: null,
+            customer_code: inputCode,
+            customer_name: inputName,
+            branch_id: normalizedBranchId || null,
+            customer_identity_mode: inputCode ? 'master' : 'new'
         };
     }
 
-    async enrichCustomerRequestDetails(details = {}, cashierId = null) {
+    async enrichCustomerRequestDetails(details = {}, cashierId = null, clientRequestKey = '') {
         const branchId = await this.getCashierBranchId(cashierId);
-        const normalizeItems = async (items = []) => {
+        const requestKey = normalizeCustomerNameValue(clientRequestKey).slice(0, 180);
+        const normalizeItems = (items = [], section) => {
             if (!Array.isArray(items)) {
                 return [];
             }
-
-            const enriched = [];
-            for (const item of items) {
-                enriched.push(await this.resolveRequestCustomerIdentity(item, branchId));
-            }
-            return enriched;
+            return items.map((rawItem, index) => {
+                const item = rawItem && typeof rawItem === 'object' ? rawItem : {};
+                const customerName = normalizeCustomerNameValue(item.customer_name || item.name);
+                const customerCode = normalizeCustomerCodeValue(item.customer_code || item.code);
+                const sourceCustomerRef = normalizeCustomerNameValue(item.source_customer_ref).slice(0, 180)
+                    || `${requestKey || 'legacy'}:${section}:${index}`;
+                return {
+                    ...item,
+                    customer_id: null,
+                    customer_name: customerName,
+                    customer_code: customerCode,
+                    branch_id: normalizePositiveInteger(item.branch_id) || branchId || null,
+                    customer_identity_mode: customerCode ? 'master' : 'new',
+                    source_customer_ref: sourceCustomerRef
+                };
+            });
         };
 
         return {
             ...details,
-            postpaid_items: await normalizeItems(details.postpaid_items),
-            customer_receipts: await normalizeItems(details.customer_receipts)
+            postpaid_items: normalizeItems(details.postpaid_items, 'postpaid_items'),
+            customer_receipts: normalizeItems(details.customer_receipts, 'customer_receipts')
         };
     }
 
@@ -5672,6 +5658,117 @@ class LocalWebServer {
 
 
 
+    async ensureCustomerCreationRequestsSchema() {
+        const pool = this.dbManager.pool || (this.dbManager.db && this.dbManager.db.pool);
+        if (pool) {
+            await pool.query(`
+                CREATE TABLE IF NOT EXISTS customer_creation_requests (
+                    id SERIAL PRIMARY KEY,
+                    cashier_id INTEGER NOT NULL REFERENCES cashiers(id) ON DELETE RESTRICT,
+                    branch_id INTEGER REFERENCES branches(id) ON DELETE SET NULL,
+                    customer_name TEXT NOT NULL,
+                    phone TEXT DEFAULT '',
+                    notes TEXT DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    client_request_key TEXT,
+                    customer_id INTEGER REFERENCES customers(id) ON DELETE SET NULL,
+                    customer_code TEXT DEFAULT '',
+                    customer_sync_source_id TEXT,
+                    customer_source_row_id BIGINT,
+                    decision_note TEXT DEFAULT '',
+                    reviewed_by TEXT DEFAULT '',
+                    reviewed_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+            await pool.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_creation_requests_cashier_key
+                ON customer_creation_requests(cashier_id, client_request_key)
+                WHERE client_request_key IS NOT NULL AND BTRIM(client_request_key) <> ''
+            `);
+            await pool.query(`CREATE INDEX IF NOT EXISTS idx_customer_creation_requests_status ON customer_creation_requests(status, created_at DESC)`);
+            return;
+        }
+        this.dbManager.db.exec(`
+            CREATE TABLE IF NOT EXISTS customer_creation_requests (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, cashier_id INTEGER NOT NULL, branch_id INTEGER,
+                customer_name TEXT NOT NULL, phone TEXT DEFAULT '', notes TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'pending', client_request_key TEXT, customer_id INTEGER,
+                customer_code TEXT DEFAULT '', customer_sync_source_id TEXT, customer_source_row_id INTEGER,
+                decision_note TEXT DEFAULT '', reviewed_by TEXT DEFAULT '', reviewed_at DATETIME,
+                created_at DATETIME DEFAULT CURRENT_TIMESTAMP, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_creation_requests_cashier_key
+            ON customer_creation_requests(cashier_id, client_request_key)
+            WHERE client_request_key IS NOT NULL AND TRIM(client_request_key) <> '';
+            CREATE INDEX IF NOT EXISTS idx_customer_creation_requests_status ON customer_creation_requests(status, created_at DESC);
+        `);
+    }
+
+    async handleCreateCustomerCreationRequest(req, res) {
+        try {
+            await this.ensureCustomerCreationRequestsSchema();
+            const authUser = req && req.authUser ? req.authUser : this.getAuthenticatedUser(req);
+            if (!authUser || authUser.role !== 'cashier') return this.sendJson(res, { success: false, error: 'هذه الميزة متاحة للكاشير المسجل فقط' }, { statusCode: 403 });
+            const data = await this.readJsonBody(req, { maxBytes: 64 * 1024, routeLabel: '/api/customer-creation-requests payload' });
+            const customerName = normalizeCustomerNameValue(data.customer_name).slice(0, 180);
+            const phone = normalizeCustomerNameValue(data.phone).slice(0, 60);
+            const notes = normalizeCustomerNameValue(data.notes).slice(0, 500);
+            const clientRequestKey = normalizeCustomerNameValue(data.client_request_key).slice(0, 180);
+            if (customerName.length < 2) return this.sendJson(res, { success: false, error: 'اسم العميل مطلوب ويجب أن يكون واضحًا' }, { statusCode: 400 });
+            const cashierId = Number(authUser.id);
+            const branchId = await this.getCashierBranchId(cashierId);
+            const pool = this.dbManager.pool || (this.dbManager.db && this.dbManager.db.pool);
+            let row;
+            if (pool) {
+                const result = await pool.query(`INSERT INTO customer_creation_requests (cashier_id, branch_id, customer_name, phone, notes, client_request_key) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (cashier_id, client_request_key) WHERE client_request_key IS NOT NULL AND BTRIM(client_request_key) <> '' DO UPDATE SET updated_at = customer_creation_requests.updated_at RETURNING *`, [cashierId, branchId || null, customerName, phone, notes, clientRequestKey || null]);
+                row = result.rows[0];
+            } else {
+                if (clientRequestKey) row = this.dbManager.db.prepare('SELECT * FROM customer_creation_requests WHERE cashier_id = ? AND client_request_key = ? LIMIT 1').get(cashierId, clientRequestKey);
+                if (!row) { const info = this.dbManager.db.prepare('INSERT INTO customer_creation_requests (cashier_id, branch_id, customer_name, phone, notes, client_request_key) VALUES (?, ?, ?, ?, ?, ?)').run(cashierId, branchId || null, customerName, phone, notes, clientRequestKey || null); row = this.dbManager.db.prepare('SELECT * FROM customer_creation_requests WHERE id = ?').get(info.lastInsertRowid); }
+            }
+            this.sendJson(res, { success: true, request: row });
+        } catch (error) { console.error('❌ [CUSTOMER REQUEST] Create failed:', error); this.sendJson(res, { success: false, error: error.message }, { statusCode: error.statusCode || 500 }); }
+    }
+
+    async handleGetCustomerCreationRequests(req, res, query = {}) {
+        try {
+            await this.ensureCustomerCreationRequestsSchema();
+            const authUser = this.getAuthenticatedUser(req);
+            const sourceId = String(query.source_id || '').trim();
+            if (!authUser && !/^[A-Za-z0-9._:-]{8,160}$/.test(sourceId)) return this.sendJson(res, { success: false, error: 'مصدر المزامنة غير صالح' }, { statusCode: 401 });
+            const requestedStatus = String(query.status || 'pending').trim().toLowerCase();
+            const status = ['pending','approved','rejected','all'].includes(requestedStatus) ? requestedStatus : 'pending';
+            const cashierId = authUser && authUser.role === 'cashier' ? Number(authUser.id) : null;
+            const pool = this.dbManager.pool || (this.dbManager.db && this.dbManager.db.pool);
+            let rows;
+            if (pool) {
+                const params=[]; const clauses=[];
+                if(status!=='all'){params.push(status);clauses.push(`r.status = $${params.length}`);} if(cashierId){params.push(cashierId);clauses.push(`r.cashier_id = $${params.length}`);}
+                const result=await pool.query(`SELECT r.*, c.name AS cashier_name, b.name AS branch_name FROM customer_creation_requests r LEFT JOIN cashiers c ON c.id=r.cashier_id LEFT JOIN branches b ON b.id=r.branch_id ${clauses.length?`WHERE ${clauses.join(' AND ')}`:''} ORDER BY r.created_at DESC,r.id DESC LIMIT 500`,params); rows=result.rows;
+            } else { const clauses=[];const params=[];if(status!=='all'){clauses.push('r.status = ?');params.push(status);}if(cashierId){clauses.push('r.cashier_id = ?');params.push(cashierId);} rows=this.dbManager.db.prepare(`SELECT r.*,c.name AS cashier_name,b.name AS branch_name FROM customer_creation_requests r LEFT JOIN cashiers c ON c.id=r.cashier_id LEFT JOIN branches b ON b.id=r.branch_id ${clauses.length?`WHERE ${clauses.join(' AND ')}`:''} ORDER BY r.created_at DESC,r.id DESC LIMIT 500`).all(...params); }
+            this.sendJson(res,{success:true,requests:rows||[]},{req,cacheable:false});
+        } catch(error){console.error('❌ [CUSTOMER REQUEST] List failed:',error);this.sendJson(res,{success:false,error:error.message},{statusCode:500});}
+    }
+
+    async handleCustomerCreationRequestDecision(req,res,requestId){
+        try{
+            await this.ensureCustomerCreationRequestsSchema(); const data=await this.readJsonBody(req,{maxBytes:64*1024,routeLabel:'/api/customer-creation-requests/:id/decision payload'}); const sourceId=String(data.source_id||'').trim();
+            if(!/^[A-Za-z0-9._:-]{8,160}$/.test(sourceId)) return this.sendJson(res,{success:false,error:'مصدر المزامنة غير صالح'},{statusCode:401});
+            const decision=String(data.decision||'').trim().toLowerCase(); if(!['approved','rejected'].includes(decision)) return this.sendJson(res,{success:false,error:'قرار الاعتماد غير صالح'},{statusCode:400});
+            const id=Number(requestId);const sourceRowId=Number(data.customer_source_row_id||0);const decisionNote=normalizeCustomerNameValue(data.decision_note).slice(0,500);const reviewedBy=normalizeCustomerNameValue(data.reviewed_by||'تطبيق المحاسب').slice(0,120);const pool=this.dbManager.pool||(this.dbManager.db&&this.dbManager.db.pool);let canonicalCustomer=null;
+            if(decision==='approved'){
+                if(!sourceRowId)return this.sendJson(res,{success:false,error:'هوية العميل المعتمد غير مكتملة'},{statusCode:400});
+                if(pool){const found=await pool.query('SELECT id,customer_code,customer_name,sync_source_id,source_row_id FROM customers WHERE sync_source_id=$1 AND source_row_id=$2 AND COALESCE(is_active,1)=1 LIMIT 1',[sourceId,sourceRowId]);canonicalCustomer=found.rows[0]||null;}else{canonicalCustomer=this.dbManager.db.prepare('SELECT id,customer_code,customer_name,sync_source_id,source_row_id FROM customers WHERE sync_source_id=? AND source_row_id=? AND COALESCE(is_active,1)=1 LIMIT 1').get(sourceId,sourceRowId)||null;}
+                if(!canonicalCustomer)return this.sendJson(res,{success:false,error:'لم تصل هوية العميل المعتمد إلى الخادم بعد؛ أعد المحاولة بعد المزامنة'},{statusCode:409});
+            }
+            let updated;
+            if(pool){const result=await pool.query(`UPDATE customer_creation_requests SET status=$1,customer_id=$2,customer_code=$3,customer_sync_source_id=$4,customer_source_row_id=$5,decision_note=$6,reviewed_by=$7,reviewed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$8 AND status='pending' RETURNING *`,[decision,canonicalCustomer?.id||null,canonicalCustomer?.customer_code||'',decision==='approved'?sourceId:null,canonicalCustomer?.source_row_id||null,decisionNote,reviewedBy,id]);updated=result.rows[0]||null;}else{const info=this.dbManager.db.prepare(`UPDATE customer_creation_requests SET status=?,customer_id=?,customer_code=?,customer_sync_source_id=?,customer_source_row_id=?,decision_note=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'`).run(decision,canonicalCustomer?.id||null,canonicalCustomer?.customer_code||'',decision==='approved'?sourceId:null,canonicalCustomer?.source_row_id||null,decisionNote,reviewedBy,id);updated=info.changes?this.dbManager.db.prepare('SELECT * FROM customer_creation_requests WHERE id=?').get(id):null;}
+            if(!updated)return this.sendJson(res,{success:false,error:'الطلب غير موجود أو سبق اتخاذ قرار بشأنه'},{statusCode:409}); this.sendJson(res,{success:true,request:updated});
+        }catch(error){console.error('❌ [CUSTOMER REQUEST] Decision failed:',error);this.sendJson(res,{success:false,error:error.message},{statusCode:500});}
+    }
+
     async handleCreateReconciliationRequest(req, res) {
         try {
             const data = await this.readJsonBody(req, {
@@ -5698,6 +5795,7 @@ class LocalWebServer {
                 const totalBank = parseFloat(data.total_bank) || 0;
 
                 // Prepare details JSON for all other lists, then attach stable customer identity.
+                const clientRequestKey = normalizeCustomerNameValue(data.client_request_key).slice(0, 180);
                 const rawDetails = {
                     cash_breakdown: data.cash_breakdown || [],
                     bank_receipts: data.bank_receipts || [],
@@ -5706,7 +5804,7 @@ class LocalWebServer {
                     return_items: data.return_items || [],
                     supplier_items: data.supplier_items || []
                 };
-                const details = await this.enrichCustomerRequestDetails(rawDetails, data.cashier_id);
+                const details = await this.enrichCustomerRequestDetails(rawDetails, data.cashier_id, clientRequestKey);
 
                 const detailsJson = JSON.stringify(details);
                 const notes = data.notes || '';
@@ -5716,6 +5814,7 @@ class LocalWebServer {
                 const pool = this.dbManager.pool;
 
                 let insertedId;
+                let insertedNew = true;
 
                 if (pool) {
                     // PostgreSQL
@@ -5723,33 +5822,43 @@ class LocalWebServer {
                         INSERT INTO reconciliation_requests (
                             cashier_id, request_date, system_sales, 
                             total_cash, total_bank, details_json, 
-                            notes, status, created_at
-                        ) VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, 'pending', CURRENT_TIMESTAMP)
-                        RETURNING id
+                            notes, status, client_request_key, created_at
+                        ) VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, 'pending', $7, CURRENT_TIMESTAMP)
+                        ON CONFLICT (cashier_id, client_request_key)
+                        WHERE client_request_key IS NOT NULL AND BTRIM(client_request_key) <> ''
+                        DO UPDATE SET updated_at = reconciliation_requests.updated_at
+                        RETURNING id, (xmax = 0) AS inserted_new
                     `;
                     const result = await pool.query(sql, [
-                        data.cashier_id, systemSales, totalCash, totalBank, detailsJson, notes
+                        data.cashier_id, systemSales, totalCash, totalBank, detailsJson, notes, clientRequestKey || null
                     ]);
                     insertedId = result.rows[0].id;
+                    insertedNew = result.rows[0].inserted_new === true;
                 } else {
+                    if (clientRequestKey) {
+                        const existing = this.dbManager.db.prepare('SELECT id FROM reconciliation_requests WHERE cashier_id = ? AND client_request_key = ? LIMIT 1').get(data.cashier_id, clientRequestKey);
+                        if (existing) { insertedId = existing.id; insertedNew = false; }
+                    }
+                    if (!insertedId) {
                     // SQLite
                     const stmt = this.dbManager.db.prepare(`
                         INSERT INTO reconciliation_requests (
                             cashier_id, request_date, system_sales, 
                             total_cash, total_bank, details_json, 
-                            notes, status, created_at
-                        ) VALUES (?, CURRENT_DATE, ?, ?, ?, ?, ?, 'pending', CURRENT_TIMESTAMP)
+                            notes, status, client_request_key, created_at
+                        ) VALUES (?, CURRENT_DATE, ?, ?, ?, ?, ?, 'pending', ?, CURRENT_TIMESTAMP)
                     `);
                     const info = stmt.run(
-                        data.cashier_id, systemSales, totalCash, totalBank, detailsJson, notes
+                        data.cashier_id, systemSales, totalCash, totalBank, detailsJson, notes, clientRequestKey || null
                     );
                     insertedId = info.lastInsertRowid;
+                    }
                 }
 
             console.log('✅ [API] Reconciliation Request Saved. ID:', insertedId);
 
                 // --- TRIGGER NOTIFICATION (Notify Admin using OneSignal) ---
-                try {
+                if (insertedNew) try {
                     let cashierName = `كاشير ${data.cashier_id}`;
 
                     // Fetch Cashier Name
@@ -5771,7 +5880,7 @@ class LocalWebServer {
                     );
                 } catch (e) { console.error('Notification Error', e); }
 
-            this.sendJson(res, { success: true, id: insertedId });
+            this.sendJson(res, { success: true, id: insertedId, duplicate: !insertedNew });
         } catch (error) {
             console.error('❌ [API] Error creating reconciliation request:', error);
             this.sendJson(
