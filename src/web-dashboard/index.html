@@ -275,6 +275,7 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/js/session-bootstrap.js"></script>
     <script src="/js/onesignal-bootstrap.js?v=15"></script>
+    <script src="/js/reconciliation-pdf-share.js?v=1"></script>
     <script>
         const sessionHelper = window.TasfiyaSession || null;
         let user = sessionHelper ? (sessionHelper.readStoredUser() || {}) : JSON.parse(localStorage.getItem('user') || '{}');
@@ -698,6 +699,11 @@
                 if (result.success) renderModalContent(result.data);
                 const modal = new bootstrap.Modal(document.getElementById('detailsModal'));
                 modal.show();
+                if (result.success && window.TasfiyaPdfShare) {
+                    window.TasfiyaPdfShare.prepare(id).catch((error) => {
+                        console.warn('[PDF] Background preparation failed:', error);
+                    });
+                }
             } catch (error) { console.error(error); }
             finally { showLoading(false); }
         }
@@ -885,21 +891,6 @@
             document.getElementById('modalBody').innerHTML = html;
         }
 
-        function tryNativePdfShare(reportUrl, fileName, title) {
-            const nativeBridge = window.TasfiyaAndroid;
-            if (!nativeBridge || typeof nativeBridge.sharePdfFromUrl !== 'function') {
-                return false;
-            }
-
-            try {
-                const absoluteReportUrl = new URL(reportUrl, window.location.href).href;
-                return nativeBridge.sharePdfFromUrl(absoluteReportUrl, fileName, title) === true;
-            } catch (error) {
-                console.warn('[PDF SHARE] Native bridge rejected URL:', error?.message || error);
-                return false;
-            }
-        }
-
         async function shareReconciliationReport() {
             if (!activeReconciliationDetails || !activeReconciliationDetails.reconciliation) {
                 alert('لا تتوفر بيانات تصفية لإنشاء التقرير.');
@@ -907,59 +898,22 @@
             }
 
             const rec = activeReconciliationDetails.reconciliation;
-            const reportNumber = rec.reconciliation_number || rec.id;
-            const fileName = `تقرير-تصفية-${reportNumber}.pdf`;
-            const reportUrl = `${API_URL}/reconciliation/${rec.id}/report.pdf`;
             const shareButton = document.querySelector('.reconciliation-share-button');
-            const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
-                window.matchMedia('(pointer: coarse)').matches;
-
-            // Desktop browsers already have a reliable PDF viewer and print dialog.
-            // Opening the server-produced PDF preserves the usual back button and print controls.
-            if (!isMobile) {
-                window.open(reportUrl, '_blank', 'noopener');
-                return;
-            }
-
-            if (tryNativePdfShare(reportUrl, fileName, `تقرير تصفية #${reportNumber}`)) {
-                return;
-            }
 
             try {
                 if (shareButton) {
                     shareButton.disabled = true;
                     shareButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>جارٍ تجهيز الملف</span>';
                 }
-                const response = await fetch(reportUrl, { cache: 'no-store', credentials: 'same-origin' });
-                if (!response.ok) throw new Error(`PDF request failed with ${response.status}`);
-                const blob = await response.blob();
-                if (blob.type !== 'application/pdf' || blob.size === 0) throw new Error('Invalid PDF response');
-                const file = new File([blob], fileName, { type: 'application/pdf' });
-                if (window.TasfiyaAndroid && typeof window.TasfiyaAndroid.sharePdf === 'function') {
-                    const nativeShareAccepted = window.TasfiyaAndroid.sharePdf(await blobToBase64(blob), fileName);
-                    if (nativeShareAccepted) return;
+                if (!window.TasfiyaPdfShare) throw new Error('خدمة مشاركة التقارير غير جاهزة');
+                const result = await window.TasfiyaPdfShare.share(rec.id);
+                if (result && result.mode === 'download') {
+                    alert('المتصفح لا يدعم مشاركة الملفات مباشرة، لذلك تم تنزيل PDF ويمكنك مشاركته من الجهاز.');
                 }
-
-                const supportsFileShare = typeof navigator.share === 'function' &&
-                    (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] }));
-                if (supportsFileShare) {
-                    await navigator.share({ files: [file], title: `تقرير تصفية #${reportNumber}` });
-                    return;
-                }
-
-                const downloadUrl = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = downloadUrl;
-                link.download = fileName;
-                document.body.appendChild(link);
-                link.click();
-                link.remove();
-                setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
-                alert('تم تنزيل تقرير PDF. يمكنك مشاركته من مجلد التنزيلات.');
             } catch (error) {
                 if (error && error.name !== 'AbortError') {
                     console.error('[PDF SHARE] Failed:', error);
-                    alert('تعذر تجهيز ملف PDF للمشاركة. تحقق من اتصال الخادم ثم حاول مرة أخرى.');
+                    alert(error && error.message ? error.message : 'تعذر تجهيز ملف PDF للمشاركة. حاول مرة أخرى.');
                 }
             } finally {
                 if (shareButton) {
@@ -967,15 +921,6 @@
                     shareButton.innerHTML = '<i class="fas fa-share-nodes"></i><span>مشاركة PDF</span>';
                 }
             }
-        }
-
-        function blobToBase64(blob) {
-            return new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(String(reader.result).split(',')[1]);
-                reader.onerror = reject;
-                reader.readAsDataURL(blob);
-            });
         }
 
         async function resetAllData() {

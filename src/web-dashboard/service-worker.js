@@ -5,9 +5,9 @@
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
 // Service Worker for Tasfiya Pro PWA
-// Version: 4.8 - Prefer native Android PDF sharing for large reports.
+// Version: 4.9 - PDF reports stay on the authenticated server path.
 
-const CACHE_NAME = 'tasfiya-pro-v4.8-native-pdf-share';
+const CACHE_NAME = 'tasfiya-pro-v4.9-pdf-delivery';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
@@ -61,6 +61,7 @@ const NETWORK_FIRST_RUNTIME_PATHS = new Set([
     '/js/session-bootstrap.js',
     '/js/navigation-shell.js',
     '/js/onesignal-bootstrap.js',
+    '/js/reconciliation-pdf-share.js',
     '/manifest.json',
     '/service-worker.js'
 ]);
@@ -121,6 +122,10 @@ function shouldTryLocalApiFallback(url) {
     } catch (_) {
         return false;
     }
+}
+
+function isReconciliationPdfRequest(url) {
+    return /^\/api\/reconciliation\/\d+\/report\.pdf$/.test(String(url && url.pathname || ''));
 }
 
 async function buildFallbackRequest(baseRequest, targetBaseUrl) {
@@ -198,7 +203,7 @@ async function fetchApiWithFallback(eventRequest) {
 
 // Install event - cache only static assets
 self.addEventListener('install', (event) => {
-    console.log('🔧 [SW] Installing Service Worker v4.7');
+    console.log('🔧 [SW] Installing Service Worker v4.9');
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => {
@@ -214,7 +219,7 @@ self.addEventListener('install', (event) => {
 
 // Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
-    console.log('🔄 [SW] Activating Service Worker v4.7');
+    console.log('🔄 [SW] Activating Service Worker v4.9');
     event.waitUntil(
         caches.keys().then((cacheNames) => {
             return Promise.all(
@@ -237,13 +242,43 @@ self.addEventListener('fetch', (event) => {
     // Strategy 1: API Requests - ALWAYS fetch from network, NEVER cache
     if (url.pathname.startsWith('/api/')) {
         console.log('🌐 [SW] API Request - Network Only:', url.pathname);
+
+        // PDF is an authenticated binary response. Never rewrite failures to
+        // localhost; that fallback is unreachable from remote browsers and
+        // hides the real HTTP status behind a long network delay.
+        if (isReconciliationPdfRequest(url)) {
+            event.respondWith(
+                fetch(event.request, { cache: 'no-store' })
+                    .catch((error) => {
+                        console.error('❌ [SW] PDF report request failed:', error);
+                        return new Response(
+                            JSON.stringify({ success: false, error: 'تعذر الاتصال بخدمة التقارير' }),
+                            {
+                                status: 503,
+                                headers: {
+                                    'Content-Type': 'application/json; charset=utf-8',
+                                    'Cache-Control': 'no-store'
+                                }
+                            }
+                        );
+                    })
+            );
+            return;
+        }
+
         event.respondWith(
             fetchApiWithFallback(event.request)
                 .catch((error) => {
                     console.error('❌ [SW] API Request failed:', error);
                     return new Response(
                         JSON.stringify({ success: false, error: 'Network error' }),
-                        { headers: { 'Content-Type': 'application/json' } }
+                        {
+                            status: 503,
+                            headers: {
+                                'Content-Type': 'application/json; charset=utf-8',
+                                'Cache-Control': 'no-store'
+                            }
+                        }
                     );
                 })
         );

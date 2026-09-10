@@ -410,16 +410,18 @@ class PDFGenerator {
                 }
                 
                 .report-info {
-                    display: flex;
-                    justify-content: space-between;
+                    display: grid;
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                    gap: 24px;
                     margin-bottom: 20px;
                     background: #f8f9fa;
                     padding: 15px;
                     border-radius: 8px;
                 }
-                
+
                 .info-section {
-                    flex: 1;
+                    min-width: 0;
+                    padding: 0 8px;
                 }
                 
                 .info-section h3 {
@@ -433,17 +435,23 @@ class PDFGenerator {
                 
                 .info-item {
                     margin-bottom: 8px;
-                    display: flex;
-                    justify-content: space-between;
+                    display: grid;
+                    grid-template-columns: max-content minmax(0, 1fr);
+                    align-items: start;
+                    gap: 12px;
                 }
                 
                 .info-label {
                     font-weight: 600;
                     color: #34495e;
+                    white-space: nowrap;
                 }
 
                 .info-value {
                     color: #2c3e50;
+                    min-width: 0;
+                    text-align: left;
+                    overflow-wrap: anywhere;
                 }
 
                 .filter-notes {
@@ -472,6 +480,8 @@ class PDFGenerator {
                     padding: 15px 20px;
                     border-radius: 8px;
                     text-align: center;
+                    break-after: avoid-page;
+                    page-break-after: avoid;
                 }
                 
                 .table {
@@ -483,6 +493,15 @@ class PDFGenerator {
                     overflow: hidden;
                     box-shadow: 0 2px 5px rgba(0,0,0,0.1);
                     font-size: 16px;
+                }
+
+                .table thead {
+                    display: table-header-group;
+                }
+
+                .table tr {
+                    break-inside: avoid;
+                    page-break-inside: avoid;
                 }
 
                 .table th {
@@ -613,6 +632,14 @@ class PDFGenerator {
                     margin-top: 40px;
                     margin-bottom: 30px;
                     padding: 20px;
+                    break-inside: avoid;
+                    page-break-inside: avoid;
+                }
+
+                @media (max-width: 640px) {
+                    .report-info {
+                        grid-template-columns: 1fr;
+                    }
                 }
 
                 .signatures-title {

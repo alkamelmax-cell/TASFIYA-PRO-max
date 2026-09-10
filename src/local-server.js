@@ -8,6 +8,7 @@ const zlib = require('zlib');
 const { parse } = require('url');
 const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
 const { WebSessionStore } = require('./security/web-session-store');
+const { ReconciliationPdfService } = require('./reconciliation-pdf-service');
 
 const SESSION_COOKIE_NAME = 'tasfiya_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -238,6 +239,7 @@ class LocalWebServer {
         this.port = port;
         this.server = null;
         this.sessionStore = new WebSessionStore({ ttlMs: SESSION_TTL_MS });
+        this.reconciliationPdfService = new ReconciliationPdfService(dbManager);
     }
 
     async readJsonBody(req, options = {}) {
@@ -606,7 +608,7 @@ class LocalWebServer {
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
             res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, If-None-Match');
-            res.setHeader('Access-Control-Expose-Headers', 'ETag');
+            res.setHeader('Access-Control-Expose-Headers', 'ETag, Content-Disposition, X-Report-Cache, X-Request-Id');
 
             if (req.method === 'OPTIONS') {
                 res.writeHead(200);
@@ -663,9 +665,10 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-09.8',
+                        release: 'server-release-2026-09-10.9',
                         reconciliation_delete_ack: true,
-                        customer_creation_requests: true
+                        customer_creation_requests: true,
+                        reconciliation_pdf_delivery: true
                     });
                     return;
                 }
@@ -742,6 +745,14 @@ class LocalWebServer {
                 else if (pathname.match(/^\/api\/reconciliation\/\d+$/)) {
                     const id = pathname.split('/').pop();
                     await this.handleGetReconciliationDetails(res, id);
+                    return;
+                }
+                else if (
+                    pathname.match(/^\/api\/reconciliation\/\d+\/report\.pdf$/)
+                    && (req.method === 'GET' || req.method === 'HEAD')
+                ) {
+                    const id = pathname.split('/')[3];
+                    await this.handleGetReconciliationPdf(req, res, id, parsedUrl.query);
                     return;
                 }
                 else if (pathname === '/api/lookups') {
@@ -895,6 +906,11 @@ class LocalWebServer {
     }
 
     stop() {
+        if (this.reconciliationPdfService) {
+            this.reconciliationPdfService.close().catch((error) => {
+                console.warn('⚠️ [PDF] تعذر إغلاق مولد التقارير:', error && error.message ? error.message : error);
+            });
+        }
         if (this.server) {
             this.server.close(() => {
                 console.log('🌐 [WEB APP] Server stopped');
@@ -1533,6 +1549,97 @@ class LocalWebServer {
 
         } catch (error) {
             this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    async handleGetReconciliationPdf(req, res, id, query = {}) {
+        const requestId = crypto.randomUUID();
+        try {
+            const report = await this.reconciliationPdfService.getReport(id);
+            if (!report) {
+                this.sendJson(res, { success: false, error: 'التصفية غير موجودة', requestId }, { statusCode: 404 });
+                return;
+            }
+
+            const pdfBuffer = report.buffer;
+            const safeNumber = String(report.reconciliationNumber || id).replace(/[^0-9A-Za-z_-]/g, '-');
+            const fileName = `tasfiya-reconciliation-${safeNumber}.pdf`;
+            const disposition = isTruthyQueryValue(query.download) ? 'attachment' : 'inline';
+            const commonHeaders = {
+                'Content-Type': 'application/pdf',
+                'Content-Disposition': `${disposition}; filename="${fileName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
+                'Cache-Control': 'private, max-age=0, must-revalidate',
+                'Accept-Ranges': 'bytes',
+                'X-Content-Type-Options': 'nosniff',
+                'X-Report-Cache': report.cacheStatus,
+                'X-Request-Id': requestId,
+                ETag: report.etag
+            };
+
+            if (requestMatchesEtag(req, report.etag)) {
+                res.writeHead(304, commonHeaders);
+                res.end();
+                return;
+            }
+
+            const rangeHeader = String(req.headers.range || '').trim();
+            if (rangeHeader) {
+                const rangeMatch = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
+                if (!rangeMatch) {
+                    res.writeHead(416, {
+                        ...commonHeaders,
+                        'Content-Range': `bytes */${pdfBuffer.length}`
+                    });
+                    res.end();
+                    return;
+                }
+
+                let start = rangeMatch[1] ? Number(rangeMatch[1]) : null;
+                let end = rangeMatch[2] ? Number(rangeMatch[2]) : null;
+                if (start === null && end !== null) {
+                    start = Math.max(0, pdfBuffer.length - end);
+                    end = pdfBuffer.length - 1;
+                } else {
+                    start = start === null ? 0 : start;
+                    end = end === null ? pdfBuffer.length - 1 : Math.min(end, pdfBuffer.length - 1);
+                }
+
+                if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || start >= pdfBuffer.length) {
+                    res.writeHead(416, {
+                        ...commonHeaders,
+                        'Content-Range': `bytes */${pdfBuffer.length}`
+                    });
+                    res.end();
+                    return;
+                }
+
+                const partial = pdfBuffer.subarray(start, end + 1);
+                res.writeHead(206, {
+                    ...commonHeaders,
+                    'Content-Range': `bytes ${start}-${end}/${pdfBuffer.length}`,
+                    'Content-Length': partial.length
+                });
+                res.end(req.method === 'HEAD' ? undefined : partial);
+                return;
+            }
+
+            res.writeHead(200, { ...commonHeaders, 'Content-Length': pdfBuffer.length });
+            res.end(req.method === 'HEAD' ? undefined : pdfBuffer);
+        } catch (error) {
+            const timedOut = error && error.code === 'PDF_GENERATION_TIMEOUT';
+            console.error(`❌ [PDF] فشل تقرير التصفية ${id} (${requestId}):`, error);
+            this.sendJson(
+                res,
+                {
+                    success: false,
+                    error: timedOut
+                        ? 'استغرق تجهيز التقرير وقتاً أطول من المتوقع. حاول مرة أخرى.'
+                        : 'تعذر تجهيز تقرير PDF حالياً. حاول مرة أخرى.',
+                    retryable: true,
+                    requestId
+                },
+                { statusCode: timedOut ? 504 : 503 }
+            );
         }
     }
 
