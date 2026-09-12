@@ -244,9 +244,12 @@ class DatabaseManager {
         address TEXT,
         notes TEXT,
         is_active INTEGER DEFAULT 1,
+        merged_into_customer_id INTEGER,
+        merged_at DATETIME,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL
+        FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL,
+        FOREIGN KEY (merged_into_customer_id) REFERENCES customers(id) ON DELETE SET NULL
       )
     `);
 
@@ -553,6 +556,24 @@ class DatabaseManager {
       });
     } catch (error) {
       console.error('❌ [DB] خطأ في إضافة عمود customer_id إلى جداول العملاء:', error);
+    }
+
+    try {
+      const customerColumns = this.db.prepare('PRAGMA table_info(customers)').all();
+      const customerColumnNames = new Set(
+        (Array.isArray(customerColumns) ? customerColumns : [])
+          .map((column) => String(column?.name || ''))
+      );
+      if (!customerColumnNames.has('merged_into_customer_id')) {
+        this.db.exec('ALTER TABLE customers ADD COLUMN merged_into_customer_id INTEGER');
+      }
+      if (!customerColumnNames.has('merged_at')) {
+        this.db.exec('ALTER TABLE customers ADD COLUMN merged_at DATETIME');
+      }
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_customers_merged_into ON customers(merged_into_customer_id)');
+      this.db.exec('CREATE INDEX IF NOT EXISTS idx_customers_active_merge ON customers(is_active, merged_into_customer_id)');
+    } catch (error) {
+      console.error('❌ [DB] خطأ في تهيئة ربط دمج العملاء:', error);
     }
 
     try {

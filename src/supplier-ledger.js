@@ -17,6 +17,7 @@
   let manualSupplierTableEnsured = false;
   let supplierLedgerMergeHistoryReady = false;
   let latestUndoableSupplierMerge = null;
+  let supplierMergeInProgress = false;
   let manualSupplierEditingContext = null;
   let currentSupplierStatementContext = {
     supplierName: '',
@@ -597,6 +598,11 @@
   }
 
   async function mergeSelectedSuppliersInLedger() {
+    if (supplierMergeInProgress) {
+      showErrorToast('عملية دمج الموردين قيد التنفيذ بالفعل');
+      return;
+    }
+
     const selectedRows = getSelectedSupplierRows();
     if (selectedRows.length < 2) {
       showErrorToast('حدد موردين على الأقل لتنفيذ الدمج');
@@ -612,23 +618,32 @@
       return;
     }
 
-    const uniqueNames = Array.from(new Set(
+    const candidates = Array.from(new Map(
       selectedRows
-        .map((row) => String(row?.supplier_name == null ? '' : row.supplier_name))
-        .filter((name) => name.trim().length > 0)
-    ));
+        .map((row) => ({
+          rawName: String(row?.supplier_name == null ? '' : row.supplier_name),
+          displayName: normalizeSupplierDisplayName(row?.supplier_name),
+          balance: Number(row?.balance || 0),
+          movementsCount: Number(row?.movements_count || 0)
+        }))
+        .filter((candidate) => candidate.displayName.length > 0)
+        .map((candidate) => [candidate.rawName, candidate])
+    ).values());
+    const uniqueNames = candidates.map((candidate) => candidate.rawName);
 
     if (uniqueNames.length < 2) {
       showErrorToast('حدد موردين مختلفين على الأقل لتنفيذ الدمج');
       return;
     }
 
-    const targetName = await promptMergeTargetSupplierName(uniqueNames);
-    if (!targetName) {
+    const targetCandidate = await promptMergeTargetSupplierName(candidates);
+    if (!targetCandidate) {
       return;
     }
 
-    const sourceNames = uniqueNames.filter((name) => name !== targetName);
+    const rawTargetName = targetCandidate.rawName;
+    const targetName = normalizeSupplierDisplayName(rawTargetName);
+    const sourceNames = uniqueNames.filter((name) => name !== rawTargetName);
     if (sourceNames.length === 0) {
       showErrorToast('اختر مورداً هدفاً مختلفاً عن الموردين المراد دمجهم');
       return;
@@ -647,8 +662,15 @@
       return;
     }
 
+    const mergeButton = document.getElementById('supplierLedgerMergeSelectedBtn');
+    const originalButtonHtml = mergeButton?.innerHTML || '';
+    supplierMergeInProgress = true;
+    if (mergeButton) {
+      mergeButton.disabled = true;
+      mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ الدمج الآمن...';
+    }
     try {
-      const mergeResult = await executeSupplierMergeTransaction(sourceNames, targetName, normalizedBranchId);
+      const mergeResult = await executeSupplierMergeTransaction(sourceNames, rawTargetName, normalizedBranchId);
       selectedSupplierMergeKeys.clear();
       await loadSupplierLedger();
 
@@ -673,35 +695,43 @@
     } catch (error) {
       console.error('Error merging selected suppliers:', error);
       showErrorToast(`تعذر دمج الموردين: ${mapSupplierLedgerDbError(error)}`);
+    } finally {
+      supplierMergeInProgress = false;
+      if (mergeButton) {
+        mergeButton.innerHTML = originalButtonHtml;
+      }
+      updateSupplierLedgerSelectionUi();
     }
   }
 
   async function promptMergeTargetSupplierName(candidateNames) {
-    const names = Array.isArray(candidateNames)
-      ? candidateNames.filter((name) => String(name == null ? '' : name).trim().length > 0)
+    const candidates = Array.isArray(candidateNames)
+      ? candidateNames.filter((candidate) => normalizeSupplierDisplayName(candidate?.rawName).length > 0)
       : [];
 
-    if (names.length < 2) {
+    if (candidates.length < 2) {
       return null;
     }
 
     if (window.Swal) {
       const inputOptions = {};
-      names.forEach((name, index) => {
-        inputOptions[String(index)] = `${index + 1}) ${formatSupplierNameForSelection(name)}`;
+      const fmt = getCurrencyFormatter();
+      candidates.forEach((candidate, index) => {
+        inputOptions[String(index)] = `${formatSupplierNameForSelection(candidate.rawName)} — ${candidate.movementsCount} حركة — الرصيد ${fmt(candidate.balance)}`;
       });
 
       const result = await window.Swal.fire({
-        title: 'اختيار المورد الهدف',
-        text: 'المورد الهدف هو الاسم الذي سيبقى بعد الدمج',
-        input: 'select',
+        title: 'أي سجل مورد سيبقى؟',
+        html: '<div style="text-align:right;color:#55706a;line-height:1.7">اختر المورد الأساسي. ستُنقل إليه كل القيود، وسيُنظّف اسمه تلقائيًا من المسافات والمحارف المخفية.</div>',
+        input: 'radio',
         inputOptions,
-        inputPlaceholder: 'اختر المورد الهدف',
         showCancelButton: true,
-        confirmButtonText: 'متابعة',
+        confirmButtonText: 'مراجعة نتيجة الدمج',
         cancelButtonText: 'إلغاء',
+        confirmButtonColor: '#175b4c',
+        customClass: { input: 'text-end' },
         inputValidator: (value) => {
-          if (value == null || value === '') return 'اختر المورد الهدف';
+          if (value == null || value === '') return 'يجب اختيار المورد الأساسي الذي سيبقى';
           return null;
         }
       });
@@ -711,23 +741,23 @@
       }
 
       const selectedIndex = Number.parseInt(String(result.value), 10);
-      if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= names.length) {
+      if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= candidates.length) {
         return null;
       }
-      return names[selectedIndex];
+      return candidates[selectedIndex];
     }
 
-    const optionsText = names
-      .map((name, index) => `${index + 1}) ${formatSupplierNameForSelection(name)}`)
+    const optionsText = candidates
+      .map((candidate, index) => `${index + 1}) ${formatSupplierNameForSelection(candidate.rawName)}`)
       .join('\n');
     const raw = window.prompt(`اختر رقم الاسم النهائي (المورد الهدف):\n${optionsText}`, '1');
     if (raw == null) return null;
     const selectedIndex = Number.parseInt(String(raw || '').trim(), 10) - 1;
-    if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= names.length) {
+    if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= candidates.length) {
       showErrorToast('الاختيار غير صالح');
       return null;
     }
-    return names[selectedIndex];
+    return candidates[selectedIndex];
   }
 
   async function buildSupplierMergePreview(sourceNames, targetName, branchId) {
@@ -749,21 +779,31 @@
 
   function formatSupplierNameForSelection(name) {
     const raw = String(name == null ? '' : name);
-    const visible = raw.trim() || raw || '(فارغ)';
+    const visible = normalizeSupplierDisplayName(raw) || raw || '(فارغ)';
     const hasLeading = /^\s+/.test(raw);
     const hasTrailing = /\s+$/.test(raw);
     const hasInternalMultiSpaces = /\s{2,}/.test(raw.trim());
+    const hasHiddenCharacters = /[\u200B-\u200D\u2060\uFEFF]/.test(raw);
     const notes = [];
 
     if (hasLeading) notes.push('مسافة بالبداية');
     if (hasTrailing) notes.push('مسافة بالنهاية');
     if (hasInternalMultiSpaces) notes.push('مسافات داخلية متعددة');
+    if (hasHiddenCharacters) notes.push('محارف مخفية');
 
     if (notes.length === 0) {
       return visible;
     }
 
     return `${visible} (${notes.join('، ')})`;
+  }
+
+  function normalizeSupplierDisplayName(value) {
+    return String(value == null ? '' : value)
+      .normalize('NFKC')
+      .replace(/[\u200B-\u200D\u2060\uFEFF]/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
   }
 
   async function fetchSupplierAggregateForNames(names, branchId) {
@@ -843,22 +883,27 @@
         icon: 'warning',
         title: 'تأكيد دمج الموردين',
         html: `
-          <div style="text-align:right;line-height:1.8">
-            <div><strong>الفرع:</strong> ${escapeHtml(branchLabel || 'غير محدد')}</div>
-            <div><strong>سيتم دمج:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
-            <div><strong>في المورد:</strong> ${escapeHtml(targetName || '-')}</div>
-            <hr style="margin:8px 0;">
-            <div><strong>الحركات المنقولة:</strong> ${escapeHtml(String(movedCount))}</div>
-            <div><strong>عدد الحركات بعد الدمج:</strong> ${escapeHtml(String(finalCount))}</div>
-            <div><strong>إجمالي المستحقات بعد الدمج:</strong> ${escapeHtml(fmt(finalInvoices))}</div>
-            <div><strong>إجمالي السداد بعد الدمج:</strong> ${escapeHtml(fmt(finalPayments))}</div>
-            <div><strong>الرصيد بعد الدمج:</strong> ${escapeHtml(fmt(finalBalance))}</div>
+          <div style="text-align:right;line-height:1.75;color:#173f36">
+            <div style="background:#edf7f3;border:1px solid #cce6dc;border-radius:12px;padding:12px;margin-bottom:10px">
+              <div style="font-size:12px;color:#628078">المورد الأساسي الذي سيبقى</div>
+              <div style="font-weight:800;font-size:17px">${escapeHtml(targetName || '-')}</div>
+              <div style="font-size:13px">الفرع: ${escapeHtml(branchLabel || 'غير محدد')}</div>
+            </div>
+            <div><strong>السجلات التي ستُدمج:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0">
+              <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>القيود المنقولة</small><br><strong>${escapeHtml(String(movedCount))}</strong></div>
+              <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>القيود النهائية</small><br><strong>${escapeHtml(String(finalCount))}</strong></div>
+              <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>إجمالي المستحقات</small><br><strong>${escapeHtml(fmt(finalInvoices))}</strong></div>
+              <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>إجمالي السداد</small><br><strong>${escapeHtml(fmt(finalPayments))}</strong></div>
+            </div>
+            <div style="background:${finalBalance >= 0 ? '#fff4e8' : '#edf9f2'};border-radius:9px;padding:9px"><strong>الرصيد النهائي: ${escapeHtml(fmt(finalBalance))}</strong></div>
+            <div style="font-size:12px;color:#7b6b58;margin-top:10px">يمكن فك آخر عملية دمج إذا احتجت إلى الاسترجاع.</div>
           </div>
         `,
         showCancelButton: true,
-        confirmButtonText: 'تنفيذ الدمج',
+        confirmButtonText: 'نعم، دمج آمن',
         cancelButtonText: 'إلغاء',
-        confirmButtonColor: '#d33'
+        confirmButtonColor: '#175b4c'
       });
       return !!result.isConfirmed;
     }
@@ -1036,11 +1081,15 @@
   }
 
   async function executeSupplierMergeTransaction(sourceNames, targetName, branchId) {
-    const safeTargetName = String(targetName == null ? '' : targetName);
+    const rawTargetName = String(targetName == null ? '' : targetName);
+    const safeTargetName = normalizeSupplierDisplayName(rawTargetName);
+    if (!safeTargetName) {
+      throw new Error('اسم المورد الأساسي غير صالح');
+    }
     const safeSourceNames = Array.from(new Set(
       (Array.isArray(sourceNames) ? sourceNames : [])
         .map((name) => String(name == null ? '' : name))
-        .filter((name) => name.trim().length > 0 && name !== safeTargetName)
+        .filter((name) => normalizeSupplierDisplayName(name).length > 0 && name !== rawTargetName)
     ));
     if (safeSourceNames.length === 0) {
       return { reconciledChanges: 0, manualChanges: 0, totalChanges: 0 };
@@ -1048,16 +1097,17 @@
 
     const normalizedBranchId = normalizeBranchId(branchId);
     const numericBranchId = normalizedBranchId ? Number(normalizedBranchId) : 0;
-    const placeholders = safeSourceNames.map(() => '?').join(', ');
-    const suppliersParams = [safeTargetName, ...safeSourceNames, numericBranchId];
-    const manualParams = [safeTargetName, ...safeSourceNames, numericBranchId];
+    const namesToUpdate = Array.from(new Set([rawTargetName, ...safeSourceNames]));
+    const placeholders = namesToUpdate.map(() => '?').join(', ');
+    const suppliersParams = [safeTargetName, ...namesToUpdate, numericBranchId];
+    const manualParams = [safeTargetName, ...namesToUpdate, numericBranchId];
     await ensureSupplierLedgerMergeHistoryTable();
 
     await ledgerIpc.invoke('db-run', 'BEGIN TRANSACTION');
     let committed = false;
     try {
       const affectedRows = await fetchSupplierMergeAffectedRows({
-        safeSourceNames,
+        safeSourceNames: namesToUpdate,
         numericBranchId,
         placeholders
       });
@@ -1301,20 +1351,21 @@
       if (nextName === null) {
         return;
       }
-      if (nextName === oldName) {
+      const normalizedNextName = normalizeSupplierDisplayName(nextName);
+      if (normalizedNextName === oldName) {
         showSuccessToast('لم يتم تغيير الاسم');
         return;
       }
 
-      const branchSupplierExists = await doesSupplierNameExistInBranch(nextName, numericBranchId);
+      const branchSupplierExists = await doesSupplierNameExistInBranch(normalizedNextName, numericBranchId);
       if (branchSupplierExists) {
-        const confirmed = await confirmSupplierMerge(nextName);
+        const confirmed = await confirmSupplierMerge(normalizedNextName);
         if (!confirmed) {
           return;
         }
       }
 
-      await renameSupplierNameInBranch(oldName, nextName, numericBranchId);
+      await executeSupplierMergeTransaction([oldName], normalizedNextName, numericBranchId);
       await loadSupplierLedger();
 
       const currentContextName = String(currentSupplierStatementContext?.supplierName || '');
@@ -1323,14 +1374,14 @@
         && currentContextBranch === normalizedBranchId;
       if (canRefreshStatement) {
         currentSupplierStatementContext = {
-          supplierName: nextName,
+          supplierName: normalizedNextName,
           forcedBranchId: normalizedBranchId
         };
         const modalTitle = document.getElementById('supplierStatementTitle');
         if (modalTitle) {
-          modalTitle.textContent = `كشف حساب المورد - ${nextName}`;
+          modalTitle.textContent = `كشف حساب المورد - ${normalizedNextName}`;
         }
-        await refreshSupplierStatementData(nextName, normalizedBranchId);
+        await refreshSupplierStatementData(normalizedNextName, normalizedBranchId);
       }
 
       showSuccessToast('تم تعديل اسم المورد بنجاح');
@@ -1411,7 +1462,7 @@
       if (!result.isConfirmed) {
         return null;
       }
-      return String(result.value || '').trim();
+      return normalizeSupplierDisplayName(result.value);
     }
 
     const value = window.prompt('أدخل الاسم الجديد للمورد:', currentName);

@@ -25,6 +25,7 @@ let postSaveSyncTimer = null;
 let postSaveSyncRunning = false;
 let postSaveSyncQueued = false;
 let postSaveDirtyTables = new Set();
+let openTransactionDirtyTables = new Set();
 
 function parseSyncEnabledSetting(value) {
     if (value === undefined || value === null) {
@@ -2717,6 +2718,14 @@ ipcMain.handle('db-run', async (event, sql, params = []) => {
         if (!dbManager || !dbManager.db) {
             throw new Error('Database not initialized');
         }
+        const normalizedSql = String(sql || '').trim().replace(/\s+/g, ' ').toUpperCase();
+        const beginsTransaction = /^(BEGIN|BEGIN TRANSACTION|BEGIN IMMEDIATE)(?:;)?$/.test(normalizedSql);
+        const commitsTransaction = /^(COMMIT|END|END TRANSACTION)(?:;)?$/.test(normalizedSql);
+        const rollsBackTransaction = /^(ROLLBACK|ROLLBACK TRANSACTION)(?:;)?$/.test(normalizedSql);
+        if (beginsTransaction) {
+            openTransactionDirtyTables.clear();
+        }
+
         const pendingDeleteTombstones = readIdsToBeDeleted(dbManager.db, sql, params);
         const result = dbManager.run(sql, params);
         const deleteRecords = Array.isArray(pendingDeleteTombstones.records) && pendingDeleteTombstones.records.length > 0
@@ -2731,7 +2740,17 @@ ipcMain.handle('db-run', async (event, sql, params = []) => {
             recordDeleteTombstones(dbManager.db, pendingDeleteTombstones.tableName, deleteRecords);
         }
         const syncWriteTables = getSyncWriteTables(sql);
-        if (syncWriteTables.length > 0) {
+        if (rollsBackTransaction) {
+            openTransactionDirtyTables.clear();
+        } else if (commitsTransaction) {
+            const committedTables = Array.from(openTransactionDirtyTables);
+            openTransactionDirtyTables.clear();
+            if (committedTables.length > 0) {
+                schedulePostSaveSync(`db-transaction:${committedTables.join(',')}`, committedTables);
+            }
+        } else if (syncWriteTables.length > 0 && dbManager.db.inTransaction) {
+            syncWriteTables.forEach(tableName => openTransactionDirtyTables.add(tableName));
+        } else if (syncWriteTables.length > 0) {
             schedulePostSaveSync(`db-run:${syncWriteTables.join(',')}`, syncWriteTables);
         }
         return result;

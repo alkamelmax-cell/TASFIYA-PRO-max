@@ -534,6 +534,7 @@
       let manualCustomersDefaultBranchIdCache = null;
       let customerLedgerMergeHistoryReady = false;
       let latestUndoableCustomerMerge = null;
+      let customerMergeInProgress = false;
       let currentCustomerStatementContext = {
         customerName: '',
         forcedBranchId: '',
@@ -1434,7 +1435,9 @@
           ...customerRef,
           selectionKey: buildCustomerSelectionKey(customerRef),
           branchName: String(row?.branch_name == null ? '' : row.branch_name),
-          label: formatCustomerRefForMergeSelection(customerRef)
+          label: formatCustomerRefForMergeSelection(customerRef),
+          balance: Number(row?.balance || 0),
+          movementsCount: Number(row?.movements_count || 0)
         };
       }
       
@@ -1611,6 +1614,11 @@
       }
       
       async function mergeSelectedCustomersInLedger() {
+        if (customerMergeInProgress) {
+          showTransactionAlert('عملية دمج العملاء قيد التنفيذ بالفعل', 'danger');
+          return;
+        }
+      
         const selectedRows = getSelectedCustomerRows();
         if (selectedRows.length < 2) {
           showTransactionAlert('حدد عميلين على الأقل لتنفيذ الدمج', 'danger');
@@ -1660,6 +1668,13 @@
         });
         if (!confirmed) return;
       
+        const mergeButton = document.getElementById('customerLedgerMergeSelectedBtn');
+        const originalButtonHtml = mergeButton?.innerHTML || '';
+        customerMergeInProgress = true;
+        if (mergeButton) {
+          mergeButton.disabled = true;
+          mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ الدمج الآمن...';
+        }
         try {
           const mergeResult = await executeCustomerMergeTransaction(sourceRefs, targetCustomerRef, normalizedBranchId);
           selectedCustomerMergeKeys.clear();
@@ -1683,10 +1698,20 @@
           }
       
           const changed = Number(mergeResult?.totalChanges || 0);
-          showTransactionAlert(`تم دمج العملاء المحددين بنجاح (${changed} حركة محدثة)`, 'success');
+          const registryChanges = Number(mergeResult?.registryChanges || 0);
+          showTransactionAlert(
+            `تم الدمج بنجاح: ${changed} حركة، وإغلاق ${registryChanges} سجل عميل مكرر`,
+            'success'
+          );
         } catch (error) {
           console.error('Error merging selected customers:', error);
           showTransactionAlert(`تعذر دمج العملاء: ${mapCustomerLedgerDbError(error)}`, 'danger');
+        } finally {
+          customerMergeInProgress = false;
+          if (mergeButton) {
+            mergeButton.innerHTML = originalButtonHtml;
+          }
+          updateCustomerLedgerSelectionUi();
         }
       }
       
@@ -1695,24 +1720,37 @@
           ? candidates.filter((candidate) => candidate && candidate.selectionKey)
           : [];
         if (customerCandidates.length < 2) return null;
+        if (!customerCandidates.some((candidate) => candidate.customerId > 0 && candidate.customerCode)) {
+          showTransactionAlert('لا يوجد ضمن التحديد سجل عميل رسمي بكود معتمد ليبقى بعد الدمج', 'danger');
+          return null;
+        }
       
         if (window.Swal) {
           const inputOptions = {};
+          const fmt = getCurrencyFormatter();
           customerCandidates.forEach((candidate, index) => {
-            inputOptions[String(index)] = `${index + 1}) ${formatCustomerNameForSelection(candidate.label)}`;
+            const officialLabel = candidate.customerId > 0 && candidate.customerCode
+              ? 'سجل رسمي'
+              : 'سجل قديم بلا هوية كاملة';
+            inputOptions[String(index)] = `${formatCustomerNameForSelection(candidate.label)} — ${officialLabel} — ${candidate.movementsCount} حركة — الرصيد ${fmt(candidate.balance)}`;
           });
       
           const result = await window.Swal.fire({
-            title: 'اختيار العميل الهدف',
-            text: 'العميل الهدف هو العميل الذي ستنتقل إليه كل الحركات والأكواد',
-            input: 'select',
+            title: 'أي سجل عميل سيبقى؟',
+            html: '<div style="text-align:right;color:#55706a;line-height:1.7">اختر السجل الرسمي الذي سيبقى بعد الدمج. سيحتفظ العميل المختار بكوده وحسابه، وتُنقل إليه كل الحركات بأمان.</div>',
+            input: 'radio',
             inputOptions,
-            inputPlaceholder: 'اختر العميل الهدف',
             showCancelButton: true,
-            confirmButtonText: 'متابعة',
+            confirmButtonText: 'مراجعة نتيجة الدمج',
             cancelButtonText: 'إلغاء',
+            confirmButtonColor: '#175b4c',
+            customClass: { input: 'text-end' },
             inputValidator: (value) => {
-              if (value == null || value === '') return 'اختر العميل الهدف';
+              if (value == null || value === '') return 'يجب اختيار السجل الرسمي الذي سيبقى';
+              const selectedCandidate = customerCandidates[Number.parseInt(String(value), 10)];
+              if (!selectedCandidate || selectedCandidate.customerId <= 0 || !selectedCandidate.customerCode) {
+                return 'هذا سجل قديم بلا هوية كاملة؛ اختر العميل الرسمي الذي يحمل كودًا معتمدًا';
+              }
               return null;
             }
           });
@@ -1734,7 +1772,12 @@
           showTransactionAlert('الاختيار غير صالح', 'danger');
           return null;
         }
-        return customerCandidates[selectedIndex];
+        const selectedCandidate = customerCandidates[selectedIndex];
+        if (selectedCandidate.customerId <= 0 || !selectedCandidate.customerCode) {
+          showTransactionAlert('اختر العميل الرسمي الذي يحمل كودًا معتمدًا', 'danger');
+          return null;
+        }
+        return selectedCandidate;
       }
       
       function formatCustomerNameForSelection(name) {
@@ -1892,22 +1935,27 @@
             icon: 'warning',
             title: 'تأكيد دمج العملاء',
             html: `
-              <div style="text-align:right;line-height:1.8">
-                <div><strong>الفرع:</strong> ${escapeHtml(branchLabel || 'غير محدد')}</div>
-                <div><strong>سيتم دمج:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
-                <div><strong>في العميل:</strong> ${escapeHtml(targetName || '-')}</div>
-                <hr style="margin:8px 0;">
-                <div><strong>الحركات المنقولة:</strong> ${escapeHtml(String(movedCount))}</div>
-                <div><strong>عدد الحركات بعد الدمج:</strong> ${escapeHtml(String(finalCount))}</div>
-                <div><strong>إجمالي الأجل بعد الدمج:</strong> ${escapeHtml(fmt(finalPostpaid))}</div>
-                <div><strong>إجمالي المقبوضات بعد الدمج:</strong> ${escapeHtml(fmt(finalReceipts))}</div>
-                <div><strong>الرصيد بعد الدمج:</strong> ${escapeHtml(fmt(finalBalance))}</div>
+              <div style="text-align:right;line-height:1.75;color:#173f36">
+                <div style="background:#edf7f3;border:1px solid #cce6dc;border-radius:12px;padding:12px;margin-bottom:10px">
+                  <div style="font-size:12px;color:#628078">السجل الرسمي الذي سيبقى</div>
+                  <div style="font-weight:800;font-size:17px">${escapeHtml(targetName || '-')}</div>
+                  <div style="font-size:13px">الفرع: ${escapeHtml(branchLabel || 'غير محدد')}</div>
+                </div>
+                <div><strong>السجلات التي ستُدمج:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0">
+                  <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>الحركات المنقولة</small><br><strong>${escapeHtml(String(movedCount))}</strong></div>
+                  <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>الحركات النهائية</small><br><strong>${escapeHtml(String(finalCount))}</strong></div>
+                  <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>إجمالي الأجل</small><br><strong>${escapeHtml(fmt(finalPostpaid))}</strong></div>
+                  <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>إجمالي المقبوضات</small><br><strong>${escapeHtml(fmt(finalReceipts))}</strong></div>
+                </div>
+                <div style="background:${finalBalance >= 0 ? '#fff4e8' : '#edf9f2'};border-radius:9px;padding:9px"><strong>الرصيد النهائي: ${escapeHtml(fmt(finalBalance))}</strong></div>
+                <div style="font-size:12px;color:#7b6b58;margin-top:10px">يمكن فك آخر عملية دمج من زر «فك آخر دمج» ما دامت السجلات لم تتغير لاحقًا.</div>
               </div>
             `,
             showCancelButton: true,
-            confirmButtonText: 'تنفيذ الدمج',
+            confirmButtonText: 'نعم، دمج آمن',
             cancelButtonText: 'إلغاء',
-            confirmButtonColor: '#d33'
+            confirmButtonColor: '#175b4c'
           });
           return !!result.isConfirmed;
         }
@@ -2000,7 +2048,12 @@
             old_name: String(oldNameSource == null ? '' : oldNameSource),
             old_customer_id: normalizeCustomerId(oldCustomerIdSource),
             old_code: String(oldCodeSource == null ? '' : oldCodeSource),
-            has_identity_snapshot: hasIdentitySnapshot
+            has_identity_snapshot: hasIdentitySnapshot,
+            old_is_active: Number(row?.old_is_active ?? row?.oldIsActive ?? 1) === 0 ? 0 : 1,
+            old_merged_into_customer_id: normalizeCustomerId(
+              row?.old_merged_into_customer_id ?? row?.oldMergedIntoCustomerId
+            ),
+            old_merged_at: row?.old_merged_at ?? row?.oldMergedAt ?? null
           });
         });
       
@@ -2010,6 +2063,7 @@
       function normalizeCustomerMergeAffectedRows(rawValue) {
         const raw = rawValue && typeof rawValue === 'object' ? rawValue : {};
         return {
+          customers: normalizeMergeRowEntries(raw.customers),
           postpaid_sales: normalizeMergeRowEntries(raw.postpaid_sales),
           customer_receipts: normalizeMergeRowEntries(raw.customer_receipts),
           manual_postpaid_sales: normalizeMergeRowEntries(raw.manual_postpaid_sales),
@@ -2020,6 +2074,7 @@
       function countCustomerMergeAffectedRows(affectedRows) {
         const normalized = normalizeCustomerMergeAffectedRows(affectedRows);
         return (
+          normalized.customers.length +
           normalized.postpaid_sales.length +
           normalized.customer_receipts.length +
           normalized.manual_postpaid_sales.length +
@@ -2153,6 +2208,104 @@
         });
       }
       
+      async function fetchCustomerRegistryRowsForMerge(sourceRefsInput, branchId, targetCustomerId) {
+        const sourceRefs = dedupeCustomerRefs(sourceRefsInput);
+        const numericBranchId = Number(normalizeBranchId(branchId) || 0);
+        const safeTargetId = normalizeCustomerId(targetCustomerId);
+        const clauses = [];
+        const params = [];
+      
+        sourceRefs.forEach((sourceRef) => {
+          if (sourceRef.customerId > 0) {
+            clauses.push('c.id = ?');
+            params.push(sourceRef.customerId);
+          } else if (sourceRef.customerCode) {
+            clauses.push("UPPER(TRIM(COALESCE(c.customer_code, ''))) = ?");
+            params.push(sourceRef.customerCode);
+          } else if (sourceRef.customerName) {
+            clauses.push("TRIM(COALESCE(c.customer_name, '')) = ?");
+            params.push(sourceRef.customerName);
+          }
+        });
+        if (clauses.length === 0 || safeTargetId <= 0) return [];
+      
+        const rows = await ledgerIpc.invoke(
+          'db-query',
+          `SELECT c.id AS id,
+                  c.customer_name AS old_name,
+                  COALESCE(c.customer_code, '') AS old_code,
+                  COALESCE(c.is_active, 1) AS old_is_active,
+                  COALESCE(c.merged_into_customer_id, 0) AS old_merged_into_customer_id,
+                  c.merged_at AS old_merged_at
+           FROM customers c
+           WHERE (${clauses.map((clause) => `(${clause})`).join(' OR ')})
+             AND COALESCE(c.branch_id, 0) = ?
+             AND c.id <> ?`,
+          [...params, numericBranchId, safeTargetId]
+        );
+        return normalizeMergeRowEntries(rows || []);
+      }
+      
+      async function markCustomerRegistrySourcesMerged(registryRows, targetCustomerId) {
+        const normalizedRows = normalizeMergeRowEntries(registryRows);
+        const safeTargetId = normalizeCustomerId(targetCustomerId);
+        const conflictingRow = normalizedRows.find((row) => (
+          row.old_merged_into_customer_id > 0
+          && row.old_merged_into_customer_id !== safeTargetId
+        ));
+        if (conflictingRow) {
+          throw new Error(`العميل المصدر رقم ${conflictingRow.id} مدمج سابقًا في عميل آخر؛ فك الدمج السابق أولًا`);
+        }
+        const sourceIds = normalizedRows.map((row) => row.id);
+        if (sourceIds.length === 0 || safeTargetId <= 0) return 0;
+        const placeholders = sourceIds.map(() => '?').join(', ');
+        const result = await ledgerIpc.invoke(
+          'db-run',
+          `UPDATE customers
+           SET is_active = 0,
+               merged_into_customer_id = ?,
+               merged_at = CURRENT_TIMESTAMP,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id IN (${placeholders})
+             AND id <> ?`,
+          [safeTargetId, ...sourceIds, safeTargetId]
+        );
+        await ledgerIpc.invoke(
+          'db-run',
+          `UPDATE customers
+           SET is_active = 1,
+               merged_into_customer_id = NULL,
+               merged_at = NULL,
+               updated_at = CURRENT_TIMESTAMP
+           WHERE id = ?`,
+          [safeTargetId]
+        );
+        return Number(result?.changes || 0);
+      }
+      
+      async function validateCustomerMergeTarget(targetIdentity, branchId) {
+        const targetCustomerId = normalizeCustomerId(targetIdentity?.customer_id);
+        if (targetCustomerId <= 0) {
+          throw new Error('يجب اختيار عميل رسمي بكود معتمد ليكون العميل الأساسي');
+        }
+        const targetRow = await ledgerIpc.invoke(
+          'db-get',
+          `SELECT id, branch_id, COALESCE(is_active, 1) AS is_active,
+                  COALESCE(merged_into_customer_id, 0) AS merged_into_customer_id
+           FROM customers
+           WHERE id = ?
+           LIMIT 1`,
+          [targetCustomerId]
+        );
+        if (!targetRow) throw new Error('تعذر العثور على سجل العميل الأساسي');
+        if (normalizeBranchId(targetRow.branch_id) !== normalizeBranchId(branchId)) {
+          throw new Error('العميل الأساسي لا يتبع الفرع المحدد');
+        }
+        if (normalizeCustomerId(targetRow.merged_into_customer_id) > 0) {
+          throw new Error('العميل المختار مدمج مسبقاً في عميل آخر؛ اختر السجل الأساسي النهائي');
+        }
+      }
+      
       async function updateCustomerMergeRows({
         tableName,
         alias,
@@ -2280,12 +2433,18 @@
           if (!safeTargetName) {
             throw new Error('اسم العميل الهدف غير صالح');
           }
+          await validateCustomerMergeTarget(targetIdentity, normalizedBranchId);
       
           const affectedRows = await fetchCustomerMergeAffectedRows({
             refsToUpdate,
             branchId: normalizedBranchId,
             includeManual
           });
+          affectedRows.customers = await fetchCustomerRegistryRowsForMerge(
+            sourceRefs,
+            normalizedBranchId,
+            targetIdentity.customer_id
+          );
           const affectedRowsCount = countCustomerMergeAffectedRows(affectedRows);
           if (affectedRowsCount <= 0) {
             throw new Error('لم يتم العثور على قيود مطابقة للدمج. تحقق من الفرع/الاسم المختار.');
@@ -2328,6 +2487,11 @@
               });
           }
       
+          const registryChanges = await markCustomerRegistrySourcesMerged(
+            affectedRows.customers,
+            targetIdentity.customer_id
+          );
+      
           const totalChanges = postpaidChanges + receiptChanges + manualChanges;
           if (totalChanges <= 0) {
             throw new Error('لم يتم العثور على قيود مطابقة للدمج. تحقق من الفرع/الاسم المختار.');
@@ -2348,6 +2512,7 @@
             postpaidChanges,
             receiptChanges,
             manualChanges,
+            registryChanges,
             totalChanges,
             mergeHistoryId,
             targetIdentity
@@ -2410,6 +2575,33 @@
         return changed;
       }
       
+      async function revertCustomerRegistryRows(entries, targetCustomerId) {
+        const safeEntries = normalizeMergeRowEntries(entries);
+        const safeTargetId = normalizeCustomerId(targetCustomerId);
+        let changed = 0;
+        for (const entry of safeEntries) {
+          const result = await ledgerIpc.invoke(
+            'db-run',
+            `UPDATE customers
+             SET is_active = ?,
+                 merged_into_customer_id = ?,
+                 merged_at = ?,
+                 updated_at = CURRENT_TIMESTAMP
+             WHERE id = ?
+               AND COALESCE(merged_into_customer_id, 0) = ?`,
+            [
+              entry.old_is_active,
+              entry.old_merged_into_customer_id || null,
+              entry.old_merged_at,
+              entry.id,
+              safeTargetId
+            ]
+          );
+          changed += Number(result?.changes || 0);
+        }
+        return changed;
+      }
+      
       async function rollbackCustomerMergeRecord(mergeRecord) {
         const recordId = Number(mergeRecord?.id || 0);
         if (!Number.isFinite(recordId) || recordId <= 0) {
@@ -2432,6 +2624,10 @@
         await ledgerIpc.invoke('db-run', 'BEGIN TRANSACTION');
         let committed = false;
         try {
+          const registryRestored = await revertCustomerRegistryRows(
+            affectedRows.customers,
+            targetIdentity.customerId
+          );
           const postpaidRestored = await revertCustomerIdentityByRowId(
             'postpaid_sales',
             affectedRows.postpaid_sales,
@@ -2453,7 +2649,8 @@
             targetIdentity
           );
       
-          const restoredTotal = postpaidRestored + receiptsRestored + manualPostpaidRestored + manualReceiptsRestored;
+          const restoredTotal = registryRestored + postpaidRestored + receiptsRestored
+            + manualPostpaidRestored + manualReceiptsRestored;
           if (restoredTotal <= 0) {
             throw new Error('لا يمكن فك الدمج: لم يتم العثور على قيود مطابقة للحالة الحالية.');
           }
@@ -2461,6 +2658,7 @@
           const skippedRows = Math.max(0, expectedRows - restoredTotal);
           const undoDetails = {
             restored: {
+              customers: registryRestored,
               postpaid_sales: postpaidRestored,
               customer_receipts: receiptsRestored,
               manual_postpaid_sales: manualPostpaidRestored,
@@ -4750,7 +4948,6 @@
       
     }
   };
-
   const resolutionMap = {
     "src/app/customer-code-helpers.js": {"./customer-code-prefix":"src/app/customer-code-prefix.js"},
     "src/app/customer-code-prefix.js": {},
@@ -4760,49 +4957,28 @@
     "src/reason-translator.js": {},
     "src/renderer-ipc.js": {}
   };
-
   const externalLoaders = {
     "dexie": function loadExternalModule(globalObject) {
       const resolved = globalObject && globalObject["Dexie"];
-      if (typeof resolved === 'undefined') {
-        throw new Error("External module dexie is not available on globalThis.Dexie");
-      }
+      if (typeof resolved === 'undefined') throw new Error("External module dexie is unavailable");
       return resolved;
     }
   };
-
   const moduleCache = Object.create(null);
-
   function requireModule(moduleId) {
-    if (moduleCache[moduleId]) {
-      return moduleCache[moduleId].exports;
-    }
-
+    if (moduleCache[moduleId]) return moduleCache[moduleId].exports;
     const factory = modules[moduleId];
-    if (typeof factory !== 'function') {
-      throw new Error(`Unknown bundled module: ${moduleId}`);
-    }
-
+    if (typeof factory !== 'function') throw new Error(`Unknown bundled module: ${moduleId}`);
     const module = { exports: {} };
     moduleCache[moduleId] = module;
-
     function localRequire(request) {
-      if (externalLoaders[request]) {
-        return externalLoaders[request](globalObject);
-      }
-
-      const dependencies = resolutionMap[moduleId] || {};
-      const targetModuleId = dependencies[request];
-      if (!targetModuleId) {
-        throw new Error(`Cannot resolve ${request} from ${moduleId}`);
-      }
-
+      if (externalLoaders[request]) return externalLoaders[request](globalObject);
+      const targetModuleId = (resolutionMap[moduleId] || {})[request];
+      if (!targetModuleId) throw new Error(`Cannot resolve ${request} from ${moduleId}`);
       return requireModule(targetModuleId);
     }
-
     factory(module, module.exports, localRequire);
     return module.exports;
   }
-
   requireModule("src/customer-ledger.js");
 }(typeof globalThis !== 'undefined' ? globalThis : window));
