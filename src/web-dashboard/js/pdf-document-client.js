@@ -27,7 +27,15 @@
     async function responseError(response) {
         try {
             const payload = await response.clone().json();
-            return String(payload?.error || '').trim();
+            const message = String(payload?.error || '').trim();
+            const details = [
+                payload?.stage ? `stage=${payload.stage}` : '',
+                payload?.errorCode ? `code=${payload.errorCode}` : '',
+                payload?.detail ? `detail=${payload.detail}` : '',
+                payload?.requestId ? `requestId=${payload.requestId}` : ''
+            ].filter(Boolean);
+            console.error('[PDF API] Error response:', payload);
+            return [message, details.length ? `(${details.join(', ')})` : ''].filter(Boolean).join(' ');
         } catch (_error) {
             return '';
         }
@@ -129,6 +137,7 @@
         } catch (error) {
             cache.delete(key);
             if (error?.name === 'AbortError') throw new Error('انتهت مهلة تجهيز التقرير');
+            console.error('[PDF CLIENT] Fetch failed:', { url, error });
             throw error;
         } finally {
             window.clearTimeout(timeout);

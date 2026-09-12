@@ -688,7 +688,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-12.5',
+                        release: 'server-release-2026-09-12.6',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
@@ -1990,6 +1990,7 @@ class LocalWebServer {
                     retryable: error.statusCode !== 400,
                     requestId,
                     stage: pdfStage,
+                    detail: String(error && error.message ? error.message : error),
                     errorCode: error.code || 'CUSTOMER_LEDGER_PDF_FAILED'
                 },
                 { statusCode: error.statusCode || 503 }
