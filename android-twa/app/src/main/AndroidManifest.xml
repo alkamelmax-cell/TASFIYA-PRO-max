@@ -19,6 +19,23 @@
             android:name="com.google.firebase.messaging.default_notification_color"
             android:resource="@color/tasfiya_notification_accent" />
 
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/filepaths" />
+        </provider>
+
+        <activity
+            android:name=".PdfViewerActivity"
+            android:configChanges="keyboardHidden|orientation|screenSize"
+            android:exported="false"
+            android:label="معاينة PDF"
+            android:screenOrientation="unspecified" />
+
         <activity
             android:name=".MainActivity"
             android:alwaysRetainTaskState="true"

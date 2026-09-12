@@ -13,12 +13,21 @@ import android.webkit.WebResourceRequest;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.widget.Toast;
+
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 
 /** Native, dependency-free host for the Tasfiya Pro web application. */
 public final class MainActivity extends Activity {
     private static final String APP_HOST = "server.tail22db51.ts.net";
+    private static final int SAVE_PDF_REQUEST = 7301;
     private WebView webView;
     private TasfiyaOneSignalBridge oneSignalBridge;
+    private TasfiyaAndroidBridge androidBridge;
+    private File pendingPdfSave;
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -44,6 +53,8 @@ public final class MainActivity extends Activity {
         CookieManager.setAcceptFileSchemeCookies(false);
         oneSignalBridge = new TasfiyaOneSignalBridge(this, getString(R.string.onesignal_app_id));
         webView.addJavascriptInterface(oneSignalBridge, "TasfiyaNativeOneSignal");
+        androidBridge = new TasfiyaAndroidBridge(this, getString(R.string.launch_url));
+        webView.addJavascriptInterface(androidBridge, "TasfiyaAndroid");
         webView.setWebViewClient(new TasfiyaWebViewClient());
         if (savedInstanceState == null) {
             webView.loadUrl(getString(R.string.launch_url));
@@ -63,6 +74,58 @@ public final class MainActivity extends Activity {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (oneSignalBridge != null) {
             oneSignalBridge.onAndroidNotificationPermissionResult(requestCode, grantResults);
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (androidBridge != null) {
+            androidBridge.destroy();
+        }
+        super.onDestroy();
+    }
+
+    public void requestPdfSave(File file, String fileName) {
+        pendingPdfSave = file;
+        Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("application/pdf");
+        intent.putExtra(Intent.EXTRA_TITLE, fileName);
+        try {
+            startActivityForResult(intent, SAVE_PDF_REQUEST);
+        } catch (ActivityNotFoundException ignored) {
+            pendingPdfSave = null;
+            Toast.makeText(this, "لا يوجد مدير ملفات لحفظ التقرير.", Toast.LENGTH_LONG).show();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != SAVE_PDF_REQUEST) return;
+        File source = pendingPdfSave;
+        pendingPdfSave = null;
+        if (resultCode != RESULT_OK || data == null || data.getData() == null || source == null) return;
+        Uri destination = data.getData();
+        new Thread(() -> {
+            boolean saved = copyPdf(source, destination);
+            runOnUiThread(() -> Toast.makeText(this,
+                    saved ? "تم حفظ ملف PDF" : "تعذر حفظ ملف PDF",
+                    Toast.LENGTH_LONG).show());
+        }, "tasfiya-pdf-save").start();
+    }
+
+    private boolean copyPdf(File source, Uri destination) {
+        try (InputStream input = new FileInputStream(source);
+             OutputStream output = getContentResolver().openOutputStream(destination, "w")) {
+            if (output == null) return false;
+            byte[] buffer = new byte[8192];
+            int read;
+            while ((read = input.read(buffer)) != -1) output.write(buffer, 0, read);
+            output.flush();
+            return true;
+        } catch (Exception ignored) {
+            return false;
         }
     }
 
