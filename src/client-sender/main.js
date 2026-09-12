@@ -146,7 +146,13 @@ function isAuthError(error) {
 }
 
 function isNetworkFailure(error) {
-    return Boolean(error && !error.statusCode && error.code !== 'AUTH_REQUIRED');
+    if (!error || error.code === 'AUTH_REQUIRED') {
+        return false;
+    }
+    if (!error.statusCode) {
+        return true;
+    }
+    return [408, 429, 500, 502, 503, 504].includes(Number(error.statusCode));
 }
 
 function beginOfflineSession({ baseUrl, currentUser }) {
@@ -365,12 +371,23 @@ async function resendPendingRequests() {
         } catch (error) {
             applySessionCookieUpdate(error.sessionCookie);
 
-            clientDb.markRequestFailed(pendingRequest.id, error.message);
-            summary.failed += 1;
+            if (isNetworkFailure(error)) {
+                clientDb.markRequestQueued(pendingRequest.id);
+            } else {
+                clientDb.markRequestFailed(pendingRequest.id, error.message);
+                summary.failed += 1;
+            }
             summary.errors.push({
                 id: pendingRequest.id,
                 message: error.message
             });
+
+            if (isNetworkFailure(error)) {
+                summary.success = false;
+                summary.offlineMode = true;
+                summary.error = error.message || 'الخادم غير جاهز حاليًا. بقيت الطلبات في المعلق وسترسل عند عودة الاتصال.';
+                break;
+            }
 
             if (isAuthError(error)) {
                 if (fallbackToOfflineSession()) {
