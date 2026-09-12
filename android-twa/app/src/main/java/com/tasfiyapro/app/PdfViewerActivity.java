@@ -26,9 +26,10 @@ import androidx.core.content.FileProvider;
 
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
@@ -44,17 +45,13 @@ public final class PdfViewerActivity extends Activity {
     private String fileName;
     private PdfRenderer renderer;
     private ParcelFileDescriptor descriptor;
-    private ImageView pageImage;
     private ScrollView pageScroll;
+    private LinearLayout pageContainer;
     private ProgressBar progress;
-    private TextView pageLabel;
-    private Button previousButton;
-    private Button nextButton;
     private LinearLayout floatingActions;
     private Button floatingMenuButton;
     private boolean floatingActionsVisible;
-    private int pageIndex;
-    private Bitmap currentBitmap;
+    private final List<Bitmap> renderedPages = new ArrayList<>();
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -75,7 +72,7 @@ public final class PdfViewerActivity extends Activity {
             descriptor = ParcelFileDescriptor.open(pdfFile, ParcelFileDescriptor.MODE_READ_ONLY);
             renderer = new PdfRenderer(descriptor);
             if (renderer.getPageCount() == 0) throw new IllegalStateException("Empty PDF");
-            showPage(0);
+            renderAllPages();
         } catch (Exception ignored) {
             Toast.makeText(this, "تعذر عرض ملف PDF.", Toast.LENGTH_LONG).show();
             finish();
@@ -105,46 +102,20 @@ public final class PdfViewerActivity extends Activity {
         canvas.setForegroundGravity(Gravity.CENTER);
         canvas.setPadding(dp(8), dp(8), dp(8), dp(8));
         pageScroll = new ScrollView(this);
-        pageScroll.setFillViewport(true);
+        pageScroll.setFillViewport(false);
         pageScroll.setBackgroundColor(Color.rgb(232, 238, 236));
-        pageImage = new ImageView(this);
-        pageImage.setAdjustViewBounds(true);
-        pageImage.setScaleType(ImageView.ScaleType.FIT_XY);
-        pageImage.setBackgroundColor(Color.WHITE);
-        pageScroll.addView(pageImage, new ScrollView.LayoutParams(-1, -2));
+        pageScroll.setClipToPadding(false);
+        pageContainer = new LinearLayout(this);
+        pageContainer.setOrientation(LinearLayout.VERTICAL);
+        pageContainer.setPadding(0, dp(2), 0, dp(86));
+        pageScroll.addView(pageContainer, new ScrollView.LayoutParams(-1, -2));
         canvas.addView(pageScroll, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
         progress = new ProgressBar(this);
         canvas.addView(progress, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
         addFloatingActionMenu(canvas);
         root.addView(canvas, new LinearLayout.LayoutParams(-1, 0, 1));
 
-        LinearLayout navigation = new LinearLayout(this);
-        navigation.setGravity(Gravity.CENTER);
-        navigation.setPadding(dp(10), dp(7), dp(10), dp(7));
-        navigation.setBackgroundColor(Color.rgb(14, 58, 54));
-        previousButton = toolbarButton("السابق");
-        previousButton.setOnClickListener(view -> showPage(pageIndex - 1));
-        navigation.addView(previousButton);
-        pageLabel = new TextView(this);
-        pageLabel.setTextColor(Color.WHITE);
-        pageLabel.setTextSize(15);
-        pageLabel.setGravity(Gravity.CENTER);
-        navigation.addView(pageLabel, new LinearLayout.LayoutParams(dp(130), dp(44)));
-        nextButton = toolbarButton("التالي");
-        nextButton.setOnClickListener(view -> showPage(pageIndex + 1));
-        navigation.addView(nextButton);
-        root.addView(navigation, new LinearLayout.LayoutParams(-1, dp(60)));
         setContentView(root);
-    }
-
-    private Button toolbarButton(String text) {
-        Button button = new Button(this);
-        button.setText(text);
-        button.setTextSize(13);
-        button.setAllCaps(false);
-        button.setTextColor(Color.rgb(8, 45, 42));
-        button.setBackgroundColor(Color.rgb(218, 244, 240));
-        return button;
     }
 
     private void addFloatingActionMenu(FrameLayout canvas) {
@@ -153,36 +124,36 @@ public final class PdfViewerActivity extends Activity {
         floatingActions.setGravity(Gravity.CENTER_HORIZONTAL);
         floatingActions.setPadding(0, 0, 0, 0);
 
-        Button close = floatingButton("×", "إغلاق العارض", Color.rgb(255, 235, 235), Color.rgb(151, 47, 61));
-        close.setTextSize(28);
+        Button close = floatingLabelButton("إغلاق  ×", "إغلاق العارض",
+                Color.rgb(255, 235, 235), Color.rgb(151, 47, 61));
         close.setOnClickListener(view -> finish());
-        floatingActions.addView(close, floatingButtonParams());
+        floatingActions.addView(close, floatingLabelButtonParams());
         addFloatingGap();
 
-        Button save = floatingButton("↓", "حفظ ملف PDF", Color.WHITE, Color.rgb(15, 78, 70));
-        save.setTextSize(25);
+        Button save = floatingLabelButton("حفظ  ↓", "حفظ ملف PDF",
+                Color.WHITE, Color.rgb(15, 78, 70));
         save.setOnClickListener(view -> {
             hideFloatingActions();
             requestSave();
         });
-        floatingActions.addView(save, floatingButtonParams());
+        floatingActions.addView(save, floatingLabelButtonParams());
         addFloatingGap();
 
-        Button share = floatingButton("↗", "مشاركة ملف PDF", Color.WHITE, Color.rgb(15, 78, 70));
-        share.setTextSize(24);
+        Button share = floatingLabelButton("مشاركة  ↗", "مشاركة ملف PDF",
+                Color.WHITE, Color.rgb(15, 78, 70));
         share.setOnClickListener(view -> {
             hideFloatingActions();
             share();
         });
-        floatingActions.addView(share, floatingButtonParams());
+        floatingActions.addView(share, floatingLabelButtonParams());
         addFloatingGap();
 
-        floatingMenuButton = floatingButton("☰", "خيارات ملف PDF", Color.rgb(14, 83, 74), Color.WHITE);
-        floatingMenuButton.setTextSize(23);
+        floatingMenuButton = floatingButton("PDF", "خيارات ملف PDF", Color.rgb(14, 83, 74), Color.WHITE);
+        floatingMenuButton.setTextSize(12);
         floatingMenuButton.setOnClickListener(view -> toggleFloatingActions());
         floatingActions.addView(floatingMenuButton, floatingButtonParams());
 
-        FrameLayout.LayoutParams menuParams = new FrameLayout.LayoutParams(dp(56), -2, Gravity.BOTTOM | Gravity.LEFT);
+        FrameLayout.LayoutParams menuParams = new FrameLayout.LayoutParams(dp(132), -2, Gravity.BOTTOM | Gravity.LEFT);
         menuParams.setMargins(dp(18), dp(18), dp(18), dp(18));
         canvas.addView(floatingActions, menuParams);
         hideFloatingActions();
@@ -206,8 +177,33 @@ public final class PdfViewerActivity extends Activity {
         return button;
     }
 
+    private Button floatingLabelButton(String text, String description, int backgroundColor, int foregroundColor) {
+        Button button = new Button(this);
+        button.setText(text);
+        button.setTextColor(foregroundColor);
+        button.setContentDescription(description);
+        button.setTextSize(14);
+        button.setAllCaps(false);
+        button.setGravity(Gravity.CENTER);
+        button.setMinWidth(0);
+        button.setMinHeight(0);
+        button.setPadding(dp(12), 0, dp(12), dp(1));
+        button.setElevation(dp(7));
+        GradientDrawable background = new GradientDrawable();
+        background.setShape(GradientDrawable.RECTANGLE);
+        background.setCornerRadius(dp(26));
+        background.setColor(backgroundColor);
+        background.setStroke(dp(1), Color.argb(38, 9, 54, 49));
+        button.setBackground(background);
+        return button;
+    }
+
     private LinearLayout.LayoutParams floatingButtonParams() {
         return new LinearLayout.LayoutParams(dp(56), dp(56));
+    }
+
+    private LinearLayout.LayoutParams floatingLabelButtonParams() {
+        return new LinearLayout.LayoutParams(dp(132), dp(52));
     }
 
     private void addFloatingGap() {
@@ -225,6 +221,7 @@ public final class PdfViewerActivity extends Activity {
             floatingActions.getChildAt(index).setVisibility(View.VISIBLE);
         }
         floatingMenuButton.setText("×");
+        floatingMenuButton.setTextSize(25);
         floatingMenuButton.setContentDescription("إخفاء خيارات ملف PDF");
     }
 
@@ -235,49 +232,81 @@ public final class PdfViewerActivity extends Activity {
             floatingActions.getChildAt(index).setVisibility(View.GONE);
         }
         if (floatingMenuButton != null) {
-            floatingMenuButton.setText("☰");
+            floatingMenuButton.setText("PDF");
+            floatingMenuButton.setTextSize(12);
             floatingMenuButton.setContentDescription("خيارات ملف PDF");
         }
     }
 
-    private void showPage(int requestedIndex) {
-        if (renderer == null || requestedIndex < 0 || requestedIndex >= renderer.getPageCount()) return;
-        pageIndex = requestedIndex;
+    private void renderAllPages() {
+        if (renderer == null) return;
         progress.setVisibility(View.VISIBLE);
-        pageScroll.setVisibility(View.INVISIBLE);
-        previousButton.setEnabled(pageIndex > 0);
-        nextButton.setEnabled(pageIndex + 1 < renderer.getPageCount());
-        pageLabel.setText((pageIndex + 1) + " / " + renderer.getPageCount());
-        final int renderIndex = pageIndex;
-        final int targetWidth = Math.min(1800,
-                Math.max(getResources().getDisplayMetrics().widthPixels * 2, 1200));
+        pageScroll.setVisibility(View.VISIBLE);
+        pageContainer.removeAllViews();
+        final int pageCount = renderer.getPageCount();
+        final int targetWidth = Math.min(1400,
+                Math.max(Math.round(getResources().getDisplayMetrics().widthPixels * 1.35f), 900));
 
         renderExecutor.execute(() -> {
-            Bitmap rendered = null;
-            try (PdfRenderer.Page page = renderer.openPage(renderIndex)) {
-                int targetHeight = Math.max(1, Math.round(targetWidth * (page.getHeight() / (float) page.getWidth())));
-                rendered = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
-                rendered.eraseColor(Color.WHITE);
-                page.render(rendered, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
-            } catch (Exception ignored) { }
-            final Bitmap result = rendered;
-            runOnUiThread(() -> {
-                if (renderIndex != pageIndex || isFinishing()) {
-                    if (result != null) result.recycle();
-                    return;
-                }
-                if (currentBitmap != null && currentBitmap != result) currentBitmap.recycle();
-                currentBitmap = result;
-                progress.setVisibility(View.GONE);
-                if (result == null) {
-                    Toast.makeText(this, "تعذر عرض هذه الصفحة.", Toast.LENGTH_SHORT).show();
-                } else {
-                    pageImage.setImageBitmap(result);
-                    pageScroll.setVisibility(View.VISIBLE);
-                    pageScroll.post(() -> pageScroll.scrollTo(0, 0));
-                }
-            });
+            for (int pageIndex = 0; pageIndex < pageCount && !Thread.currentThread().isInterrupted(); pageIndex++) {
+                Bitmap rendered = null;
+                try (PdfRenderer.Page page = renderer.openPage(pageIndex)) {
+                    int targetHeight = Math.max(1,
+                            Math.round(targetWidth * (page.getHeight() / (float) page.getWidth())));
+                    rendered = Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888);
+                    rendered.eraseColor(Color.WHITE);
+                    page.render(rendered, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY);
+                } catch (Exception ignored) { }
+
+                final int renderedIndex = pageIndex;
+                final Bitmap result = rendered;
+                runOnUiThread(() -> appendRenderedPage(result, renderedIndex, pageCount));
+                if (renderedIndex == 0) runOnUiThread(() -> progress.setVisibility(View.GONE));
+            }
         });
+    }
+
+    private void appendRenderedPage(Bitmap bitmap, int pageIndex, int pageCount) {
+        if (isFinishing() || isDestroyed()) {
+            if (bitmap != null) bitmap.recycle();
+            return;
+        }
+        if (bitmap == null) {
+            if (pageIndex == 0) {
+                progress.setVisibility(View.GONE);
+                Toast.makeText(this, "تعذر عرض صفحات الملف.", Toast.LENGTH_SHORT).show();
+            }
+            return;
+        }
+
+        renderedPages.add(bitmap);
+        LinearLayout pageCard = new LinearLayout(this);
+        pageCard.setOrientation(LinearLayout.VERTICAL);
+        pageCard.setBackgroundColor(Color.WHITE);
+        pageCard.setElevation(dp(2));
+
+        TextView pageNumber = new TextView(this);
+        pageNumber.setText("صفحة " + (pageIndex + 1) + " من " + pageCount);
+        pageNumber.setTextColor(Color.rgb(78, 102, 98));
+        pageNumber.setTextSize(11);
+        pageNumber.setGravity(Gravity.CENTER);
+        pageNumber.setPadding(0, dp(7), 0, dp(7));
+
+        ImageView image = new ImageView(this);
+        image.setAdjustViewBounds(true);
+        image.setScaleType(ImageView.ScaleType.FIT_XY);
+        image.setBackgroundColor(Color.WHITE);
+        image.setImageBitmap(bitmap);
+        pageCard.addView(image, new LinearLayout.LayoutParams(-1, -2));
+        pageCard.addView(pageNumber, new LinearLayout.LayoutParams(-1, dp(34)));
+
+        LinearLayout.LayoutParams cardParams = new LinearLayout.LayoutParams(-1, -2);
+        cardParams.setMargins(dp(2), dp(5), dp(2), dp(9));
+        pageContainer.addView(pageCard, cardParams);
+        if (pageIndex == 0) {
+            progress.setVisibility(View.GONE);
+            pageScroll.post(() -> pageScroll.scrollTo(0, 0));
+        }
     }
 
     private void share() {
@@ -336,7 +365,10 @@ public final class PdfViewerActivity extends Activity {
     @Override
     protected void onDestroy() {
         renderExecutor.shutdownNow();
-        if (currentBitmap != null) currentBitmap.recycle();
+        for (Bitmap bitmap : renderedPages) {
+            if (bitmap != null && !bitmap.isRecycled()) bitmap.recycle();
+        }
+        renderedPages.clear();
         if (renderer != null) renderer.close();
         try { if (descriptor != null) descriptor.close(); } catch (Exception ignored) { }
         super.onDestroy();
