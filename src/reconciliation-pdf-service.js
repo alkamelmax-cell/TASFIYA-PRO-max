@@ -1,5 +1,11 @@
 const crypto = require('crypto');
 const PDFGenerator = require('./pdf-generator');
+const {
+    buildArabicPdfFileName,
+    buildReconciliationReportHtml,
+    dateForFile,
+    sanitizeFilePart
+} = require('./report-pdf-templates');
 
 const DEFAULT_CACHE_TTL_MS = 10 * 60 * 1000;
 const DEFAULT_GENERATION_TIMEOUT_MS = 90 * 1000;
@@ -159,6 +165,7 @@ class ReconciliationPdfService {
             cashierNumber: escapeHtml(reconciliation.cashier_number || reconciliation.cashier_id || '-'),
             accountantName: escapeHtml(reconciliation.accountant_name || 'غير معروف'),
             reconciliationDate: normalizeDate(reconciliation.reconciliation_date),
+            reconciliationDateRaw: reconciliation.reconciliation_date,
             timeRangeStart: escapeHtml(reconciliation.time_range_start || ''),
             timeRangeEnd: escapeHtml(reconciliation.time_range_end || ''),
             filterNotes: escapeHtml(reconciliation.notes || ''),
@@ -216,7 +223,20 @@ class ReconciliationPdfService {
 
         try {
             return await Promise.race([
-                this.pdfGenerator.generateReconciliationReport(reportData),
+                this.pdfGenerator.generateFromHTML(
+                    buildReconciliationReportHtml(reportData),
+                    {
+                        margin: {
+                            top: '10mm',
+                            right: '9mm',
+                            bottom: '10mm',
+                            left: '9mm'
+                        },
+                        displayHeaderFooter: false,
+                        headerTemplate: '<div></div>',
+                        footerTemplate: '<div></div>'
+                    }
+                ),
                 timeoutPromise
             ]);
         } catch (error) {
@@ -272,7 +292,16 @@ class ReconciliationPdfService {
                     etag: createPdfEtag(buffer),
                     version: loaded.version,
                     cachedAt: this.now(),
-                    reconciliationNumber: loaded.reportData.reconciliationId
+                    reconciliationNumber: loaded.reportData.reconciliationId,
+                    fileName: buildArabicPdfFileName(
+                        'تصفية',
+                        loaded.reportData.cashierName,
+                        loaded.reportData.reconciliationDateRaw || loaded.reportData.reconciliationDate,
+                        loaded.reportData.reconciliationId
+                    ),
+                    fallbackFileName: `tasfiya-reconciliation-${sanitizeFilePart(loaded.reportData.reconciliationId || id, 'report')}.pdf`,
+                    cashierName: loaded.reportData.cashierName,
+                    reconciliationDateForFile: dateForFile(loaded.reportData.reconciliationDateRaw || loaded.reportData.reconciliationDate)
                 };
                 this.cache.delete(String(id));
                 this.cache.set(String(id), report);
@@ -312,4 +341,3 @@ module.exports = {
     normalizeDate,
     toFiniteNumber
 };
-

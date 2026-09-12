@@ -245,7 +245,7 @@ class PDFGenerator {
         }
     }
 
-    async generateFromHTML(htmlContent) {
+    async generateFromHTML(htmlContent, pdfOptions = {}) {
         try {
             return await this.generatePdfWithRetry(async (page) => {
                 await page.setViewport({ width: 794, height: 1123 });
@@ -254,15 +254,19 @@ class PDFGenerator {
                     timeout: 45000
                 });
 
-                return page.pdf({
+                const defaultMargin = {
+                    top: '20mm',
+                    right: '15mm',
+                    bottom: '25mm',
+                    left: '15mm'
+                };
+                const mergedOptions = {
                     format: 'A4',
                     printBackground: true,
                     timeout: 60000,
                     margin: {
-                        top: '20mm',
-                        right: '15mm',
-                        bottom: '25mm',
-                        left: '15mm'
+                        ...defaultMargin,
+                        ...(pdfOptions.margin || {})
                     },
                     displayHeaderFooter: true,
                     footerTemplate: `
@@ -270,7 +274,16 @@ class PDFGenerator {
                             © 2025 محمد أمين الكامل - جميع الحقوق محفوظة - تصفية برو - Tasfiya Pro
                         </div>
                     `,
-                    headerTemplate: '<div></div>'
+                    headerTemplate: '<div></div>',
+                    ...pdfOptions
+                };
+                mergedOptions.margin = {
+                    ...defaultMargin,
+                    ...(pdfOptions.margin || {})
+                };
+
+                return page.pdf({
+                    ...mergedOptions
                 });
             });
         } catch (error) {

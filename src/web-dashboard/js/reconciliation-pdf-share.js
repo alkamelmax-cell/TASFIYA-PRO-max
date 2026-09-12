@@ -21,6 +21,43 @@
         return `tasfiya-reconciliation-${normalizeId(id)}.pdf`;
     }
 
+    function safePdfNamePart(value, fallback) {
+        return String(value || fallback || 'report')
+            .replace(/[\\/:*?"<>|\r\n]+/g, '-')
+            .replace(/\s+/g, '-')
+            .replace(/-+/g, '-')
+            .replace(/^-|-$/g, '')
+            .trim() || fallback || 'report';
+    }
+
+    function pdfDateNamePart(value) {
+        const date = value ? new Date(value) : new Date();
+        if (Number.isNaN(date.getTime())) return new Date().toISOString().slice(0, 10);
+        return date.toISOString().slice(0, 10);
+    }
+
+    function reportFileNameFromOptions(id, options = {}) {
+        const cashierName = options.cashierName || options.cashier_name || '';
+        const reportDate = options.date || options.reconciliationDate || options.reconciliation_date || '';
+        if (!cashierName) return reportFileName(id);
+        return `تصفية-${safePdfNamePart(cashierName, 'كاشير')}-${pdfDateNamePart(reportDate)}-${normalizeId(id)}.pdf`;
+    }
+
+    function fileNameFromContentDisposition(headerValue, fallback) {
+        const header = String(headerValue || '');
+        const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+        if (utf8Match) {
+            try {
+                return decodeURIComponent(utf8Match[1]);
+            } catch (_error) {
+                return fallback;
+            }
+        }
+
+        const plainMatch = header.match(/filename="?([^";]+)"?/i);
+        return plainMatch ? plainMatch[1] : fallback;
+    }
+
     async function readError(response) {
         try {
             const payload = await response.clone().json();
@@ -30,9 +67,10 @@
         }
     }
 
-    async function fetchReport(id) {
+    async function fetchReport(id, options = {}) {
         const normalizedId = normalizeId(id);
-        const existing = preparedReports.get(normalizedId);
+        const cacheKey = `${normalizedId}:${reportFileNameFromOptions(normalizedId, options)}`;
+        const existing = preparedReports.get(cacheKey);
         if (existing && Date.now() - existing.createdAt < PREPARED_TTL_MS) {
             return existing.promise;
         }
@@ -64,18 +102,21 @@
                 throw new Error('ملف التقرير غير صالح');
             }
 
-            const fileName = reportFileName(normalizedId);
+            const fileName = fileNameFromContentDisposition(
+                response.headers.get('content-disposition'),
+                reportFileNameFromOptions(normalizedId, options)
+            );
             const file = typeof File === 'function'
                 ? new File([blob], fileName, { type: 'application/pdf', lastModified: Date.now() })
                 : null;
             return { blob, file, fileName };
         })();
 
-        preparedReports.set(normalizedId, { createdAt: Date.now(), promise });
+        preparedReports.set(cacheKey, { createdAt: Date.now(), promise });
         try {
             return await promise;
         } catch (error) {
-            preparedReports.delete(normalizedId);
+            preparedReports.delete(cacheKey);
             if (error && error.name === 'AbortError') {
                 throw new Error('انتهت مهلة تجهيز التقرير. حاول مرة أخرى.');
             }
@@ -97,15 +138,15 @@
         window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60 * 1000);
     }
 
-    async function prepare(id) {
-        return fetchReport(id);
+    async function prepare(id, options = {}) {
+        return fetchReport(id, options);
     }
 
     async function share(id, options = {}) {
         const normalizedId = normalizeId(id);
         const onStatus = typeof options.onStatus === 'function' ? options.onStatus : () => {};
         const absoluteUrl = new URL(reportPath(normalizedId, false), window.location.origin).href;
-        const fileName = reportFileName(normalizedId);
+        const fileName = reportFileNameFromOptions(normalizedId, options);
 
         if (
             window.TasfiyaAndroid
@@ -121,7 +162,7 @@
         }
 
         onStatus('جاري تجهيز ملف PDF للمشاركة...');
-        const prepared = await fetchReport(normalizedId);
+        const prepared = await fetchReport(normalizedId, options);
         if (
             prepared.file
             && navigator.share
@@ -147,7 +188,7 @@
     async function download(id, options = {}) {
         const onStatus = typeof options.onStatus === 'function' ? options.onStatus : () => {};
         onStatus('جاري تجهيز ملف PDF للتنزيل...');
-        const prepared = await fetchReport(id);
+        const prepared = await fetchReport(id, options);
         downloadBlob(prepared.blob, prepared.fileName);
         return { mode: 'download' };
     }
@@ -159,4 +200,3 @@
         share
     });
 })();
-

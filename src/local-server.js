@@ -9,6 +9,13 @@ const { parse } = require('url');
 const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
 const { WebSessionStore } = require('./security/web-session-store');
 const { ReconciliationPdfService } = require('./reconciliation-pdf-service');
+const {
+    buildArabicPdfFileName,
+    buildCustomerLedgerReportHtml,
+    buildPdfContentDisposition,
+    createPdfEtag,
+    sanitizeFilePart
+} = require('./report-pdf-templates');
 
 const SESSION_COOKIE_NAME = 'tasfiya_session';
 const SESSION_TTL_MS = 12 * 60 * 60 * 1000;
@@ -240,6 +247,7 @@ class LocalWebServer {
         this.server = null;
         this.sessionStore = new WebSessionStore({ ttlMs: SESSION_TTL_MS });
         this.reconciliationPdfService = new ReconciliationPdfService(dbManager);
+        this.reportPdfGenerator = this.reconciliationPdfService.pdfGenerator;
     }
 
     async readJsonBody(req, options = {}) {
@@ -665,10 +673,12 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-10.9',
+                        release: 'server-release-2026-09-12.1',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
-                        reconciliation_pdf_delivery: true
+                        reconciliation_pdf_delivery: true,
+                        professional_pdf_reports: true,
+                        customer_ledger_pdf_delivery: true
                     });
                     return;
                 }
@@ -757,6 +767,13 @@ class LocalWebServer {
                 }
                 else if (pathname === '/api/lookups') {
                     await this.handleGetLookups(res);
+                    return;
+                }
+                else if (
+                    pathname === '/api/customer-ledger/report.pdf'
+                    && (req.method === 'GET' || req.method === 'HEAD')
+                ) {
+                    await this.handleGetCustomerLedgerPdf(req, res, parsedUrl.query);
                     return;
                 }
                 else if (pathname === '/api/customer-ledger') {
@@ -1552,6 +1569,75 @@ class LocalWebServer {
         }
     }
 
+    sendPdfBuffer(req, res, report, query = {}) {
+        const pdfBuffer = report.buffer;
+        const disposition = isTruthyQueryValue(query.download) ? 'attachment' : 'inline';
+        const commonHeaders = {
+            'Content-Type': 'application/pdf',
+            'Content-Disposition': buildPdfContentDisposition(
+                disposition,
+                report.fileName || report.fallbackFileName || 'report.pdf',
+                report.fallbackFileName || 'report.pdf'
+            ),
+            'Cache-Control': 'private, max-age=0, must-revalidate',
+            'Accept-Ranges': 'bytes',
+            'X-Content-Type-Options': 'nosniff',
+            'X-Report-Cache': report.cacheStatus || 'MISS',
+            'X-Request-Id': report.requestId || '',
+            ETag: report.etag
+        };
+
+        if (requestMatchesEtag(req, report.etag)) {
+            res.writeHead(304, commonHeaders);
+            res.end();
+            return;
+        }
+
+        const rangeHeader = String(req.headers.range || '').trim();
+        if (rangeHeader) {
+            const rangeMatch = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
+            if (!rangeMatch) {
+                res.writeHead(416, {
+                    ...commonHeaders,
+                    'Content-Range': `bytes */${pdfBuffer.length}`
+                });
+                res.end();
+                return;
+            }
+
+            let start = rangeMatch[1] ? Number(rangeMatch[1]) : null;
+            let end = rangeMatch[2] ? Number(rangeMatch[2]) : null;
+            if (start === null && end !== null) {
+                start = Math.max(0, pdfBuffer.length - end);
+                end = pdfBuffer.length - 1;
+            } else {
+                start = start === null ? 0 : start;
+                end = end === null ? pdfBuffer.length - 1 : Math.min(end, pdfBuffer.length - 1);
+            }
+
+            if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || start >= pdfBuffer.length) {
+                res.writeHead(416, {
+                    ...commonHeaders,
+                    'Content-Range': `bytes */${pdfBuffer.length}`
+                });
+                res.end();
+                return;
+            }
+
+            const partial = pdfBuffer.subarray(start, end + 1);
+            res.writeHead(206, {
+                ...commonHeaders,
+                'Content-Range': `bytes ${start}-${end}/${pdfBuffer.length}`,
+                'Content-Length': partial.length
+            });
+            res.end(req.method === 'HEAD' ? undefined : partial);
+            return;
+        }
+
+        res.writeHead(200, { ...commonHeaders, 'Content-Length': pdfBuffer.length });
+        res.end(req.method === 'HEAD' ? undefined : pdfBuffer);
+    }
+
     async handleGetReconciliationPdf(req, res, id, query = {}) {
         const requestId = crypto.randomUUID();
         try {
@@ -1561,70 +1647,7 @@ class LocalWebServer {
                 return;
             }
 
-            const pdfBuffer = report.buffer;
-            const safeNumber = String(report.reconciliationNumber || id).replace(/[^0-9A-Za-z_-]/g, '-');
-            const fileName = `tasfiya-reconciliation-${safeNumber}.pdf`;
-            const disposition = isTruthyQueryValue(query.download) ? 'attachment' : 'inline';
-            const commonHeaders = {
-                'Content-Type': 'application/pdf',
-                'Content-Disposition': `${disposition}; filename="${fileName}"; filename*=UTF-8''${encodeURIComponent(fileName)}`,
-                'Cache-Control': 'private, max-age=0, must-revalidate',
-                'Accept-Ranges': 'bytes',
-                'X-Content-Type-Options': 'nosniff',
-                'X-Report-Cache': report.cacheStatus,
-                'X-Request-Id': requestId,
-                ETag: report.etag
-            };
-
-            if (requestMatchesEtag(req, report.etag)) {
-                res.writeHead(304, commonHeaders);
-                res.end();
-                return;
-            }
-
-            const rangeHeader = String(req.headers.range || '').trim();
-            if (rangeHeader) {
-                const rangeMatch = rangeHeader.match(/^bytes=(\d*)-(\d*)$/);
-                if (!rangeMatch) {
-                    res.writeHead(416, {
-                        ...commonHeaders,
-                        'Content-Range': `bytes */${pdfBuffer.length}`
-                    });
-                    res.end();
-                    return;
-                }
-
-                let start = rangeMatch[1] ? Number(rangeMatch[1]) : null;
-                let end = rangeMatch[2] ? Number(rangeMatch[2]) : null;
-                if (start === null && end !== null) {
-                    start = Math.max(0, pdfBuffer.length - end);
-                    end = pdfBuffer.length - 1;
-                } else {
-                    start = start === null ? 0 : start;
-                    end = end === null ? pdfBuffer.length - 1 : Math.min(end, pdfBuffer.length - 1);
-                }
-
-                if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || start >= pdfBuffer.length) {
-                    res.writeHead(416, {
-                        ...commonHeaders,
-                        'Content-Range': `bytes */${pdfBuffer.length}`
-                    });
-                    res.end();
-                    return;
-                }
-
-                const partial = pdfBuffer.subarray(start, end + 1);
-                res.writeHead(206, {
-                    ...commonHeaders,
-                    'Content-Range': `bytes ${start}-${end}/${pdfBuffer.length}`,
-                    'Content-Length': partial.length
-                });
-                res.end(req.method === 'HEAD' ? undefined : partial);
-                return;
-            }
-
-            res.writeHead(200, { ...commonHeaders, 'Content-Length': pdfBuffer.length });
-            res.end(req.method === 'HEAD' ? undefined : pdfBuffer);
+            this.sendPdfBuffer(req, res, { ...report, requestId }, query);
         } catch (error) {
             const timedOut = error && error.code === 'PDF_GENERATION_TIMEOUT';
             console.error(`❌ [PDF] فشل تقرير التصفية ${id} (${requestId}):`, error);
@@ -1751,159 +1774,206 @@ class LocalWebServer {
         };
     }
 
+    async loadCustomerLedgerData(query = {}) {
+        const { customerName, dateFrom, dateTo } = query;
+
+        if (!customerName) {
+            const error = new Error('اسم العميل مطلوب');
+            error.statusCode = 400;
+            throw error;
+        }
+
+        const pool = this.dbManager.pool;
+
+        if (pool) {
+            console.log('[Customer Ledger] Using PostgreSQL connection (Synced Data)');
+
+            const openingContext = await this.getCustomerLedgerOpeningContext(customerName, dateFrom, pool);
+            const effectiveDateFrom = (dateFrom && dateFrom.trim() !== '') ? dateFrom : openingContext.openingStartDate;
+            let dateFilterSales = '';
+            let dateFilterReceipts = '';
+            const paramsSales = [customerName];
+            const paramsReceipts = [customerName];
+            let pNextSales = 2;
+            let pNextReceipts = 2;
+
+            if (effectiveDateFrom && effectiveDateFrom.trim() !== '') {
+                dateFilterSales += ` AND ps.created_at >= $${pNextSales++}`;
+                dateFilterReceipts += ` AND cr.created_at >= $${pNextReceipts++}`;
+                paramsSales.push(effectiveDateFrom);
+                paramsReceipts.push(effectiveDateFrom);
+            }
+            if (dateTo && dateTo.trim() !== '') {
+                dateFilterSales += ` AND ps.created_at <= $${pNextSales++}`;
+                dateFilterReceipts += ` AND cr.created_at <= $${pNextReceipts++}`;
+                const dateToEnd = dateTo.includes(' ') ? dateTo : dateTo + ' 23:59:59';
+                paramsSales.push(dateToEnd);
+                paramsReceipts.push(dateToEnd);
+            }
+
+            const salesResult = await pool.query(`
+                SELECT ps.id, ps.amount, ps.created_at, 'مبيعات آجلة' as type, 'فاتورة مبيعات' as description, c.name as cashier_name, r.reconciliation_number
+                FROM postpaid_sales ps
+                LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
+                LEFT JOIN cashiers c ON r.cashier_id = c.id
+                WHERE ps.customer_name = $1 ${dateFilterSales}
+            `, paramsSales);
+
+            const filterSalesManual = dateFilterSales.replace(/ps\./g, '');
+            const manualSalesResult = await pool.query(`
+                SELECT id, amount, created_at, 'مبيعات يدوية' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
+                FROM manual_postpaid_sales
+                WHERE customer_name = $1 ${filterSalesManual}
+            `, paramsSales);
+
+            const receiptsResult = await pool.query(`
+                SELECT cr.id, cr.amount, cr.payment_type, cr.created_at, 'سند قبض' as type, 'سداد - ' || cr.payment_type as description, c.name as cashier_name, r.reconciliation_number
+                FROM customer_receipts cr
+                LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
+                LEFT JOIN cashiers c ON r.cashier_id = c.id
+                WHERE cr.customer_name = $1 ${dateFilterReceipts}
+            `, paramsReceipts);
+
+            const filterReceiptsManual = dateFilterReceipts.replace(/cr\./g, '');
+            const manualReceiptsResult = await pool.query(`
+                SELECT id, amount, 'نقدي' as payment_type, created_at, 'سند قبض يدوي' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
+                FROM manual_customer_receipts
+                WHERE customer_name = $1 ${filterReceiptsManual}
+            `, paramsReceipts);
+
+            return [
+                this.buildOpeningLedgerRow(openingContext, dateFrom),
+                ...salesResult.rows.map(s => ({ ...s, debit: s.amount, credit: 0 })),
+                ...manualSalesResult.rows.map(s => ({ ...s, debit: s.amount, credit: 0 })),
+                ...receiptsResult.rows.map(r => ({ ...r, debit: 0, credit: r.amount })),
+                ...manualReceiptsResult.rows.map(r => ({ ...r, debit: 0, credit: r.amount }))
+            ].filter(Boolean).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+        }
+
+        console.log('[Customer Ledger] Using SQLite connection (Local Data)');
+
+        const openingContext = await this.getCustomerLedgerOpeningContext(customerName, dateFrom);
+        const effectiveDateFrom = (dateFrom && dateFrom.trim() !== '') ? dateFrom : openingContext.openingStartDate;
+        let dateFilterSales = '';
+        let dateFilterReceipts = '';
+        const paramsSales = [customerName];
+        const paramsReceipts = [customerName];
+
+        if (effectiveDateFrom && effectiveDateFrom.trim() !== '') {
+            dateFilterSales += ' AND ps.created_at >= ?';
+            dateFilterReceipts += ' AND cr.created_at >= ?';
+            paramsSales.push(effectiveDateFrom);
+            paramsReceipts.push(effectiveDateFrom);
+        }
+        if (dateTo && dateTo.trim() !== '') {
+            dateFilterSales += ' AND ps.created_at <= ?';
+            dateFilterReceipts += ' AND cr.created_at <= ?';
+            const dateToEnd = dateTo.includes(' ') ? dateTo : dateTo + ' 23:59:59';
+            paramsSales.push(dateToEnd);
+            paramsReceipts.push(dateToEnd);
+        }
+
+        const sales = await this.dbManager.db.prepare(`
+            SELECT ps.id, ps.amount, ps.created_at, 'مبيعات آجلة' as type, 'فاتورة مبيعات' as description, c.name as cashier_name, r.reconciliation_number
+            FROM postpaid_sales ps
+            LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
+            LEFT JOIN cashiers c ON r.cashier_id = c.id
+            WHERE ps.customer_name = ? ${dateFilterSales}
+        `).all(paramsSales);
+
+        const filterSalesManual = dateFilterSales.replace(/ps\./g, '');
+        const manualSales = await this.dbManager.db.prepare(`
+            SELECT id, amount, created_at, 'مبيعات يدوية' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
+            FROM manual_postpaid_sales
+            WHERE customer_name = ? ${filterSalesManual}
+        `).all(paramsSales);
+
+        const receipts = await this.dbManager.db.prepare(`
+            SELECT cr.id, cr.amount, cr.payment_type, cr.created_at, 'سند قبض' as type, 'سداد - ' || cr.payment_type as description, c.name as cashier_name, r.reconciliation_number
+            FROM customer_receipts cr
+            LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
+            LEFT JOIN cashiers c ON r.cashier_id = c.id
+            WHERE cr.customer_name = ? ${dateFilterReceipts}
+        `).all(paramsReceipts);
+
+        const filterReceiptsManual = dateFilterReceipts.replace(/cr\./g, '');
+        const manualReceipts = await this.dbManager.db.prepare(`
+            SELECT id, amount, 'نقدي' as payment_type, created_at, 'سند قبض يدوي' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
+            FROM manual_customer_receipts
+            WHERE customer_name = ? ${filterReceiptsManual}
+        `).all(paramsReceipts);
+
+        return [
+            this.buildOpeningLedgerRow(openingContext, dateFrom),
+            ...sales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
+            ...manualSales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
+            ...receipts.map(r => ({ ...r, debit: 0, credit: r.amount })),
+            ...manualReceipts.map(r => ({ ...r, debit: 0, credit: r.amount }))
+        ].filter(Boolean).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
+    }
+
     async handleGetCustomerLedger(res, query) {
         try {
-            const { customerName, dateFrom, dateTo } = query;
-
-            if (!customerName) {
-                return this.sendJson(res, { success: false, error: 'اسم العميل مطلوب' });
-            }
-
-            // Check if we are in Server Mode (Render/Postgres) or Local Mode (SQLite)
-            const pool = this.dbManager.pool;
-
-            if (pool) {
-                // ============================================
-                // POSTGRESQL MODE (Server / Synced Data)
-                // ============================================
-                console.log('[Customer Ledger] Using PostgreSQL connection (Synced Data)');
-
-                const openingContext = await this.getCustomerLedgerOpeningContext(customerName, dateFrom, pool);
-                const effectiveDateFrom = (dateFrom && dateFrom.trim() !== '') ? dateFrom : openingContext.openingStartDate;
-                let dateFilterSales = '';
-                let dateFilterReceipts = '';
-                const paramsSales = [customerName];
-                const paramsReceipts = [customerName];
-                let pNextSales = 2;
-                let pNextReceipts = 2;
-
-                if (effectiveDateFrom && effectiveDateFrom.trim() !== '') {
-                    dateFilterSales += ` AND ps.created_at >= $${pNextSales++}`;
-                    dateFilterReceipts += ` AND cr.created_at >= $${pNextReceipts++}`;
-                    paramsSales.push(effectiveDateFrom);
-                    paramsReceipts.push(effectiveDateFrom);
-                }
-                if (dateTo && dateTo.trim() !== '') {
-                    dateFilterSales += ` AND ps.created_at <= $${pNextSales++}`;
-                    dateFilterReceipts += ` AND cr.created_at <= $${pNextReceipts++}`;
-                    const dateToEnd = dateTo.includes(' ') ? dateTo : dateTo + ' 23:59:59';
-                    paramsSales.push(dateToEnd);
-                    paramsReceipts.push(dateToEnd);
-                }
-
-                // Get Debits
-                const salesResult = await pool.query(`
-                    SELECT ps.id, ps.amount, ps.created_at, 'مبيعات آجلة' as type, 'فاتورة مبيعات' as description, c.name as cashier_name, r.reconciliation_number
-                    FROM postpaid_sales ps 
-                    LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
-                    LEFT JOIN cashiers c ON r.cashier_id = c.id
-                    WHERE ps.customer_name = $1 ${dateFilterSales}
-                `, paramsSales);
-
-                const filterSalesManual = dateFilterSales.replace(/ps\./g, '');
-                const manualSalesResult = await pool.query(`
-                    SELECT id, amount, created_at, 'مبيعات يدوية' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
-                    FROM manual_postpaid_sales 
-                    WHERE customer_name = $1 ${filterSalesManual}
-                `, paramsSales);
-
-                // Get Credits
-                const receiptsResult = await pool.query(`
-                    SELECT cr.id, cr.amount, cr.payment_type, cr.created_at, 'سند قبض' as type, 'سداد - ' || cr.payment_type as description, c.name as cashier_name, r.reconciliation_number
-                    FROM customer_receipts cr 
-                    LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
-                    LEFT JOIN cashiers c ON r.cashier_id = c.id
-                    WHERE cr.customer_name = $1 ${dateFilterReceipts}
-                `, paramsReceipts);
-
-                const filterReceiptsManual = dateFilterReceipts.replace(/cr\./g, '');
-                const manualReceiptsResult = await pool.query(`
-                    SELECT id, amount, 'نقدي' as payment_type, created_at, 'سند قبض يدوي' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
-                    FROM manual_customer_receipts 
-                    WHERE customer_name = $1 ${filterReceiptsManual}
-                `, paramsReceipts);
-
-                const ledger = [
-                    this.buildOpeningLedgerRow(openingContext, dateFrom),
-                    ...salesResult.rows.map(s => ({ ...s, debit: s.amount, credit: 0 })),
-                    ...manualSalesResult.rows.map(s => ({ ...s, debit: s.amount, credit: 0 })),
-                    ...receiptsResult.rows.map(r => ({ ...r, debit: 0, credit: r.amount })),
-                    ...manualReceiptsResult.rows.map(r => ({ ...r, debit: 0, credit: r.amount }))
-                ].filter(Boolean).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-                this.sendJson(res, { success: true, data: ledger });
-
-            } else {
-                // ============================================
-                // SQLITE MODE (Local / Offline)
-                // ============================================
-                console.log('[Customer Ledger] Using SQLite connection (Local Data)');
-
-                const openingContext = await this.getCustomerLedgerOpeningContext(customerName, dateFrom);
-                const effectiveDateFrom = (dateFrom && dateFrom.trim() !== '') ? dateFrom : openingContext.openingStartDate;
-                let dateFilterSales = '';
-                let dateFilterReceipts = '';
-                const paramsSales = [customerName];
-                const paramsReceipts = [customerName];
-
-                if (effectiveDateFrom && effectiveDateFrom.trim() !== '') {
-                    dateFilterSales += ' AND ps.created_at >= ?';
-                    dateFilterReceipts += ' AND cr.created_at >= ?';
-                    paramsSales.push(effectiveDateFrom);
-                    paramsReceipts.push(effectiveDateFrom);
-                }
-                if (dateTo && dateTo.trim() !== '') {
-                    dateFilterSales += ' AND ps.created_at <= ?';
-                    dateFilterReceipts += ' AND cr.created_at <= ?';
-                    const dateToEnd = dateTo.includes(' ') ? dateTo : dateTo + ' 23:59:59';
-                    paramsSales.push(dateToEnd);
-                    paramsReceipts.push(dateToEnd);
-                }
-
-                const sales = await this.dbManager.db.prepare(`
-                    SELECT ps.id, ps.amount, ps.created_at, 'مبيعات آجلة' as type, 'فاتورة مبيعات' as description, c.name as cashier_name, r.reconciliation_number
-                    FROM postpaid_sales ps 
-                    LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
-                    LEFT JOIN cashiers c ON r.cashier_id = c.id
-                    WHERE ps.customer_name = ? ${dateFilterSales}
-                `).all(paramsSales);
-
-                const filterSalesManual = dateFilterSales.replace(/ps\./g, '');
-                const manualSales = await this.dbManager.db.prepare(`
-                    SELECT id, amount, created_at, 'مبيعات يدوية' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
-                    FROM manual_postpaid_sales 
-                    WHERE customer_name = ? ${filterSalesManual}
-                `).all(paramsSales);
-
-                const receipts = await this.dbManager.db.prepare(`
-                    SELECT cr.id, cr.amount, cr.payment_type, cr.created_at, 'سند قبض' as type, 'سداد - ' || cr.payment_type as description, c.name as cashier_name, r.reconciliation_number
-                    FROM customer_receipts cr 
-                    LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
-                    LEFT JOIN cashiers c ON r.cashier_id = c.id
-                    WHERE cr.customer_name = ? ${dateFilterReceipts}
-                `).all(paramsReceipts);
-
-                const filterReceiptsManual = dateFilterReceipts.replace(/cr\./g, '');
-                const manualReceipts = await this.dbManager.db.prepare(`
-                    SELECT id, amount, 'نقدي' as payment_type, created_at, 'سند قبض يدوي' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
-                    FROM manual_customer_receipts 
-                    WHERE customer_name = ? ${filterReceiptsManual}
-                `).all(paramsReceipts);
-
-                const ledger = [
-                    this.buildOpeningLedgerRow(openingContext, dateFrom),
-                    ...sales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
-                    ...manualSales.map(s => ({ ...s, debit: s.amount, credit: 0 })),
-                    ...receipts.map(r => ({ ...r, debit: 0, credit: r.amount })),
-                    ...manualReceipts.map(r => ({ ...r, debit: 0, credit: r.amount }))
-                ].filter(Boolean).sort((a, b) => new Date(a.created_at) - new Date(b.created_at));
-
-                this.sendJson(res, { success: true, data: ledger });
-            }
-
+            const ledger = await this.loadCustomerLedgerData(query);
+            this.sendJson(res, { success: true, data: ledger });
         } catch (error) {
             console.error('[Customer Ledger] Error:', error);
-            this.sendJson(res, { success: false, error: error.message });
+            this.sendJson(res, { success: false, error: error.message }, { statusCode: error.statusCode || 200 });
+        }
+    }
+
+    async handleGetCustomerLedgerPdf(req, res, query = {}) {
+        const requestId = crypto.randomUUID();
+        try {
+            const customerName = String(query.customerName || '').trim();
+            if (!customerName) {
+                this.sendJson(res, { success: false, error: 'اسم العميل مطلوب', requestId }, { statusCode: 400 });
+                return;
+            }
+
+            const rows = await this.loadCustomerLedgerData(query);
+            const html = buildCustomerLedgerReportHtml({
+                customerName,
+                dateFrom: query.dateFrom || '',
+                dateTo: query.dateTo || '',
+                rows
+            });
+            const buffer = await this.reportPdfGenerator.generateFromHTML(html, {
+                margin: {
+                    top: '10mm',
+                    right: '9mm',
+                    bottom: '10mm',
+                    left: '9mm'
+                },
+                displayHeaderFooter: false,
+                headerTemplate: '<div></div>',
+                footerTemplate: '<div></div>'
+            });
+
+            if (!Buffer.isBuffer(buffer) || buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {
+                throw new Error('Generated customer ledger report is not a valid PDF');
+            }
+
+            this.sendPdfBuffer(req, res, {
+                buffer,
+                etag: createPdfEtag(buffer),
+                fileName: buildArabicPdfFileName('كشف-حساب', customerName, query.dateTo || query.dateFrom || Date.now()),
+                fallbackFileName: `customer-ledger-${sanitizeFilePart(customerName, 'customer')}.pdf`,
+                cacheStatus: 'MISS',
+                requestId
+            }, query);
+        } catch (error) {
+            console.error(`❌ [PDF] فشل كشف حساب العميل (${requestId}):`, error);
+            this.sendJson(
+                res,
+                {
+                    success: false,
+                    error: 'تعذر تجهيز كشف الحساب PDF حالياً. حاول مرة أخرى.',
+                    retryable: true,
+                    requestId
+                },
+                { statusCode: error.statusCode || 503 }
+            );
         }
     }
     async handleGetCustomersSummary(res, query = {}) {

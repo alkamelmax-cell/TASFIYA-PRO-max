@@ -275,7 +275,7 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/js/session-bootstrap.js"></script>
     <script src="/js/onesignal-bootstrap.js?v=15"></script>
-    <script src="/js/reconciliation-pdf-share.js?v=1"></script>
+    <script src="/js/reconciliation-pdf-share.js?v=2"></script>
     <script>
         const sessionHelper = window.TasfiyaSession || null;
         let user = sessionHelper ? (sessionHelper.readStoredUser() || {}) : JSON.parse(localStorage.getItem('user') || '{}');
@@ -700,7 +700,11 @@
                 const modal = new bootstrap.Modal(document.getElementById('detailsModal'));
                 modal.show();
                 if (result.success && window.TasfiyaPdfShare) {
-                    window.TasfiyaPdfShare.prepare(id).catch((error) => {
+                    const rec = result.data && result.data.reconciliation ? result.data.reconciliation : {};
+                    window.TasfiyaPdfShare.prepare(id, {
+                        cashierName: rec.cashier_name || rec.cashierName || '',
+                        date: rec.reconciliation_date || rec.reconciliationDate || ''
+                    }).catch((error) => {
                         console.warn('[PDF] Background preparation failed:', error);
                     });
                 }
@@ -906,7 +910,10 @@
                     shareButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>جارٍ تجهيز الملف</span>';
                 }
                 if (!window.TasfiyaPdfShare) throw new Error('خدمة مشاركة التقارير غير جاهزة');
-                const result = await window.TasfiyaPdfShare.share(rec.id);
+                const result = await window.TasfiyaPdfShare.share(rec.id, {
+                    cashierName: rec.cashier_name || rec.cashierName || '',
+                    date: rec.reconciliation_date || rec.reconciliationDate || ''
+                });
                 if (result && result.mode === 'download') {
                     alert('المتصفح لا يدعم مشاركة الملفات مباشرة، لذلك تم تنزيل PDF ويمكنك مشاركته من الجهاز.');
                 }

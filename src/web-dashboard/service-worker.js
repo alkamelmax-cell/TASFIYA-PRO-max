@@ -5,9 +5,9 @@
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
 // Service Worker for Tasfiya Pro PWA
-// Version: 4.9 - PDF reports stay on the authenticated server path.
+// Version: 4.10 - API PDF reports stay on the authenticated server path.
 
-const CACHE_NAME = 'tasfiya-pro-v4.9-pdf-delivery';
+const CACHE_NAME = 'tasfiya-pro-v4.10-pdf-reports';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
@@ -124,8 +124,9 @@ function shouldTryLocalApiFallback(url) {
     }
 }
 
-function isReconciliationPdfRequest(url) {
-    return /^\/api\/reconciliation\/\d+\/report\.pdf$/.test(String(url && url.pathname || ''));
+function isApiPdfRequest(url) {
+    const pathname = String(url && url.pathname || '');
+    return pathname.startsWith('/api/') && pathname.endsWith('.pdf');
 }
 
 async function buildFallbackRequest(baseRequest, targetBaseUrl) {
@@ -203,7 +204,7 @@ async function fetchApiWithFallback(eventRequest) {
 
 // Install event - cache only static assets
 self.addEventListener('install', (event) => {
-    console.log('🔧 [SW] Installing Service Worker v4.9');
+    console.log('🔧 [SW] Installing Service Worker v4.10');
     event.waitUntil(
         caches.open(CACHE_NAME)
             .then((cache) => {
@@ -219,7 +220,7 @@ self.addEventListener('install', (event) => {
 
 // Activate event - clean up old caches
 self.addEventListener('activate', (event) => {
-    console.log('🔄 [SW] Activating Service Worker v4.9');
+    console.log('🔄 [SW] Activating Service Worker v4.10');
     event.waitUntil(
         caches.keys().then((cacheNames) => {
             return Promise.all(
@@ -246,7 +247,7 @@ self.addEventListener('fetch', (event) => {
         // PDF is an authenticated binary response. Never rewrite failures to
         // localhost; that fallback is unreachable from remote browsers and
         // hides the real HTTP status behind a long network delay.
-        if (isReconciliationPdfRequest(url)) {
+        if (isApiPdfRequest(url)) {
             event.respondWith(
                 fetch(event.request, { cache: 'no-store' })
                     .catch((error) => {

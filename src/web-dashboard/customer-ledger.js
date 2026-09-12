@@ -346,6 +346,29 @@ function safePdfNamePart(value, fallback) {
         .trim();
 }
 
+function pdfDateNamePart(value) {
+    const date = value ? new Date(value) : new Date();
+    if (Number.isNaN(date.getTime())) {
+        return new Date().toISOString().slice(0, 10);
+    }
+    return date.toISOString().slice(0, 10);
+}
+
+function fileNameFromContentDisposition(headerValue, fallback) {
+    const header = String(headerValue || '');
+    const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
+    if (utf8Match) {
+        try {
+            return decodeURIComponent(utf8Match[1]);
+        } catch (_error) {
+            return fallback;
+        }
+    }
+
+    const plainMatch = header.match(/filename="?([^";]+)"?/i);
+    return plainMatch ? plainMatch[1] : fallback;
+}
+
 async function shareCustomerLedgerReport() {
     const customerName = (document.getElementById('currentCustomerName')?.value || '').trim();
     if (!customerName) return;
@@ -357,7 +380,7 @@ async function shareCustomerLedgerReport() {
     if (dateTo) params.set('dateTo', dateTo);
 
     const reportUrl = `${API_URL}/customer-ledger/report.pdf?${params.toString()}`;
-    const fileName = `كشف-حساب-${safePdfNamePart(customerName, 'عميل')}.pdf`;
+    const fileName = `كشف-حساب-${safePdfNamePart(customerName, 'عميل')}-${pdfDateNamePart(dateTo || dateFrom)}.pdf`;
     const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.matchMedia('(pointer: coarse)').matches;
     if (!isMobile) {
         window.open(reportUrl, '_blank', 'noopener');
@@ -374,14 +397,20 @@ async function shareCustomerLedgerReport() {
             shareButton.disabled = true;
             shareButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>تجهيز</span>';
         }
-        const response = await fetch(reportUrl, { cache: 'no-store', credentials: 'same-origin' });
+        const response = await fetch(reportUrl, {
+            cache: 'no-store',
+            credentials: 'same-origin',
+            headers: { Accept: 'application/pdf' }
+        });
         if (!response.ok) throw new Error(`PDF request failed with ${response.status}`);
         const blob = await response.blob();
-        if (blob.type !== 'application/pdf' || blob.size === 0) throw new Error('Invalid PDF response');
-        const file = new File([blob], fileName, { type: 'application/pdf' });
+        const signature = await blob.slice(0, 5).text();
+        if (blob.size === 0 || signature !== '%PDF-') throw new Error('Invalid PDF response');
+        const finalFileName = fileNameFromContentDisposition(response.headers.get('content-disposition'), fileName);
+        const file = new File([blob], finalFileName, { type: 'application/pdf' });
 
         if (window.TasfiyaAndroid && typeof window.TasfiyaAndroid.sharePdf === 'function') {
-            const accepted = window.TasfiyaAndroid.sharePdf(await customerLedgerBlobToBase64(blob), fileName);
+            const accepted = window.TasfiyaAndroid.sharePdf(await customerLedgerBlobToBase64(blob), finalFileName);
             if (accepted) return;
         }
 
@@ -395,7 +424,7 @@ async function shareCustomerLedgerReport() {
         const downloadUrl = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = downloadUrl;
-        link.download = fileName;
+        link.download = finalFileName;
         document.body.appendChild(link);
         link.click();
         link.remove();
