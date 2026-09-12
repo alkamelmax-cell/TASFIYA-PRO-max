@@ -3,8 +3,8 @@
   "_copyright": "🧾 تطبيق: تصفية برو | 🛠️ المطور: محمد أمين الكامل | 🗓️ سنة: 2025 | 📌 جميع الحقوق محفوظة | يمنع الاستخدام أو التعديل دون إذن كتابي",
   "_comment2": "===================================================",
   "name": "casher",
-  "version": "6.0.0",
-  "description": "تصفية برو - Professional Reconciliation System with Customer Codes & Full Ledger Identity Support v6.0.0",
+  "version": "6.0.1",
+  "description": "تصفية برو - Professional Reconciliation System with Customer Codes & Full Ledger Identity Support v6.0.1",
   "main": "src/main.js",
   "scripts": {
     "build:renderer": "node scripts/build-renderer-bundles.js",
@@ -109,8 +109,7 @@
       "shortcutName": "تصفية برو",
       "deleteAppDataOnUninstall": false,
       "displayLanguageSelector": false,
-      "language": "1025",
-      "include": "installer.nsh"
+      "language": "1025"
     },
     "portable": {
       "artifactName": "Tasfiya-Pro-${version}-Portable.${ext}"
