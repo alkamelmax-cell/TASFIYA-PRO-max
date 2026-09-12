@@ -80,6 +80,18 @@ function sanitizeFilePart(value, fallback = 'report') {
     return cleaned || fallback;
 }
 
+function sanitizeAsciiHeaderFileName(value, fallback = 'report') {
+    const cleaned = String(value || fallback)
+        .normalize('NFKD')
+        .replace(/[^\x20-\x7E]+/g, ' ')
+        .replace(/[\\/:*?"<>|;\r\n]+/g, ' ')
+        .replace(/\s+/g, '-')
+        .replace(/-+/g, '-')
+        .replace(/^-|-$/g, '')
+        .slice(0, 80);
+    return cleaned || fallback;
+}
+
 function encodeContentDispositionValue(value) {
     return encodeURIComponent(value)
         .replace(/['()]/g, (char) => `%${char.charCodeAt(0).toString(16).toUpperCase()}`)
@@ -98,7 +110,7 @@ function buildArabicPdfFileName(prefix, name, dateValue, fallbackId = '') {
 
 function buildPdfContentDisposition(disposition, fileName, fallbackFileName = 'report.pdf') {
     const safeDisposition = disposition === 'attachment' ? 'attachment' : 'inline';
-    const asciiFallback = sanitizeFilePart(fallbackFileName.replace(/\.pdf$/i, ''), 'report') + '.pdf';
+    const asciiFallback = sanitizeAsciiHeaderFileName(fallbackFileName.replace(/\.pdf$/i, ''), 'report') + '.pdf';
     return `${safeDisposition}; filename="${asciiFallback}"; filename*=UTF-8''${encodeContentDispositionValue(fileName)}`;
 }
 

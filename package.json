@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node src/start-web.js",
     "start:web": "node src/start-web.js",
-    "test": "node --check src/start-web.js && node --check src/local-server.js && node src/pdf-generator-test.js && node src/professional-pdf-renderer-test.js"
+    "test": "node --check src/start-web.js && node --check src/local-server.js && node src/pdf-generator-test.js && node src/professional-pdf-renderer-test.js && node src/report-pdf-templates-test.js"
   },
   "keywords": [
     "cashier",
