@@ -6,6 +6,7 @@ import android.content.ClipData;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.graphics.pdf.PdfRenderer;
 import android.net.Uri;
 import android.os.Bundle;
@@ -49,6 +50,9 @@ public final class PdfViewerActivity extends Activity {
     private TextView pageLabel;
     private Button previousButton;
     private Button nextButton;
+    private LinearLayout floatingActions;
+    private Button floatingMenuButton;
+    private boolean floatingActionsVisible;
     private int pageIndex;
     private Bitmap currentBitmap;
 
@@ -83,14 +87,9 @@ public final class PdfViewerActivity extends Activity {
         root.setOrientation(LinearLayout.VERTICAL);
         root.setBackgroundColor(Color.rgb(232, 238, 236));
 
-        LinearLayout toolbar = new LinearLayout(this);
-        toolbar.setGravity(Gravity.CENTER_VERTICAL);
-        toolbar.setPadding(dp(10), dp(8), dp(10), dp(8));
+        FrameLayout toolbar = new FrameLayout(this);
+        toolbar.setPadding(dp(18), dp(8), dp(18), dp(8));
         toolbar.setBackgroundColor(Color.rgb(14, 58, 54));
-
-        Button close = toolbarButton("إغلاق");
-        close.setOnClickListener(view -> finish());
-        toolbar.addView(close);
 
         TextView titleView = new TextView(this);
         titleView.setText(title);
@@ -99,15 +98,8 @@ public final class PdfViewerActivity extends Activity {
         titleView.setGravity(Gravity.CENTER);
         titleView.setMaxLines(1);
         titleView.setPadding(dp(8), 0, dp(8), 0);
-        toolbar.addView(titleView, new LinearLayout.LayoutParams(0, dp(48), 1));
-
-        Button save = toolbarButton("حفظ");
-        save.setOnClickListener(view -> requestSave());
-        toolbar.addView(save);
-        Button share = toolbarButton("مشاركة");
-        share.setOnClickListener(view -> share());
-        toolbar.addView(share);
-        root.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(64)));
+        toolbar.addView(titleView, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+        root.addView(toolbar, new LinearLayout.LayoutParams(-1, dp(56)));
 
         FrameLayout canvas = new FrameLayout(this);
         canvas.setForegroundGravity(Gravity.CENTER);
@@ -123,6 +115,7 @@ public final class PdfViewerActivity extends Activity {
         canvas.addView(pageScroll, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
         progress = new ProgressBar(this);
         canvas.addView(progress, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
+        addFloatingActionMenu(canvas);
         root.addView(canvas, new LinearLayout.LayoutParams(-1, 0, 1));
 
         LinearLayout navigation = new LinearLayout(this);
@@ -152,6 +145,99 @@ public final class PdfViewerActivity extends Activity {
         button.setTextColor(Color.rgb(8, 45, 42));
         button.setBackgroundColor(Color.rgb(218, 244, 240));
         return button;
+    }
+
+    private void addFloatingActionMenu(FrameLayout canvas) {
+        floatingActions = new LinearLayout(this);
+        floatingActions.setOrientation(LinearLayout.VERTICAL);
+        floatingActions.setGravity(Gravity.CENTER_HORIZONTAL);
+        floatingActions.setPadding(0, 0, 0, 0);
+
+        Button close = floatingButton("×", "إغلاق العارض", Color.rgb(255, 235, 235), Color.rgb(151, 47, 61));
+        close.setTextSize(28);
+        close.setOnClickListener(view -> finish());
+        floatingActions.addView(close, floatingButtonParams());
+        addFloatingGap();
+
+        Button save = floatingButton("↓", "حفظ ملف PDF", Color.WHITE, Color.rgb(15, 78, 70));
+        save.setTextSize(25);
+        save.setOnClickListener(view -> {
+            hideFloatingActions();
+            requestSave();
+        });
+        floatingActions.addView(save, floatingButtonParams());
+        addFloatingGap();
+
+        Button share = floatingButton("↗", "مشاركة ملف PDF", Color.WHITE, Color.rgb(15, 78, 70));
+        share.setTextSize(24);
+        share.setOnClickListener(view -> {
+            hideFloatingActions();
+            share();
+        });
+        floatingActions.addView(share, floatingButtonParams());
+        addFloatingGap();
+
+        floatingMenuButton = floatingButton("☰", "خيارات ملف PDF", Color.rgb(14, 83, 74), Color.WHITE);
+        floatingMenuButton.setTextSize(23);
+        floatingMenuButton.setOnClickListener(view -> toggleFloatingActions());
+        floatingActions.addView(floatingMenuButton, floatingButtonParams());
+
+        FrameLayout.LayoutParams menuParams = new FrameLayout.LayoutParams(dp(56), -2, Gravity.BOTTOM | Gravity.LEFT);
+        menuParams.setMargins(dp(18), dp(18), dp(18), dp(18));
+        canvas.addView(floatingActions, menuParams);
+        hideFloatingActions();
+    }
+
+    private Button floatingButton(String icon, String description, int backgroundColor, int foregroundColor) {
+        Button button = new Button(this);
+        button.setText(icon);
+        button.setTextColor(foregroundColor);
+        button.setContentDescription(description);
+        button.setAllCaps(false);
+        button.setMinWidth(0);
+        button.setMinHeight(0);
+        button.setPadding(0, 0, 0, dp(2));
+        button.setElevation(dp(8));
+        GradientDrawable background = new GradientDrawable();
+        background.setShape(GradientDrawable.OVAL);
+        background.setColor(backgroundColor);
+        background.setStroke(dp(1), Color.argb(38, 9, 54, 49));
+        button.setBackground(background);
+        return button;
+    }
+
+    private LinearLayout.LayoutParams floatingButtonParams() {
+        return new LinearLayout.LayoutParams(dp(56), dp(56));
+    }
+
+    private void addFloatingGap() {
+        View gap = new View(this);
+        floatingActions.addView(gap, new LinearLayout.LayoutParams(1, dp(10)));
+    }
+
+    private void toggleFloatingActions() {
+        if (floatingActionsVisible) hideFloatingActions(); else showFloatingActions();
+    }
+
+    private void showFloatingActions() {
+        floatingActionsVisible = true;
+        for (int index = 0; index < floatingActions.getChildCount() - 1; index++) {
+            floatingActions.getChildAt(index).setVisibility(View.VISIBLE);
+        }
+        floatingMenuButton.setText("×");
+        floatingMenuButton.setContentDescription("إخفاء خيارات ملف PDF");
+    }
+
+    private void hideFloatingActions() {
+        floatingActionsVisible = false;
+        if (floatingActions == null) return;
+        for (int index = 0; index < floatingActions.getChildCount() - 1; index++) {
+            floatingActions.getChildAt(index).setVisibility(View.GONE);
+        }
+        if (floatingMenuButton != null) {
+            floatingMenuButton.setText("☰");
+            floatingMenuButton.setContentDescription("خيارات ملف PDF");
+        }
     }
 
     private void showPage(int requestedIndex) {
