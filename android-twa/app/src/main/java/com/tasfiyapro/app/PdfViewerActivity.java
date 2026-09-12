@@ -17,6 +17,7 @@ import android.widget.FrameLayout;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -43,6 +44,7 @@ public final class PdfViewerActivity extends Activity {
     private PdfRenderer renderer;
     private ParcelFileDescriptor descriptor;
     private ImageView pageImage;
+    private ScrollView pageScroll;
     private ProgressBar progress;
     private TextView pageLabel;
     private Button previousButton;
@@ -110,11 +112,15 @@ public final class PdfViewerActivity extends Activity {
         FrameLayout canvas = new FrameLayout(this);
         canvas.setForegroundGravity(Gravity.CENTER);
         canvas.setPadding(dp(8), dp(8), dp(8), dp(8));
+        pageScroll = new ScrollView(this);
+        pageScroll.setFillViewport(true);
+        pageScroll.setBackgroundColor(Color.rgb(232, 238, 236));
         pageImage = new ImageView(this);
         pageImage.setAdjustViewBounds(true);
-        pageImage.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        pageImage.setScaleType(ImageView.ScaleType.FIT_XY);
         pageImage.setBackgroundColor(Color.WHITE);
-        canvas.addView(pageImage, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
+        pageScroll.addView(pageImage, new ScrollView.LayoutParams(-1, -2));
+        canvas.addView(pageScroll, new FrameLayout.LayoutParams(-1, -1, Gravity.CENTER));
         progress = new ProgressBar(this);
         canvas.addView(progress, new FrameLayout.LayoutParams(dp(48), dp(48), Gravity.CENTER));
         root.addView(canvas, new LinearLayout.LayoutParams(-1, 0, 1));
@@ -152,12 +158,13 @@ public final class PdfViewerActivity extends Activity {
         if (renderer == null || requestedIndex < 0 || requestedIndex >= renderer.getPageCount()) return;
         pageIndex = requestedIndex;
         progress.setVisibility(View.VISIBLE);
-        pageImage.setVisibility(View.INVISIBLE);
+        pageScroll.setVisibility(View.INVISIBLE);
         previousButton.setEnabled(pageIndex > 0);
         nextButton.setEnabled(pageIndex + 1 < renderer.getPageCount());
         pageLabel.setText((pageIndex + 1) + " / " + renderer.getPageCount());
         final int renderIndex = pageIndex;
-        final int targetWidth = Math.max(getResources().getDisplayMetrics().widthPixels * 2, 1200);
+        final int targetWidth = Math.min(1800,
+                Math.max(getResources().getDisplayMetrics().widthPixels * 2, 1200));
 
         renderExecutor.execute(() -> {
             Bitmap rendered = null;
@@ -180,7 +187,8 @@ public final class PdfViewerActivity extends Activity {
                     Toast.makeText(this, "تعذر عرض هذه الصفحة.", Toast.LENGTH_SHORT).show();
                 } else {
                     pageImage.setImageBitmap(result);
-                    pageImage.setVisibility(View.VISIBLE);
+                    pageScroll.setVisibility(View.VISIBLE);
+                    pageScroll.post(() -> pageScroll.scrollTo(0, 0));
                 }
             });
         });
