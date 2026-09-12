@@ -688,7 +688,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-12.7',
+                        release: 'server-release-2026-09-12.8',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
@@ -3637,6 +3637,10 @@ class LocalWebServer {
                         'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_id ON manual_customer_receipts(customer_id)',
                         'CREATE INDEX IF NOT EXISTS idx_manual_receipts_customer_code_norm ON manual_customer_receipts(UPPER(TRIM(customer_code)))',
                         'CREATE INDEX IF NOT EXISTS idx_manual_receipts_created_date ON manual_customer_receipts(DATE(created_at))',
+                        'ALTER TABLE reconciliation_requests ADD COLUMN IF NOT EXISTS client_request_key TEXT',
+                        `CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_requests_cashier_key
+                         ON reconciliation_requests(cashier_id, client_request_key)
+                         WHERE client_request_key IS NOT NULL AND BTRIM(client_request_key) <> ''`,
                         `CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliations_sync_source_row_unique
                          ON reconciliations(sync_source_id, source_row_id)
                          WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL`,
@@ -5915,6 +5919,32 @@ class LocalWebServer {
         `);
     }
 
+    async ensureReconciliationRequestsSchema() {
+        const pool = this.dbManager.pool || (this.dbManager.db && this.dbManager.db.pool);
+        if (pool) {
+            await pool.query("ALTER TABLE reconciliation_requests ADD COLUMN IF NOT EXISTS client_request_key TEXT");
+            await pool.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_requests_cashier_key
+                ON reconciliation_requests(cashier_id, client_request_key)
+                WHERE client_request_key IS NOT NULL AND BTRIM(client_request_key) <> ''
+            `);
+            return;
+        }
+
+        try {
+            this.dbManager.db.exec('ALTER TABLE reconciliation_requests ADD COLUMN client_request_key TEXT');
+        } catch (error) {
+            if (!String(error && error.message || error).includes('duplicate column name')) {
+                throw error;
+            }
+        }
+        this.dbManager.db.exec(`
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_requests_cashier_key
+            ON reconciliation_requests(cashier_id, client_request_key)
+            WHERE client_request_key IS NOT NULL AND TRIM(client_request_key) <> ''
+        `);
+    }
+
     async handleCreateCustomerCreationRequest(req, res) {
         try {
             await this.ensureCustomerCreationRequestsSchema();
@@ -5980,6 +6010,7 @@ class LocalWebServer {
 
     async handleCreateReconciliationRequest(req, res) {
         try {
+            await this.ensureReconciliationRequestsSchema();
             const data = await this.readJsonBody(req, {
                 maxBytes: LARGE_JSON_BODY_LIMIT_BYTES,
                 routeLabel: '/api/reconciliation-requests payload'

@@ -327,6 +327,7 @@ class DatabaseManager {
         status TEXT DEFAULT 'pending', 
         details_json TEXT, 
         notes TEXT,
+        client_request_key TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (cashier_id) REFERENCES cashiers(id)
@@ -655,6 +656,7 @@ class DatabaseManager {
       status TEXT DEFAULT 'pending',
       notes TEXT,
       details_json TEXT,
+      client_request_key TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )
@@ -799,6 +801,19 @@ class DatabaseManager {
       }
 
       this.ensureBranchCustomerCodePrefixes();
+
+      const requestColumns = this.db.pragma('table_info(reconciliation_requests)');
+      const hasClientRequestKey = requestColumns.some(col => col.name === 'client_request_key');
+      if (!hasClientRequestKey) {
+        console.log('➕ [DB] Adding client_request_key column to reconciliation_requests table...');
+        this.db.exec('ALTER TABLE reconciliation_requests ADD COLUMN client_request_key TEXT');
+        console.log('✅ [DB] client_request_key column added to reconciliation_requests.');
+      }
+      this.db.exec(`
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_requests_cashier_key
+        ON reconciliation_requests(cashier_id, client_request_key)
+        WHERE client_request_key IS NOT NULL AND TRIM(client_request_key) <> ''
+      `);
 
       // Check for role column in admins
       const adminColumns = this.db.pragma('table_info(admins)');

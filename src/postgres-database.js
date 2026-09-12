@@ -150,6 +150,12 @@ class PostgresManager {
             await client.query("ALTER TABLE customers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP");
             await client.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS sync_source_id TEXT');
             await client.query('ALTER TABLE customers ADD COLUMN IF NOT EXISTS source_row_id BIGINT');
+            await client.query('ALTER TABLE reconciliation_requests ADD COLUMN IF NOT EXISTS client_request_key TEXT');
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_requests_cashier_key
+                ON reconciliation_requests(cashier_id, client_request_key)
+                WHERE client_request_key IS NOT NULL AND BTRIM(client_request_key) <> ''
+            `);
             await client.query(`
                 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_sync_source_row
                 ON customers(sync_source_id, source_row_id)
@@ -386,6 +392,7 @@ class PostgresManager {
             "ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''",
             'ALTER TABLE manual_customer_receipts ADD COLUMN IF NOT EXISTS created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP',
 
+            'ALTER TABLE reconciliation_requests ADD COLUMN IF NOT EXISTS client_request_key TEXT',
             'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
             'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
             'ALTER TABLE reconciliations ADD COLUMN IF NOT EXISTS formula_profile_id INTEGER',
@@ -597,6 +604,7 @@ class PostgresManager {
                 status TEXT DEFAULT 'pending',
                 details_json TEXT,
                 notes TEXT,
+                client_request_key TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )`,
@@ -759,6 +767,9 @@ class PostgresManager {
             `CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_customer_code_unique
              ON customers(UPPER(TRIM(customer_code)))
              WHERE TRIM(COALESCE(customer_code, '')) <> ''`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_reconciliation_requests_cashier_key
+             ON reconciliation_requests(cashier_id, client_request_key)
+             WHERE client_request_key IS NOT NULL AND BTRIM(client_request_key) <> ''`,
             'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_id ON postpaid_sales(customer_id)',
             'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code ON postpaid_sales(customer_code)',
             'CREATE INDEX IF NOT EXISTS idx_postpaid_sales_customer_code_norm ON postpaid_sales(UPPER(TRIM(customer_code)))',
