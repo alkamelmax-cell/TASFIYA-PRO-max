@@ -688,7 +688,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-12.4',
+                        release: 'server-release-2026-09-12.5',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
@@ -696,7 +696,8 @@ class LocalWebServer {
                         customer_ledger_pdf_delivery: true,
                         normalized_puppeteer_pdf_output: true,
                         vector_pdf_engine: true,
-                        unified_pdf_viewer: true
+                        unified_pdf_viewer: true,
+                        pdf_engine: 'vector-pdfkit'
                     });
                     return;
                 }
@@ -1601,6 +1602,7 @@ class LocalWebServer {
             'Accept-Ranges': 'bytes',
             'X-Content-Type-Options': 'nosniff',
             'X-Report-Cache': report.cacheStatus || 'MISS',
+            'X-PDF-Engine': 'vector-pdfkit',
             'X-Request-Id': report.requestId || '',
             ETag: report.etag
         };
@@ -1942,7 +1944,9 @@ class LocalWebServer {
 
     async handleGetCustomerLedgerPdf(req, res, query = {}) {
         const requestId = crypto.randomUUID();
+        let pdfStage = 'start';
         try {
+            pdfStage = 'normalize-query';
             const normalizedQuery = normalizeCustomerLedgerQuery(query);
             const { customerName, dateFrom, dateTo } = normalizedQuery;
             if (!customerName) {
@@ -1950,7 +1954,9 @@ class LocalWebServer {
                 return;
             }
 
+            pdfStage = 'load-ledger-data';
             const rows = await this.loadCustomerLedgerData(normalizedQuery);
+            pdfStage = 'render-vector-pdf';
             const buffer = await this.reportPdfRenderer.renderCustomerLedger({
                 customerName,
                 dateFrom,
@@ -1958,10 +1964,12 @@ class LocalWebServer {
                 rows
             });
 
+            pdfStage = 'validate-pdf';
             if (!Buffer.isBuffer(buffer) || buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {
                 throw new Error('Generated customer ledger report is not a valid PDF');
             }
 
+            pdfStage = 'send-pdf';
             this.sendPdfBuffer(req, res, {
                 buffer,
                 etag: createPdfEtag(buffer),
@@ -1971,7 +1979,7 @@ class LocalWebServer {
                 requestId
             }, query);
         } catch (error) {
-            console.error(`❌ [PDF] فشل كشف حساب العميل (${requestId}):`, error);
+            console.error(`❌ [PDF] فشل كشف حساب العميل (${requestId}) at ${pdfStage}:`, error);
             this.sendJson(
                 res,
                 {
@@ -1981,6 +1989,7 @@ class LocalWebServer {
                         : 'تعذر تجهيز كشف الحساب PDF حالياً. حاول مرة أخرى.',
                     retryable: error.statusCode !== 400,
                     requestId,
+                    stage: pdfStage,
                     errorCode: error.code || 'CUSTOMER_LEDGER_PDF_FAILED'
                 },
                 { statusCode: error.statusCode || 503 }
