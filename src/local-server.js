@@ -45,6 +45,22 @@ function requestMatchesEtag(req, etag) {
     return ifNoneMatch.split(',').map((value) => value.trim()).includes(etag);
 }
 
+function firstQueryValue(value) {
+    return Array.isArray(value) ? value[0] : value;
+}
+
+function normalizeQueryText(value) {
+    return String(firstQueryValue(value) == null ? '' : firstQueryValue(value)).trim();
+}
+
+function normalizeCustomerLedgerQuery(query = {}) {
+    return {
+        customerName: normalizeQueryText(query.customerName || query.name || query.customer),
+        dateFrom: normalizeQueryText(query.dateFrom || query.from),
+        dateTo: normalizeQueryText(query.dateTo || query.to)
+    };
+}
+
 function parseNumericDbValue(value, fallback = 0) {
     if (value === null || value === undefined || value === '') {
         return fallback;
@@ -673,7 +689,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-12.1',
+                        release: 'server-release-2026-09-12.2',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
@@ -1775,7 +1791,7 @@ class LocalWebServer {
     }
 
     async loadCustomerLedgerData(query = {}) {
-        const { customerName, dateFrom, dateTo } = query;
+        const { customerName, dateFrom, dateTo } = normalizeCustomerLedgerQuery(query);
 
         if (!customerName) {
             const error = new Error('اسم العميل مطلوب');
@@ -1925,17 +1941,18 @@ class LocalWebServer {
     async handleGetCustomerLedgerPdf(req, res, query = {}) {
         const requestId = crypto.randomUUID();
         try {
-            const customerName = String(query.customerName || '').trim();
+            const normalizedQuery = normalizeCustomerLedgerQuery(query);
+            const { customerName, dateFrom, dateTo } = normalizedQuery;
             if (!customerName) {
                 this.sendJson(res, { success: false, error: 'اسم العميل مطلوب', requestId }, { statusCode: 400 });
                 return;
             }
 
-            const rows = await this.loadCustomerLedgerData(query);
+            const rows = await this.loadCustomerLedgerData(normalizedQuery);
             const html = buildCustomerLedgerReportHtml({
                 customerName,
-                dateFrom: query.dateFrom || '',
-                dateTo: query.dateTo || '',
+                dateFrom,
+                dateTo,
                 rows
             });
             const buffer = await this.reportPdfGenerator.generateFromHTML(html, {
@@ -1957,7 +1974,7 @@ class LocalWebServer {
             this.sendPdfBuffer(req, res, {
                 buffer,
                 etag: createPdfEtag(buffer),
-                fileName: buildArabicPdfFileName('كشف-حساب', customerName, query.dateTo || query.dateFrom || Date.now()),
+                fileName: buildArabicPdfFileName('كشف-حساب', customerName, dateTo || dateFrom || Date.now()),
                 fallbackFileName: `customer-ledger-${sanitizeFilePart(customerName, 'customer')}.pdf`,
                 cacheStatus: 'MISS',
                 requestId

@@ -138,6 +138,29 @@ function amountClass(value) {
     return 'neutral';
 }
 
+function statusFromSurplusDeficit(value) {
+    const numeric = toFiniteNumber(value);
+    if (numeric > 0) {
+        return {
+            label: 'فائض',
+            value: `فائض ${formatAmount(numeric)}`,
+            className: 'positive'
+        };
+    }
+    if (numeric < 0) {
+        return {
+            label: 'عجز',
+            value: `عجز ${formatAmount(Math.abs(numeric))}`,
+            className: 'negative'
+        };
+    }
+    return {
+        label: 'متوازن',
+        value: 'متوازن 0.00',
+        className: 'neutral'
+    };
+}
+
 function baseReportHtml(title, header, summaryCards, bodySections) {
     const generatedAt = new Date();
     return `<!doctype html>
@@ -316,7 +339,7 @@ function baseReportHtml(title, header, summaryCards, bodySections) {
         }
         .footer {
             margin-top: 10px;
-            padding-top: 5px;
+            padding-top: 6px;
             border-top: 1px solid #dfe9ea;
             color: #7b8d91;
             font-size: 7.5px;
@@ -342,8 +365,8 @@ function baseReportHtml(title, header, summaryCards, bodySections) {
         ${summaryCards}
         ${bodySections}
         <footer class="footer">
-            <span>تم إنشاء التقرير بواسطة تصفية برو</span>
-            <span>Tasfiya Pro</span>
+            <span>© 2025 محمد أمين الكامل - جميع الحقوق محفوظة - تصفية برو - Tasfiya Pro</span>
+            <span>تم إنشاء التقرير بواسطة نظام تصفية برو</span>
         </footer>
     </main>
 </body>
@@ -377,6 +400,7 @@ function buildReconciliationReportHtml(data) {
     const returnInvoices = data.returnInvoices || [];
     const suppliers = data.suppliers || [];
     const reportDate = data.reconciliationDateRaw || data.reconciliationDate;
+    const reconciliationStatus = statusFromSurplusDeficit(summary.surplusDeficit);
 
     const header = infoGrid([
         { label: 'رقم التصفية', value: `#${data.reconciliationId || '-'}` },
@@ -395,7 +419,7 @@ function buildReconciliationReportHtml(data) {
         { label: 'العجز/الفائض', value: formatAmount(summary.surplusDeficit), className: amountClass(summary.surplusDeficit) },
         { label: 'النقدية', value: formatAmount(summary.cashTotal), className: 'positive' },
         { label: 'الشبكة والبنك', value: formatAmount(summary.bankTotal), className: 'positive' },
-        { label: 'الأجل الصافي', value: formatAmount(toFiniteNumber(summary.postpaidTotal) - toFiniteNumber(summary.customerTotal)), className: amountClass(toFiniteNumber(summary.postpaidTotal) - toFiniteNumber(summary.customerTotal)) }
+        { label: 'الحالة', value: reconciliationStatus.value, className: reconciliationStatus.className }
     ]);
 
     const bankSection = section('المقبوضات البنكية', `

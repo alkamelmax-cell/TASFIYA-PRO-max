@@ -382,12 +382,8 @@ async function shareCustomerLedgerReport() {
     const reportUrl = `${API_URL}/customer-ledger/report.pdf?${params.toString()}`;
     const fileName = `كشف-حساب-${safePdfNamePart(customerName, 'عميل')}-${pdfDateNamePart(dateTo || dateFrom)}.pdf`;
     const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.matchMedia('(pointer: coarse)').matches;
-    if (!isMobile) {
-        window.open(reportUrl, '_blank', 'noopener');
-        return;
-    }
 
-    if (tryNativePdfShare(reportUrl, fileName, `كشف حساب ${customerName}`)) {
+    if (isMobile && tryNativePdfShare(reportUrl, fileName, `كشف حساب ${customerName}`)) {
         return;
     }
 
@@ -408,6 +404,13 @@ async function shareCustomerLedgerReport() {
         if (blob.size === 0 || signature !== '%PDF-') throw new Error('Invalid PDF response');
         const finalFileName = fileNameFromContentDisposition(response.headers.get('content-disposition'), fileName);
         const file = new File([blob], finalFileName, { type: 'application/pdf' });
+        const downloadUrl = URL.createObjectURL(blob);
+
+        if (!isMobile) {
+            window.open(downloadUrl, '_blank', 'noopener');
+            setTimeout(() => URL.revokeObjectURL(downloadUrl), 60 * 1000);
+            return;
+        }
 
         if (window.TasfiyaAndroid && typeof window.TasfiyaAndroid.sharePdf === 'function') {
             const accepted = window.TasfiyaAndroid.sharePdf(await customerLedgerBlobToBase64(blob), finalFileName);
@@ -421,7 +424,6 @@ async function shareCustomerLedgerReport() {
             return;
         }
 
-        const downloadUrl = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = downloadUrl;
         link.download = finalFileName;
