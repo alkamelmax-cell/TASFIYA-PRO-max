@@ -7,7 +7,7 @@ importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 // Service Worker for Tasfiya Pro PWA
 // Version: 4.12 - vector PDF engine and unified document viewer.
 
-const CACHE_NAME = 'tasfiya-pro-v4.12-vector-pdf-viewer';
+const CACHE_NAME = 'tasfiya-pro-v4.13-android-native-pdf';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',

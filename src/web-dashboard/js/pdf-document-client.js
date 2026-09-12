@@ -14,6 +14,28 @@
         return /\.pdf$/i.test(name) ? name : `${name}.pdf`;
     }
 
+    function androidBridgeMethod(name) {
+        const bridge = window.TasfiyaAndroid;
+        return bridge && typeof bridge[name] === 'function' ? bridge[name].bind(bridge) : null;
+    }
+
+    function nativeOptions(options) {
+        return {
+            url: new URL(options.url, window.location.href).href,
+            fileName: safeName(options.fileName),
+            title: options.title || safeName(options.fileName)
+        };
+    }
+
+    function runAndroidPdfAction(methodName, options) {
+        const method = androidBridgeMethod(methodName);
+        if (!method) return false;
+        const native = nativeOptions(options);
+        const accepted = method(native.url, native.fileName, native.title);
+        if (accepted === false) throw new Error('تعذر بدء عملية PDF في التطبيق');
+        return true;
+    }
+
     function nameFromHeader(value, fallback) {
         const header = String(value || '');
         const utf8 = header.match(/filename\*=UTF-8''([^;]+)/i);
@@ -167,8 +189,10 @@
     }
 
     async function sharePrepared(prepared) {
-        if (window.TasfiyaAndroid && typeof window.TasfiyaAndroid.sharePdf === 'function') {
-            const accepted = window.TasfiyaAndroid.sharePdf(await blobToBase64(prepared.blob), prepared.fileName, prepared.title);
+        if (androidBridgeMethod('sharePdf')) {
+            const accepted = window.TasfiyaAndroid.sharePdf(
+                await blobToBase64(prepared.blob), prepared.fileName, prepared.title
+            );
             if (accepted !== false) return 'android-share';
         }
         if (prepared.file && typeof navigator.share === 'function') {
@@ -193,6 +217,9 @@
 
     async function open(options) {
         ensureUi();
+        if (runAndroidPdfAction('openPdfFromUrl', options)) {
+            return { mode: 'android-preview' };
+        }
         notify('جاري تجهيز التقرير...');
         try {
             const prepared = await fetchPdf(options);
@@ -216,6 +243,9 @@
     }
 
     async function share(options) {
+        if (runAndroidPdfAction('sharePdfFromUrl', options)) {
+            return { mode: 'android-share' };
+        }
         notify('جاري تجهيز التقرير للمشاركة...');
         try {
             const prepared = await fetchPdf(options);
@@ -227,6 +257,9 @@
     }
 
     async function download(options) {
+        if (runAndroidPdfAction('downloadPdfFromUrl', options)) {
+            return { mode: 'android-download' };
+        }
         notify('جاري تجهيز التقرير للتنزيل...');
         const prepared = await fetchPdf(options);
         downloadPrepared(prepared);
