@@ -740,7 +740,7 @@
       
           const normalizedBranchId = normalizeBranchId(branchIds[0]);
           const branchLabel = selectedRows[0]?.branch_name || 'غير محدد';
-          const preview = await buildSupplierMergePreview(sourceNames, targetName, normalizedBranchId);
+          const preview = await buildSupplierMergePreview(sourceNames, rawTargetName, normalizedBranchId);
           const confirmed = await confirmSupplierMergeExecution({
             sourceNames,
             targetName,
@@ -766,7 +766,7 @@
             const currentName = String(currentSupplierStatementContext?.supplierName || '');
             const currentBranch = normalizeBranchId(currentSupplierStatementContext?.forcedBranchId || '');
             const shouldRefreshStatement = currentBranch === normalizedBranchId
-              && (sourceNames.includes(currentName) || currentName === targetName);
+              && (sourceNames.includes(currentName) || currentName === rawTargetName || currentName === targetName);
             if (shouldRefreshStatement) {
               currentSupplierStatementContext = {
                 supplierName: targetName,
