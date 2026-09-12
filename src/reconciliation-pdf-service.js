@@ -1,8 +1,7 @@
 const crypto = require('crypto');
-const PDFGenerator = require('./pdf-generator');
+const { ProfessionalPdfRenderer } = require('./professional-pdf-renderer');
 const {
     buildArabicPdfFileName,
-    buildReconciliationReportHtml,
     dateForFile,
     sanitizeFilePart
 } = require('./report-pdf-templates');
@@ -62,17 +61,7 @@ class ReconciliationPdfService {
         this.activeGenerators = 0;
         this.generationQueue = [];
 
-        const databaseAdapter = {
-            get: async (sql, params = []) => {
-                const row = await this.dbManager.db.prepare(sql).get(params);
-                if (row && Object.prototype.hasOwnProperty.call(row, 'setting_value')) {
-                    return { ...row, setting_value: escapeHtml(row.setting_value) };
-                }
-                return row;
-            }
-        };
-
-        this.pdfGenerator = options.pdfGenerator || new PDFGenerator(databaseAdapter);
+        this.pdfRenderer = options.pdfRenderer || new ProfessionalPdfRenderer(options.pdfRendererOptions);
     }
 
     async queryOne(sql, params = []) {
@@ -223,26 +212,10 @@ class ReconciliationPdfService {
 
         try {
             return await Promise.race([
-                this.pdfGenerator.generateFromHTML(
-                    buildReconciliationReportHtml(reportData),
-                    {
-                        margin: {
-                            top: '10mm',
-                            right: '9mm',
-                            bottom: '10mm',
-                            left: '9mm'
-                        },
-                        displayHeaderFooter: false,
-                        headerTemplate: '<div></div>',
-                        footerTemplate: '<div></div>'
-                    }
-                ),
+                this.pdfRenderer.renderReconciliation(reportData),
                 timeoutPromise
             ]);
         } catch (error) {
-            if (error && error.code === 'PDF_GENERATION_TIMEOUT' && typeof this.pdfGenerator.resetBrowser === 'function') {
-                await this.pdfGenerator.resetBrowser();
-            }
             throw error;
         } finally {
             clearTimeout(timeoutId);
@@ -327,9 +300,7 @@ class ReconciliationPdfService {
 
     async close() {
         this.cache.clear();
-        if (this.pdfGenerator && typeof this.pdfGenerator.close === 'function') {
-            await this.pdfGenerator.close();
-        }
+        // The vector renderer has no browser process or native resource to close.
     }
 }
 

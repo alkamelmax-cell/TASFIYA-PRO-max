@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node src/start-web.js",
     "start:web": "node src/start-web.js",
-    "test": "node --check src/start-web.js && node --check src/local-server.js && node src/pdf-generator-test.js"
+    "test": "node --check src/start-web.js && node --check src/local-server.js && node src/pdf-generator-test.js && node src/professional-pdf-renderer-test.js"
   },
   "keywords": [
     "cashier",
@@ -27,6 +27,7 @@
     "idb": "8.0.3",
     "localforage": "1.10.0",
     "node-fetch": "2.7.0",
+    "pdfkit": "0.17.2",
     "pg": "8.17.1",
     "puppeteer": "24.37.5",
     "sweetalert2": "11.26.21"

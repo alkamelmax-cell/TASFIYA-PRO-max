@@ -324,21 +324,6 @@ async function loadCustomerLedger(customerName) {
     }
 }
 
-function tryNativePdfShare(reportUrl, fileName, title) {
-    const nativeBridge = window.TasfiyaAndroid;
-    if (!nativeBridge || typeof nativeBridge.sharePdfFromUrl !== 'function') {
-        return false;
-    }
-
-    try {
-        const absoluteReportUrl = new URL(reportUrl, window.location.href).href;
-        return nativeBridge.sharePdfFromUrl(absoluteReportUrl, fileName, title) === true;
-    } catch (error) {
-        console.warn('[CUSTOMER LEDGER PDF] Native bridge rejected URL:', error?.message || error);
-        return false;
-    }
-}
-
 function safePdfNamePart(value, fallback) {
     return String(value || fallback || 'تقرير')
         .replace(/[\\/:*?"<>|\r\n]+/g, '-')
@@ -354,21 +339,6 @@ function pdfDateNamePart(value) {
     return date.toISOString().slice(0, 10);
 }
 
-function fileNameFromContentDisposition(headerValue, fallback) {
-    const header = String(headerValue || '');
-    const utf8Match = header.match(/filename\*=UTF-8''([^;]+)/i);
-    if (utf8Match) {
-        try {
-            return decodeURIComponent(utf8Match[1]);
-        } catch (_error) {
-            return fallback;
-        }
-    }
-
-    const plainMatch = header.match(/filename="?([^";]+)"?/i);
-    return plainMatch ? plainMatch[1] : fallback;
-}
-
 async function shareCustomerLedgerReport() {
     const customerName = (document.getElementById('currentCustomerName')?.value || '').trim();
     if (!customerName) return;
@@ -381,86 +351,29 @@ async function shareCustomerLedgerReport() {
 
     const reportUrl = `${API_URL}/customer-ledger/report.pdf?${params.toString()}`;
     const fileName = `كشف-حساب-${safePdfNamePart(customerName, 'عميل')}-${pdfDateNamePart(dateTo || dateFrom)}.pdf`;
-    const isMobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) || window.matchMedia('(pointer: coarse)').matches;
-
-    if (isMobile && tryNativePdfShare(reportUrl, fileName, `كشف حساب ${customerName}`)) {
-        return;
-    }
-
     const shareButton = document.getElementById('shareCustomerLedgerButton');
     try {
         if (shareButton) {
             shareButton.disabled = true;
             shareButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>تجهيز</span>';
         }
-        const response = await fetch(reportUrl, {
-            cache: 'no-store',
-            credentials: 'same-origin',
-            headers: { Accept: 'application/pdf' }
+        if (!window.TasfiyaPdf) throw new Error('عارض PDF غير جاهز');
+        await window.TasfiyaPdf.open({
+            url: reportUrl,
+            fileName,
+            title: `كشف حساب ${customerName}`,
+            cacheKey: `customer-ledger:${customerName}:${dateFrom}:${dateTo}`
         });
-        if (!response.ok) {
-            let serverMessage = '';
-            try {
-                const payload = await response.json();
-                serverMessage = String(payload?.error || '').trim();
-            } catch (_error) {
-                // The status code is still enough when the response is not JSON.
-            }
-            throw new Error(serverMessage || `PDF request failed with ${response.status}`);
-        }
-        const blob = await response.blob();
-        const signature = await blob.slice(0, 5).text();
-        if (blob.size === 0 || signature !== '%PDF-') throw new Error('Invalid PDF response');
-        const finalFileName = fileNameFromContentDisposition(response.headers.get('content-disposition'), fileName);
-        const file = new File([blob], finalFileName, { type: 'application/pdf' });
-        const downloadUrl = URL.createObjectURL(blob);
-
-        if (!isMobile) {
-            window.open(downloadUrl, '_blank', 'noopener');
-            setTimeout(() => URL.revokeObjectURL(downloadUrl), 60 * 1000);
-            return;
-        }
-
-        if (window.TasfiyaAndroid && typeof window.TasfiyaAndroid.sharePdf === 'function') {
-            const accepted = window.TasfiyaAndroid.sharePdf(await customerLedgerBlobToBase64(blob), finalFileName);
-            if (accepted) return;
-        }
-
-        const supportsFileShare = typeof navigator.share === 'function' &&
-            (typeof navigator.canShare !== 'function' || navigator.canShare({ files: [file] }));
-        if (supportsFileShare) {
-            await navigator.share({ files: [file], title: `كشف حساب ${customerName}` });
-            return;
-        }
-
-        const link = document.createElement('a');
-        link.href = downloadUrl;
-        link.download = finalFileName;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(() => URL.revokeObjectURL(downloadUrl), 1000);
-        alert('تم تنزيل كشف الحساب. يمكنك مشاركته من مجلد التنزيلات.');
     } catch (error) {
         if (error?.name !== 'AbortError') {
             console.error('[CUSTOMER LEDGER PDF] Failed:', error);
-            alert(error?.message || 'تعذر تجهيز كشف الحساب للمشاركة. تحقق من اتصال الخادم ثم حاول مرة أخرى.');
         }
     } finally {
         if (shareButton) {
             shareButton.disabled = false;
-            shareButton.innerHTML = '<i class="fas fa-share-nodes"></i><span>مشاركة</span>';
+            shareButton.innerHTML = '<i class="fas fa-file-pdf"></i><span>عرض PDF</span>';
         }
     }
-}
-
-function customerLedgerBlobToBase64(blob) {
-    return new Promise((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve(String(reader.result).split(',')[1]);
-        reader.onerror = reject;
-        reader.readAsDataURL(blob);
-    });
 }
 
 let currentLedgerData = [];

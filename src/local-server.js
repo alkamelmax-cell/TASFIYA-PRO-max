@@ -11,7 +11,6 @@ const { WebSessionStore } = require('./security/web-session-store');
 const { ReconciliationPdfService } = require('./reconciliation-pdf-service');
 const {
     buildArabicPdfFileName,
-    buildCustomerLedgerReportHtml,
     buildPdfContentDisposition,
     createPdfEtag,
     sanitizeFilePart
@@ -263,7 +262,7 @@ class LocalWebServer {
         this.server = null;
         this.sessionStore = new WebSessionStore({ ttlMs: SESSION_TTL_MS });
         this.reconciliationPdfService = new ReconciliationPdfService(dbManager);
-        this.reportPdfGenerator = this.reconciliationPdfService.pdfGenerator;
+        this.reportPdfRenderer = this.reconciliationPdfService.pdfRenderer;
     }
 
     async readJsonBody(req, options = {}) {
@@ -689,13 +688,15 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-12.3',
+                        release: 'server-release-2026-09-12.4',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
                         professional_pdf_reports: true,
                         customer_ledger_pdf_delivery: true,
-                        normalized_puppeteer_pdf_output: true
+                        normalized_puppeteer_pdf_output: true,
+                        vector_pdf_engine: true,
+                        unified_pdf_viewer: true
                     });
                     return;
                 }
@@ -1950,27 +1951,12 @@ class LocalWebServer {
             }
 
             const rows = await this.loadCustomerLedgerData(normalizedQuery);
-            const html = buildCustomerLedgerReportHtml({
+            const buffer = await this.reportPdfRenderer.renderCustomerLedger({
                 customerName,
                 dateFrom,
                 dateTo,
                 rows
             });
-            const rawPdf = await this.reportPdfGenerator.generateFromHTML(html, {
-                margin: {
-                    top: '10mm',
-                    right: '9mm',
-                    bottom: '10mm',
-                    left: '9mm'
-                },
-                displayHeaderFooter: false,
-                headerTemplate: '<div></div>',
-                footerTemplate: '<div></div>'
-            });
-
-            // Puppeteer 24+ returns Uint8Array. Always normalize it before
-            // validation and HTTP delivery so valid PDFs are never rejected.
-            const buffer = Buffer.isBuffer(rawPdf) ? rawPdf : Buffer.from(rawPdf || []);
 
             if (!Buffer.isBuffer(buffer) || buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {
                 throw new Error('Generated customer ledger report is not a valid PDF');

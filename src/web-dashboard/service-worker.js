@@ -5,9 +5,9 @@
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
 // Service Worker for Tasfiya Pro PWA
-// Version: 4.11 - normalized binary PDF delivery for every report type.
+// Version: 4.12 - vector PDF engine and unified document viewer.
 
-const CACHE_NAME = 'tasfiya-pro-v4.11-pdf-binary-fix';
+const CACHE_NAME = 'tasfiya-pro-v4.12-vector-pdf-viewer';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
@@ -61,6 +61,7 @@ const NETWORK_FIRST_RUNTIME_PATHS = new Set([
     '/js/session-bootstrap.js',
     '/js/navigation-shell.js',
     '/js/onesignal-bootstrap.js',
+    '/js/pdf-document-client.js',
     '/js/reconciliation-pdf-share.js',
     '/manifest.json',
     '/service-worker.js'

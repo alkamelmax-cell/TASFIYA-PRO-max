@@ -259,7 +259,7 @@
                         <button type="button" class="reconciliation-share-button" onclick="shareReconciliationReport()"
                             title="حفظ أو مشاركة تقرير PDF" aria-label="حفظ أو مشاركة تقرير PDF">
                             <i class="fas fa-share-nodes"></i>
-                            <span>مشاركة PDF</span>
+                            <span>عرض PDF</span>
                         </button>
                     </div>
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="إغلاق"></button>
@@ -275,7 +275,8 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/js/session-bootstrap.js"></script>
     <script src="/js/onesignal-bootstrap.js?v=15"></script>
-    <script src="/js/reconciliation-pdf-share.js?v=2"></script>
+    <script src="/js/pdf-document-client.js?v=1"></script>
+    <script src="/js/reconciliation-pdf-share.js?v=3"></script>
     <script>
         const sessionHelper = window.TasfiyaSession || null;
         let user = sessionHelper ? (sessionHelper.readStoredUser() || {}) : JSON.parse(localStorage.getItem('user') || '{}');
@@ -910,22 +911,18 @@
                     shareButton.innerHTML = '<i class="fas fa-spinner fa-spin"></i><span>جارٍ تجهيز الملف</span>';
                 }
                 if (!window.TasfiyaPdfShare) throw new Error('خدمة مشاركة التقارير غير جاهزة');
-                const result = await window.TasfiyaPdfShare.share(rec.id, {
+                await window.TasfiyaPdfShare.preview(rec.id, {
                     cashierName: rec.cashier_name || rec.cashierName || '',
                     date: rec.reconciliation_date || rec.reconciliationDate || ''
                 });
-                if (result && result.mode === 'download') {
-                    alert('المتصفح لا يدعم مشاركة الملفات مباشرة، لذلك تم تنزيل PDF ويمكنك مشاركته من الجهاز.');
-                }
             } catch (error) {
                 if (error && error.name !== 'AbortError') {
                     console.error('[PDF SHARE] Failed:', error);
-                    alert(error && error.message ? error.message : 'تعذر تجهيز ملف PDF للمشاركة. حاول مرة أخرى.');
                 }
             } finally {
                 if (shareButton) {
                     shareButton.disabled = false;
-                    shareButton.innerHTML = '<i class="fas fa-share-nodes"></i><span>مشاركة PDF</span>';
+                    shareButton.innerHTML = '<i class="fas fa-file-pdf"></i><span>عرض PDF</span>';
                 }
             }
         }
