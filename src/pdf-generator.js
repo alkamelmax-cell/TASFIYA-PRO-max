@@ -116,6 +116,30 @@ class PDFGenerator {
         );
     }
 
+    normalizePdfOutput(value) {
+        if (Buffer.isBuffer(value)) {
+            return value;
+        }
+
+        if (value instanceof Uint8Array) {
+            return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+        }
+
+        if (value instanceof ArrayBuffer) {
+            return Buffer.from(value);
+        }
+
+        throw new TypeError(`Unsupported PDF output type: ${value?.constructor?.name || typeof value}`);
+    }
+
+    validatePdfOutput(value) {
+        const buffer = this.normalizePdfOutput(value);
+        if (buffer.length < 8 || buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {
+            throw new Error('PDF renderer returned an invalid document');
+        }
+        return buffer;
+    }
+
     async generatePdfWithRetry(renderCallback) {
         let lastError = null;
 
@@ -127,7 +151,7 @@ class PDFGenerator {
                 page.setDefaultNavigationTimeout(45000);
                 page.setDefaultTimeout(45000);
 
-                const result = await renderCallback(page);
+                const result = this.validatePdfOutput(await renderCallback(page));
                 await page.close();
                 return result;
             } catch (error) {

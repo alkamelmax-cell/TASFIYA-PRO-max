@@ -398,7 +398,16 @@ async function shareCustomerLedgerReport() {
             credentials: 'same-origin',
             headers: { Accept: 'application/pdf' }
         });
-        if (!response.ok) throw new Error(`PDF request failed with ${response.status}`);
+        if (!response.ok) {
+            let serverMessage = '';
+            try {
+                const payload = await response.json();
+                serverMessage = String(payload?.error || '').trim();
+            } catch (_error) {
+                // The status code is still enough when the response is not JSON.
+            }
+            throw new Error(serverMessage || `PDF request failed with ${response.status}`);
+        }
         const blob = await response.blob();
         const signature = await blob.slice(0, 5).text();
         if (blob.size === 0 || signature !== '%PDF-') throw new Error('Invalid PDF response');
@@ -435,7 +444,7 @@ async function shareCustomerLedgerReport() {
     } catch (error) {
         if (error?.name !== 'AbortError') {
             console.error('[CUSTOMER LEDGER PDF] Failed:', error);
-            alert('تعذر تجهيز كشف الحساب للمشاركة. تحقق من اتصال الخادم ثم حاول مرة أخرى.');
+            alert(error?.message || 'تعذر تجهيز كشف الحساب للمشاركة. تحقق من اتصال الخادم ثم حاول مرة أخرى.');
         }
     } finally {
         if (shareButton) {

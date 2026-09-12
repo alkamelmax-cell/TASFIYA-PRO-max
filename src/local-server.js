@@ -689,12 +689,13 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-12.2',
+                        release: 'server-release-2026-09-12.3',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
                         professional_pdf_reports: true,
-                        customer_ledger_pdf_delivery: true
+                        customer_ledger_pdf_delivery: true,
+                        normalized_puppeteer_pdf_output: true
                     });
                     return;
                 }
@@ -1955,7 +1956,7 @@ class LocalWebServer {
                 dateTo,
                 rows
             });
-            const buffer = await this.reportPdfGenerator.generateFromHTML(html, {
+            const rawPdf = await this.reportPdfGenerator.generateFromHTML(html, {
                 margin: {
                     top: '10mm',
                     right: '9mm',
@@ -1966,6 +1967,10 @@ class LocalWebServer {
                 headerTemplate: '<div></div>',
                 footerTemplate: '<div></div>'
             });
+
+            // Puppeteer 24+ returns Uint8Array. Always normalize it before
+            // validation and HTTP delivery so valid PDFs are never rejected.
+            const buffer = Buffer.isBuffer(rawPdf) ? rawPdf : Buffer.from(rawPdf || []);
 
             if (!Buffer.isBuffer(buffer) || buffer.subarray(0, 5).toString('ascii') !== '%PDF-') {
                 throw new Error('Generated customer ledger report is not a valid PDF');
@@ -1985,9 +1990,12 @@ class LocalWebServer {
                 res,
                 {
                     success: false,
-                    error: 'تعذر تجهيز كشف الحساب PDF حالياً. حاول مرة أخرى.',
-                    retryable: true,
-                    requestId
+                    error: error.statusCode === 400
+                        ? error.message
+                        : 'تعذر تجهيز كشف الحساب PDF حالياً. حاول مرة أخرى.',
+                    retryable: error.statusCode !== 400,
+                    requestId,
+                    errorCode: error.code || 'CUSTOMER_LEDGER_PDF_FAILED'
                 },
                 { statusCode: error.statusCode || 503 }
             );

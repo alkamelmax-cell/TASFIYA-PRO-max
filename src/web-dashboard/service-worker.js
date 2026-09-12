@@ -5,9 +5,9 @@
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
 // Service Worker for Tasfiya Pro PWA
-// Version: 4.10 - API PDF reports stay on the authenticated server path.
+// Version: 4.11 - normalized binary PDF delivery for every report type.
 
-const CACHE_NAME = 'tasfiya-pro-v4.10-pdf-reports';
+const CACHE_NAME = 'tasfiya-pro-v4.11-pdf-binary-fix';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
