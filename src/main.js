@@ -20,6 +20,7 @@ const { hashSecret, verifySecret } = require('./security/auth-service');
 const { startBackgroundSync, stopBackgroundSync, getSyncStatus, setSyncEnabled, getSyncEnabled, pullRemoteRequestsNow, markSyncTablesDirty, triggerInstantSync } = require('./background-sync');
 const { getSyncWriteTables } = require('./sync-write-detector');
 const { readIdsToBeDeleted, recordDeleteTombstones } = require('./sync-delete-tombstones');
+const { executeCustomerMerge } = require('./app/customer-merge-service');
 
 let postSaveSyncTimer = null;
 let postSaveSyncRunning = false;
@@ -2756,6 +2757,26 @@ ipcMain.handle('db-run', async (event, sql, params = []) => {
         return result;
     } catch (error) {
         console.error('Database run error:', error);
+        throw error;
+    }
+});
+
+ipcMain.handle('merge-customers-atomic', async (event, payload = {}) => {
+    try {
+        if (!dbManager || !dbManager.db) {
+            throw new Error('Database not initialized');
+        }
+        const result = executeCustomerMerge(dbManager.db, payload);
+        schedulePostSaveSync('customer-merge-atomic', [
+            'customers',
+            'postpaid_sales',
+            'customer_receipts',
+            'manual_postpaid_sales',
+            'manual_customer_receipts'
+        ]);
+        return result;
+    } catch (error) {
+        console.error('Atomic customer merge error:', error);
         throw error;
     }
 });

@@ -577,6 +577,22 @@ class DatabaseManager {
     }
 
     try {
+      const mergeHistoryColumns = this.db.prepare('PRAGMA table_info(ledger_merge_history)').all();
+      const mergeHistoryColumnNames = new Set(
+        (Array.isArray(mergeHistoryColumns) ? mergeHistoryColumns : [])
+          .map((column) => String(column?.name || ''))
+      );
+      if (!mergeHistoryColumnNames.has('target_customer_id')) {
+        this.db.exec('ALTER TABLE ledger_merge_history ADD COLUMN target_customer_id INTEGER DEFAULT 0');
+      }
+      if (!mergeHistoryColumnNames.has('target_customer_code')) {
+        this.db.exec("ALTER TABLE ledger_merge_history ADD COLUMN target_customer_code TEXT DEFAULT ''");
+      }
+    } catch (error) {
+      console.error('Customer merge history schema migration failed:', error);
+    }
+
+    try {
       this.ensureBranchCustomerCodePrefixColumn();
       this.ensureBranchCustomerCodePrefixes();
     } catch (error) {
@@ -690,6 +706,8 @@ class DatabaseManager {
         entity_type TEXT NOT NULL,
         branch_id INTEGER DEFAULT 0,
         target_name TEXT NOT NULL,
+        target_customer_id INTEGER DEFAULT 0,
+        target_customer_code TEXT DEFAULT '',
         source_names_json TEXT NOT NULL,
         affected_rows_json TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,

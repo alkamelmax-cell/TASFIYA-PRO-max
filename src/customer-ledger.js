@@ -1113,64 +1113,54 @@ async function mergeSelectedCustomersInLedger() {
     showTransactionAlert('عملية دمج العملاء قيد التنفيذ بالفعل', 'danger');
     return;
   }
-
-  const selectedRows = getSelectedCustomerRows();
-  if (selectedRows.length < 2) {
-    showTransactionAlert('حدد عميلين على الأقل لتنفيذ الدمج', 'danger');
-    return;
-  }
-
-  const selectedCandidates = Array.from(
-    new Map(
-      selectedRows
-        .map((row) => buildCustomerMergeCandidate(row))
-        .filter((candidate) => candidate.customerName || candidate.customerCode || candidate.customerId > 0)
-        .map((candidate) => [candidate.selectionKey, candidate])
-    ).values()
-  );
-  if (selectedCandidates.length < 2) {
-    showTransactionAlert('حدد عميلين مختلفين على الأقل لتنفيذ الدمج', 'danger');
-    return;
-  }
-
-  const branchIds = Array.from(new Set(
-    selectedCandidates.map((row) => normalizeBranchId(row?.forcedBranchId) || '0')
-  ));
-  if (branchIds.length !== 1) {
-    showTransactionAlert('لا يمكن دمج عملاء من أكثر من فرع. اختر عملاء من نفس الفرع فقط', 'danger');
-    return;
-  }
-
-  const targetCustomerRef = await promptMergeTargetCustomerRef(selectedCandidates);
-  if (!targetCustomerRef) return;
-
-  const sourceRefs = selectedCandidates.filter((candidate) => candidate.selectionKey !== targetCustomerRef.selectionKey);
-  if (sourceRefs.length === 0) {
-    showTransactionAlert('اختر عميلاً هدفاً مختلفاً عن العملاء المراد دمجهم', 'danger');
-    return;
-  }
-
-  const normalizedBranchId = normalizeBranchId(branchIds[0]);
-  const branchLabel = selectedCandidates[0]?.branchName || 'غير محدد';
-  const sourceLabels = sourceRefs.map((customerRef) => formatCustomerRefForMergeSelection(customerRef));
-  const targetLabel = formatCustomerRefForMergeSelection(targetCustomerRef);
-  const preview = await buildCustomerMergePreview(sourceRefs, targetCustomerRef, normalizedBranchId);
-  const confirmed = await confirmCustomerMergeExecution({
-    sourceNames: sourceLabels,
-    targetName: targetLabel,
-    branchLabel,
-    preview
-  });
-  if (!confirmed) return;
-
   const mergeButton = document.getElementById('customerLedgerMergeSelectedBtn');
   const originalButtonHtml = mergeButton?.innerHTML || '';
   customerMergeInProgress = true;
   if (mergeButton) {
     mergeButton.disabled = true;
-    mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ الدمج الآمن...';
+    mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ تجهيز الدمج...';
   }
+
   try {
+    const selectedRows = getSelectedCustomerRows();
+    if (selectedRows.length < 2) throw new Error('حدد عميلين على الأقل لتنفيذ الدمج');
+
+    const selectedCandidates = Array.from(new Map(
+      selectedRows
+        .map((row) => buildCustomerMergeCandidate(row))
+        .filter((candidate) => candidate.customerName || candidate.customerCode || candidate.customerId > 0)
+        .map((candidate) => [candidate.selectionKey, candidate])
+    ).values());
+    if (selectedCandidates.length < 2) throw new Error('حدد عميلين مختلفين على الأقل لتنفيذ الدمج');
+
+    const branchIds = Array.from(new Set(
+      selectedCandidates.map((row) => normalizeBranchId(row?.forcedBranchId) || '0')
+    ));
+    if (branchIds.length !== 1 || branchIds[0] === '0') {
+      throw new Error('لا يمكن دمج عملاء من أكثر من فرع أو من فرع غير محدد');
+    }
+
+    const targetCustomerRef = await promptMergeTargetCustomerRef(selectedCandidates);
+    if (!targetCustomerRef) return;
+    const sourceRefs = selectedCandidates.filter((candidate) => candidate.selectionKey !== targetCustomerRef.selectionKey);
+    if (!sourceRefs.length) throw new Error('اختر عميلاً هدفاً مختلفاً عن العملاء المراد دمجهم');
+
+    const normalizedBranchId = normalizeBranchId(branchIds[0]);
+    const branchLabel = selectedCandidates[0]?.branchName || 'غير محدد';
+    const sourceLabels = sourceRefs.map((customerRef) => formatCustomerRefForMergeSelection(customerRef));
+    const targetLabel = formatCustomerRefForMergeSelection(targetCustomerRef);
+    const preview = await buildCustomerMergePreview(sourceRefs, targetCustomerRef, normalizedBranchId);
+    const confirmed = await confirmCustomerMergeExecution({
+      sourceNames: sourceLabels,
+      targetName: targetLabel,
+      branchLabel,
+      preview
+    });
+    if (!confirmed) return;
+
+    if (mergeButton) {
+      mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ تنفيذ الدمج...';
+    }
     const mergeResult = await executeCustomerMergeTransaction(sourceRefs, targetCustomerRef, normalizedBranchId);
     selectedCustomerMergeKeys.clear();
     await loadCustomerLedger();
@@ -1905,122 +1895,23 @@ async function recordCustomerMergeHistory({
 }
 
 async function executeCustomerMergeTransaction(sourceRefsInput, targetRefInput, branchId) {
-  const normalizedBranchId = normalizeBranchId(branchId);
-  const numericBranchId = normalizedBranchId ? Number(normalizedBranchId) : 0;
-  const targetRef = normalizeCustomerStatementRef(targetRefInput);
-  const sourceRefs = dedupeCustomerRefs(sourceRefsInput)
-    .filter((customerRef) => buildCustomerSelectionKey(customerRef) !== buildCustomerSelectionKey(targetRef));
-  if (sourceRefs.length === 0) {
-    return { postpaidChanges: 0, receiptChanges: 0, manualChanges: 0, totalChanges: 0 };
-  }
-
-  const refsToUpdate = dedupeCustomerRefs([targetRef, ...sourceRefs]);
-  const safeSourceNames = sourceRefs.map((customerRef) => formatCustomerRefForMergeSelection(customerRef));
-  const includeManual = await shouldApplyManualCustomersForBranch(normalizedBranchId);
-  await ensureLedgerMergeHistoryTable();
-
-  await ledgerIpc.invoke('db-run', 'BEGIN TRANSACTION');
-  let committed = false;
-  let targetIdentity = null;
+  const request = ledgerIpc.invoke('merge-customers-atomic', {
+    sourceRefs: dedupeCustomerRefs(sourceRefsInput),
+    targetRef: normalizeCustomerStatementRef(targetRefInput),
+    branchId: normalizeBranchId(branchId)
+  });
+  let timeoutId = null;
+  const timeout = new Promise((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error('استغرق الدمج وقتًا غير طبيعي. أعد تحميل دفتر العملاء للتحقق من النتيجة قبل المحاولة مجددًا'));
+    }, 45000);
+  });
   try {
-    targetIdentity = await resolveCustomerMergeTargetIdentity(targetRef, normalizedBranchId);
-    const safeTargetName = String(targetIdentity.customer_name == null ? '' : targetIdentity.customer_name).trim();
-    if (!safeTargetName) {
-      throw new Error('اسم العميل الهدف غير صالح');
-    }
-    await validateCustomerMergeTarget(targetIdentity, normalizedBranchId);
-
-    const affectedRows = await fetchCustomerMergeAffectedRows({
-      refsToUpdate,
-      branchId: normalizedBranchId,
-      includeManual
-    });
-    affectedRows.customers = await fetchCustomerRegistryRowsForMerge(
-      sourceRefs,
-      normalizedBranchId,
-      targetIdentity.customer_id
-    );
-    const affectedRowsCount = countCustomerMergeAffectedRows(affectedRows);
-    if (affectedRowsCount <= 0) {
-      throw new Error('لم يتم العثور على قيود مطابقة للدمج. تحقق من الفرع/الاسم المختار.');
-    }
-
-    const postpaidChanges = await updateCustomerMergeRows({
-      tableName: 'postpaid_sales',
-      alias: 'ps',
-      customerRefs: refsToUpdate,
-      branchId: normalizedBranchId,
-      targetIdentity,
-      reconciled: true
-    });
-
-    const receiptChanges = await updateCustomerMergeRows({
-      tableName: 'customer_receipts',
-      alias: 'cr',
-      customerRefs: refsToUpdate,
-      branchId: normalizedBranchId,
-      targetIdentity,
-      reconciled: true
-    });
-
-    let manualChanges = 0;
-    if (includeManual) {
-      manualChanges =
-        await updateCustomerMergeRows({
-          tableName: 'manual_postpaid_sales',
-          alias: 'mp',
-          customerRefs: refsToUpdate,
-          targetIdentity,
-          allowUnscopedFallback: false
-        }) +
-        await updateCustomerMergeRows({
-          tableName: 'manual_customer_receipts',
-          alias: 'mr',
-          customerRefs: refsToUpdate,
-          targetIdentity,
-          allowUnscopedFallback: false
-        });
-    }
-
-    const registryChanges = await markCustomerRegistrySourcesMerged(
-      affectedRows.customers,
-      targetIdentity.customer_id
-    );
-
-    const totalChanges = postpaidChanges + receiptChanges + manualChanges;
-    if (totalChanges <= 0) {
-      throw new Error('لم يتم العثور على قيود مطابقة للدمج. تحقق من الفرع/الاسم المختار.');
-    }
-
-    const mergeHistoryId = await recordCustomerMergeHistory({
-      numericBranchId,
-      safeTargetName,
-      targetIdentity,
-      safeSourceNames,
-      affectedRows
-    });
-
-    await ledgerIpc.invoke('db-run', 'COMMIT');
-    committed = true;
+    const result = await Promise.race([request, timeout]);
     await refreshCustomerUndoMergeState();
-    return {
-      postpaidChanges,
-      receiptChanges,
-      manualChanges,
-      registryChanges,
-      totalChanges,
-      mergeHistoryId,
-      targetIdentity
-    };
-  } catch (error) {
-    if (!committed) {
-      try {
-        await ledgerIpc.invoke('db-run', 'ROLLBACK');
-      } catch (rollbackError) {
-        console.error('Customer merge rollback failed:', rollbackError);
-      }
-    }
-    throw error;
+    return result;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
   }
 }
 
