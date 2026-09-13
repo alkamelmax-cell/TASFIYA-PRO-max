@@ -8,32 +8,32 @@
         buildCustomerCodeFromPrefix,
         normalizeCustomerCodePrefix
       } = require('./customer-code-prefix');
-      
+
       function createCustomerCodeHelpers(context) {
         const ipcRenderer = context.ipcRenderer;
         const logger = context.logger || console;
         const GENERATED_CUSTOMER_CODE_WIDTH = 6;
-      
+
         function normalizeCustomerName(value) {
           return String(value == null ? '' : value).trim();
         }
-      
+
         function normalizeCustomerCode(value) {
           const normalizedCode = String(value == null ? '' : value).trim().toUpperCase();
           return ['-', '–', '—'].includes(normalizedCode) ? '' : normalizedCode;
         }
-      
+
         function normalizeBranchId(branchId) {
           const numericBranchId = Number(branchId);
           return Number.isFinite(numericBranchId) && numericBranchId > 0 ? numericBranchId : null;
         }
-      
+
         async function resolveBranchCodePrefix(branchId) {
           const normalizedBranchId = normalizeBranchId(branchId);
           if (!normalizedBranchId) {
             return 'C0';
           }
-      
+
           try {
             const branch = await ipcRenderer.invoke(
               'db-get',
@@ -44,7 +44,7 @@
             if (configuredPrefix) {
               return configuredPrefix;
             }
-      
+
             const orderedBranches = await ipcRenderer.invoke(
               'db-query',
               'SELECT id FROM branches ORDER BY id',
@@ -56,23 +56,23 @@
             if (branchIndex >= 0) {
               return `C${branchIndex + 1}`;
             }
-      
+
             return `C${normalizedBranchId}`;
           } catch (error) {
             logger.error('Error resolving branch customer code prefix:', error);
             return `C${normalizedBranchId}`;
           }
         }
-      
+
         function buildGeneratedCustomerCode(branchPrefix, sequence = 1) {
           return buildCustomerCodeFromPrefix(branchPrefix, sequence, GENERATED_CUSTOMER_CODE_WIDTH);
         }
-      
+
         async function getNextGeneratedCustomerSequence(branchId) {
           const branchPrefix = await resolveBranchCodePrefix(branchId);
           const prefix = `${branchPrefix}-`;
           const codePattern = `${prefix}${'[0-9]'.repeat(GENERATED_CUSTOMER_CODE_WIDTH)}`;
-      
+
           try {
             const row = await ipcRenderer.invoke(
               'db-get',
@@ -83,7 +83,7 @@
               `,
               [prefix.length + 1, GENERATED_CUSTOMER_CODE_WIDTH, codePattern]
             );
-      
+
             const maxSequence = Number(row?.max_sequence || 0);
             return Number.isFinite(maxSequence) && maxSequence > 0 ? maxSequence + 1 : 1;
           } catch (error) {
@@ -91,7 +91,7 @@
             return 1;
           }
         }
-      
+
         async function generateUniqueCustomerCode(branchId) {
           const branchPrefix = await resolveBranchCodePrefix(branchId);
           let nextSequence = await getNextGeneratedCustomerSequence(branchId);
@@ -102,16 +102,16 @@
               return candidateCode;
             }
           }
-      
+
           throw new Error('customer_code_generation_failed');
         }
-      
+
         async function findCustomerByCode(customerCode) {
           const normalizedCode = normalizeCustomerCode(customerCode);
           if (!normalizedCode) {
             return null;
           }
-      
+
           try {
             const row = await ipcRenderer.invoke(
               'db-get',
@@ -123,11 +123,11 @@
               `,
               [normalizedCode]
             );
-      
+
             if (!row) {
               return null;
             }
-      
+
             return {
               id: Number(row.id || 0),
               customer_name: normalizeCustomerName(row.customer_name),
@@ -139,17 +139,17 @@
             return null;
           }
         }
-      
+
         async function findCustomersByName(customerName, branchId = null) {
           const normalizedName = normalizeCustomerName(customerName);
           if (!normalizedName) {
             return [];
           }
-      
+
           const normalizedBranchId = normalizeBranchId(branchId);
           const branchFilterSql = normalizedBranchId ? 'AND COALESCE(branch_id, 0) = ?' : '';
           const params = normalizedBranchId ? [normalizedName, normalizedBranchId] : [normalizedName];
-      
+
           try {
             const rows = await ipcRenderer.invoke(
               'db-query',
@@ -162,7 +162,7 @@
               `,
               params
             );
-      
+
             return Array.isArray(rows)
               ? rows.map((row) => ({
                 id: Number(row.id || 0),
@@ -176,13 +176,13 @@
             return [];
           }
         }
-      
+
         async function createCustomerRecord({ customerName, customerCode, branchId = null }) {
           const normalizedName = normalizeCustomerName(customerName);
           const normalizedCode = normalizeCustomerCode(customerCode);
           const normalizedBranchId = normalizeBranchId(branchId);
           const effectiveCode = normalizedCode || await generateUniqueCustomerCode(normalizedBranchId);
-      
+
           const result = await ipcRenderer.invoke(
             'db-run',
             `
@@ -191,7 +191,7 @@
             `,
             [effectiveCode, normalizedName, normalizedBranchId]
           );
-      
+
           return {
             id: Number(result?.lastInsertRowid || 0),
             customer_name: normalizedName,
@@ -199,7 +199,7 @@
             branch_id: normalizedBranchId
           };
         }
-      
+
         async function ensureCustomerHasCode(customer, branchId = null) {
           const existingCode = normalizeCustomerCode(customer?.customer_code);
           if (existingCode) {
@@ -208,12 +208,12 @@
               customer_code: existingCode
             };
           }
-      
+
           const customerId = Number(customer?.id || 0);
           if (!customerId) {
             return customer;
           }
-      
+
           const normalizedBranchId = normalizeBranchId(branchId) || normalizeBranchId(customer?.branch_id);
           const generatedCode = await generateUniqueCustomerCode(normalizedBranchId);
           await ipcRenderer.invoke(
@@ -227,28 +227,28 @@
             `,
             [generatedCode, normalizedBranchId, customerId]
           );
-      
+
           return {
             ...customer,
             customer_code: generatedCode,
             branch_id: normalizedBranchId
           };
         }
-      
+
         async function suggestCustomerCodeForName(customerName, branchId = null) {
           const matches = await findCustomersByName(customerName, branchId);
           return matches.length === 1 ? matches[0].customer_code : '';
         }
-      
+
         async function resolveCustomerIdentity({ customerName, customerCode, branchId }) {
           const normalizedName = normalizeCustomerName(customerName);
           if (!normalizedName) {
             throw new Error('customer_name_required');
           }
-      
+
           const normalizedCode = normalizeCustomerCode(customerCode);
           const normalizedBranchId = normalizeBranchId(branchId);
-      
+
           if (normalizedCode) {
             const existingCustomer = await findCustomerByCode(normalizedCode);
             if (existingCustomer) {
@@ -257,15 +257,15 @@
               const sameBranch = normalizedBranchId == null
                 || existingCustomer.branch_id == null
                 || existingCustomer.branch_id === normalizedBranchId;
-      
+
               if (!sameName) {
                 throw new Error(`customer_code_name_conflict:${existingName}`);
               }
-      
+
               if (!sameBranch) {
                 throw new Error('customer_code_branch_conflict');
               }
-      
+
               return {
                 customer_id: Number(existingCustomer.id || 0),
                 customer_name: existingName,
@@ -273,13 +273,13 @@
                 branch_id: existingCustomer.branch_id
               };
             }
-      
+
             const createdCustomer = await createCustomerRecord({
               customerName: normalizedName,
               customerCode: normalizedCode,
               branchId: normalizedBranchId
             });
-      
+
             return {
               customer_id: createdCustomer.id,
               customer_name: createdCustomer.customer_name,
@@ -287,7 +287,7 @@
               branch_id: createdCustomer.branch_id
             };
           }
-      
+
           const matchingCustomers = await findCustomersByName(normalizedName, normalizedBranchId);
           if (matchingCustomers.length === 1) {
             const customerWithCode = await ensureCustomerHasCode(matchingCustomers[0], normalizedBranchId);
@@ -298,17 +298,17 @@
               branch_id: customerWithCode.branch_id
             };
           }
-      
+
           if (matchingCustomers.length > 1) {
             throw new Error('customer_code_required_for_duplicate_name');
           }
-      
+
           const createdCustomer = await createCustomerRecord({
             customerName: normalizedName,
             customerCode: await generateUniqueCustomerCode(normalizedBranchId),
             branchId: normalizedBranchId
           });
-      
+
           return {
             customer_id: createdCustomer.id,
             customer_name: createdCustomer.customer_name,
@@ -316,7 +316,7 @@
             branch_id: createdCustomer.branch_id
           };
         }
-      
+
         return {
           normalizeCustomerName,
           normalizeCustomerCode,
@@ -324,57 +324,57 @@
           resolveCustomerIdentity
         };
       }
-      
+
       module.exports = {
         createCustomerCodeHelpers
       };
-      
+
     },
     "src/app/customer-code-prefix.js": function rendererModule(module, exports, require) {
       const DEFAULT_CUSTOMER_CODE_WIDTH = 6;
       const BRANCH_CUSTOMER_CODE_PREFIX_REGEX = /^C([1-9]\d*)$/;
       const CUSTOMER_CODE_PREFIX_REGEX = /^C(\d+)$/;
-      
+
       function normalizeCustomerCodePrefix(value, options = {}) {
         const allowZero = options.allowZero === true;
         let normalizedValue = String(value == null ? '' : value)
           .trim()
           .toUpperCase()
           .replace(/\s+/g, '');
-      
+
         if (!normalizedValue) {
           return '';
         }
-      
+
         if (/^\d+$/.test(normalizedValue)) {
           normalizedValue = `C${normalizedValue}`;
         }
-      
+
         const match = normalizedValue.match(allowZero
           ? CUSTOMER_CODE_PREFIX_REGEX
           : BRANCH_CUSTOMER_CODE_PREFIX_REGEX);
         if (!match) {
           return '';
         }
-      
+
         const numericSegment = Number(match[1]);
         if (!Number.isFinite(numericSegment) || numericSegment < 0 || (!allowZero && numericSegment === 0)) {
           return '';
         }
-      
+
         return `C${Math.floor(numericSegment)}`;
       }
-      
+
       function isValidCustomerCodePrefix(value, options = {}) {
         return normalizeCustomerCodePrefix(value, options).length > 0;
       }
-      
+
       function extractCustomerCodePrefix(customerCode, options = {}) {
         const normalizedCode = String(customerCode == null ? '' : customerCode).trim().toUpperCase();
         const match = normalizedCode.match(/^C(\d+)-/);
         return match ? normalizeCustomerCodePrefix(`C${match[1]}`, { allowZero: options.allowZero === true }) : '';
       }
-      
+
       function buildCustomerCodeFromPrefix(prefix, sequence = 1, width = DEFAULT_CUSTOMER_CODE_WIDTH) {
         const normalizedPrefix = normalizeCustomerCodePrefix(prefix, { allowZero: true }) || 'C0';
         const numericSequence = Number(sequence);
@@ -383,22 +383,22 @@
           : 1;
         return `${normalizedPrefix}-${String(safeSequence).padStart(width, '0')}`;
       }
-      
+
       function getNextCustomerCodePrefix(prefixes = []) {
         const usedPrefixes = new Set(
           (Array.isArray(prefixes) ? prefixes : [])
             .map((prefix) => normalizeCustomerCodePrefix(prefix))
             .filter(Boolean)
         );
-      
+
         let nextSegment = 1;
         while (usedPrefixes.has(`C${nextSegment}`)) {
           nextSegment += 1;
         }
-      
+
         return `C${nextSegment}`;
       }
-      
+
       module.exports = {
         DEFAULT_CUSTOMER_CODE_WIDTH,
         normalizeCustomerCodePrefix,
@@ -407,19 +407,19 @@
         buildCustomerCodeFromPrefix,
         getNextCustomerCodePrefix
       };
-      
+
     },
     "src/app/customer-ledger-statement.js": function rendererModule(module, exports, require) {
       function toNumber(value) {
         const number = Number(value);
         return Number.isFinite(number) ? number : 0;
       }
-      
+
       function summarizeStatementTransactions(transactions, options = {}) {
         const rows = Array.isArray(transactions) ? transactions : [];
         const openingBalance = toNumber(options.openingBalance);
         const order = options.order === 'asc' ? 'asc' : 'desc';
-      
+
         let totalPostpaid = 0;
         let totalReceipts = 0;
         rows.forEach((tx) => {
@@ -430,10 +430,10 @@
           }
           totalReceipts += amount;
         });
-      
+
         const periodNet = totalPostpaid - totalReceipts;
         const closingBalance = openingBalance + periodNet;
-      
+
         if (order === 'asc') {
           let runningBalance = openingBalance;
           const decoratedRows = rows.map((tx) => {
@@ -441,7 +441,7 @@
             const debit = tx?.type === 'postpaid' ? amount : 0;
             const credit = tx?.type === 'postpaid' ? 0 : amount;
             runningBalance += debit - credit;
-      
+
             return {
               ...tx,
               amount,
@@ -450,7 +450,7 @@
               runningBalance
             };
           });
-      
+
           return {
             openingBalance,
             totalPostpaid,
@@ -460,7 +460,7 @@
             rows: decoratedRows
           };
         }
-      
+
         let runningBalance = closingBalance;
         const decoratedRows = rows.map((tx) => {
           const amount = toNumber(tx?.amount);
@@ -469,16 +469,16 @@
             amount,
             runningBalance
           };
-      
+
           if (tx?.type === 'postpaid') {
             runningBalance -= amount;
           } else {
             runningBalance += amount;
           }
-      
+
           return row;
         });
-      
+
         return {
           openingBalance,
           totalPostpaid,
@@ -488,19 +488,19 @@
           rows: decoratedRows
         };
       }
-      
+
       function shouldShowOpeningBalanceRow(dateFrom, openingBalance) {
         if (String(dateFrom || '').trim()) {
           return true;
         }
         return Math.abs(toNumber(openingBalance)) > 0.000001;
       }
-      
+
       module.exports = {
         summarizeStatementTransactions,
         shouldShowOpeningBalanceRow
       };
-      
+
     },
     "src/customer-ledger.js": function rendererModule(module, exports, require) {
       // ===================================================
@@ -509,9 +509,9 @@
       // - Uses safe IPC channels already present in the app: 'db-query', 'add-manual-transaction', 'add-statement-transaction', 'get-print-manager'
       // - Keeps UI hooks identical (onclick exposure, element ids)
       // ===================================================
-      
+
       console.log('✅ [CUSTOMER-LEDGER] تم تحميل ملف customer-ledger.js بنجاح');
-      
+
       const ledgerIpc = typeof window !== 'undefined' && window.RendererIPC
         ? window.RendererIPC
         : require('./renderer-ipc');
@@ -522,7 +522,7 @@
         summarizeStatementTransactions,
         shouldShowOpeningBalanceRow
       } = require('./app/customer-ledger-statement');
-      
+
       // Print manager instance (requested from main)
       let printManager = null;
       let ledgerLoadPromise = null;
@@ -547,13 +547,13 @@
         ipcRenderer: ledgerIpc,
         logger: console
       });
-      
+
       function mapCustomerLedgerDbError(error, fallback = 'خطأ غير معروف') {
         const message = String(error && error.message ? error.message : error || '').trim();
         if (!message) {
           return fallback;
         }
-      
+
         if (message.includes('manual_postpaid_sales_invalid_data')) {
           return 'بيانات الحركة اليدوية (آجل) غير صالحة. تأكد من الاسم والمبلغ.';
         }
@@ -569,10 +569,10 @@
         if (message.includes('SQLITE_CONSTRAINT')) {
           return 'فشلت العملية بسبب قيد سلامة البيانات.';
         }
-      
+
         return message;
       }
-      
+
       // Initialize print manager when app starts (best-effort)
       document.addEventListener('DOMContentLoaded', async function () {
         try {
@@ -584,10 +584,10 @@
           console.warn('[get-print-manager] not available or failed:', error && error.message ? error.message : error);
         }
       });
-      
+
       (function initCustomerLedger() {
         attachLedgerEventListeners();
-      
+
         // Expose for inline onclick usage
         window.showCustomerStatement = showCustomerStatement;
         window.openCustomerReconciliationFromStatement = openCustomerReconciliationFromStatement;
@@ -599,7 +599,7 @@
         window.loadCustomerLedger = loadCustomerLedger;
         window.loadCustomerLedgerFilters = loadCustomerLedgerFilters;
       })();
-      
+
       async function editCustomerData(customerName) {
         try {
           // جلب معرف العميل
@@ -610,16 +610,16 @@
               SELECT customer_name FROM customer_receipts WHERE customer_name = ?
               UNION
               SELECT customer_name FROM postpaid_sales WHERE customer_name = ?
-            ) t
+            )
             LIMIT 1
           `;
           const customer = await ledgerIpc.invoke('db-query', sql, [customerName, customerName]);
-      
+
           if (!customer || customer.length === 0) {
             showTransactionAlert('لم يتم العثور على بيانات العميل', 'danger');
             return;
           }
-      
+
           // إنشاء نافذة تعديل البيانات
           const modalContent = `
             <div class="modal fade" id="editCustomerModal" tabindex="-1">
@@ -646,27 +646,27 @@
               </div>
             </div>
           `;
-      
+
           // إضافة النافذة للصفحة
           const modalDiv = document.createElement('div');
           modalDiv.innerHTML = modalContent;
           document.body.appendChild(modalDiv);
-      
+
           // عرض النافذة
           const modal = new bootstrap.Modal(document.getElementById('editCustomerModal'));
           modal.show();
-      
+
           // إزالة النافذة عند الإغلاق
           document.getElementById('editCustomerModal').addEventListener('hidden.bs.modal', function () {
             this.remove();
           });
-      
+
         } catch (error) {
           console.error('Error loading customer data:', error);
           showTransactionAlert('حدث خطأ أثناء تحميل بيانات العميل', 'danger');
         }
       }
-      
+
       async function updateCustomerData(oldCustomerName) {
         try {
           const editBtn = document.querySelector('#editCustomerModal .btn-primary');
@@ -674,9 +674,9 @@
             editBtn.disabled = true;
             editBtn.innerHTML = '<span class="spinner-border spinner-border-sm" role="status" aria-hidden="true"></span> جاري الحفظ...';
           }
-      
+
           const newName = document.getElementById('editCustomerName').value.trim();
-      
+
           if (!newName) {
             showEditCustomerAlert('الرجاء إدخال اسم العميل', 'danger');
             if (editBtn) {
@@ -685,26 +685,26 @@
             }
             return;
           }
-      
+
           console.log('💾 [تحديث] جاري تحديث بيانات العميل:', {
             oldCustomerName,
             newName
           });
-      
+
           // تحديث بيانات العميل
           const result = await ledgerIpc.invoke('update-customer-data', {
             oldCustomerName,
             newName
           });
-      
+
           console.log('💾 [تحديث] نتيجة التحديث:', result);
-      
+
           if (result && result.success) {
             showEditCustomerAlert('تم تحديث بيانات العميل بنجاح', 'success');
-      
+
             // إعادة تحميل جدول العملاء فوراً
             await loadCustomerLedger();
-      
+
             // إغلاق النافذة بعد التحديث
             setTimeout(() => {
               const modal = bootstrap.Modal.getInstance(document.getElementById('editCustomerModal'));
@@ -722,7 +722,7 @@
           showEditCustomerAlert('حدث خطأ أثناء تحديث بيانات العميل: ' + mapCustomerLedgerDbError(error), 'danger');
         }
       }
-      
+
       function showEditCustomerAlert(message, type = 'info') {
         const alertEl = document.getElementById('editCustomerAlert');
         if (alertEl) {
@@ -731,61 +731,61 @@
           alertEl.style.display = 'block';
         }
       }
-      
+
       function attachLedgerEventListeners() {
         const searchBtn = document.getElementById('ledgerSearchBtn');
         if (searchBtn) searchBtn.addEventListener('click', handleLedgerSearch);
-      
+
         const clearBtn = document.getElementById('ledgerClearBtn');
         if (clearBtn) clearBtn.addEventListener('click', handleLedgerClear);
-      
+
         const onlyBalance = document.getElementById('ledgerOnlyWithBalance');
         if (onlyBalance) onlyBalance.addEventListener('change', handleLedgerSearch);
-      
+
         const branchFilter = document.getElementById('ledgerBranchFilter');
         if (branchFilter) branchFilter.addEventListener('change', handleLedgerSearch);
-      
+
         const mergeSelectedBtn = document.getElementById('customerLedgerMergeSelectedBtn');
         if (mergeSelectedBtn) {
           mergeSelectedBtn.addEventListener('click', () => mergeSelectedCustomersInLedger());
         }
-      
+
         const undoMergeBtn = document.getElementById('customerLedgerUndoMergeBtn');
         if (undoMergeBtn) {
           undoMergeBtn.addEventListener('click', () => undoLastCustomerMergeInLedger());
         }
-      
+
         const clearSelectionBtn = document.getElementById('customerLedgerClearSelectionBtn');
         if (clearSelectionBtn) {
           clearSelectionBtn.addEventListener('click', () => clearCustomerLedgerSelection());
         }
-      
+
         const selectAll = document.getElementById('customerLedgerSelectAll');
         if (selectAll) {
           selectAll.addEventListener('change', (event) => {
             toggleCustomerLedgerSelectAll(!!event?.target?.checked);
           });
         }
-      
+
         const tableBody = document.getElementById('customerLedgerTable');
         if (tableBody) {
           tableBody.addEventListener('change', (event) => {
             const target = event?.target;
             if (!target || !target.classList?.contains('customer-ledger-select-checkbox')) return;
-      
+
             const selectionKey = String(target.dataset.selectionKey || '');
             if (!selectionKey) return;
-      
+
             if (target.checked) selectedCustomerMergeKeys.add(selectionKey);
             else selectedCustomerMergeKeys.delete(selectionKey);
-      
+
             updateCustomerLedgerSelectionUi();
           });
         }
-      
+
         updateCustomerLedgerSelectionUi();
       }
-      
+
       async function loadCustomerLedgerFilters(options = {}) {
         const forceReload = !!options.forceReload;
         const nameInput = document.getElementById('ledgerSearchName');
@@ -793,12 +793,12 @@
         const dateTo = document.getElementById('ledgerDateTo');
         const onlyBalance = document.getElementById('ledgerOnlyWithBalance');
         const branchFilter = document.getElementById('ledgerBranchFilter');
-      
+
         if (nameInput && nameInput.value == null) nameInput.value = '';
         if (dateFrom && dateFrom.value == null) dateFrom.value = '';
         if (dateTo && dateTo.value == null) dateTo.value = '';
         if (onlyBalance && onlyBalance.checked == null) onlyBalance.checked = false;
-      
+
         // Load branches for filter
         if (branchFilter) {
           try {
@@ -809,18 +809,18 @@
               }
               return;
             }
-      
+
             const branches = await ledgerIpc.invoke('db-query',
               'SELECT * FROM branches WHERE is_active = 1 ORDER BY branch_name'
             );
-      
+
             // Keep the first option (placeholder)
             const placeholder = branchFilter.querySelector('option[value=""]');
             branchFilter.innerHTML = '';
             if (placeholder) {
               branchFilter.appendChild(placeholder);
             }
-      
+
             // Add branches to dropdown
             branches.forEach(branch => {
               const option = document.createElement('option');
@@ -828,18 +828,18 @@
               option.textContent = branch.branch_name;
               branchFilter.appendChild(option);
             });
-      
+
             if (selectedValue && Array.from(branchFilter.options).some(opt => opt.value === selectedValue)) {
               branchFilter.value = selectedValue;
             }
-      
+
             ledgerBranchesLoaded = true;
           } catch (error) {
             console.error('Error loading branches for ledger filter:', error);
           }
         }
       }
-      
+
       function getLedgerFilters() {
         return {
           branchId: (document.getElementById('ledgerBranchFilter')?.value || '').trim(),
@@ -849,24 +849,24 @@
           onlyWithBalance: !!document.getElementById('ledgerOnlyWithBalance')?.checked
         };
       }
-      
+
       function handleLedgerSearch() { loadCustomerLedger(); }
       function handleLedgerClear() {
         const nameInput = document.getElementById('ledgerSearchName');
         const dateFrom = document.getElementById('ledgerDateFrom');
         const dateTo = document.getElementById('ledgerDateTo');
         const onlyBalance = document.getElementById('ledgerOnlyWithBalance');
-      
+
         if (nameInput) nameInput.value = '';
         if (dateFrom) dateFrom.value = '';
         if (dateTo) dateTo.value = '';
         if (onlyBalance) onlyBalance.checked = false;
         selectedCustomerMergeKeys.clear();
         updateCustomerLedgerSelectionUi();
-      
+
         loadCustomerLedger();
       }
-      
+
       function buildLedgerPeriodLabel(filters) {
         const from = filters?.dateFrom || '';
         const to = filters?.dateTo || '';
@@ -875,43 +875,43 @@
         if (to) return `الفترة: حتى ${to}`;
         return 'الفترة: كل الفترات';
       }
-      
+
       function updateLedgerSummaryCards(rows, filters) {
         const totalPostpaidEl = document.getElementById('ledgerTotalPostpaidPeriod');
         const totalReceiptsEl = document.getElementById('ledgerTotalReceiptsPeriod');
         const netBalanceEl = document.getElementById('ledgerNetBalancePeriod');
         const periodEl = document.getElementById('ledgerSummaryPeriod');
-      
+
         if (!totalPostpaidEl || !totalReceiptsEl || !netBalanceEl) {
           return;
         }
-      
+
         const fmt = getCurrencyFormatter();
         const safeRows = Array.isArray(rows) ? rows : [];
-      
+
         const totals = safeRows.reduce((acc, row) => {
           acc.postpaid += Number(row?.total_postpaid || 0);
           acc.receipts += Number(row?.total_receipts || 0);
           acc.net += Number(row?.balance || 0);
           return acc;
         }, { postpaid: 0, receipts: 0, net: 0 });
-      
+
         totalPostpaidEl.textContent = fmt(totals.postpaid);
         totalReceiptsEl.textContent = fmt(totals.receipts);
         netBalanceEl.textContent = fmt(totals.net);
-      
+
         netBalanceEl.classList.remove('text-success', 'text-deficit');
         if (totals.net > 0) {
           netBalanceEl.classList.add('text-deficit');
         } else if (totals.net < 0) {
           netBalanceEl.classList.add('text-success');
         }
-      
+
         if (periodEl) {
           periodEl.textContent = buildLedgerPeriodLabel(filters || getLedgerFilters());
         }
       }
-      
+
       function buildLedgerQuery(filters) {
         const normalizedCodeSql = (columnExpression) => (
           `NULLIF(NULLIF(NULLIF(NULLIF(UPPER(TRIM(COALESCE(${columnExpression}, ''))), ''), '-'), '–'), '—')`
@@ -950,7 +950,7 @@
             )
           )
         `;
-      
+
         let dateFilterPostpaid = '';
         let dateFilterReceipts = '';
         let dateFilterManualPostpaid = '';
@@ -959,7 +959,7 @@
         const dateParamsReceipts = [];
         const dateParamsManualPostpaid = [];
         const dateParamsManualReceipts = [];
-      
+
         if (filters.dateFrom) {
           dateFilterPostpaid += ' AND DATE(COALESCE(r.reconciliation_date, ps.created_at)) >= ?';
           dateFilterReceipts += ' AND DATE(COALESCE(r.reconciliation_date, cr.created_at)) >= ?';
@@ -970,7 +970,7 @@
           dateParamsManualPostpaid.push(filters.dateFrom);
           dateParamsManualReceipts.push(filters.dateFrom);
         }
-      
+
         if (filters.dateTo) {
           dateFilterPostpaid += ' AND DATE(COALESCE(r.reconciliation_date, ps.created_at)) <= ?';
           dateFilterReceipts += ' AND DATE(COALESCE(r.reconciliation_date, cr.created_at)) <= ?';
@@ -981,7 +981,7 @@
           dateParamsManualPostpaid.push(filters.dateTo);
           dateParamsManualReceipts.push(filters.dateTo);
         }
-      
+
         let nameFilter = '';
         const nameParams = [];
         if (filters.name) {
@@ -994,7 +994,7 @@
           const searchValue = `%${String(filters.name || '').trim().toUpperCase()}%`;
           nameParams.push(searchValue, searchValue);
         }
-      
+
         let branchFilter = '';
         const branchParams = [];
         if (filters.branchId) {
@@ -1007,7 +1007,7 @@
           `;
           branchParams.push(rawBranchFilter, rawBranchFilter);
         }
-      
+
         const sub1 = `
           SELECT
             COALESCE(cust.id, 0) AS t_customer_id,
@@ -1027,7 +1027,7 @@
           LEFT JOIN branches cb ON cb.id = cust.branch_id
           WHERE 1=1 ${dateFilterPostpaid}
         `;
-      
+
         const sub1Manual = `
           SELECT
             COALESCE(mps.customer_id, cust.id, 0) AS t_customer_id,
@@ -1047,7 +1047,7 @@
           LEFT JOIN customers cust ON cust.id = mps.customer_id
           WHERE 1=1 ${dateFilterManualPostpaid}
         `;
-      
+
         const sub2 = `
           SELECT
             COALESCE(cust.id, 0) AS t_customer_id,
@@ -1067,7 +1067,7 @@
           LEFT JOIN branches cb ON cb.id = cust.branch_id
           WHERE 1=1 ${dateFilterReceipts}
         `;
-      
+
         const sub2Manual = `
           SELECT
             COALESCE(mcr.customer_id, cust.id, 0) AS t_customer_id,
@@ -1087,7 +1087,7 @@
           LEFT JOIN customers cust ON cust.id = mcr.customer_id
           WHERE 1=1 ${dateFilterManualReceipts}
         `;
-      
+
         const unioned = `
           SELECT * FROM (
             ${sub1}
@@ -1100,7 +1100,7 @@
           ) all_tx
           WHERE 1=1 ${nameFilter} ${branchFilter}
         `;
-      
+
         const sql = `
           SELECT
             CASE
@@ -1120,12 +1120,12 @@
             MAX(t_date) AS last_tx_date
           FROM (
             ${unioned}
-          ) t
+          )
           GROUP BY customer_key, customer_id, customer_code, customer_name, branch_id, branch_name
           ${filters.onlyWithBalance ? "HAVING COALESCE(SUM(CASE WHEN t_type = 'postpaid' THEN t_amount ELSE -t_amount END), 0) > 0" : ''}
           ORDER BY branch_name ASC, balance DESC, customer_name ASC, customer_code ASC
         `;
-      
+
         const params = [
           ...dateParamsPostpaid,
           ...dateParamsManualPostpaid,
@@ -1134,37 +1134,37 @@
           ...nameParams,
           ...branchParams
         ];
-      
+
         return { sql, params };
       }
-      
+
       async function loadCustomerLedger() {
         const tbody = document.getElementById('customerLedgerTable');
         if (!tbody) return [];
-      
+
         const filters = getLedgerFilters();
         const currentSignature = JSON.stringify(filters);
-      
+
         // Avoid duplicate heavy queries when the same load is triggered multiple times quickly.
         if (ledgerLoadPromise && currentSignature === lastLedgerFiltersSignature) {
           return ledgerLoadPromise;
         }
-      
+
         lastLedgerFiltersSignature = currentSignature;
         const requestId = ++ledgerLoadSequence;
         customerLedgerRowsCache = [];
         tbody.innerHTML = `<tr><td colspan="10" class="text-center">جاري التحميل...</td></tr>`;
         updateCustomerLedgerSelectionUi();
-      
+
         ledgerLoadPromise = (async () => {
           try {
             const { sql, params } = buildLedgerQuery(filters);
             const rows = await ledgerIpc.invoke('db-query', sql, params);
-      
+
             if (requestId !== ledgerLoadSequence) {
               return rows || [];
             }
-      
+
             const safeRows = rows || [];
             customerLedgerRowsCache = safeRows;
             syncCustomerLedgerSelectionWithRows();
@@ -1177,7 +1177,7 @@
             if (requestId !== ledgerLoadSequence) {
               return [];
             }
-      
+
             console.error('Error loading customer ledger:', error);
             customerLedgerRowsCache = [];
             syncCustomerLedgerSelectionWithRows();
@@ -1192,19 +1192,19 @@
             }
           }
         })();
-      
+
         return ledgerLoadPromise;
       }
-      
+
       function renderLedgerTable(rows) {
         const tbody = document.getElementById('customerLedgerTable');
         if (!tbody) return;
-      
+
         if (!rows || rows.length === 0) {
           tbody.innerHTML = `<tr><td colspan="10" class="text-center">لا توجد بيانات مطابقة</td></tr>`;
           return;
         }
-      
+
         const fmt = getCurrencyFormatter();
         tbody.innerHTML = rows.map(r => {
           const lastDate = r.last_tx_date ? escapeHtml(r.last_tx_date) : '-';
@@ -1217,7 +1217,7 @@
           return `
             <tr>
               <td>
-                <input
+                <inpu
                   type="checkbox"
                   class="form-check-input customer-ledger-select-checkbox"
                   data-selection-key="${escapeAttr(selectionKey)}"
@@ -1244,24 +1244,24 @@
           `;
         }).join('');
       }
-      
+
       function normalizeBranchId(value) {
         const raw = String(value == null ? '' : value).trim();
         if (!raw || raw === '0') return '';
         const parsed = Number.parseInt(raw, 10);
         return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : '';
       }
-      
+
       function normalizeCustomerCode(value) {
         const normalizedCode = String(value == null ? '' : value).trim().toUpperCase();
         return ['', '-', '–', '—'].includes(normalizedCode) ? '' : normalizedCode;
       }
-      
+
       function normalizeCustomerId(value) {
         const numericValue = Number(value);
         return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : 0;
       }
-      
+
       function normalizeCustomerStatementRef(customerNameOrRef, forcedBranchId = '', customerCode = '', customerId = '') {
         const source = customerNameOrRef && typeof customerNameOrRef === 'object'
           ? customerNameOrRef
@@ -1271,7 +1271,7 @@
             customerCode,
             customerId
           };
-      
+
         return {
           customerName: String(
             source?.customerName != null
@@ -1283,33 +1283,26 @@
           customerId: normalizeCustomerId(source?.customerId || source?.customer_id || customerId)
         };
       }
-      
+
       function buildCustomerSelectionKey(customerNameOrRef, branchId = '', customerCode = '', customerId = '') {
         const customerRef = normalizeCustomerStatementRef(customerNameOrRef, branchId, customerCode, customerId);
+        if (customerRef.customerCode) {
+          return JSON.stringify({ customerCode: customerRef.customerCode, branchId: customerRef.forcedBranchId || '0' });
+        }
         if (customerRef.customerId > 0) {
           return JSON.stringify({ customerId: customerRef.customerId });
-        }
-        if (customerRef.customerCode) {
-          return JSON.stringify({ customerCode: customerRef.customerCode });
         }
         return JSON.stringify({
           name: customerRef.customerName,
           branchId: customerRef.forcedBranchId || '0'
         });
       }
-      
+
       function buildCustomerTableMatcher(alias, customerRefInput, options = {}) {
         const customerRef = normalizeCustomerStatementRef(customerRefInput);
         const branchExpression = String(options.branchExpression || '').trim();
         const normalizedBranchId = normalizeBranchId(options.branchId || customerRef.forcedBranchId);
-      
-        if (customerRef.customerId > 0) {
-          return {
-            clause: `COALESCE(${alias}.customer_id, 0) = ?`,
-            params: [customerRef.customerId]
-          };
-        }
-      
+
         if (customerRef.customerCode) {
           let clause = `UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?`;
           const params = [customerRef.customerCode];
@@ -1317,23 +1310,27 @@
             clause += ` AND COALESCE(${branchExpression}, 0) = ?`;
             params.push(Number(normalizedBranchId));
           }
+          return { clause, params };
+        }
+
+        if (customerRef.customerId > 0) {
           return {
-            clause,
-            params
+            clause: `COALESCE(${alias}.customer_id, 0) = ?`,
+            params: [customerRef.customerId]
           };
         }
-      
+
         const params = [customerRef.customerName];
         let clause = `TRIM(COALESCE(${alias}.customer_name, '')) = ?`;
-      
+
         if (branchExpression && normalizedBranchId) {
           clause += ` AND COALESCE(${branchExpression}, 0) = ?`;
           params.push(Number(normalizedBranchId));
         }
-      
+
         return { clause, params };
       }
-      
+
       function buildCustomerMergeTableMatcher(alias, customerRefInput, options = {}) {
         const customerRef = normalizeCustomerStatementRef(customerRefInput);
         const branchExpression = String(options.branchExpression || '').trim();
@@ -1341,8 +1338,19 @@
         const allowUnscopedFallback = options.allowUnscopedFallback !== false || !!branchExpression;
         const clauses = [];
         const params = [];
-      
-        if (customerRef.customerId > 0) {
+
+        if (customerRef.customerCode) {
+          let codeClause = `UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?`;
+          const codeParams = [customerRef.customerCode];
+          if (branchExpression && normalizedBranchId) {
+            codeClause += ` AND COALESCE(${branchExpression}, 0) = ?`;
+            codeParams.push(Number(normalizedBranchId));
+          }
+          clauses.push(codeClause);
+          params.push(...codeParams);
+        }
+
+        if (!customerRef.customerCode && customerRef.customerId > 0) {
           let idClause = `COALESCE(${alias}.customer_id, 0) = ?`;
           const idParams = [customerRef.customerId];
           if (branchExpression && normalizedBranchId) {
@@ -1352,47 +1360,30 @@
           clauses.push(idClause);
           params.push(...idParams);
         }
-      
-        if (customerRef.customerCode && allowUnscopedFallback) {
-          let codeClause = `UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?`;
-          const codeParams = [customerRef.customerCode];
-      
-          if (customerRef.customerId > 0) {
-            codeClause = `COALESCE(${alias}.customer_id, 0) = 0 AND ${codeClause}`;
-          }
-      
-          if (branchExpression && normalizedBranchId) {
-            codeClause += ` AND COALESCE(${branchExpression}, 0) = ?`;
-            codeParams.push(Number(normalizedBranchId));
-          }
-      
-          clauses.push(codeClause);
-          params.push(...codeParams);
-        }
-      
+
         if (clauses.length === 0 && customerRef.customerName && allowUnscopedFallback) {
           let nameClause = `TRIM(COALESCE(${alias}.customer_name, '')) = ?`;
           const nameParams = [customerRef.customerName];
-      
+
           if (branchExpression && normalizedBranchId) {
             nameClause += ` AND COALESCE(${branchExpression}, 0) = ?`;
             nameParams.push(Number(normalizedBranchId));
           }
-      
+
           clauses.push(nameClause);
           params.push(...nameParams);
         }
-      
+
         if (clauses.length === 0) {
           return { clause: '0 = 1', params: [] };
         }
-      
+
         return {
           clause: clauses.map((clause) => `(${clause})`).join(' OR '),
           params
         };
       }
-      
+
       function dedupeCustomerRefs(customerRefs) {
         const uniqueRefs = new Map();
         (Array.isArray(customerRefs) ? customerRefs : []).forEach((customerRefInput) => {
@@ -1407,28 +1398,28 @@
         });
         return Array.from(uniqueRefs.values());
       }
-      
+
       function buildCustomerMergeRefsMatcher(alias, customerRefs, options = {}) {
         const matchers = dedupeCustomerRefs(customerRefs)
           .map((customerRef) => buildCustomerMergeTableMatcher(alias, customerRef, options))
           .filter((matcher) => matcher && matcher.clause && matcher.clause !== '0 = 1');
-      
+
         if (matchers.length === 0) {
           return { clause: '0 = 1', params: [] };
         }
-      
+
         return {
           clause: matchers.map((matcher) => `(${matcher.clause})`).join(' OR '),
           params: matchers.flatMap((matcher) => matcher.params)
         };
       }
-      
+
       function formatCustomerRefForMergeSelection(customerRefInput) {
         const customerRef = normalizeCustomerStatementRef(customerRefInput);
         const name = customerRef.customerName || 'غير محدد';
         return customerRef.customerCode ? `${customerRef.customerCode} - ${name}` : name;
       }
-      
+
       function buildCustomerMergeCandidate(row) {
         const customerRef = normalizeCustomerStatementRef(row);
         return {
@@ -1440,7 +1431,7 @@
           movementsCount: Number(row?.movements_count || 0)
         };
       }
-      
+
       function buildStatementTransactionSelectionKey(tx) {
         const source = String(tx?.source || '').trim();
         const type = String(tx?.type || '').trim();
@@ -1448,29 +1439,29 @@
         const reconciliationId = Number(tx?.reconciliation_id || 0);
         return JSON.stringify({ source, type, rowId, reconciliationId });
       }
-      
+
       function syncCustomerStatementSelectionWithRows() {
         const availableKeys = new Set(
           (currentCustomerStatementRowsCache || []).map((row) => buildStatementTransactionSelectionKey(row))
         );
-      
+
         selectedCustomerStatementKeys.forEach((key) => {
           if (!availableKeys.has(key)) {
             selectedCustomerStatementKeys.delete(key);
           }
         });
       }
-      
+
       function getSelectedCustomerStatementRows() {
         if (!Array.isArray(currentCustomerStatementRowsCache) || currentCustomerStatementRowsCache.length === 0) {
           return [];
         }
-      
+
         return currentCustomerStatementRowsCache.filter((row) => (
           selectedCustomerStatementKeys.has(buildStatementTransactionSelectionKey(row))
         ));
       }
-      
+
       function clearCustomerStatementSelection() {
         selectedCustomerStatementKeys.clear();
         const rowChecks = document.querySelectorAll('.customer-statement-select-checkbox');
@@ -1479,7 +1470,7 @@
         });
         updateCustomerStatementSelectionUi();
       }
-      
+
       function updateCustomerStatementSelectionUi() {
         const summaryEl = document.getElementById('statementSelectionSummary');
         const splitBtn = document.getElementById('splitStatementTransactionsBtn');
@@ -1487,16 +1478,16 @@
         const selectAll = document.getElementById('statementSelectAllTransactions');
         const totalRows = Array.isArray(currentCustomerStatementRowsCache) ? currentCustomerStatementRowsCache.length : 0;
         const selectedCount = getSelectedCustomerStatementRows().length;
-      
+
         if (summaryEl) {
           summaryEl.textContent = selectedCount > 0
             ? `تم تحديد ${selectedCount} حركة`
             : 'لم يتم تحديد أي حركة';
         }
-      
+
         if (splitBtn) splitBtn.disabled = selectedCount === 0;
         if (clearBtn) clearBtn.disabled = selectedCount === 0;
-      
+
         if (selectAll) {
           if (totalRows === 0) {
             selectAll.checked = false;
@@ -1504,7 +1495,7 @@
             selectAll.disabled = true;
             return;
           }
-      
+
           const allSelected = selectedCount > 0 && selectedCount === totalRows;
           const someSelected = selectedCount > 0 && selectedCount < totalRows;
           selectAll.disabled = false;
@@ -1512,28 +1503,28 @@
           selectAll.indeterminate = someSelected;
         }
       }
-      
+
       function syncCustomerLedgerSelectionWithRows() {
         const availableKeys = new Set(
           (customerLedgerRowsCache || []).map((row) => buildCustomerSelectionKey(row))
         );
-      
+
         selectedCustomerMergeKeys.forEach((key) => {
           if (!availableKeys.has(key)) selectedCustomerMergeKeys.delete(key);
         });
       }
-      
+
       function getSelectedCustomerRows() {
         if (!Array.isArray(customerLedgerRowsCache) || customerLedgerRowsCache.length === 0) {
           return [];
         }
-      
+
         return customerLedgerRowsCache.filter((row) => {
           const key = buildCustomerSelectionKey(row);
           return selectedCustomerMergeKeys.has(key);
         });
       }
-      
+
       function clearCustomerLedgerSelection() {
         selectedCustomerMergeKeys.clear();
         const rowChecks = document.querySelectorAll('.customer-ledger-select-checkbox');
@@ -1542,7 +1533,7 @@
         });
         updateCustomerLedgerSelectionUi();
       }
-      
+
       function toggleCustomerLedgerSelectAll(isChecked) {
         const visibleRows = Array.isArray(customerLedgerRowsCache) ? customerLedgerRowsCache : [];
         visibleRows.forEach((row) => {
@@ -1550,22 +1541,22 @@
           if (isChecked) selectedCustomerMergeKeys.add(key);
           else selectedCustomerMergeKeys.delete(key);
         });
-      
+
         const rowChecks = document.querySelectorAll('.customer-ledger-select-checkbox');
         rowChecks.forEach((checkbox) => {
           checkbox.checked = isChecked;
         });
-      
+
         updateCustomerLedgerSelectionUi();
       }
-      
+
       function updateCustomerLedgerSelectionUi() {
         const summaryEl = document.getElementById('customerLedgerSelectionSummary');
         const mergeBtn = document.getElementById('customerLedgerMergeSelectedBtn');
         const undoBtn = document.getElementById('customerLedgerUndoMergeBtn');
         const clearBtn = document.getElementById('customerLedgerClearSelectionBtn');
         const selectAll = document.getElementById('customerLedgerSelectAll');
-      
+
         const selectedRows = getSelectedCustomerRows();
         const totalRows = Array.isArray(customerLedgerRowsCache) ? customerLedgerRowsCache.length : 0;
         const selectedCount = selectedRows.length;
@@ -1574,30 +1565,30 @@
         );
         const hasMixedBranches = selectedBranchSet.size > 1;
         const canMerge = selectedCount >= 2 && !hasMixedBranches;
-      
+
         if (summaryEl) {
           if (selectedCount === 0) {
             summaryEl.textContent = 'لم يتم تحديد أي عميل';
           } else if (hasMixedBranches) {
-            summaryEl.textContent = `تم تحديد ${selectedCount} عميل (من أكثر من فرع - الدمج غير مسموح)`;
+            summaryEl.textContent = `تم تحديد ${selectedCount} عميل (من أكثر من فرع - توحيد الهوية غير مسموح)`;
           } else {
             const branchLabel = selectedRows[0]?.branch_name || 'غير محدد';
-            summaryEl.textContent = `تم تحديد ${selectedCount} عميل للدمج - الفرع: ${branchLabel}`;
+            summaryEl.textContent = `تم تحديد ${selectedCount} عميل لتوحيد الهوية - الفرع: ${branchLabel}`;
           }
         }
-      
+
         if (mergeBtn) mergeBtn.disabled = !canMerge;
         if (undoBtn) {
           undoBtn.disabled = !latestUndoableCustomerMerge;
-          const createdAtText = latestUndoableCustomerMerge?.created_at
+          const createdAtText = latestUndoableCustomerMerge?.created_a
             ? formatMergeDateTime(latestUndoableCustomerMerge.created_at)
             : '';
           undoBtn.title = latestUndoableCustomerMerge
-            ? `فك آخر دمج (${createdAtText || 'بدون تاريخ'})`
-            : 'لا يوجد دمج متاح للفك';
+            ? `التراجع عن آخر توحيد (${createdAtText || 'بدون تاريخ'})`
+            : 'لا توجد عملية توحيد متاحة للتراجع';
         }
         if (clearBtn) clearBtn.disabled = selectedCount === 0;
-      
+
         if (selectAll) {
           if (totalRows === 0) {
             selectAll.checked = false;
@@ -1612,10 +1603,10 @@
           }
         }
       }
-      
+
       async function mergeSelectedCustomersInLedger() {
         if (customerMergeInProgress) {
-          showTransactionAlert('عملية دمج العملاء قيد التنفيذ بالفعل', 'danger');
+          showTransactionAlert('عملية توحيد هوية العملاء قيد التنفيذ بالفعل', 'danger');
           return;
         }
         const mergeButton = document.getElementById('customerLedgerMergeSelectedBtn');
@@ -1623,13 +1614,13 @@
         customerMergeInProgress = true;
         if (mergeButton) {
           mergeButton.disabled = true;
-          mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ تجهيز الدمج...';
+          mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ تحليل الهويات...';
         }
-      
+
         try {
           const selectedRows = getSelectedCustomerRows();
           if (selectedRows.length < 2) throw new Error('حدد عميلين على الأقل لتنفيذ الدمج');
-      
+
           const selectedCandidates = Array.from(new Map(
             selectedRows
               .map((row) => buildCustomerMergeCandidate(row))
@@ -1637,19 +1628,19 @@
               .map((candidate) => [candidate.selectionKey, candidate])
           ).values());
           if (selectedCandidates.length < 2) throw new Error('حدد عميلين مختلفين على الأقل لتنفيذ الدمج');
-      
+
           const branchIds = Array.from(new Set(
             selectedCandidates.map((row) => normalizeBranchId(row?.forcedBranchId) || '0')
           ));
           if (branchIds.length !== 1 || branchIds[0] === '0') {
             throw new Error('لا يمكن دمج عملاء من أكثر من فرع أو من فرع غير محدد');
           }
-      
+
           const targetCustomerRef = await promptMergeTargetCustomerRef(selectedCandidates);
           if (!targetCustomerRef) return;
           const sourceRefs = selectedCandidates.filter((candidate) => candidate.selectionKey !== targetCustomerRef.selectionKey);
           if (!sourceRefs.length) throw new Error('اختر عميلاً هدفاً مختلفاً عن العملاء المراد دمجهم');
-      
+
           const normalizedBranchId = normalizeBranchId(branchIds[0]);
           const branchLabel = selectedCandidates[0]?.branchName || 'غير محدد';
           const sourceLabels = sourceRefs.map((customerRef) => formatCustomerRefForMergeSelection(customerRef));
@@ -1662,14 +1653,14 @@
             preview
           });
           if (!confirmed) return;
-      
+
           if (mergeButton) {
-            mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ تنفيذ الدمج...';
+            mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ توحيد الهوية...';
           }
           const mergeResult = await executeCustomerMergeTransaction(sourceRefs, targetCustomerRef, normalizedBranchId);
           selectedCustomerMergeKeys.clear();
           await loadCustomerLedger();
-      
+
           const currentRef = getCurrentCustomerStatementRef();
           const currentBranch = normalizeBranchId(currentRef.forcedBranchId || '');
           const impactedKeys = new Set([
@@ -1686,16 +1677,16 @@
               mergeResult.targetIdentity.customer_id
             );
           }
-      
+
           const changed = Number(mergeResult?.totalChanges || 0);
           const registryChanges = Number(mergeResult?.registryChanges || 0);
           showTransactionAlert(
-            `تم الدمج بنجاح: ${changed} حركة، وإغلاق ${registryChanges} سجل عميل مكرر`,
+            `تم توحيد الهوية بنجاح: ${changed} حركة، وإغلاق ${registryChanges} سجل مكرر، وحفظ الأسماء والأكواد القديمة كبدائل`,
             'success'
           );
         } catch (error) {
           console.error('Error merging selected customers:', error);
-          showTransactionAlert(`تعذر دمج العملاء: ${mapCustomerLedgerDbError(error)}`, 'danger');
+          showTransactionAlert(`تعذر توحيد هوية العملاء: ${mapCustomerLedgerDbError(error)}`, 'danger');
         } finally {
           customerMergeInProgress = false;
           if (mergeButton) {
@@ -1704,7 +1695,7 @@
           updateCustomerLedgerSelectionUi();
         }
       }
-      
+
       async function promptMergeTargetCustomerRef(candidates) {
         const customerCandidates = Array.isArray(candidates)
           ? candidates.filter((candidate) => candidate && candidate.selectionKey)
@@ -1714,7 +1705,7 @@
           showTransactionAlert('لا يوجد ضمن التحديد عميل يحمل كودًا معتمدًا ليبقى بعد الدمج', 'danger');
           return null;
         }
-      
+
         if (window.Swal) {
           const inputOptions = {};
           const fmt = getCurrencyFormatter();
@@ -1724,14 +1715,14 @@
               : (candidate.customerCode ? 'سيتم إصلاح هويته تلقائيًا' : 'سجل قديم بلا كود');
             inputOptions[String(index)] = `${formatCustomerNameForSelection(candidate.label)} — ${officialLabel} — ${candidate.movementsCount} حركة — الرصيد ${fmt(candidate.balance)}`;
           });
-      
+
           const result = await window.Swal.fire({
             title: 'أي سجل عميل سيبقى؟',
             html: '<div style="text-align:right;color:#55706a;line-height:1.7">اختر السجل الرسمي الذي سيبقى بعد الدمج. سيحتفظ العميل المختار بكوده وحسابه، وتُنقل إليه كل الحركات بأمان.</div>',
             input: 'radio',
             inputOptions,
             showCancelButton: true,
-            confirmButtonText: 'مراجعة نتيجة الدمج',
+            confirmButtonText: 'مراجعة نتيجة التوحيد',
             cancelButtonText: 'إلغاء',
             confirmButtonColor: '#175b4c',
             customClass: { input: 'text-end' },
@@ -1744,14 +1735,14 @@
               return null;
             }
           });
-      
+
           if (!result.isConfirmed) return null;
-      
+
           const selectedIndex = Number.parseInt(String(result.value), 10);
           if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= customerCandidates.length) return null;
           return customerCandidates[selectedIndex];
         }
-      
+
         const optionsText = customerCandidates
           .map((candidate, index) => `${index + 1}) ${formatCustomerNameForSelection(candidate.label)}`)
           .join('\n');
@@ -1769,7 +1760,7 @@
         }
         return selectedCandidate;
       }
-      
+
       function formatCustomerNameForSelection(name) {
         const raw = String(name == null ? '' : name);
         const visible = raw.trim() || raw || '(فارغ)';
@@ -1777,20 +1768,20 @@
         const hasTrailing = /\s+$/.test(raw);
         const hasInternalMultiSpaces = /\s{2,}/.test(raw.trim());
         const notes = [];
-      
+
         if (hasLeading) notes.push('مسافة بالبداية');
         if (hasTrailing) notes.push('مسافة بالنهاية');
         if (hasInternalMultiSpaces) notes.push('مسافات داخلية متعددة');
-      
+
         if (notes.length === 0) return visible;
         return `${visible} (${notes.join('، ')})`;
       }
-      
+
       async function getManualCustomersDefaultBranchId() {
         if (manualCustomersDefaultBranchIdCache !== null) {
           return manualCustomersDefaultBranchIdCache;
         }
-      
+
         try {
           const rows = await ledgerIpc.invoke(
             'db-query',
@@ -1801,23 +1792,23 @@
         } catch (_error) {
           manualCustomersDefaultBranchIdCache = 0;
         }
-      
+
         return manualCustomersDefaultBranchIdCache;
       }
-      
+
       async function shouldApplyManualCustomersForBranch(branchId) {
         const normalizedBranchId = normalizeBranchId(branchId);
         const numericBranchId = normalizedBranchId ? Number(normalizedBranchId) : 0;
         const manualBranchId = await getManualCustomersDefaultBranchId();
         return numericBranchId === Number(manualBranchId || 0);
       }
-      
+
       async function buildCustomerMergePreview(sourceRefs, targetRef, branchId) {
         const [sourceTotals, targetTotals] = await Promise.all([
           fetchCustomerAggregateForRefs(sourceRefs, branchId),
           fetchCustomerAggregateForRefs([targetRef], branchId)
         ]);
-      
+
         return {
           source: sourceTotals,
           target: targetTotals,
@@ -1828,7 +1819,7 @@
           }
         };
       }
-      
+
       async function fetchCustomerAggregateForRefs(customerRefs, branchId) {
         const safeRefs = dedupeCustomerRefs(customerRefs);
         if (safeRefs.length === 0) {
@@ -1839,7 +1830,7 @@
             balance: 0
           };
         }
-      
+
         const normalizedBranchId = normalizeBranchId(branchId);
         const includeManual = await shouldApplyManualCustomersForBranch(normalizedBranchId);
         const postpaidMatcher = buildCustomerMergeRefsMatcher('ps', safeRefs, {
@@ -1850,7 +1841,7 @@
           branchExpression: 'c.branch_id',
           branchId: normalizedBranchId
         });
-      
+
         const unionParts = [
           `SELECT ps.amount AS amount, 'postpaid' AS tx_type
            FROM postpaid_sales ps
@@ -1863,12 +1854,12 @@
            LEFT JOIN cashiers c ON c.id = r.cashier_id
            WHERE ${receiptMatcher.clause}`
         ];
-      
+
         const params = [
           ...postpaidMatcher.params,
           ...receiptMatcher.params
         ];
-      
+
         if (includeManual) {
           const manualPostpaidMatcher = buildCustomerMergeRefsMatcher('mp', safeRefs, {
             allowUnscopedFallback: false
@@ -1888,7 +1879,7 @@
           );
           params.push(...manualPostpaidMatcher.params, ...manualReceiptMatcher.params);
         }
-      
+
         const sql = `
           SELECT
             COUNT(*) AS movements_count,
@@ -1898,7 +1889,7 @@
             ${unionParts.join('\nUNION ALL\n')}
           ) tx
         `;
-      
+
         const rows = await ledgerIpc.invoke('db-query', sql, params);
         const row = Array.isArray(rows) ? rows[0] : null;
         const totalPostpaid = Number(row?.total_postpaid || 0);
@@ -1910,7 +1901,7 @@
           balance: totalPostpaid - totalReceipts
         };
       }
-      
+
       async function confirmCustomerMergeExecution({ sourceNames, targetName, branchLabel, preview }) {
         const fmt = getCurrencyFormatter();
         const mergedNamesLabel = Array.isArray(sourceNames) ? sourceNames.join(' + ') : '';
@@ -1919,11 +1910,11 @@
         const finalPostpaid = Number(preview?.after?.totalPostpaid || 0);
         const finalReceipts = Number(preview?.after?.totalReceipts || 0);
         const finalBalance = finalPostpaid - finalReceipts;
-      
+
         if (window.Swal) {
           const result = await window.Swal.fire({
             icon: 'warning',
-            title: 'تأكيد دمج العملاء',
+            title: 'تأكيد توحيد هوية العملاء',
             html: `
               <div style="text-align:right;line-height:1.75;color:#173f36">
                 <div style="background:#edf7f3;border:1px solid #cce6dc;border-radius:12px;padding:12px;margin-bottom:10px">
@@ -1931,7 +1922,7 @@
                   <div style="font-weight:800;font-size:17px">${escapeHtml(targetName || '-')}</div>
                   <div style="font-size:13px">الفرع: ${escapeHtml(branchLabel || 'غير محدد')}</div>
                 </div>
-                <div><strong>السجلات التي ستُدمج:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
+                <div><strong>الهويات البديلة التي ستُوحّد:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0">
                   <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>الحركات المنقولة</small><br><strong>${escapeHtml(String(movedCount))}</strong></div>
                   <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>الحركات النهائية</small><br><strong>${escapeHtml(String(finalCount))}</strong></div>
@@ -1939,27 +1930,27 @@
                   <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>إجمالي المقبوضات</small><br><strong>${escapeHtml(fmt(finalReceipts))}</strong></div>
                 </div>
                 <div style="background:${finalBalance >= 0 ? '#fff4e8' : '#edf9f2'};border-radius:9px;padding:9px"><strong>الرصيد النهائي: ${escapeHtml(fmt(finalBalance))}</strong></div>
-                <div style="font-size:12px;color:#7b6b58;margin-top:10px">يمكن فك آخر عملية دمج من زر «فك آخر دمج» ما دامت السجلات لم تتغير لاحقًا.</div>
+                <div style="font-size:12px;color:#7b6b58;margin-top:10px">تُحفظ الأكواد والأسماء القديمة كبدائل، وتُوجّه الحركات الجديدة تلقائيًا للحساب الأساسي، مع إمكانية التراجع.</div>
               </div>
             `,
             showCancelButton: true,
-            confirmButtonText: 'نعم، دمج آمن',
+            confirmButtonText: 'اعتماد التوحيد',
             cancelButtonText: 'إلغاء',
             confirmButtonColor: '#175b4c'
           });
           return !!result.isConfirmed;
         }
-      
+
         return window.confirm(
-          `سيتم دمج العملاء (${mergedNamesLabel}) في (${targetName}) ضمن فرع (${branchLabel}). هل تريد المتابعة؟`
+          `سيتم توحيد هوية العملاء (${mergedNamesLabel}) في الحساب الأساسي (${targetName}) ضمن فرع (${branchLabel}). هل تريد المتابعة؟`
         );
       }
-      
+
       async function ensureLedgerMergeHistoryTable() {
         if (customerLedgerMergeHistoryReady) {
           return;
         }
-      
+
         await ledgerIpc.invoke(
           'db-run',
           `CREATE TABLE IF NOT EXISTS ledger_merge_history (
@@ -1994,10 +1985,10 @@
           'db-run',
           'CREATE INDEX IF NOT EXISTS idx_ledger_merge_history_entity_open ON ledger_merge_history(entity_type, undone_at, id DESC)'
         );
-      
+
         customerLedgerMergeHistoryReady = true;
       }
-      
+
       function safeParseJson(value, fallback) {
         if (value == null || value === '') {
           return fallback;
@@ -2008,12 +1999,12 @@
           return fallback;
         }
       }
-      
+
       function normalizeMergeRowEntries(entries) {
         if (!Array.isArray(entries)) {
           return [];
         }
-      
+
         const normalizedRows = [];
         const seenIds = new Set();
         entries.forEach((row) => {
@@ -2027,11 +2018,11 @@
             || row?.old_code !== undefined
             || row?.oldCode !== undefined
           );
-      
+
           if (!Number.isFinite(id) || id <= 0 || seenIds.has(id)) {
             return;
           }
-      
+
           seenIds.add(id);
           normalizedRows.push({
             id,
@@ -2046,10 +2037,10 @@
             old_merged_at: row?.old_merged_at ?? row?.oldMergedAt ?? null
           });
         });
-      
+
         return normalizedRows;
       }
-      
+
       function normalizeCustomerMergeAffectedRows(rawValue) {
         const raw = rawValue && typeof rawValue === 'object' ? rawValue : {};
         return {
@@ -2060,7 +2051,7 @@
           manual_customer_receipts: normalizeMergeRowEntries(raw.manual_customer_receipts)
         };
       }
-      
+
       function countCustomerMergeAffectedRows(affectedRows) {
         const normalized = normalizeCustomerMergeAffectedRows(affectedRows);
         return (
@@ -2071,7 +2062,7 @@
           normalized.manual_customer_receipts.length
         );
       }
-      
+
       async function fetchLatestUndoableCustomerMerge() {
         await ensureLedgerMergeHistoryTable();
         const rows = await ledgerIpc.invoke(
@@ -2085,22 +2076,22 @@
            ORDER BY h.id DESC
            LIMIT 1`
         );
-      
+
         const row = Array.isArray(rows) ? rows[0] : null;
         if (!row) {
           return null;
         }
-      
+
         const sourceNames = Array.from(new Set(
           (safeParseJson(row.source_names_json, []) || [])
             .map((name) => String(name == null ? '' : name))
             .filter((name) => name.trim().length > 0)
         ));
-      
+
         const affectedRows = normalizeCustomerMergeAffectedRows(
           safeParseJson(row.affected_rows_json, {})
         );
-      
+
         return {
           id: Number(row.id || 0),
           branch_id: normalizeBranchId(row.branch_id) || '0',
@@ -2113,7 +2104,7 @@
           created_at: row.created_at || ''
         };
       }
-      
+
       async function refreshCustomerUndoMergeState() {
         try {
           latestUndoableCustomerMerge = await fetchLatestUndoableCustomerMerge();
@@ -2123,7 +2114,7 @@
         }
         updateCustomerLedgerSelectionUi();
       }
-      
+
       async function fetchRowsForCustomerMergeRefs({
         tableName,
         alias,
@@ -2139,7 +2130,7 @@
           ? `LEFT JOIN reconciliations r ON r.id = ${alias}.reconciliation_id
              LEFT JOIN cashiers c ON c.id = r.cashier_id`
           : '';
-      
+
         return ledgerIpc.invoke(
           'db-query',
           `SELECT ${alias}.id AS id,
@@ -2152,7 +2143,7 @@
           matcher.params
         );
       }
-      
+
       async function fetchCustomerMergeAffectedRows({ refsToUpdate, branchId, includeManual }) {
         const [postpaidRows, receiptRows] = await Promise.all([
           fetchRowsForCustomerMergeRefs({
@@ -2170,7 +2161,7 @@
             reconciled: true
           })
         ]);
-      
+
         let manualPostpaidRows = [];
         let manualReceiptRows = [];
         if (includeManual) {
@@ -2189,7 +2180,7 @@
             })
           ]);
         }
-      
+
         return normalizeCustomerMergeAffectedRows({
           postpaid_sales: postpaidRows || [],
           customer_receipts: receiptRows || [],
@@ -2197,14 +2188,14 @@
           manual_customer_receipts: manualReceiptRows || []
         });
       }
-      
+
       async function fetchCustomerRegistryRowsForMerge(sourceRefsInput, branchId, targetCustomerId) {
         const sourceRefs = dedupeCustomerRefs(sourceRefsInput);
         const numericBranchId = Number(normalizeBranchId(branchId) || 0);
         const safeTargetId = normalizeCustomerId(targetCustomerId);
         const clauses = [];
         const params = [];
-      
+
         sourceRefs.forEach((sourceRef) => {
           if (sourceRef.customerId > 0) {
             clauses.push('c.id = ?');
@@ -2218,7 +2209,7 @@
           }
         });
         if (clauses.length === 0 || safeTargetId <= 0) return [];
-      
+
         const rows = await ledgerIpc.invoke(
           'db-query',
           `SELECT c.id AS id,
@@ -2226,7 +2217,7 @@
                   COALESCE(c.customer_code, '') AS old_code,
                   COALESCE(c.is_active, 1) AS old_is_active,
                   COALESCE(c.merged_into_customer_id, 0) AS old_merged_into_customer_id,
-                  c.merged_at AS old_merged_at
+                  c.merged_at AS old_merged_a
            FROM customers c
            WHERE (${clauses.map((clause) => `(${clause})`).join(' OR ')})
              AND COALESCE(c.branch_id, 0) = ?
@@ -2235,7 +2226,7 @@
         );
         return normalizeMergeRowEntries(rows || []);
       }
-      
+
       async function markCustomerRegistrySourcesMerged(registryRows, targetCustomerId) {
         const normalizedRows = normalizeMergeRowEntries(registryRows);
         const safeTargetId = normalizeCustomerId(targetCustomerId);
@@ -2272,7 +2263,7 @@
         );
         return Number(result?.changes || 0);
       }
-      
+
       async function validateCustomerMergeTarget(targetIdentity, branchId) {
         const targetCustomerId = normalizeCustomerId(targetIdentity?.customer_id);
         if (targetCustomerId <= 0) {
@@ -2295,7 +2286,7 @@
           throw new Error('العميل المختار مدمج مسبقاً في عميل آخر؛ اختر السجل الأساسي النهائي');
         }
       }
-      
+
       async function updateCustomerMergeRows({
         tableName,
         alias,
@@ -2315,7 +2306,7 @@
         const targetCustomerId = normalizeCustomerId(targetIdentity.customer_id) || null;
         const targetCustomerName = String(targetIdentity.customer_name == null ? '' : targetIdentity.customer_name).trim();
         const targetCustomerCode = normalizeCustomerCode(targetIdentity.customer_code);
-      
+
         const result = await ledgerIpc.invoke(
           'db-run',
           `UPDATE ${tableName}
@@ -2330,14 +2321,14 @@
            )`,
           [targetCustomerId, targetCustomerName, targetCustomerCode, ...matcher.params]
         );
-      
+
         return Number(result?.changes || 0);
       }
-      
+
       async function resolveCustomerMergeTargetIdentity(targetRefInput, branchId) {
         const targetRef = normalizeCustomerStatementRef(targetRefInput);
         const normalizedBranchId = normalizeBranchId(branchId || targetRef.forcedBranchId);
-      
+
         if (targetRef.customerId > 0) {
           const existingCustomer = await ledgerIpc.invoke(
             'db-get',
@@ -2347,7 +2338,7 @@
              LIMIT 1`,
             [targetRef.customerId]
           );
-      
+
           if (existingCustomer) {
             const existingCode = normalizeCustomerCode(existingCustomer.customer_code);
             if (existingCode) {
@@ -2358,7 +2349,7 @@
                 branch_id: normalizeBranchId(existingCustomer.branch_id) || normalizedBranchId || null
               };
             }
-      
+
             return customerLedgerCodeHelpers.resolveCustomerIdentity({
               customerName: existingCustomer.customer_name || targetRef.customerName,
               customerCode: '',
@@ -2366,14 +2357,14 @@
             });
           }
         }
-      
+
         return customerLedgerCodeHelpers.resolveCustomerIdentity({
           customerName: targetRef.customerName,
           customerCode: targetRef.customerCode,
           branchId: normalizedBranchId
         });
       }
-      
+
       async function recordCustomerMergeHistory({
         numericBranchId,
         safeTargetName,
@@ -2398,7 +2389,7 @@
         );
         return Number(result?.lastInsertRowid || 0);
       }
-      
+
       async function executeCustomerMergeTransaction(sourceRefsInput, targetRefInput, branchId) {
         const request = ledgerIpc.invoke('merge-customers-atomic', {
           sourceRefs: dedupeCustomerRefs(sourceRefsInput),
@@ -2419,13 +2410,13 @@
           if (timeoutId) clearTimeout(timeoutId);
         }
       }
-      
+
       async function revertCustomerIdentityByRowId(tableName, entries, targetIdentity) {
         const safeEntries = normalizeMergeRowEntries(entries);
         if (safeEntries.length === 0) {
           return 0;
         }
-      
+
         const targetName = String(targetIdentity?.customerName || targetIdentity?.customer_name || '').trim();
         const targetCustomerId = normalizeCustomerId(targetIdentity?.customerId || targetIdentity?.customer_id);
         const targetCustomerCode = normalizeCustomerCode(targetIdentity?.customerCode || targetIdentity?.customer_code);
@@ -2433,7 +2424,7 @@
         for (const entry of safeEntries) {
           const guardClauses = ['id = ?', 'TRIM(COALESCE(customer_name, \'\')) = ?'];
           const guardParams = [entry.id, targetName];
-      
+
           if (targetCustomerId > 0) {
             guardClauses.push('COALESCE(customer_id, 0) = ?');
             guardParams.push(targetCustomerId);
@@ -2442,18 +2433,18 @@
             guardClauses.push("UPPER(TRIM(COALESCE(customer_code, ''))) = ?");
             guardParams.push(targetCustomerCode);
           }
-      
-          const setSql = entry.has_identity_snapshot
+
+          const setSql = entry.has_identity_snapsho
             ? 'customer_id = ?, customer_name = ?, customer_code = ?'
             : 'customer_name = ?';
-          const setParams = entry.has_identity_snapshot
+          const setParams = entry.has_identity_snapsho
             ? [
               entry.old_customer_id > 0 ? entry.old_customer_id : null,
               entry.old_name,
               entry.old_code || ''
             ]
             : [entry.old_name];
-      
+
           const result = await ledgerIpc.invoke(
             'db-run',
             `UPDATE ${tableName}
@@ -2465,7 +2456,7 @@
         }
         return changed;
       }
-      
+
       async function revertCustomerRegistryRows(entries, targetCustomerId) {
         const safeEntries = normalizeMergeRowEntries(entries);
         const safeTargetId = normalizeCustomerId(targetCustomerId);
@@ -2492,13 +2483,13 @@
         }
         return changed;
       }
-      
+
       async function rollbackCustomerMergeRecord(mergeRecord) {
         const recordId = Number(mergeRecord?.id || 0);
         if (!Number.isFinite(recordId) || recordId <= 0) {
           throw new Error('سجل الدمج غير صالح');
         }
-      
+
         const safeTargetName = String(mergeRecord?.target_name == null ? '' : mergeRecord.target_name);
         const targetIdentity = {
           customerName: safeTargetName,
@@ -2511,7 +2502,7 @@
           throw new Error('لا توجد قيود محفوظة لفك هذا الدمج');
         }
         await ensureLedgerMergeHistoryTable();
-      
+
         await ledgerIpc.invoke('db-run', 'BEGIN TRANSACTION');
         let committed = false;
         try {
@@ -2539,14 +2530,43 @@
             affectedRows.manual_customer_receipts,
             targetIdentity
           );
-      
+
           const restoredTotal = registryRestored + postpaidRestored + receiptsRestored
             + manualPostpaidRestored + manualReceiptsRestored;
           if (restoredTotal <= 0) {
             throw new Error('لا يمكن فك الدمج: لم يتم العثور على قيود مطابقة للحالة الحالية.');
           }
-      
+
           const skippedRows = Math.max(0, expectedRows - restoredTotal);
+          const aliasCustomerIds = Array.from(new Set((affectedRows.customers || [])
+            .map((row) => Number(row.id || 0)).filter((id) => id > 0)));
+          const aliasCodes = Array.from(new Set([
+            ...(affectedRows.customers || []),
+            ...(affectedRows.postpaid_sales || []),
+            ...(affectedRows.customer_receipts || []),
+            ...(affectedRows.manual_postpaid_sales || []),
+            ...(affectedRows.manual_customer_receipts || [])
+          ].map((row) => normalizeCustomerCode(row.old_code)).filter(Boolean)));
+          const aliasClauses = [];
+          const aliasParams = [Number(mergeRecord.branch_id || 0), targetIdentity.customerId];
+          if (aliasCustomerIds.length) {
+            aliasClauses.push(`alias_customer_id IN (${aliasCustomerIds.map(() => '?').join(', ')})`);
+            aliasParams.push(...aliasCustomerIds);
+          }
+          if (aliasCodes.length) {
+            aliasClauses.push(`alias_code IN (${aliasCodes.map(() => '?').join(', ')})`);
+            aliasParams.push(...aliasCodes);
+          }
+          if (aliasClauses.length) {
+            await ledgerIpc.invoke(
+              'db-run',
+              `UPDATE customer_identity_aliases
+               SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+               WHERE branch_id = ? AND canonical_customer_id = ?
+                 AND (${aliasClauses.join(' OR ')})`,
+              aliasParams
+            );
+          }
           const undoDetails = {
             restored: {
               customers: registryRestored,
@@ -2558,7 +2578,7 @@
             expected_rows: expectedRows,
             skipped_rows: skippedRows
           };
-      
+
           const markResult = await ledgerIpc.invoke(
             'db-run',
             `UPDATE ledger_merge_history
@@ -2571,7 +2591,7 @@
           if (Number(markResult?.changes || 0) <= 0) {
             throw new Error('تعذر تحديث حالة سجل الدمج');
           }
-      
+
           await ledgerIpc.invoke('db-run', 'COMMIT');
           committed = true;
           await refreshCustomerUndoMergeState();
@@ -2591,14 +2611,14 @@
           throw error;
         }
       }
-      
+
       async function confirmCustomerMergeUndoExecution(mergeRecord) {
         const sourceNames = Array.isArray(mergeRecord?.source_names) ? mergeRecord.source_names : [];
         const sourceLabel = sourceNames.length > 0 ? sourceNames.join(' + ') : '-';
         const affectedCount = countCustomerMergeAffectedRows(mergeRecord?.affected_rows);
         const branchLabel = mergeRecord?.branch_name || mergeRecord?.branch_id || 'غير محدد';
         const createdAt = formatMergeDateTime(mergeRecord?.created_at);
-      
+
         if (window.Swal) {
           const result = await window.Swal.fire({
             icon: 'warning',
@@ -2619,12 +2639,12 @@
           });
           return !!result.isConfirmed;
         }
-      
+
         return window.confirm(
           `سيتم فك آخر دمج للعملاء (${sourceLabel}) من (${mergeRecord?.target_name || '-'}) بعدد قيود متوقع ${affectedCount}. هل تريد المتابعة؟`
         );
       }
-      
+
       async function undoLastCustomerMergeInLedger() {
         try {
           const mergeRecord = latestUndoableCustomerMerge || await fetchLatestUndoableCustomerMerge();
@@ -2633,16 +2653,16 @@
             await refreshCustomerUndoMergeState();
             return;
           }
-      
+
           const confirmed = await confirmCustomerMergeUndoExecution(mergeRecord);
           if (!confirmed) {
             return;
           }
-      
+
           const undoResult = await rollbackCustomerMergeRecord(mergeRecord);
           selectedCustomerMergeKeys.clear();
           await loadCustomerLedger();
-      
+
           const currentName = String(currentCustomerStatementContext?.customerName || '');
           const currentBranch = normalizeBranchId(currentCustomerStatementContext?.forcedBranchId || '');
           const mergeBranch = normalizeBranchId(mergeRecord.branch_id);
@@ -2650,7 +2670,7 @@
           if (currentBranch === mergeBranch && impactedNames.has(currentName)) {
             await showCustomerStatement(currentName, mergeBranch);
           }
-      
+
           const skippedText = undoResult.skippedRows > 0
             ? `، مع ${undoResult.skippedRows} قيد لم يتغير لأنه عُدّل بعد الدمج`
             : '';
@@ -2663,12 +2683,12 @@
           showTransactionAlert(`تعذر فك الدمج: ${mapCustomerLedgerDbError(error)}`, 'danger');
         }
       }
-      
+
       async function renameCustomerNameInLedger(customerName, branchId = '', customerCode = '', customerId = '') {
         const customerRef = normalizeCustomerStatementRef(customerName, branchId, customerCode, customerId);
         const oldName = customerRef.customerName;
         if (!oldName) return;
-      
+
         try {
           const nextName = await promptForCustomerRename(oldName);
           if (nextName === null) return;
@@ -2676,7 +2696,7 @@
             showTransactionAlert('لم يتم تغيير الاسم', 'info');
             return;
           }
-      
+
           const result = await ledgerIpc.invoke('update-customer-data', {
             oldCustomerName: oldName,
             newName: nextName,
@@ -2684,13 +2704,13 @@
             customerCode: customerRef.customerCode || '',
             branchId: customerRef.forcedBranchId || null
           });
-      
+
           if (!result || !result.success) {
             throw new Error(result?.error || 'فشل تحديث اسم العميل');
           }
-      
+
           await loadCustomerLedger();
-      
+
           const currentRef = getCurrentCustomerStatementRef();
           const shouldRefreshStatement = (
             (customerRef.customerId > 0 && currentRef.customerId === customerRef.customerId)
@@ -2702,11 +2722,11 @@
               && currentRef.forcedBranchId === customerRef.forcedBranchId
             )
           );
-      
+
           if (shouldRefreshStatement) {
             await showCustomerStatement(nextName, customerRef.forcedBranchId, customerRef.customerCode, customerRef.customerId);
           }
-      
+
           const changed = Number(result?.changes || result?.affectedRows || 0);
           showTransactionAlert(`تم تعديل اسم العميل بنجاح (${changed} حركة محدثة)`, 'success');
         } catch (error) {
@@ -2714,15 +2734,15 @@
           showTransactionAlert(`تعذر تعديل اسم العميل: ${mapCustomerLedgerDbError(error)}`, 'danger');
         }
       }
-      
+
       async function doesCustomerNameExistInBranch(name, branchId) {
         const targetName = String(name == null ? '' : name);
         if (!targetName.trim()) return false;
-      
+
         const normalizedBranchId = normalizeBranchId(branchId);
         const numericBranchId = normalizedBranchId ? Number(normalizedBranchId) : 0;
         const includeManual = await shouldApplyManualCustomersForBranch(normalizedBranchId);
-      
+
         const reconciledRows = await ledgerIpc.invoke(
           'db-query',
           `SELECT
@@ -2747,9 +2767,9 @@
         );
         const reconciledTotal = Number(reconciledRows?.[0]?.total || 0);
         if (reconciledTotal > 0) return true;
-      
+
         if (!includeManual) return false;
-      
+
         const manualRows = await ledgerIpc.invoke(
           'db-query',
           `SELECT
@@ -2764,7 +2784,7 @@
         );
         return Number(manualRows?.[0]?.total || 0) > 0;
       }
-      
+
       async function promptForCustomerRename(currentName) {
         if (window.Swal) {
           const result = await window.Swal.fire({
@@ -2786,7 +2806,7 @@
           if (!result.isConfirmed) return null;
           return String(result.value || '').trim();
         }
-      
+
         const value = window.prompt('أدخل الاسم الجديد للعميل:', currentName);
         if (value == null) return null;
         const next = String(value).trim();
@@ -2800,7 +2820,7 @@
         }
         return next;
       }
-      
+
       async function confirmCustomerRenameMerge(nextName) {
         if (window.Swal) {
           const result = await window.Swal.fire({
@@ -2815,7 +2835,7 @@
         }
         return window.confirm('الاسم موجود مسبقاً في نفس الفرع. المتابعة ستدمج الحركات. هل تريد الاستمرار؟');
       }
-      
+
       // --------- Statement (single customer) ---------
       function getCurrentCustomerStatementRef(fallbackCustomerName = '') {
         return normalizeCustomerStatementRef({
@@ -2823,16 +2843,16 @@
           customerName: currentCustomerStatementContext?.customerName || fallbackCustomerName
         });
       }
-      
+
       async function showCustomerStatement(customerName, forcedBranchId = '', customerCode = '', customerId = '') {
         try {
           const customerRef = normalizeCustomerStatementRef(customerName, forcedBranchId, customerCode, customerId);
           const name = customerRef.customerName;
           if (!name) return;
           currentCustomerStatementContext = customerRef;
-      
+
           const filters = getLedgerFilters();
-      
+
           const fmt = getCurrencyFormatter();
           const mTitle = document.getElementById('customerStatementTitle');
           if (mTitle) {
@@ -2840,7 +2860,7 @@
               ? `كشف حساب - ${name} (${customerRef.customerCode})`
               : `كشف حساب - ${name}`;
           }
-      
+
           const sOpen = document.getElementById('statementOpeningBalance');
           const sPost = document.getElementById('statementTotalPostpaid');
           const sRec = document.getElementById('statementTotalReceipts');
@@ -2852,12 +2872,12 @@
           currentCustomerStatementRowsCache = [];
           selectedCustomerStatementKeys.clear();
           updateCustomerStatementSelectionUi();
-      
+
           const tbody = document.getElementById('customerStatementTable');
           if (tbody) {
             tbody.innerHTML = `<tr><td colspan="8" class="text-center">جاري تحميل الحركات...</td></tr>`;
           }
-      
+
           setupStatementEvents(customerRef);
           // Open modal immediately to avoid perceived UI freeze while data loads.
           if (modalHandler && typeof modalHandler.setupStatementModal === 'function') {
@@ -2869,12 +2889,12 @@
               modal.show();
             }
           }
-      
+
           const { transactions, openingBalance } = await loadCustomerStatementDataset(customerRef, {
             dateFrom: filters.dateFrom,
             dateTo: filters.dateTo
           });
-      
+
           renderCustomerStatementRows(name, transactions, 'لا توجد حركات', {
             openingBalance,
             dateFrom: filters.dateFrom
@@ -2884,29 +2904,29 @@
           showTransactionAlert('حدث خطأ أثناء عرض كشف الحساب: ' + (error && error.message ? error.message : error));
         }
       }
-      
+
       function setupStatementEvents(customerRefInput) {
         const customerRef = normalizeCustomerStatementRef(customerRefInput);
         const customerName = customerRef.customerName;
         console.log('🔧 [LEDGER] إعداد حدث الكشف للعميل:', customerName);
-      
+
         // Store customer name for use in filter functions
         window.currentStatementCustomer = customerRef;
-      
+
         const addBtn = document.getElementById('addTransactionBtn');
         if (addBtn) {
           addBtn.replaceWith(addBtn.cloneNode(true));
           const newAddBtn = document.getElementById('addTransactionBtn');
           newAddBtn.addEventListener('click', () => addNewTransaction(customerRef));
         }
-      
+
         const printBtn = document.getElementById('printStatementBtn');
         if (printBtn) {
           printBtn.replaceWith(printBtn.cloneNode(true));
           const newPrintBtn = document.getElementById('printStatementBtn');
           newPrintBtn.addEventListener('click', () => printCustomerStatement(customerRef));
         }
-      
+
         // إعداد أزرار الفلتر بالتاريخ
         const applyFilterBtn = document.getElementById('applyStatementDateFilter');
         if (applyFilterBtn) {
@@ -2914,28 +2934,28 @@
           const newApplyFilterBtn = document.getElementById('applyStatementDateFilter');
           newApplyFilterBtn.addEventListener('click', () => applyStatementDateFilter(customerRef));
         }
-      
+
         const clearFilterBtn = document.getElementById('clearStatementDateFilter');
         if (clearFilterBtn) {
           clearFilterBtn.replaceWith(clearFilterBtn.cloneNode(true));
           const newClearFilterBtn = document.getElementById('clearStatementDateFilter');
           newClearFilterBtn.addEventListener('click', () => clearStatementDateFilter(customerRef));
         }
-      
+
         const splitBtn = document.getElementById('splitStatementTransactionsBtn');
         if (splitBtn) {
           splitBtn.replaceWith(splitBtn.cloneNode(true));
           const newSplitBtn = document.getElementById('splitStatementTransactionsBtn');
           newSplitBtn.addEventListener('click', () => splitSelectedCustomerStatementTransactions(customerRef));
         }
-      
+
         const clearSelectionBtn = document.getElementById('clearStatementSelectionBtn');
         if (clearSelectionBtn) {
           clearSelectionBtn.replaceWith(clearSelectionBtn.cloneNode(true));
           const newClearSelectionBtn = document.getElementById('clearStatementSelectionBtn');
           newClearSelectionBtn.addEventListener('click', () => clearCustomerStatementSelection());
         }
-      
+
         const selectAll = document.getElementById('statementSelectAllTransactions');
         if (selectAll) {
           selectAll.replaceWith(selectAll.cloneNode(true));
@@ -2948,7 +2968,7 @@
               if (isChecked) selectedCustomerStatementKeys.add(key);
               else selectedCustomerStatementKeys.delete(key);
             });
-      
+
             const rowChecks = document.querySelectorAll('.customer-statement-select-checkbox');
             rowChecks.forEach((checkbox) => {
               checkbox.checked = isChecked;
@@ -2956,39 +2976,39 @@
             updateCustomerStatementSelectionUi();
           });
         }
-      
+
         const statementTableBody = document.getElementById('customerStatementTable');
         if (statementTableBody) {
           statementTableBody.onchange = (event) => {
             const target = event?.target;
             if (!target || !target.classList?.contains('customer-statement-select-checkbox')) return;
-      
+
             const selectionKey = String(target.dataset.selectionKey || '');
             if (!selectionKey) return;
-      
+
             if (target.checked) selectedCustomerStatementKeys.add(selectionKey);
             else selectedCustomerStatementKeys.delete(selectionKey);
-      
+
             updateCustomerStatementSelectionUi();
           };
         }
-      
+
         updateCustomerStatementSelectionUi();
-      
+
         // إعداد حدث الطباعة الحرارية - مع delayed binding
         setTimeout(() => {
           const printThermalBtn = document.getElementById('printStatementThermalBtn');
           console.log('🔍 [LEDGER] البحث عن زر الطباعة الحرارية...');
-      
+
           if (printThermalBtn) {
             console.log('✅ [LEDGER] تم العثور على زر الطباعة الحرارية، إضافة event listener...');
-      
+
             // إزالة أي مستمعين سابقين
             const clonedBtn = printThermalBtn.cloneNode(true);
             printThermalBtn.parentNode.replaceChild(clonedBtn, printThermalBtn);
-      
+
             const newPrintThermalBtn = document.getElementById('printStatementThermalBtn');
-      
+
             // إضافة event listener
             newPrintThermalBtn.addEventListener('click', async (e) => {
               e.preventDefault();
@@ -2996,7 +3016,7 @@
               console.log('🖨️ [LEDGER] تم النقر على زر الطباعة الحرارية للعميل:', customerName);
               await printCustomerStatementThermal(customerRef);
             });
-      
+
             console.log('✅ [LEDGER] تم إضافة event listener للزر الحراري بنجاح');
           } else {
             console.warn('❌ [LEDGER] لم يتم العثور على زر الطباعة الحرارية في DOM');
@@ -3009,98 +3029,98 @@
           }
         }, 100);
       }
-      
+
       // ==================================================
       // دوال فلتر التاريخ لنافذة كشف الحساب
       // ==================================================
-      
+
       async function applyStatementDateFilter(customerRefInput) {
         try {
           const customerRef = normalizeCustomerStatementRef(customerRefInput);
           console.log('📅 [LEDGER] تطبيق فلتر التاريخ لـ:', customerRef.customerName);
-      
+
           const dateFromEl = document.getElementById('statementDateFrom');
           const dateToEl = document.getElementById('statementDateTo');
-      
+
           const dateFrom = dateFromEl?.value;
           const dateTo = dateToEl?.value;
-      
+
           if (!dateFrom && !dateTo) {
             showTransactionAlert('يرجى تحديد تاريخ واحد على الأقل', 'warning');
             return;
           }
-      
+
           if (dateFrom && dateTo && dateFrom > dateTo) {
             showTransactionAlert('تاريخ البداية لا يمكن أن يكون أكبر من تاريخ النهاية', 'warning');
             return;
           }
-      
+
           // حفظ الفلترات في متغير عام
           window.statementDateFilter = { dateFrom, dateTo };
-      
+
           console.log('📅 [LEDGER] الفلتر المحفوظ:', window.statementDateFilter);
-      
+
           // إعادة تحميل الكشف بالفلتر المطبق
           await refreshStatementWithFilter(customerRef, dateFrom, dateTo);
-      
+
         } catch (error) {
           console.error('Error applying date filter:', error);
           showTransactionAlert('حدث خطأ أثناء تطبيق الفلتر: ' + error.message, 'danger');
         }
       }
-      
+
       function clearStatementDateFilter(customerRefInput) {
         try {
           const customerRef = normalizeCustomerStatementRef(customerRefInput);
           console.log('🗑️ [LEDGER] مسح فلتر التاريخ');
-      
+
           // مسح قيم الفلترات
           const dateFromEl = document.getElementById('statementDateFrom');
           const dateToEl = document.getElementById('statementDateTo');
-      
+
           if (dateFromEl) dateFromEl.value = '';
           if (dateToEl) dateToEl.value = '';
-      
+
           // مسح الفلتر المحفوظ
           window.statementDateFilter = null;
-      
+
           // إعادة تحميل الكشف بدون فلتر
           showCustomerStatement(customerRef);
-      
+
         } catch (error) {
           console.error('Error clearing date filter:', error);
           showTransactionAlert('حدث خطأ أثناء مسح الفلتر: ' + error.message, 'danger');
         }
       }
-      
+
       async function refreshStatementWithFilter(customerRefInput, dateFrom, dateTo) {
         try {
           const customerRef = normalizeCustomerStatementRef(customerRefInput);
           const name = customerRef.customerName;
           if (!name) return;
-      
+
           const { transactions, openingBalance } = await loadCustomerStatementDataset(customerRef, {
             dateFrom,
             dateTo
           });
-      
+
           renderCustomerStatementRows(name, transactions, 'لا توجد حركات في الفترة المحددة', {
             openingBalance,
             dateFrom
           });
-      
+
           const fmt = getCurrencyFormatter();
           showTransactionAlert(
             `✅ تم تطبيق الفلتر - عدد الحركات: ${transactions.length} - الرصيد المرحل: ${fmt(openingBalance)}`,
             'success'
           );
-      
+
         } catch (error) {
           console.error('Error refreshing statement with filter:', error);
           showTransactionAlert('حدث خطأ أثناء تطبيق الفلتر: ' + error.message, 'danger');
         }
       }
-      
+
       async function addNewTransaction(customerRefInput) {
         try {
           const customerRef = normalizeCustomerStatementRef(customerRefInput);
@@ -3111,12 +3131,12 @@
           const type = typeEl?.value;
           const amount = parseFloat(amountEl?.value) || 0;
           const reason = reasonEl?.value || '';
-      
+
           if (!customerName || !type || amount <= 0) {
             showTransactionAlert('الرجاء ملء الحقول المطلوبة بشكل صحيح', 'danger');
             return;
           }
-      
+
           // For statement modal we only add manual transactions (no reconciliations)
           // This ensures adding a new tx from the statement does NOT create a reconciliation.
           const payload = {
@@ -3136,16 +3156,16 @@
             console.error('add-manual-transaction IPC failed, error:', e);
             result = { success: false, error: e && e.message ? e.message : String(e) };
           }
-      
+
           if (result && result.success) {
             // Refresh statement data only WITHOUT re-showing modal (to preserve sidebar state)
             refreshStatementData(customerRef);
-      
+
             // Clear form fields after successful add
             if (typeEl) typeEl.value = 'receipt';
             if (amountEl) amountEl.value = '';
             if (reasonEl) reasonEl.value = '';
-      
+
             showTransactionAlert('تمت إضافة الحركة بنجاح', 'success');
             // NOTE: Modal stays open so user can add more transactions without disruption
           } else {
@@ -3159,17 +3179,17 @@
           showTransactionAlert('حدث خطأ أثناء إضافة الحركة: ' + mapCustomerLedgerDbError(error), 'danger');
         }
       }
-      
+
       // تحديث بيانات الكشف فقط دون إعادة إظهار المودال
       async function refreshStatementData(customerRefInput) {
         try {
           const customerRef = normalizeCustomerStatementRef(customerRefInput);
           const name = customerRef.customerName;
           if (!name) return;
-      
+
           const dateRange = getEffectiveStatementDateRange();
           const { transactions, openingBalance } = await loadCustomerStatementDataset(customerRef, dateRange);
-      
+
           renderCustomerStatementRows(name, transactions, 'لا توجد حركات', {
             openingBalance,
             dateFrom: dateRange.dateFrom
@@ -3178,11 +3198,11 @@
           console.error('Error refreshing statement data:', error);
         }
       }
-      
+
       async function promptCustomerStatementSplitTarget(customerRef) {
         const defaultName = String(customerRef?.customerName || '').trim();
         const defaultCode = '';
-      
+
         if (window.Swal) {
           const result = await window.Swal.fire({
             title: 'فصل الحركات المحددة',
@@ -3208,11 +3228,11 @@
               return { customerName, customerCode };
             }
           });
-      
+
           if (!result.isConfirmed) return null;
           return result.value || null;
         }
-      
+
         const customerName = window.prompt('اسم العميل الجديد/الهدف:', defaultName);
         if (customerName == null) return null;
         const trimmedName = String(customerName).trim();
@@ -3220,16 +3240,16 @@
           showTransactionAlert('اسم العميل مطلوب', 'danger');
           return null;
         }
-      
+
         const customerCode = window.prompt('كود العميل (اختياري):', defaultCode);
         if (customerCode == null) return null;
-      
+
         return {
           customerName: trimmedName,
           customerCode: String(customerCode).trim()
         };
       }
-      
+
       function resolveStatementTransactionTableName(tx) {
         const isManual = tx?.source === 'manual';
         if (tx?.type === 'postpaid') {
@@ -3237,7 +3257,7 @@
         }
         return isManual ? 'manual_customer_receipts' : 'customer_receipts';
       }
-      
+
       async function splitSelectedCustomerStatementTransactions(customerRefInput) {
         const customerRef = normalizeCustomerStatementRef(customerRefInput);
         const selectedRows = getSelectedCustomerStatementRows();
@@ -3245,19 +3265,19 @@
           showTransactionAlert('حدد حركة واحدة على الأقل لتنفيذ الفصل', 'warning');
           return;
         }
-      
+
         try {
           const targetInput = await promptCustomerStatementSplitTarget(customerRef);
           if (!targetInput) {
             return;
           }
-      
+
           const targetIdentity = await customerLedgerCodeHelpers.resolveCustomerIdentity({
             customerName: targetInput.customerName,
             customerCode: targetInput.customerCode,
             branchId: customerRef.forcedBranchId
           });
-      
+
           const sameCustomer = (
             (customerRef.customerId > 0 && Number(targetIdentity.customer_id || 0) === customerRef.customerId)
             || (customerRef.customerId <= 0 && customerRef.customerCode && targetIdentity.customer_code === customerRef.customerCode)
@@ -3268,12 +3288,12 @@
               && normalizeBranchId(targetIdentity.branch_id) === customerRef.forcedBranchId
             )
           );
-      
+
           if (sameCustomer) {
             showTransactionAlert('العميل الهدف مطابق للعميل الحالي، لا يوجد فصل مطلوب', 'info');
             return;
           }
-      
+
           await ledgerIpc.invoke('db-run', 'BEGIN TRANSACTION');
           let committed = false;
           try {
@@ -3294,11 +3314,11 @@
               );
               updatedRows += Number(result?.changes || 0);
             }
-      
+
             if (updatedRows <= 0) {
               throw new Error('لم يتم العثور على قيود قابلة للتحديث');
             }
-      
+
             await ledgerIpc.invoke('db-run', 'COMMIT');
             committed = true;
           } catch (error) {
@@ -3311,7 +3331,7 @@
             }
             throw error;
           }
-      
+
           clearCustomerStatementSelection();
           await loadCustomerLedger();
           await refreshStatementData(customerRef);
@@ -3321,11 +3341,11 @@
           showTransactionAlert(`تعذر فصل الحركات المحددة: ${mapCustomerLedgerDbError(error)}`, 'danger');
         }
       }
-      
+
       function closeCustomerStatementModal() {
         const modalEl = document.getElementById('customerStatementModal');
         if (!modalEl) return;
-      
+
         if (window.bootstrap?.Modal) {
           const modal = window.bootstrap.Modal.getInstance(modalEl);
           if (modal) {
@@ -3333,19 +3353,19 @@
             return;
           }
         }
-      
+
         modalEl.classList.remove('show');
         modalEl.style.display = 'none';
         modalEl.setAttribute('aria-hidden', 'true');
       }
-      
+
       function activateReconciliationSectionFromLedger() {
         const reconciliationMenu = document.querySelector('a[data-section="reconciliation"]');
         if (reconciliationMenu && typeof reconciliationMenu.click === 'function') {
           reconciliationMenu.click();
           return;
         }
-      
+
         const targetSection = document.getElementById('reconciliation-section');
         if (targetSection) {
           document.querySelectorAll('.content-section').forEach((section) => {
@@ -3354,14 +3374,14 @@
           targetSection.classList.add('active');
         }
       }
-      
+
       async function openCustomerReconciliationFromStatement(reconciliationId) {
         const numericId = Number.parseInt(reconciliationId, 10);
         if (!Number.isFinite(numericId) || numericId <= 0) {
           showTransactionAlert('هذه الحركة غير مرتبطة بتصفية صالحة', 'warning');
           return;
         }
-      
+
         try {
           if (typeof window.recallReconciliationFromId === 'function') {
             const recalled = await window.recallReconciliationFromId(numericId);
@@ -3372,25 +3392,25 @@
             activateReconciliationSectionFromLedger();
             return;
           }
-      
+
           if (typeof window.editReconciliationNew === 'function') {
             closeCustomerStatementModal();
             await window.editReconciliationNew(numericId);
             return;
           }
-      
+
           showTransactionAlert('تعذر فتح التصفية المرتبطة من هذه الشاشة', 'danger');
         } catch (error) {
           console.error('Error opening reconciliation from customer statement:', error);
           showTransactionAlert('حدث خطأ أثناء فتح التصفية المرتبطة', 'danger');
         }
       }
-      
+
       function buildCustomerStatementReconciliationCell(tx) {
         const reconciliationId = Number(tx?.reconciliation_id || 0);
         const recLabel = tx?.rec_no != null ? `#${tx.rec_no}` : (reconciliationId > 0 ? `#${reconciliationId}` : '-');
         const cashierLabel = tx?.cashier_name ? ` - ${escapeHtml(tx.cashier_name)}` : '';
-      
+
         if (reconciliationId > 0 && tx?.source !== 'manual') {
           return `
             <button
@@ -3402,16 +3422,16 @@
             </button>${cashierLabel}
           `;
         }
-      
+
         return `${escapeHtml(recLabel)}${cashierLabel}`;
       }
-      
+
       function buildCustomerStatementActions(tx, customerName) {
         if (tx?.source === 'manual') {
           const rowId = Number(tx?.row_id || tx?.id || 0);
           return `<button class="btn btn-sm btn-outline-primary" onclick="editManualTransaction(${rowId}, '${tx.type}', '${escapeAttr(customerName)}')"><i class="bi bi-pencil"></i></button>`;
         }
-      
+
         const reconciliationId = Number(tx?.reconciliation_id || 0);
         if (reconciliationId > 0) {
           return `
@@ -3424,10 +3444,10 @@
             </button>
           `;
         }
-      
+
         return '<span class="text-muted">-</span>';
       }
-      
+
       function renderCustomerStatementRows(customerName, transactions, emptyMessage = 'لا توجد حركات', options = {}) {
         const tbody = document.getElementById('customerStatementTable');
         const sOpen = document.getElementById('statementOpeningBalance');
@@ -3444,7 +3464,7 @@
         });
         currentCustomerStatementRowsCache = Array.isArray(summary.rows) ? summary.rows : [];
         syncCustomerStatementSelectionWithRows();
-      
+
         const rowsHtml = summary.rows.map((tx) => {
           const kind = tx.type === 'postpaid' ? 'مبيعات آجلة' : 'مقبوض عميل';
           const reasonText = translateReason(tx.reason || '-');
@@ -3453,11 +3473,11 @@
           const txDate = tx.tx_date || tx.created_at || '';
           const selectionKey = buildStatementTransactionSelectionKey(tx);
           const checked = selectedCustomerStatementKeys.has(selectionKey) ? 'checked' : '';
-      
+
           return `
             <tr>
               <td>
-                <input
+                <inpu
                   type="checkbox"
                   class="form-check-input customer-statement-select-checkbox"
                   data-selection-key="${escapeAttr(selectionKey)}"
@@ -3474,7 +3494,7 @@
             </tr>
           `;
         }).join('');
-      
+
         const openingRowHtml = shouldShowOpeningBalanceRow(dateFrom, openingBalance) ? `
           <tr class="statement-opening-carry-row">
             <td><span class="text-muted">-</span></td>
@@ -3487,21 +3507,21 @@
             <td><span class="text-muted">-</span></td>
           </tr>
         ` : '';
-      
+
         if (sOpen) sOpen.textContent = fmt(openingBalance);
         if (sPost) sPost.textContent = fmt(summary.totalPostpaid);
         if (sRec) sRec.textContent = fmt(summary.totalReceipts);
         if (sBal) sBal.textContent = fmt(summary.closingBalance);
-      
+
         if (tbody) {
           const hasContent = Boolean(rowsHtml || openingRowHtml);
-          tbody.innerHTML = hasContent
+          tbody.innerHTML = hasConten
             ? `${rowsHtml}${openingRowHtml}`
             : `<tr><td colspan="8" class="text-center">${escapeHtml(emptyMessage)}</td></tr>`;
         }
         updateCustomerStatementSelectionUi();
       }
-      
+
       function showTransactionAlert(message, type = 'info') {
         const alertEl = document.getElementById('transactionAlert');
         if (alertEl) {
@@ -3513,13 +3533,13 @@
           console.log('ALERT:', message);
         }
       }
-      
+
       async function printCustomerStatement(customerName) {
         try {
           const customerRef = normalizeCustomerStatementRef(customerName);
           const name = customerRef.customerName;
           if (!name.trim()) return;
-      
+
           const customerMatcher = customerRef.customerId > 0
             ? {
               clause: 'cust.id = ?',
@@ -3534,15 +3554,15 @@
                 clause: 'TRIM(COALESCE(cust.customer_name, \'\')) = ?',
                 params: [name]
               };
-      
+
           let branchInfo = await ledgerIpc.invoke('db-query', `
             SELECT b.id, b.branch_name, b.branch_phone, b.branch_address
-            FROM customers cust
+            FROM customers cus
             LEFT JOIN branches b ON b.id = cust.branch_id
             WHERE ${customerMatcher.clause}
             LIMIT 1
           `, customerMatcher.params);
-      
+
           if (!Array.isArray(branchInfo) || branchInfo.length === 0) {
             const fallbackMatcher = buildCustomerTableMatcher('ps', customerRef, { branchExpression: 'c.branch_id' });
             branchInfo = await ledgerIpc.invoke('db-query', `
@@ -3556,20 +3576,20 @@
               LIMIT 1
             `, fallbackMatcher.params);
           }
-      
+
           const branch = branchInfo && branchInfo[0] ? branchInfo[0] : {
             branch_name: 'غير محدد',
             branch_phone: '',
             branch_address: ''
           };
-      
+
           const dateRange = getEffectiveStatementDateRange();
           const { transactions, openingBalance } = await loadCustomerStatementDataset(customerRef, dateRange);
           const summary = summarizeStatementTransactions(transactions, {
             openingBalance,
             order: 'desc'
           });
-      
+
           const fmt = getCurrencyFormatter();
           const sortedTx = [...transactions].sort((left, right) => {
             const leftDate = String(left?.tx_date || left?.created_at || '');
@@ -3578,18 +3598,18 @@
             if (dateCompare !== 0) return dateCompare;
             return String(left?.created_at || '').localeCompare(String(right?.created_at || ''));
           });
-      
+
           const printRows = summarizeStatementTransactions(sortedTx, {
             openingBalance,
             order: 'asc'
           }).rows;
-      
+
           const rowsHtml = printRows.map((t) => {
             const amount = Math.abs(Number(t.amount || 0));
             const isPostpaid = t.type === 'postpaid';
             const debit = t.debit || (isPostpaid ? amount : 0);
             const credit = t.credit || (isPostpaid ? 0 : amount);
-      
+
             const reasonText = translateReason(t.reason || '-');
             const recNo = t.rec_no != null ? `#${t.rec_no}` : '-';
             const cashierName = String(t.cashier_name || 'إدخال يدوي').trim();
@@ -3604,7 +3624,7 @@
               `المصدر: ${sourceLabel}`,
               cashierName ? `المستخدم: ${cashierName}` : ''
             ].filter(Boolean).join(' - ');
-      
+
             return `
               <tr>
                 <td>${escapeHtml(formatDateTime(t.tx_date || t.created_at || ''))}</td>
@@ -3620,14 +3640,14 @@
               </tr>
             `;
           }).join('');
-      
+
           const openingDebit = openingBalance >= 0 ? openingBalance : 0;
           const openingCredit = openingBalance < 0 ? Math.abs(openingBalance) : 0;
           const closingDebit = summary.closingBalance >= 0 ? summary.closingBalance : 0;
           const closingCredit = summary.closingBalance < 0 ? Math.abs(summary.closingBalance) : 0;
           const openingDebitText = (openingDebit > 0 || (openingDebit === 0 && openingCredit === 0)) ? fmt(openingDebit) : '';
           const formattedDateRange = formatStatementDateRange(dateRange.dateFrom, dateRange.dateTo);
-      
+
           const printHTML = `
           <!DOCTYPE html>
           <html dir="rtl" lang="ar">
@@ -3636,76 +3656,76 @@
               <title>كشف حساب - ${name}</title>
               <style>
                   @page { size: A4; margin: 12mm 14mm }
-                  body { 
-                      font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+                  body {
+                      font-family: 'Cairo', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
                       font-size: 12px;
                       line-height: 1.5;
                       color: #0b1f35;
                       margin: 0 auto;
                       padding: 0;
                   }
-                  .header { 
+                  .header {
                       margin-bottom: 6mm;
                       padding: 4mm 5mm;
                       border: 1px solid #738aa3;
                       border-radius: 2.5mm;
                       background-color: #fff;
                   }
-                  .statement-title { 
-                      text-align: center; 
-                      margin-bottom: 3mm 
+                  .statement-title {
+                      text-align: center;
+                      margin-bottom: 3mm
                   }
-                  .statement-title h2 { 
-                      font-size: 18px; 
-                      font-weight: bold; 
-                      margin: 0; 
+                  .statement-title h2 {
+                      font-size: 18px;
+                      font-weight: bold;
+                      margin: 0;
                       padding: 0;
                       color: #0b1f35;
                   }
-                  .header-content { 
-                      display: flex; 
-                      justify-content: space-between; 
-                      align-items: flex-start; 
+                  .header-content {
+                      display: flex;
+                      justify-content: space-between;
+                      align-items: flex-start;
                       gap: 6mm;
                   }
                   .header-right, .header-left { flex: 1 }
-                  .header-right { 
+                  .header-right {
                       padding-left: 4mm;
                       border-left: 1px solid #d1d9e0;
                   }
-                  .company-name { 
-                      font-size: 15px; 
-                      font-weight: bold; 
+                  .company-name {
+                      font-size: 15px;
+                      font-weight: bold;
                       margin-bottom: 2mm;
                       color: #0b1f35;
                   }
-                  .branch-name { 
-                      font-size: 13px; 
-                      margin-bottom: 2mm; 
+                  .branch-name {
+                      font-size: 13px;
+                      margin-bottom: 2mm;
                       color: #334155;
                   }
-                  .branch-info { 
+                  .branch-info {
                       font-size: 11px;
-                      line-height: 1.4; 
+                      line-height: 1.4;
                       color: #475569;
                   }
                   .branch-info > div { margin-bottom: 1mm }
-                  .header-left { 
-                      text-align: left; 
+                  .header-left {
+                      text-align: left;
                       padding-right: 4mm;
                   }
-                  .customer-info, .print-date { 
+                  .customer-info, .print-date {
                       margin-top: 1.5mm;
                       font-size: 12px;
                   }
-                  .detail-label { 
-                      font-weight: 500; 
+                  .detail-label {
+                      font-weight: 500;
                       color: #475569;
                       margin-left: 2mm;
                   }
-                  .summary { 
-                      display: flex; 
-                      justify-content: space-between; 
+                  .summary {
+                      display: flex;
+                      justify-content: space-between;
                       gap: 3mm;
                       margin: 0 0 5mm 0;
                       padding: 3mm;
@@ -3713,40 +3733,40 @@
                       border-radius: 2mm;
                       border: 1px solid #d1d9e0;
                   }
-                  .summary-item { 
-                      flex: 1; 
-                      background-color: #fff; 
+                  .summary-item {
+                      flex: 1;
+                      background-color: #fff;
                       padding: 2mm 2.5mm;
-                      border-radius: 2mm; 
+                      border-radius: 2mm;
                       border: 1px solid #d1d9e0;
                       text-align: center
                   }
-                  .summary-item .label { 
-                      font-weight: bold; 
+                  .summary-item .label {
+                      font-weight: bold;
                       color: #334155;
                       font-size: 11px;
-                      margin-bottom: 1mm 
+                      margin-bottom: 1mm
                   }
-                  .summary-item .value { 
+                  .summary-item .value {
                       font-size: 13px;
-                      font-weight: bold 
+                      font-weight: bold
                   }
-                  table { 
+                  table {
                       width: 100%;
                       border-collapse: collapse;
                       margin: 0 0 6mm 0;
                       border: 1px solid #738aa3;
                   }
-                  th, td { 
+                  th, td {
                       border: 1px solid #738aa3;
                       padding: 2.2mm;
                       text-align: right;
-                      font-size: 11px 
+                      font-size: 11px
                   }
-                  th { 
+                  th {
                       background: #b6cfe8;
                       font-weight: bold;
-                      font-size: 11px 
+                      font-size: 11px
                   }
                   td, th {
                       vertical-align: top;
@@ -3774,18 +3794,18 @@
                       background: #f1f5f9;
                       font-weight: 700;
                   }
-                  .text-currency { 
+                  .text-currency {
                       font-family: 'Consolas', 'Cascadia Mono', monospace;
                       color: #0f172a;
-                      font-size: 11px 
+                      font-size: 11px
                   }
-                  .footer { 
+                  .footer {
                       margin-top: 6mm;
-                      text-align: center; 
+                      text-align: center;
                       font-size: 10px;
                       color: #64748b
                   }
-                  @media print { 
+                  @media print {
                       body { margin: 0; padding: 0 }
                   }
               </style>
@@ -3869,7 +3889,7 @@
           </body>
           </html>
           `;
-      
+
           if (printManager && typeof printManager.printWithPreview === 'function') {
             try {
               const result = await printManager.printWithPreview(printHTML);
@@ -3880,7 +3900,7 @@
               console.warn('printManager error:', err);
             }
           }
-      
+
           // fallback to window printing
           const printWindow = window.open('', '_blank');
           if (printWindow) {
@@ -3895,7 +3915,7 @@
           showTransactionAlert('حدث خطأ أثناء الطباعة: ' + (error && error.message ? error.message : error), 'danger');
         }
       }
-      
+
       function buildDateFilter(filters) {
         let sql = '';
         const params = [];
@@ -3903,7 +3923,7 @@
         if (filters.dateTo) { sql += ' AND r.reconciliation_date <= ?'; params.push(filters.dateTo); }
         return { sql, params };
       }
-      
+
       function buildStatementDateClauses(options = {}) {
         const dateFrom = String(options.dateFrom || '').trim();
         const dateTo = String(options.dateTo || '').trim();
@@ -3912,25 +3932,25 @@
         let manualSql = '';
         const reconciledParams = [];
         const manualParams = [];
-      
+
         if (completedOnly) {
           reconciledSql += " AND r.status = 'completed'";
         }
-      
+
         if (dateFrom) {
           reconciledSql += ' AND r.reconciliation_date >= ?';
           manualSql += ' AND DATE(created_at) >= ?';
           reconciledParams.push(dateFrom);
           manualParams.push(dateFrom);
         }
-      
+
         if (dateTo) {
           reconciledSql += ' AND r.reconciliation_date <= ?';
           manualSql += ' AND DATE(created_at) <= ?';
           reconciledParams.push(dateTo);
           manualParams.push(dateTo);
         }
-      
+
         return {
           dateFrom,
           dateTo,
@@ -3940,18 +3960,18 @@
           manualParams
         };
       }
-      
+
       async function fetchCustomerStatementTransactions(customerRefInput, options = {}) {
         const customerRef = normalizeCustomerStatementRef(customerRefInput);
         const name = customerRef.customerName;
         if (!name) return [];
-      
+
         const clauses = buildStatementDateClauses(options);
         const postpaidMatcher = buildCustomerTableMatcher('ps', customerRef, { branchExpression: 'c.branch_id' });
         const receiptMatcher = buildCustomerTableMatcher('cr', customerRef, { branchExpression: 'c.branch_id' });
         const manualPostpaidMatcher = buildCustomerTableMatcher('mp', customerRef);
         const manualReceiptMatcher = buildCustomerTableMatcher('mr', customerRef);
-      
+
         const sqlPost = `
           SELECT ps.id AS row_id, ps.reconciliation_id AS reconciliation_id, 'reconciled' AS source,
                  ps.amount AS amount, 'postpaid' AS type, r.reconciliation_date AS tx_date,
@@ -3963,7 +3983,7 @@
           WHERE ${postpaidMatcher.clause}
           ${clauses.reconciledSql}
         `;
-      
+
         const sqlRec = `
           SELECT cr.id AS row_id, cr.reconciliation_id AS reconciliation_id, 'reconciled' AS source,
                  cr.amount AS amount, 'receipt' AS type, r.reconciliation_date AS tx_date,
@@ -3975,7 +3995,7 @@
           WHERE ${receiptMatcher.clause}
           ${clauses.reconciledSql}
         `;
-      
+
         const sqlManualPost = `
           SELECT id AS row_id, NULL AS reconciliation_id, 'manual' as source,
                  amount, 'postpaid' as type, created_at as tx_date,
@@ -3985,7 +4005,7 @@
           WHERE ${manualPostpaidMatcher.clause}
           ${clauses.manualSql}
         `;
-      
+
         const sqlManualRec = `
           SELECT id AS row_id, NULL AS reconciliation_id, 'manual' as source,
                  amount, 'receipt' as type, created_at as tx_date,
@@ -3995,19 +4015,19 @@
           WHERE ${manualReceiptMatcher.clause}
           ${clauses.manualSql}
         `;
-      
+
         const postpaidParams = [...postpaidMatcher.params, ...clauses.reconciledParams];
         const receiptParams = [...receiptMatcher.params, ...clauses.reconciledParams];
         const manualPostpaidParams = [...manualPostpaidMatcher.params, ...clauses.manualParams];
         const manualReceiptParams = [...manualReceiptMatcher.params, ...clauses.manualParams];
-      
+
         const [postTx, recTx, manualPostTx, manualRecTx] = await Promise.all([
           ledgerIpc.invoke('db-query', sqlPost, postpaidParams),
           ledgerIpc.invoke('db-query', sqlRec, receiptParams),
           ledgerIpc.invoke('db-query', sqlManualPost, manualPostpaidParams),
           ledgerIpc.invoke('db-query', sqlManualRec, manualReceiptParams)
         ]);
-      
+
         return sortTransactionsForStatement([
           ...(postTx || []),
           ...(recTx || []),
@@ -4015,20 +4035,20 @@
           ...(manualRecTx || [])
         ]);
       }
-      
+
       async function calculateCustomerStatementOpeningBalance(customerRefInput, options = {}) {
         const customerRef = normalizeCustomerStatementRef(customerRefInput);
         const name = customerRef.customerName;
         const dateFrom = String(options.dateFrom || '').trim();
         const completedOnly = !!options.completedOnly;
         if (!name || !dateFrom) return 0;
-      
+
         const reconciledStatusSql = completedOnly ? " AND r.status = 'completed'" : '';
         const postpaidMatcher = buildCustomerTableMatcher('ps', customerRef, { branchExpression: 'c.branch_id' });
         const receiptMatcher = buildCustomerTableMatcher('cr', customerRef, { branchExpression: 'c.branch_id' });
         const manualPostpaidMatcher = buildCustomerTableMatcher('mp', customerRef);
         const manualReceiptMatcher = buildCustomerTableMatcher('mr', customerRef);
-      
+
         const sqlPost = `
           SELECT COALESCE(SUM(ps.amount), 0) AS total
           FROM postpaid_sales ps
@@ -4038,7 +4058,7 @@
             AND r.reconciliation_date < ?
             ${reconciledStatusSql}
         `;
-      
+
         const sqlRec = `
           SELECT COALESCE(SUM(cr.amount), 0) AS total
           FROM customer_receipts cr
@@ -4048,45 +4068,45 @@
             AND r.reconciliation_date < ?
             ${reconciledStatusSql}
         `;
-      
+
         const sqlManualPost = `
           SELECT COALESCE(SUM(amount), 0) AS total
           FROM manual_postpaid_sales mp
           WHERE ${manualPostpaidMatcher.clause}
             AND DATE(created_at) < ?
         `;
-      
+
         const sqlManualRec = `
           SELECT COALESCE(SUM(amount), 0) AS total
           FROM manual_customer_receipts mr
           WHERE ${manualReceiptMatcher.clause}
             AND DATE(created_at) < ?
         `;
-      
+
         const [postRows, recRows, manualPostRows, manualRecRows] = await Promise.all([
           ledgerIpc.invoke('db-query', sqlPost, [...postpaidMatcher.params, dateFrom]),
           ledgerIpc.invoke('db-query', sqlRec, [...receiptMatcher.params, dateFrom]),
           ledgerIpc.invoke('db-query', sqlManualPost, [...manualPostpaidMatcher.params, dateFrom]),
           ledgerIpc.invoke('db-query', sqlManualRec, [...manualReceiptMatcher.params, dateFrom])
         ]);
-      
+
         const getTotal = (rows) => Number(rows?.[0]?.total || 0);
         return getTotal(postRows) + getTotal(manualPostRows) - getTotal(recRows) - getTotal(manualRecRows);
       }
-      
+
       async function loadCustomerStatementDataset(customerRefInput, options = {}) {
         const customerRef = normalizeCustomerStatementRef(customerRefInput);
         const [transactions, openingBalance] = await Promise.all([
           fetchCustomerStatementTransactions(customerRef, options),
           calculateCustomerStatementOpeningBalance(customerRef, options)
         ]);
-      
+
         return {
           transactions,
           openingBalance
         };
       }
-      
+
       function getEffectiveStatementDateRange() {
         if (window.statementDateFilter && (window.statementDateFilter.dateFrom || window.statementDateFilter.dateTo)) {
           return {
@@ -4094,14 +4114,14 @@
             dateTo: String(window.statementDateFilter.dateTo || '').trim()
           };
         }
-      
+
         const filters = getLedgerFilters();
         return {
           dateFrom: String(filters.dateFrom || '').trim(),
           dateTo: String(filters.dateTo || '').trim()
         };
       }
-      
+
       function formatStatementDateRange(dateFrom, dateTo) {
         const from = String(dateFrom || '').trim();
         const to = String(dateTo || '').trim();
@@ -4110,7 +4130,7 @@
         if (to) return `حتى ${to}`;
         return '';
       }
-      
+
       function sortTransactionsForStatement(transactions) {
         return transactions.sort((a, b) => {
           const leftDate = String(a.tx_date || a.created_at || '');
@@ -4120,7 +4140,7 @@
           return String(b.created_at || '').localeCompare(String(a.created_at || ''));
         });
       }
-      
+
       function getCurrencyFormatter() {
         if (typeof window.formatCurrency === 'function') return window.formatCurrency;
         return function (amount) {
@@ -4129,7 +4149,7 @@
           catch { return Number(amount).toFixed(2); }
         };
       }
-      
+
       async function getCompanyName() {
         try {
           const cachedCompanyName = String(window.currentCompanyName || '').trim();
@@ -4140,7 +4160,7 @@
               AND setting_key IN ('company_name', 'name')
             ORDER BY id DESC
           `);
-      
+
           const rows = Array.isArray(result) ? result : [];
           const latestByKey = new Map();
           rows.forEach((row) => {
@@ -4148,38 +4168,38 @@
             const settingKey = String(row?.setting_key || '').trim().toLowerCase();
             const settingValue = String(row?.setting_value || '').trim();
             if (!category || !settingKey || !settingValue) return;
-      
+
             const compositeKey = `${category}:${settingKey}`;
             if (!latestByKey.has(compositeKey)) {
               latestByKey.set(compositeKey, settingValue);
             }
           });
-      
+
           const preferredKeys = [
             'general:company_name',
             'general:name',
             'company:name',
             'company:company_name'
           ];
-      
+
           for (const key of preferredKeys) {
             const value = latestByKey.get(key);
             if (value) {
               return value;
             }
           }
-      
+
           if (cachedCompanyName) {
             return cachedCompanyName;
           }
-      
+
           return 'شركة المثال التجارية';
         } catch (error) {
           console.error('Error getting company name:', error);
           return 'شركة المثال التجارية';
         }
       }
-      
+
       function escapeHtml(str) {
         return String(str || '')
           .replace(/&/g, '&amp;')
@@ -4188,16 +4208,16 @@
           .replace(/"/g, '&quot;')
           .replace(/'/g, '&#039;');
       }
-      
+
       function escapeAttr(str) {
         return String(str || '').replace(/['"\\]/g, s => ({ "'": '&#39;', '"': '&quot;', '\\': '\\\\' }[s]));
       }
-      
+
       function formatMergeDateTime(dateTimeString) {
         const formatted = formatDateTime(dateTimeString);
         return formatted === 'غير محدد' ? '' : formatted;
       }
-      
+
       function formatDateTime(dateTimeString) {
         if (!dateTimeString) return 'غير محدد';
         try {
@@ -4214,13 +4234,13 @@
           return 'غير محدد';
         }
       }
-      
+
       async function printCustomerStatementThermal(customerName) {
         try {
           const customerRef = normalizeCustomerStatementRef(customerName);
           const name = customerRef.customerName;
           console.log('🖨️ [LEDGER] بدء طباعة كشف الحساب الحرارية للعميل:', name);
-      
+
           // جلب بيانات الفرع المرتبط بالعميل
           let customerBranch = { branch_name: '', branch_phone: '', branch_address: '' };
           try {
@@ -4238,15 +4258,15 @@
                   clause: 'TRIM(COALESCE(cust.customer_name, \'\')) = ?',
                   params: [name]
                 };
-      
+
             let branchData = await ledgerIpc.invoke('db-query', `
               SELECT b.id, b.branch_name, b.branch_phone, b.branch_address
-              FROM customers cust
+              FROM customers cus
               LEFT JOIN branches b ON b.id = cust.branch_id
               WHERE ${customerMatcher.clause}
               LIMIT 1
             `, customerMatcher.params);
-      
+
             if (!Array.isArray(branchData) || branchData.length === 0) {
               const fallbackMatcher = buildCustomerTableMatcher('ps', customerRef, { branchExpression: 'c.branch_id' });
               branchData = await ledgerIpc.invoke('db-query', `
@@ -4259,7 +4279,7 @@
                 LIMIT 1
               `, fallbackMatcher.params);
             }
-      
+
             if (branchData && branchData.length > 0) {
               customerBranch = branchData[0];
               console.log('🏢 [THERMAL] تم الحصول على بيانات الفرع:', customerBranch);
@@ -4267,12 +4287,12 @@
           } catch (branchErr) {
             console.warn('⚠️ [THERMAL] تحذير في جلب بيانات الفرع:', branchErr);
           }
-      
+
           const dateRange = getEffectiveStatementDateRange();
-      
+
           // إظهار رسالة التحميل
           showTransactionAlert('جاري تحضير البيانات للطباعة...', 'info');
-      
+
           const { transactions, openingBalance } = await loadCustomerStatementDataset(customerRef, {
             ...dateRange,
             completedOnly: true
@@ -4282,7 +4302,7 @@
             order: 'desc'
           });
           const fmt = getCurrencyFormatter();
-      
+
           // بيانات الجدول في صيغة منظمة
           const tableData = [];
           summary.rows.forEach((t) => {
@@ -4292,7 +4312,7 @@
             const amt = amount;
             const bal = t.runningBalance;
             const cashier = t.cashier_name || 'يدوي';
-      
+
             tableData.push({
               date,
               type: kind,
@@ -4302,13 +4322,13 @@
               cashier
             });
           });
-      
+
           // الملخص النهائي
           const totalPostStr = fmt(summary.totalPostpaid);
           const totalRecStr = fmt(summary.totalReceipts);
           const openingBalanceStr = fmt(openingBalance);
           const balanceStr = fmt(summary.closingBalance);
-      
+
           // إنشاء بيانات متوافقة مع ThermalPrinter80mm
           const textReceipt = JSON.stringify({
             isStructuredStatement: true,
@@ -4329,9 +4349,9 @@
               balanceStr: balanceStr
             }
           });
-      
+
           console.log('📄 [LEDGER] تم تحضير النص للطباعة، الحجم:', textReceipt.length, 'بايت');
-      
+
           // استدعاء IPC handler للطباعة الحرارية
           const result = await ledgerIpc.invoke('print-thermal-statement', {
             customerName: name,
@@ -4342,9 +4362,9 @@
             balance: summary.closingBalance,
             branch: customerBranch
           });
-      
+
           console.log('📤 [LEDGER] نتيجة الطباعة:', result);
-      
+
           if (result && result.success) {
             showTransactionAlert('✅ تمت طباعة كشف الحساب على الطابعة الحرارية بنجاح', 'success');
           } else {
@@ -4357,38 +4377,38 @@
           showTransactionAlert('❌ حدث خطأ أثناء الطباعة الحرارية: ' + error.message, 'danger');
         }
       }
-      
+
       // ==================================================
       // تعديل الحركات اليدوية
       // ==================================================
-      
+
       async function editManualTransaction(id, type, customerName) {
         try {
           console.log(`✏️ [EDIT] تحرير حركة يدوية: ID=${id}, Type=${type}, Customer=${customerName}`);
-      
+
           // تحديد الجدول بناءً على النوع
           const table = type === 'postpaid' ? 'manual_postpaid_sales' : 'manual_customer_receipts';
-      
+
           // جلب بيانات الحركة الحالية
           const sql = `SELECT * FROM ${table} WHERE id = ?`;
           const rows = await ledgerIpc.invoke('db-query', sql, [id]);
-      
+
           if (!rows || rows.length === 0) {
             showTransactionAlert('لم يتم العثور على الحركة المطلوبة', 'danger');
             return;
           }
-      
+
           const tx = rows[0];
           const currentAmount = tx.amount;
           const currentReason = tx.reason || '';
           const currentCreatedAt = tx.created_at;
-      
+
           // Convert SQL date to input datetime-local format (YYYY-MM-DDTHH:MM)
           let dateValue = '';
           if (currentCreatedAt) {
             const dateObj = new Date(currentCreatedAt);
             if (!isNaN(dateObj.getTime())) {
-              // Adjust to local time string for input
+              // Adjust to local time string for inpu
               const yyyy = dateObj.getFullYear();
               const MM = String(dateObj.getMonth() + 1).padStart(2, '0');
               const dd = String(dateObj.getDate()).padStart(2, '0');
@@ -4397,13 +4417,13 @@
               dateValue = `${yyyy}-${MM}-${dd}T${hh}:${mm}`;
             }
           }
-      
+
           // إنشاء نافذة التعديل
           const modalId = 'editManualTxModal';
           // إزالة النافذة القديمة إن وجدت
           const oldModal = document.getElementById(modalId);
           if (oldModal) oldModal.remove();
-      
+
           const reasonsOptions = `
             <option value="">-- اختر سبب --</option>
             <option value="opening_balance" ${currentReason === 'opening_balance' ? 'selected' : ''}>رصيد افتتاحي</option>
@@ -4411,7 +4431,7 @@
             <option value="account_adjustment" ${currentReason === 'account_adjustment' ? 'selected' : ''}>تصفية حساب</option>
             <option value="other" ${currentReason === 'other' || (currentReason && !['opening_balance', 'reconciliation', 'account_adjustment'].includes(currentReason)) ? 'selected' : ''}>أخرى</option>
           `;
-      
+
           const modalContent = `
             <div class="modal fade" id="${modalId}" tabindex="-1" style="z-index: 1060;">
               <div class="modal-dialog">
@@ -4423,7 +4443,7 @@
                   <div class="modal-body">
                     <form id="editManualTxForm">
                       <input type="hidden" id="editTxOldType" value="${type}">
-                      
+
                       <div class="mb-3">
                         <label class="form-label">نوع الحركة</label>
                         <select class="form-select" id="editTxType">
@@ -4431,12 +4451,12 @@
                           <option value="receipt" ${type === 'receipt' ? 'selected' : ''}>مقبوض عميل</option>
                         </select>
                       </div>
-                      
+
                       <div class="mb-3">
                         <label class="form-label">تاريخ الحركة</label>
                         <input type="datetime-local" class="form-control" id="editTxDate" value="${dateValue}" required>
                       </div>
-      
+
                       <div class="mb-3">
                         <label class="form-label">المبلغ</label>
                         <input type="number" class="form-control" id="editTxAmount" value="${currentAmount}" step="0.01" required>
@@ -4464,12 +4484,12 @@
               </div>
             </div>
           `;
-      
+
           // إضافة النافذة
           const modalDiv = document.createElement('div');
           modalDiv.innerHTML = modalContent;
           document.body.appendChild(modalDiv);
-      
+
           // إضافة مستمع لتغيير السبب لإظهار حقل "أخرى"
           setTimeout(() => {
             const reasonSelect = document.getElementById('editTxReason');
@@ -4480,25 +4500,25 @@
               });
             }
           }, 100);
-      
+
           // عرض النافذة
           const modalElement = document.getElementById(modalId);
           if (window.bootstrap && window.bootstrap.Modal) {
             const modal = new bootstrap.Modal(modalElement);
             modal.show();
           }
-      
+
           // تنظيف عند الإغلاق
           modalElement.addEventListener('hidden.bs.modal', function () {
             this.remove();
           });
-      
+
         } catch (error) {
           console.error('Error editing manual transaction:', error);
           showTransactionAlert('حدث خطأ أثناء فتح نافذة التعديل', 'danger');
         }
       }
-      
+
       async function updateManualTransaction(id, initialType, customerName) {
         try {
           const customerRef = getCurrentCustomerStatementRef(customerName);
@@ -4507,49 +4527,49 @@
             saveBtn.disabled = true;
             saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> جاري الحفظ...';
           }
-      
+
           const amount = document.getElementById('editTxAmount').value;
           const newType = document.getElementById('editTxType').value;
           const oldType = document.getElementById('editTxOldType').value;
           const dateInput = document.getElementById('editTxDate').value;
-      
+
           const reasonSelect = document.getElementById('editTxReason').value;
           let finalReason = reasonSelect;
-      
+
           if (reasonSelect === 'other') {
             finalReason = document.getElementById('editTxOtherReason').value.trim();
           }
-      
+
           if (!amount || isNaN(amount) || Number(amount) <= 0) {
             showEditTxAlert('الرجاء إدخال مبلغ صحيح', 'danger');
             if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save"></i> حفظ التعديلات'; }
             return;
           }
-      
+
           if (!dateInput) {
             showEditTxAlert('الرجاء إدخال التاريخ', 'danger');
             if (saveBtn) { saveBtn.disabled = false; saveBtn.innerHTML = '<i class="fas fa-save"></i> حفظ التعديلات'; }
             return;
           }
-      
+
           // Convert input date (YYYY-MM-DDTHH:MM) to DB format (YYYY-MM-DD HH:MM:SS) if possible
-          // Adding :00 for seconds to be consistent
+          // Adding :00 for seconds to be consisten
           const finalDate = dateInput.replace('T', ' ') + ':00';
-      
+
           // التحقق مما إذا كان النوع قد تغير
           if (newType === oldType) {
             // تحديث عادي في نفس الجدول
             const table = newType === 'postpaid' ? 'manual_postpaid_sales' : 'manual_customer_receipts';
             const sql = `UPDATE ${table} SET amount = ?, reason = ?, created_at = ? WHERE id = ?`;
             await ledgerIpc.invoke('db-run', sql, [amount, finalReason, finalDate, id]);
-      
+
           } else {
             // تغيير النوع يتطلب النقل من جدول لآخر
             console.log(`🔄 [UPDATE] تغيير نوع الحركة من ${oldType} إلى ${newType}`);
-      
+
             const oldTable = oldType === 'postpaid' ? 'manual_postpaid_sales' : 'manual_customer_receipts';
             const newTable = newType === 'postpaid' ? 'manual_postpaid_sales' : 'manual_customer_receipts';
-      
+
             // 1. إضافة سجل جديد في الجدول الجديد (مع استخدام التاريخ الجديد)
             const insertSql = `INSERT INTO ${newTable} (customer_id, customer_name, customer_code, amount, reason, created_at) VALUES (?, ?, ?, ?, ?, ?)`;
             await ledgerIpc.invoke('db-run', insertSql, [
@@ -4560,19 +4580,19 @@
               finalReason,
               finalDate
             ]);
-      
+
             // 2. حذف السجل من الجدول القديم
             const deleteSql = `DELETE FROM ${oldTable} WHERE id = ?`;
             await ledgerIpc.invoke('db-run', deleteSql, [id]);
           }
-      
+
           // إغلاق النافذة وتحديث الكشف
           const modalEl = document.getElementById('editManualTxModal');
           const modal = bootstrap.Modal.getInstance(modalEl);
           if (modal) modal.hide();
-      
+
           showTransactionAlert('تم تعديل الحركة بنجاح', 'success');
-      
+
           // إعادة تحميل الكشف
           const dateFilter = window.statementDateFilter;
           if (dateFilter && (dateFilter.dateFrom || dateFilter.dateTo)) {
@@ -4580,7 +4600,7 @@
           } else {
             await showCustomerStatement(customerRef);
           }
-      
+
         } catch (error) {
           console.error('Error updating manual transaction:', error);
           showEditTxAlert('حدث خطأ أثناء حفظ التعديلات: ' + mapCustomerLedgerDbError(error), 'danger');
@@ -4591,7 +4611,7 @@
           }
         }
       }
-      
+
       function showEditTxAlert(message, type) {
         const el = document.getElementById('editTxAlert');
         if (el) {
@@ -4600,18 +4620,18 @@
           el.style.display = 'block';
         }
       }
-      
+
       // Expose to window
       window.editManualTransaction = editManualTransaction;
       window.updateManualTransaction = updateManualTransaction;
-      
+
     },
     "src/modal-handler.js": function rendererModule(module, exports, require) {
       // ===================================================
       // 🔄 معالج المودال - Modal Handler
       // يتعامل مع فتح وإغلاق المودال بشكل صحيح
       // ===================================================
-      
+
       /**
        * يقوم بإعداد وتهيئة مودال كشف الحساب
        * @param {string} customerName اسم العميل
@@ -4620,12 +4640,12 @@
         void customerName;
         const modalEl = document.getElementById('customerStatementModal');
         if (!modalEl) return;
-      
+
         // Keep modal at document root to avoid stacking-context issues.
         if (modalEl.parentElement !== document.body) {
           document.body.appendChild(modalEl);
         }
-      
+
         if (!isBootstrapModalAvailable()) {
           modalEl.classList.add('show');
           modalEl.style.display = 'block';
@@ -4634,27 +4654,27 @@
           modalEl.setAttribute('role', 'dialog');
           return;
         }
-      
+
         // تنظيف أي بقايا من مودال سابق لتجنب حجب الواجهة بدون داع
         cleanupModalArtifacts();
-      
+
         const existingModal = bootstrap.Modal.getInstance(modalEl);
         if (existingModal) {
           existingModal.dispose();
         }
-      
+
         const modal = new bootstrap.Modal(modalEl, {
           backdrop: true,
           keyboard: true,
           focus: true
         });
-      
+
         modalEl.removeEventListener('hidden.bs.modal', handleModalHidden);
         modalEl.addEventListener('hidden.bs.modal', handleModalHidden);
-      
+
         modal.show();
       }
-      
+
       /**
        * معالجة إغلاق المودال وتنظيف الحقول
        */
@@ -4665,32 +4685,32 @@
           reason: document.getElementById('newTransactionReason'),
           alert: document.getElementById('transactionAlert')
         };
-      
+
         if (fields.amount) fields.amount.value = '';
         if (fields.type) fields.type.selectedIndex = 0;
         if (fields.reason) fields.reason.selectedIndex = 0;
         if (fields.alert) fields.alert.style.display = 'none';
-      
+
         const refreshLedger = typeof window !== 'undefined' ? window.loadCustomerLedger : null;
         if (typeof refreshLedger === 'function') {
           refreshLedger();
         }
-      
+
         const modalEl = document.getElementById('customerStatementModal');
         if (modalEl) {
           modalEl.removeEventListener('hidden.bs.modal', handleModalHidden);
         }
-      
+
         cleanupModalArtifacts();
       }
-      
+
       /**
        * إغلاق المودال برمجياً
        */
       function closeStatementModal() {
         const modalEl = document.getElementById('customerStatementModal');
         if (!modalEl) return;
-      
+
         if (isBootstrapModalAvailable()) {
           const modal = bootstrap.Modal.getInstance(modalEl);
           if (modal) {
@@ -4698,17 +4718,17 @@
             return;
           }
         }
-      
+
         modalEl.classList.remove('show');
         modalEl.style.display = 'none';
         modalEl.setAttribute('aria-hidden', 'true');
         cleanupModalArtifacts();
       }
-      
+
       function isBootstrapModalAvailable() {
         return typeof bootstrap !== 'undefined' && bootstrap && typeof bootstrap.Modal === 'function';
       }
-      
+
       function cleanupModalArtifacts() {
         if (document.querySelector('.modal.show')) return;
         document.querySelectorAll('.modal-backdrop').forEach(backdrop => backdrop.remove());
@@ -4716,21 +4736,21 @@
         document.body.style.removeProperty('padding-right');
         document.body.style.removeProperty('overflow');
       }
-      
+
       // تصدير الدوال
       module.exports = {
         setupStatementModal,
         handleModalHidden,
         closeStatementModal
       };
-      
+
     },
     "src/reason-translator.js": function rendererModule(module, exports, require) {
       // ===================================================
       // 🔄 مترجم الأسباب - Reason Translator
       // لتحويل أسباب الحركات من الإنجليزية إلى العربية
       // ===================================================
-      
+
       /**
        * تحويل سبب الحركة من الإنجليزية إلى العربية
        * @param {string} reason - السبب باللغة الإنجليزية
@@ -4738,36 +4758,36 @@
        */
       function translateReason(reason) {
         if (!reason) return "-";
-      
+
         const reasonMap = {
           "opening_balance": "رصيد افتتاحي",
           "reconciliation": "تسوية رصيد",
           "account_adjustment": "تصفية حساب",
           "other": "أخرى"
         };
-      
+
         return reasonMap[reason] || reason;
       }
-      
+
       // تصدير الدالة للاستخدام في ملفات أخرى
       module.exports = {
         translateReason
       };
-      
+
     },
     "src/renderer-ipc.js": function rendererModule(module, exports, require) {
       (function initializeRendererIpc(root, factory) {
           const globalRoot = root && typeof root === 'object'
-              ? root
+              ? roo
               : (typeof globalThis !== 'undefined' ? globalThis : {});
-      
+
           const rendererIpc = factory(globalRoot);
-      
+
           if (typeof module !== 'undefined' && module.exports) {
               module.exports = rendererIpc;
               module.exports.createRendererIpcBridge = factory;
           }
-      
+
           if (globalRoot && typeof globalRoot === 'object') {
               globalRoot.RendererIPC = rendererIpc;
           }
@@ -4775,7 +4795,7 @@
           const requireFn = typeof options.requireFn === 'function'
               ? options.requireFn
               : (typeof require === 'function' ? require : null);
-      
+
           function resolveTransport() {
               const preloadIpc = root?.electronAPI?.ipc;
               if (preloadIpc && typeof preloadIpc.invoke === 'function') {
@@ -4784,7 +4804,7 @@
                       transport: 'preload'
                   };
               }
-      
+
               if (typeof requireFn === 'function') {
                   try {
                       const electronModule = requireFn('electron');
@@ -4802,19 +4822,19 @@
                       };
                   }
               }
-      
+
               return {
                   ipc: null,
                   transport: 'unavailable'
               };
           }
-      
+
           const resolved = resolveTransport();
-      
+
           function createUnavailableError(methodName) {
               return new Error(`IPC bridge unavailable for ${methodName}`);
           }
-      
+
           return {
               transport: resolved.transport,
               isSecureBridge: resolved.transport === 'preload',
@@ -4824,19 +4844,19 @@
                   if (!resolved.ipc || typeof resolved.ipc.invoke !== 'function') {
                       return Promise.reject(createUnavailableError('invoke'));
                   }
-      
+
                   return resolved.ipc.invoke(channel, ...args);
               },
               send(channel, ...args) {
                   if (!resolved.ipc || typeof resolved.ipc.send !== 'function') {
                       throw createUnavailableError('send');
                   }
-      
+
                   return resolved.ipc.send(channel, ...args);
               }
           };
       }));
-      
+
     }
   };
   const resolutionMap = {

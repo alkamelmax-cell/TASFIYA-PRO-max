@@ -21,6 +21,7 @@ const { startBackgroundSync, stopBackgroundSync, getSyncStatus, setSyncEnabled, 
 const { getSyncWriteTables } = require('./sync-write-detector');
 const { readIdsToBeDeleted, recordDeleteTombstones } = require('./sync-delete-tombstones');
 const { executeCustomerMerge } = require('./app/customer-merge-service');
+const { executeSupplierUnification } = require('./app/supplier-identity-service');
 
 let postSaveSyncTimer = null;
 let postSaveSyncRunning = false;
@@ -2777,6 +2778,18 @@ ipcMain.handle('merge-customers-atomic', async (event, payload = {}) => {
         return result;
     } catch (error) {
         console.error('Atomic customer merge error:', error);
+        throw error;
+    }
+});
+
+ipcMain.handle('merge-suppliers-atomic', async (event, payload = {}) => {
+    try {
+        if (!dbManager || !dbManager.db) throw new Error('Database not initialized');
+        const result = executeSupplierUnification(dbManager.db, payload);
+        schedulePostSaveSync('supplier-unification-atomic', ['suppliers']);
+        return result;
+    } catch (error) {
+        console.error('Atomic supplier unification error:', error);
         throw error;
     }
 });

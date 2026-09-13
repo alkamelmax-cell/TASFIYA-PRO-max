@@ -122,6 +122,7 @@ class DatabaseManager {
       CREATE TABLE IF NOT EXISTS manual_supplier_transactions (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         supplier_name TEXT NOT NULL,
+        supplier_account_id INTEGER,
         transaction_type TEXT NOT NULL DEFAULT 'payment',
         amount DECIMAL(10,2) NOT NULL,
         reference_no TEXT,
@@ -588,6 +589,9 @@ class DatabaseManager {
       if (!mergeHistoryColumnNames.has('target_customer_code')) {
         this.db.exec("ALTER TABLE ledger_merge_history ADD COLUMN target_customer_code TEXT DEFAULT ''");
       }
+      if (!mergeHistoryColumnNames.has('target_supplier_id')) {
+        this.db.exec('ALTER TABLE ledger_merge_history ADD COLUMN target_supplier_id INTEGER DEFAULT 0');
+      }
     } catch (error) {
       console.error('Customer merge history schema migration failed:', error);
     }
@@ -644,6 +648,7 @@ class DatabaseManager {
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         reconciliation_id INTEGER NOT NULL,
         supplier_name TEXT NOT NULL,
+        supplier_account_id INTEGER,
         invoice_number TEXT,
         amount DECIMAL(10,2) NOT NULL,
         notes TEXT,
@@ -708,12 +713,55 @@ class DatabaseManager {
         target_name TEXT NOT NULL,
         target_customer_id INTEGER DEFAULT 0,
         target_customer_code TEXT DEFAULT '',
+        target_supplier_id INTEGER DEFAULT 0,
         source_names_json TEXT NOT NULL,
         affected_rows_json TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
         undone_at DATETIME,
         undo_details_json TEXT
       )
+    `);
+
+    this.db.exec(`
+      CREATE TABLE IF NOT EXISTS customer_identity_aliases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        branch_id INTEGER NOT NULL,
+        alias_customer_id INTEGER DEFAULT 0,
+        alias_code TEXT DEFAULT '',
+        alias_name TEXT DEFAULT '',
+        canonical_customer_id INTEGER NOT NULL,
+        is_active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_alias_code
+        ON customer_identity_aliases(branch_id, alias_code) WHERE TRIM(alias_code) <> '';
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_alias_id
+        ON customer_identity_aliases(branch_id, alias_customer_id) WHERE alias_customer_id > 0;
+
+      CREATE TABLE IF NOT EXISTS supplier_accounts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        branch_id INTEGER NOT NULL,
+        supplier_name TEXT NOT NULL,
+        is_active INTEGER DEFAULT 1,
+        merged_into_supplier_id INTEGER,
+        merged_at DATETIME,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_accounts_branch_name
+        ON supplier_accounts(branch_id, supplier_name COLLATE NOCASE);
+      CREATE TABLE IF NOT EXISTS supplier_identity_aliases (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        branch_id INTEGER NOT NULL,
+        alias_name TEXT NOT NULL,
+        canonical_supplier_id INTEGER NOT NULL,
+        is_active INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_supplier_alias_branch_name
+        ON supplier_identity_aliases(branch_id, alias_name COLLATE NOCASE);
     `);
 
     // Settings table
@@ -880,6 +928,10 @@ class DatabaseManager {
       }
 
       const manualSupplierColumns = this.db.pragma('table_info(manual_supplier_transactions)');
+      const hasManualSupplierAccountId = manualSupplierColumns.some(col => col.name === 'supplier_account_id');
+      if (!hasManualSupplierAccountId) {
+        this.db.exec('ALTER TABLE manual_supplier_transactions ADD COLUMN supplier_account_id INTEGER');
+      }
       const hasManualSupplierUpdatedAt = manualSupplierColumns.some(col => col.name === 'updated_at');
       if (!hasManualSupplierUpdatedAt) {
         console.log('➕ [DB] Adding updated_at column to manual_supplier_transactions table...');
@@ -891,6 +943,11 @@ class DatabaseManager {
         SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)
         WHERE updated_at IS NULL
       `);
+
+      const supplierColumns = this.db.pragma('table_info(suppliers)');
+      if (!supplierColumns.some(col => col.name === 'supplier_account_id')) {
+        this.db.exec('ALTER TABLE suppliers ADD COLUMN supplier_account_id INTEGER');
+      }
 
       const cashboxVoucherColumns = this.db.pragma('table_info(cashbox_vouchers)');
       const hasVoucherSequenceNumber = cashboxVoucherColumns.some(col => col.name === 'voucher_sequence_number');
@@ -1003,6 +1060,7 @@ class DatabaseManager {
 
       this.normalizeCashboxVoucherSequences();
       this.backfillCashboxVoucherSyncKeys();
+      this.ensureIdentityAliasTriggers();
 
       console.log('✅ [DB] تم فحص وتحديث مخطط قاعدة البيانات بنجاح');
 
@@ -1014,6 +1072,111 @@ class DatabaseManager {
     } catch (error) {
       console.error('❌ [DB] خطأ في تحديث مخطط قاعدة البيانات:', error);
     }
+  }
+
+  ensureIdentityAliasTriggers() {
+    const customerTables = ['postpaid_sales', 'customer_receipts'];
+    customerTables.forEach((tableName) => {
+      ['INSERT', 'UPDATE OF customer_id, customer_code'].forEach((eventName) => {
+        const suffix = eventName.startsWith('INSERT') ? 'insert' : 'update';
+        this.db.exec(`DROP TRIGGER IF EXISTS trg_${tableName}_identity_alias_${suffix}`);
+        this.db.exec(`
+          CREATE TRIGGER IF NOT EXISTS trg_${tableName}_identity_alias_${suffix}
+          AFTER ${eventName} ON ${tableName}
+          WHEN EXISTS (
+            SELECT 1
+            FROM customer_identity_aliases a
+            JOIN reconciliations r ON r.id = NEW.reconciliation_id
+            JOIN cashiers c ON c.id = r.cashier_id
+            WHERE a.branch_id = COALESCE(c.branch_id, 0)
+              AND COALESCE(a.is_active, 1) = 1
+              AND ((a.alias_customer_id > 0 AND a.alias_customer_id = COALESCE(NEW.customer_id, 0))
+                OR (TRIM(a.alias_code) <> '' AND UPPER(TRIM(a.alias_code)) = UPPER(TRIM(COALESCE(NEW.customer_code, '')))))
+          )
+          BEGIN
+            UPDATE ${tableName}
+            SET customer_id = (
+                  SELECT a.canonical_customer_id FROM customer_identity_aliases a
+                  JOIN reconciliations r ON r.id = NEW.reconciliation_id
+                  JOIN cashiers c ON c.id = r.cashier_id
+                  WHERE a.branch_id = COALESCE(c.branch_id, 0) AND COALESCE(a.is_active, 1) = 1
+                    AND ((a.alias_customer_id > 0 AND a.alias_customer_id = COALESCE(NEW.customer_id, 0))
+                      OR UPPER(TRIM(a.alias_code)) = UPPER(TRIM(COALESCE(NEW.customer_code, ''))))
+                  ORDER BY a.updated_at DESC, a.id DESC LIMIT 1
+                )
+            WHERE id = NEW.id;
+            UPDATE ${tableName}
+            SET customer_code = (SELECT customer_code FROM customers WHERE id = ${tableName}.customer_id),
+                customer_name = (SELECT customer_name FROM customers WHERE id = ${tableName}.customer_id)
+            WHERE id = NEW.id;
+          END
+        `);
+      });
+    });
+
+    ['manual_postpaid_sales', 'manual_customer_receipts'].forEach((tableName) => {
+      ['INSERT', 'UPDATE OF customer_id, customer_code'].forEach((eventName) => {
+        const suffix = eventName.startsWith('INSERT') ? 'insert' : 'update';
+        this.db.exec(`DROP TRIGGER IF EXISTS trg_${tableName}_identity_alias_${suffix}`);
+        this.db.exec(`
+          CREATE TRIGGER trg_${tableName}_identity_alias_${suffix}
+          AFTER ${eventName} ON ${tableName}
+          WHEN (
+            SELECT COUNT(DISTINCT canonical_customer_id)
+            FROM customer_identity_aliases a
+            WHERE COALESCE(a.is_active, 1) = 1
+              AND ((a.alias_customer_id > 0 AND a.alias_customer_id = COALESCE(NEW.customer_id, 0))
+                OR (TRIM(a.alias_code) <> '' AND UPPER(TRIM(a.alias_code)) = UPPER(TRIM(COALESCE(NEW.customer_code, '')))))
+          ) = 1
+          BEGIN
+            UPDATE ${tableName}
+            SET customer_id = (
+                  SELECT a.canonical_customer_id FROM customer_identity_aliases a
+                  WHERE COALESCE(a.is_active, 1) = 1
+                    AND ((a.alias_customer_id > 0 AND a.alias_customer_id = COALESCE(NEW.customer_id, 0))
+                      OR UPPER(TRIM(a.alias_code)) = UPPER(TRIM(COALESCE(NEW.customer_code, ''))))
+                  ORDER BY a.updated_at DESC, a.id DESC LIMIT 1
+                )
+            WHERE id = NEW.id;
+            UPDATE ${tableName}
+            SET customer_code = (SELECT customer_code FROM customers WHERE id = ${tableName}.customer_id),
+                customer_name = (SELECT customer_name FROM customers WHERE id = ${tableName}.customer_id)
+            WHERE id = NEW.id;
+          END
+        `);
+      });
+    });
+
+    ['suppliers', 'manual_supplier_transactions'].forEach((tableName) => {
+      const branchSql = tableName === 'suppliers'
+        ? '(SELECT COALESCE(c.branch_id, 0) FROM reconciliations r JOIN cashiers c ON c.id = r.cashier_id WHERE r.id = NEW.reconciliation_id)'
+        : 'COALESCE(NEW.branch_id, 0)';
+      ['INSERT', 'UPDATE OF supplier_name'].forEach((eventName) => {
+        const suffix = eventName.startsWith('INSERT') ? 'insert' : 'update';
+        this.db.exec(`DROP TRIGGER IF EXISTS trg_${tableName}_supplier_alias_${suffix}`);
+        this.db.exec(`
+        CREATE TRIGGER trg_${tableName}_supplier_alias_${suffix}
+        AFTER ${eventName} ON ${tableName}
+        WHEN EXISTS (
+          SELECT 1 FROM supplier_identity_aliases a
+          WHERE a.branch_id = ${branchSql} AND COALESCE(a.is_active, 1) = 1
+            AND a.alias_name = TRIM(NEW.supplier_name) COLLATE NOCASE
+        )
+        BEGIN
+          UPDATE ${tableName}
+          SET supplier_account_id = (
+                SELECT canonical_supplier_id FROM supplier_identity_aliases a
+                WHERE a.branch_id = ${branchSql} AND COALESCE(a.is_active, 1) = 1
+                  AND a.alias_name = TRIM(NEW.supplier_name) COLLATE NOCASE LIMIT 1
+              )
+          WHERE id = NEW.id;
+          UPDATE ${tableName}
+          SET supplier_name = (SELECT supplier_name FROM supplier_accounts WHERE id = ${tableName}.supplier_account_id)
+          WHERE id = NEW.id;
+        END
+        `);
+      });
+    });
   }
 
   normalizeCashboxVoucherSequences() {

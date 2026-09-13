@@ -33,8 +33,8 @@ function normalizeRef(value) {
 }
 
 function refKey(ref) {
-  if (ref.customerId) return `id:${ref.customerId}`;
   if (ref.customerCode) return `code:${ref.customerCode}`;
+  if (ref.customerId) return `id:${ref.customerId}`;
   return `name:${ref.customerName}|branch:${ref.branchId}`;
 }
 
@@ -53,18 +53,13 @@ function buildMatcher(alias, refs, branchExpression = '') {
   const params = [];
   for (const ref of refs) {
     const branchClause = branchExpression && ref.branchId ? ` AND COALESCE(${branchExpression}, 0) = ?` : '';
-    if (ref.customerId) {
-      clauses.push(`(COALESCE(${alias}.customer_id, 0) = ?${branchClause})`);
-      params.push(ref.customerId);
-      if (branchClause) params.push(ref.branchId);
-      if (ref.customerCode) {
-        clauses.push(`(UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?${branchClause})`);
-        params.push(ref.customerCode);
-        if (branchClause) params.push(ref.branchId);
-      }
-    } else if (ref.customerCode) {
+    if (ref.customerCode) {
       clauses.push(`(UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?${branchClause})`);
       params.push(ref.customerCode);
+      if (branchClause) params.push(ref.branchId);
+    } else if (ref.customerId) {
+      clauses.push(`(COALESCE(${alias}.customer_id, 0) = ?${branchClause})`);
+      params.push(ref.customerId);
       if (branchClause) params.push(ref.branchId);
     } else if (ref.customerName) {
       clauses.push(`(TRIM(COALESCE(${alias}.customer_name, '')) = ?${branchClause})`);
@@ -125,6 +120,93 @@ function ensureHistorySchema(db) {
   const columns = new Set(db.prepare('PRAGMA table_info(ledger_merge_history)').all().map((row) => row.name));
   if (!columns.has('target_customer_id')) db.exec('ALTER TABLE ledger_merge_history ADD COLUMN target_customer_id INTEGER DEFAULT 0');
   if (!columns.has('target_customer_code')) db.exec("ALTER TABLE ledger_merge_history ADD COLUMN target_customer_code TEXT DEFAULT ''");
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS customer_identity_aliases (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      branch_id INTEGER NOT NULL,
+      alias_customer_id INTEGER DEFAULT 0,
+      alias_code TEXT DEFAULT '',
+      alias_name TEXT DEFAULT '',
+      canonical_customer_id INTEGER NOT NULL,
+      is_active INTEGER DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (canonical_customer_id) REFERENCES customers(id) ON DELETE CASCADE
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_alias_code
+      ON customer_identity_aliases(branch_id, alias_code) WHERE TRIM(alias_code) <> '';
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_alias_id
+      ON customer_identity_aliases(branch_id, alias_customer_id) WHERE alias_customer_id > 0;
+  `);
+}
+
+function recordCustomerAliases(db, sourceRefs, branchId, canonicalCustomerId) {
+  const findConflict = db.prepare(`
+    SELECT canonical_customer_id FROM customer_identity_aliases
+    WHERE branch_id = ? AND is_active = 1
+      AND ((? > 0 AND alias_customer_id = ?) OR (? <> '' AND UPPER(TRIM(alias_code)) = ?))
+      AND canonical_customer_id <> ?
+    LIMIT 1
+  `);
+  const findExisting = db.prepare(`
+    SELECT id FROM customer_identity_aliases
+    WHERE branch_id = ?
+      AND ((? > 0 AND alias_customer_id = ?) OR (? <> '' AND UPPER(TRIM(alias_code)) = ?))
+    ORDER BY id ASC LIMIT 1
+  `);
+  const updateExisting = db.prepare(`
+    UPDATE customer_identity_aliases
+    SET alias_customer_id = ?, alias_code = ?, alias_name = ?, canonical_customer_id = ?,
+        is_active = 1, updated_at = CURRENT_TIMESTAMP
+    WHERE id = ?
+  `);
+  const insertAlias = db.prepare(`
+    INSERT INTO customer_identity_aliases
+      (branch_id, alias_customer_id, alias_code, alias_name, canonical_customer_id, is_active, updated_at)
+    VALUES (?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+  `);
+  let changes = 0;
+  const persistAlias = (aliasCustomerId, aliasCode, aliasName) => {
+    const conflict = findConflict.get(
+      branchId, aliasCustomerId, aliasCustomerId, aliasCode, aliasCode, canonicalCustomerId
+    );
+    if (conflict) throw new Error('أحد أكواد العميل مرتبط مسبقًا بحساب أساسي آخر');
+    const existing = findExisting.get(branchId, aliasCustomerId, aliasCustomerId, aliasCode, aliasCode);
+    if (existing) {
+      changes += updateExisting.run(
+        aliasCustomerId, aliasCode, aliasName, canonicalCustomerId, existing.id
+      ).changes;
+    } else {
+      changes += insertAlias.run(
+        branchId, aliasCustomerId, aliasCode, aliasName, canonicalCustomerId
+      ).changes;
+    }
+  };
+  for (const ref of sourceRefs) {
+    if (ref.customerCode) persistAlias(0, ref.customerCode, ref.customerName);
+    if (ref.customerId && ref.customerId !== canonicalCustomerId) persistAlias(ref.customerId, '', ref.customerName);
+  }
+  return changes;
+}
+
+function verifyCustomerMerge(db, affected, target) {
+  const checks = [
+    ['postpaid_sales', affected.postpaid_sales],
+    ['customer_receipts', affected.customer_receipts],
+    ['manual_postpaid_sales', affected.manual_postpaid_sales],
+    ['manual_customer_receipts', affected.manual_customer_receipts]
+  ];
+  for (const [table, rows] of checks) {
+    if (!rows.length) continue;
+    const statement = db.prepare(`SELECT customer_id, customer_code FROM ${table} WHERE id = ?`);
+    for (const row of rows) {
+      const current = statement.get(row.id);
+      if (!current || normalizeId(current.customer_id) !== target.id || normalizeCode(current.customer_code) !== target.customer_code) {
+        throw new Error(`فشل فحص سلامة الدمج في جدول ${table}`);
+      }
+    }
+  }
 }
 
 function executeCustomerMerge(db, payload = {}) {
@@ -222,9 +304,11 @@ function executeCustomerMerge(db, payload = {}) {
     const mergeCustomer = db.prepare(`UPDATE customers SET is_active = 0, merged_into_customer_id = ?, merged_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?`);
     for (const row of affected.customers) registryChanges += mergeCustomer.run(target.id, row.id).changes;
     db.prepare(`UPDATE customers SET is_active = 1, merged_into_customer_id = NULL, merged_at = NULL, updated_at = CURRENT_TIMESTAMP WHERE id = ?`).run(target.id);
+    const aliasesRecorded = recordCustomerAliases(db, sourceRefs, branchId, target.id);
 
     const totalChanges = changes.postpaidChanges + changes.receiptChanges + changes.manualPostpaidChanges + changes.manualReceiptChanges;
     if (!totalChanges) throw new Error('لم يتم العثور على حركات مطابقة داخل الفرع المحدد');
+    verifyCustomerMerge(db, affected, target);
     const sourceLabels = sourceRefs.map((ref) => ref.customerCode ? `${ref.customerCode} - ${ref.customerName}` : ref.customerName);
     const history = db.prepare(`
       INSERT INTO ledger_merge_history
@@ -236,6 +320,7 @@ function executeCustomerMerge(db, payload = {}) {
       ...changes,
       manualChanges: changes.manualPostpaidChanges + changes.manualReceiptChanges,
       registryChanges,
+      aliasesRecorded,
       totalChanges,
       mergeHistoryId: Number(history.lastInsertRowid || 0),
       targetIdentity: {

@@ -557,10 +557,10 @@
       if (selectedCount === 0) {
         summaryEl.textContent = 'لم يتم تحديد أي مورد';
       } else if (hasMixedBranches) {
-        summaryEl.textContent = `تم تحديد ${selectedCount} مورد (من أكثر من فرع - الدمج غير مسموح)`;
+        summaryEl.textContent = `تم تحديد ${selectedCount} مورد (من أكثر من فرع - توحيد الهوية غير مسموح)`;
       } else {
         const branchLabel = selectedRows[0]?.branch_name || 'غير محدد';
-        summaryEl.textContent = `تم تحديد ${selectedCount} مورد للدمج - الفرع: ${branchLabel}`;
+        summaryEl.textContent = `تم تحديد ${selectedCount} مورد لتوحيد الهوية - الفرع: ${branchLabel}`;
       }
     }
 
@@ -574,8 +574,8 @@
         ? formatMergeDateTime(latestUndoableSupplierMerge.created_at)
         : '';
       undoBtn.title = latestUndoableSupplierMerge
-        ? `فك آخر دمج (${createdAtText || 'بدون تاريخ'})`
-        : 'لا يوجد دمج متاح للفك';
+        ? `التراجع عن آخر توحيد (${createdAtText || 'بدون تاريخ'})`
+        : 'لا توجد عملية توحيد متاحة للتراجع';
     }
 
     if (clearBtn) {
@@ -599,77 +599,48 @@
 
   async function mergeSelectedSuppliersInLedger() {
     if (supplierMergeInProgress) {
-      showErrorToast('عملية دمج الموردين قيد التنفيذ بالفعل');
+      showErrorToast('عملية توحيد هوية الموردين قيد التنفيذ بالفعل');
       return;
     }
-
-    const selectedRows = getSelectedSupplierRows();
-    if (selectedRows.length < 2) {
-      showErrorToast('حدد موردين على الأقل لتنفيذ الدمج');
-      return;
-    }
-
-    const branchIds = Array.from(new Set(
-      selectedRows.map((row) => normalizeBranchId(row?.branch_id) || '0')
-    ));
-
-    if (branchIds.length !== 1) {
-      showErrorToast('لا يمكن دمج موردين من أكثر من فرع. اختر موردين من نفس الفرع فقط');
-      return;
-    }
-
-    const candidates = Array.from(new Map(
-      selectedRows
-        .map((row) => ({
-          rawName: String(row?.supplier_name == null ? '' : row.supplier_name),
-          displayName: normalizeSupplierDisplayName(row?.supplier_name),
-          balance: Number(row?.balance || 0),
-          movementsCount: Number(row?.movements_count || 0)
-        }))
-        .filter((candidate) => candidate.displayName.length > 0)
-        .map((candidate) => [candidate.rawName, candidate])
-    ).values());
-    const uniqueNames = candidates.map((candidate) => candidate.rawName);
-
-    if (uniqueNames.length < 2) {
-      showErrorToast('حدد موردين مختلفين على الأقل لتنفيذ الدمج');
-      return;
-    }
-
-    const targetCandidate = await promptMergeTargetSupplierName(candidates);
-    if (!targetCandidate) {
-      return;
-    }
-
-    const rawTargetName = targetCandidate.rawName;
-    const targetName = normalizeSupplierDisplayName(rawTargetName);
-    const sourceNames = uniqueNames.filter((name) => name !== rawTargetName);
-    if (sourceNames.length === 0) {
-      showErrorToast('اختر مورداً هدفاً مختلفاً عن الموردين المراد دمجهم');
-      return;
-    }
-
-    const normalizedBranchId = normalizeBranchId(branchIds[0]);
-    const branchLabel = selectedRows[0]?.branch_name || 'غير محدد';
-    const preview = await buildSupplierMergePreview(sourceNames, rawTargetName, normalizedBranchId);
-    const confirmed = await confirmSupplierMergeExecution({
-      sourceNames,
-      targetName,
-      branchLabel,
-      preview
-    });
-    if (!confirmed) {
-      return;
-    }
-
     const mergeButton = document.getElementById('supplierLedgerMergeSelectedBtn');
     const originalButtonHtml = mergeButton?.innerHTML || '';
     supplierMergeInProgress = true;
     if (mergeButton) {
       mergeButton.disabled = true;
-      mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ الدمج الآمن...';
+      mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ تحليل الموردين...';
     }
     try {
+      const selectedRows = getSelectedSupplierRows();
+      if (selectedRows.length < 2) throw new Error('حدد موردين على الأقل لتنفيذ التوحيد');
+      const branchIds = Array.from(new Set(selectedRows.map((row) => normalizeBranchId(row?.branch_id) || '0')));
+      if (branchIds.length !== 1 || branchIds[0] === '0') throw new Error('اختر موردين من فرع واحد محدد فقط');
+      const candidates = Array.from(new Map(selectedRows.map((row) => {
+        const rawName = String(row?.supplier_name == null ? '' : row.supplier_name);
+        return [rawName, {
+          rawName,
+          displayName: normalizeSupplierDisplayName(rawName),
+          balance: Number(row?.balance || 0),
+          movementsCount: Number(row?.movements_count || 0)
+        }];
+      })).values()).filter((candidate) => candidate.displayName);
+      if (candidates.length < 2) throw new Error('حدد سجلين مختلفين على الأقل للمورد');
+
+      const targetCandidate = await promptMergeTargetSupplierName(candidates);
+      if (!targetCandidate) return;
+      const rawTargetName = targetCandidate.rawName;
+      const targetName = normalizeSupplierDisplayName(rawTargetName);
+      const sourceNames = candidates.map((candidate) => candidate.rawName).filter((name) => name !== rawTargetName);
+      const normalizedBranchId = normalizeBranchId(branchIds[0]);
+      const preview = await buildSupplierMergePreview(sourceNames, rawTargetName, normalizedBranchId);
+      const confirmed = await confirmSupplierMergeExecution({
+        sourceNames,
+        targetName,
+        branchLabel: selectedRows[0]?.branch_name || 'غير محدد',
+        preview
+      });
+      if (!confirmed) return;
+      if (mergeButton) mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ توحيد الهوية...';
+
       const mergeResult = await executeSupplierMergeTransaction(sourceNames, rawTargetName, normalizedBranchId);
       selectedSupplierMergeKeys.clear();
       await loadSupplierLedger();
@@ -691,10 +662,10 @@
       }
 
       const changed = Number(mergeResult?.totalChanges || 0);
-      showSuccessToast(`تم دمج الموردين المحددين بنجاح (${changed} حركة محدثة)`);
+      showSuccessToast(`تم توحيد هوية الموردين بنجاح (${changed} حركة، ${Number(mergeResult?.aliasesRecorded || 0)} اسم بديل)`);
     } catch (error) {
       console.error('Error merging selected suppliers:', error);
-      showErrorToast(`تعذر دمج الموردين: ${mapSupplierLedgerDbError(error)}`);
+      showErrorToast(`تعذر توحيد هوية الموردين: ${mapSupplierLedgerDbError(error)}`);
     } finally {
       supplierMergeInProgress = false;
       if (mergeButton) {
@@ -726,7 +697,7 @@
         input: 'radio',
         inputOptions,
         showCancelButton: true,
-        confirmButtonText: 'مراجعة نتيجة الدمج',
+        confirmButtonText: 'مراجعة نتيجة التوحيد',
         cancelButtonText: 'إلغاء',
         confirmButtonColor: '#175b4c',
         customClass: { input: 'text-end' },
@@ -881,7 +852,7 @@
     if (window.Swal) {
       const result = await window.Swal.fire({
         icon: 'warning',
-        title: 'تأكيد دمج الموردين',
+        title: 'تأكيد توحيد هوية الموردين',
         html: `
           <div style="text-align:right;line-height:1.75;color:#173f36">
             <div style="background:#edf7f3;border:1px solid #cce6dc;border-radius:12px;padding:12px;margin-bottom:10px">
@@ -889,7 +860,7 @@
               <div style="font-weight:800;font-size:17px">${escapeHtml(targetName || '-')}</div>
               <div style="font-size:13px">الفرع: ${escapeHtml(branchLabel || 'غير محدد')}</div>
             </div>
-            <div><strong>السجلات التي ستُدمج:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
+            <div><strong>الهويات البديلة التي ستُوحّد:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0">
               <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>القيود المنقولة</small><br><strong>${escapeHtml(String(movedCount))}</strong></div>
               <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>القيود النهائية</small><br><strong>${escapeHtml(String(finalCount))}</strong></div>
@@ -897,11 +868,11 @@
               <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>إجمالي السداد</small><br><strong>${escapeHtml(fmt(finalPayments))}</strong></div>
             </div>
             <div style="background:${finalBalance >= 0 ? '#fff4e8' : '#edf9f2'};border-radius:9px;padding:9px"><strong>الرصيد النهائي: ${escapeHtml(fmt(finalBalance))}</strong></div>
-            <div style="font-size:12px;color:#7b6b58;margin-top:10px">يمكن فك آخر عملية دمج إذا احتجت إلى الاسترجاع.</div>
+            <div style="font-size:12px;color:#7b6b58;margin-top:10px">تُحفظ الأسماء القديمة كأسماء بديلة، وتُوجّه الحركات الجديدة تلقائيًا للحساب الأساسي، مع إمكانية التراجع.</div>
           </div>
         `,
         showCancelButton: true,
-        confirmButtonText: 'نعم، دمج آمن',
+        confirmButtonText: 'اعتماد التوحيد',
         cancelButtonText: 'إلغاء',
         confirmButtonColor: '#175b4c'
       });
@@ -909,7 +880,7 @@
     }
 
     return window.confirm(
-      `سيتم دمج الموردين (${mergedNamesLabel}) في (${targetName}) ضمن فرع (${branchLabel}). هل تريد المتابعة؟`
+      `سيتم توحيد هوية الموردين (${mergedNamesLabel}) في الحساب الأساسي (${targetName}) ضمن فرع (${branchLabel}). هل تريد المتابعة؟`
     );
   }
 
@@ -925,6 +896,7 @@
         entity_type TEXT NOT NULL,
         branch_id INTEGER DEFAULT 0,
         target_name TEXT NOT NULL,
+        target_supplier_id INTEGER DEFAULT 0,
         source_names_json TEXT NOT NULL,
         affected_rows_json TEXT NOT NULL,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -936,6 +908,10 @@
       'db-run',
       'CREATE INDEX IF NOT EXISTS idx_ledger_merge_history_entity_open ON ledger_merge_history(entity_type, undone_at, id DESC)'
     );
+    const historyColumns = await ledgerIpc.invoke('db-query', 'PRAGMA table_info(ledger_merge_history)');
+    if (!Array.isArray(historyColumns) || !historyColumns.some((column) => column?.name === 'target_supplier_id')) {
+      await ledgerIpc.invoke('db-run', 'ALTER TABLE ledger_merge_history ADD COLUMN target_supplier_id INTEGER DEFAULT 0');
+    }
 
     supplierLedgerMergeHistoryReady = true;
   }
@@ -966,7 +942,8 @@
         }
         return {
           id,
-          old_name: oldName
+          old_name: oldName,
+          old_supplier_account_id: Number(row?.old_supplier_account_id || 0)
         };
       })
       .filter((row) => !!row);
@@ -974,22 +951,38 @@
 
   function normalizeSupplierMergeAffectedRows(rawValue) {
     const raw = rawValue && typeof rawValue === 'object' ? rawValue : {};
+    const supplierAccounts = (Array.isArray(raw.supplier_accounts) ? raw.supplier_accounts : [])
+      .map((source) => {
+        const id = Number(source?.id || 0);
+        if (!Number.isFinite(id) || id <= 0) return null;
+        return {
+          id,
+          old_name: String(source?.old_name ?? source?.oldName ?? ''),
+          old_supplier_account_id: 0,
+          old_is_active: Number(source?.old_is_active ?? 1),
+          old_merged_into_supplier_id: Number(source?.old_merged_into_supplier_id || 0),
+          old_merged_at: source?.old_merged_at || null
+        };
+      })
+      .filter(Boolean);
     return {
       suppliers: normalizeMergeRowEntries(raw.suppliers),
-      manual_supplier_transactions: normalizeMergeRowEntries(raw.manual_supplier_transactions)
+      manual_supplier_transactions: normalizeMergeRowEntries(raw.manual_supplier_transactions),
+      supplier_accounts: supplierAccounts
     };
   }
 
   function countSupplierMergeAffectedRows(affectedRows) {
     const normalized = normalizeSupplierMergeAffectedRows(affectedRows);
-    return normalized.suppliers.length + normalized.manual_supplier_transactions.length;
+    return normalized.suppliers.length + normalized.manual_supplier_transactions.length + normalized.supplier_accounts.length;
   }
 
   async function fetchLatestUndoableSupplierMerge() {
     await ensureSupplierLedgerMergeHistoryTable();
     const rows = await ledgerIpc.invoke(
       'db-query',
-      `SELECT h.id, h.branch_id, h.target_name, h.source_names_json, h.affected_rows_json, h.created_at,
+      `SELECT h.id, h.branch_id, h.target_name, COALESCE(h.target_supplier_id, 0) AS target_supplier_id,
+              h.source_names_json, h.affected_rows_json, h.created_at,
               COALESCE(b.branch_name, 'غير محدد') AS branch_name
        FROM ledger_merge_history h
        LEFT JOIN branches b ON b.id = h.branch_id
@@ -1017,6 +1010,7 @@
       branch_id: normalizeBranchId(row.branch_id) || '0',
       branch_name: String(row.branch_name == null ? '' : row.branch_name),
       target_name: String(row.target_name == null ? '' : row.target_name),
+      target_supplier_id: Number(row.target_supplier_id || 0),
       source_names: sourceNames,
       affected_rows: affectedRows,
       created_at: row.created_at || ''
@@ -1081,91 +1075,21 @@
   }
 
   async function executeSupplierMergeTransaction(sourceNames, targetName, branchId) {
-    const rawTargetName = String(targetName == null ? '' : targetName);
-    const safeTargetName = normalizeSupplierDisplayName(rawTargetName);
-    if (!safeTargetName) {
-      throw new Error('اسم المورد الأساسي غير صالح');
-    }
-    const safeSourceNames = Array.from(new Set(
-      (Array.isArray(sourceNames) ? sourceNames : [])
-        .map((name) => String(name == null ? '' : name))
-        .filter((name) => normalizeSupplierDisplayName(name).length > 0 && name !== rawTargetName)
-    ));
-    if (safeSourceNames.length === 0) {
-      return { reconciledChanges: 0, manualChanges: 0, totalChanges: 0 };
-    }
-
-    const normalizedBranchId = normalizeBranchId(branchId);
-    const numericBranchId = normalizedBranchId ? Number(normalizedBranchId) : 0;
-    const namesToUpdate = Array.from(new Set([rawTargetName, ...safeSourceNames]));
-    const placeholders = namesToUpdate.map(() => '?').join(', ');
-    const suppliersParams = [safeTargetName, ...namesToUpdate, numericBranchId];
-    const manualParams = [safeTargetName, ...namesToUpdate, numericBranchId];
-    await ensureSupplierLedgerMergeHistoryTable();
-
-    await ledgerIpc.invoke('db-run', 'BEGIN TRANSACTION');
-    let committed = false;
+    let timeoutId = null;
+    const request = ledgerIpc.invoke('merge-suppliers-atomic', {
+      sourceNames,
+      targetName,
+      branchId: normalizeBranchId(branchId)
+    });
+    const timeout = new Promise((_resolve, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('استغرق توحيد الموردين وقتًا غير طبيعي؛ حدّث الدفتر للتحقق من النتيجة')), 45000);
+    });
     try {
-      const affectedRows = await fetchSupplierMergeAffectedRows({
-        safeSourceNames: namesToUpdate,
-        numericBranchId,
-        placeholders
-      });
-      const affectedRowsCount = countSupplierMergeAffectedRows(affectedRows);
-      if (affectedRowsCount <= 0) {
-        throw new Error('لم يتم العثور على قيود مطابقة للدمج. تحقق من اختلافات الاسم الخفية.');
-      }
-
-      const reconciledUpdateResult = await ledgerIpc.invoke(
-        'db-run',
-        `UPDATE suppliers
-         SET supplier_name = ?
-         WHERE supplier_name IN (${placeholders})
-           AND reconciliation_id IN (
-             SELECT r.id
-             FROM reconciliations r
-             LEFT JOIN cashiers c ON c.id = r.cashier_id
-             WHERE COALESCE(c.branch_id, 0) = ?
-           )`,
-        suppliersParams
-      );
-
-      const manualUpdateResult = await ledgerIpc.invoke(
-        'db-run',
-        `UPDATE manual_supplier_transactions
-         SET supplier_name = ?, updated_at = CURRENT_TIMESTAMP
-         WHERE supplier_name IN (${placeholders})
-           AND COALESCE(branch_id, 0) = ?`,
-        manualParams
-      );
-
-      const reconciledChanges = Number(reconciledUpdateResult?.changes || 0);
-      const manualChanges = Number(manualUpdateResult?.changes || 0);
-      const totalChanges = reconciledChanges + manualChanges;
-      if (totalChanges <= 0) {
-        throw new Error('لم يتم العثور على قيود مطابقة للدمج. تحقق من اختلافات الاسم الخفية.');
-      }
-
-      const mergeHistoryId = await recordSupplierMergeHistory({
-        numericBranchId,
-        safeTargetName,
-        safeSourceNames,
-        affectedRows
-      });
-
-      await ledgerIpc.invoke('db-run', 'COMMIT');
-      committed = true;
+      const result = await Promise.race([request, timeout]);
       await refreshSupplierUndoMergeState();
-      return { reconciledChanges, manualChanges, totalChanges, mergeHistoryId };
-    } catch (error) {
-      if (!committed) {
-        try {
-          await ledgerIpc.invoke('db-run', 'ROLLBACK');
-        } catch (rollbackError) {
-          console.error('Supplier merge rollback failed:', rollbackError);
-        }
-      }
-      throw error;
+      return result;
+    } finally {
+      if (timeoutId) clearTimeout(timeoutId);
     }
   }
 
@@ -1175,16 +1099,17 @@
       return 0;
     }
 
+    const accountSetClause = options.restoreSupplierAccountId ? ', supplier_account_id = ?' : '';
     const extraSetClause = options.extraSetClause ? `, ${options.extraSetClause}` : '';
     let changed = 0;
     for (const entry of safeEntries) {
       const result = await ledgerIpc.invoke(
         'db-run',
         `UPDATE ${tableName}
-         SET ${columnName} = ?${extraSetClause}
+         SET ${columnName} = ?${accountSetClause}${extraSetClause}
          WHERE id = ?
            AND ${columnName} = ?`,
-        [entry.old_name, entry.id, targetName]
+        [entry.old_name, ...(options.restoreSupplierAccountId ? [entry.old_supplier_account_id || null] : []), entry.id, targetName]
       );
       changed += Number(result?.changes || 0);
     }
@@ -1212,26 +1137,65 @@
         'suppliers',
         'supplier_name',
         affectedRows.suppliers,
-        safeTargetName
+        safeTargetName,
+        { restoreSupplierAccountId: true }
       );
       const manualRestored = await revertSupplierNamesByRowId(
         'manual_supplier_transactions',
         'supplier_name',
         affectedRows.manual_supplier_transactions,
         safeTargetName,
-        { extraSetClause: 'updated_at = CURRENT_TIMESTAMP' }
+        { restoreSupplierAccountId: true, extraSetClause: 'updated_at = CURRENT_TIMESTAMP' }
       );
 
-      const restoredTotal = suppliersRestored + manualRestored;
+      let accountsRestored = 0;
+      const targetSupplierId = Number(mergeRecord?.target_supplier_id || 0);
+      for (const account of affectedRows.supplier_accounts) {
+        const result = await ledgerIpc.invoke(
+          'db-run',
+          `UPDATE supplier_accounts
+           SET is_active = ?, merged_into_supplier_id = ?, merged_at = ?, updated_at = CURRENT_TIMESTAMP
+           WHERE id = ? AND COALESCE(merged_into_supplier_id, 0) = ?`,
+          [
+            account.old_is_active,
+            account.old_merged_into_supplier_id || null,
+            account.old_merged_at,
+            account.id,
+            targetSupplierId
+          ]
+        );
+        accountsRestored += Number(result?.changes || 0);
+      }
+
+      const restoredTotal = suppliersRestored + manualRestored + accountsRestored;
       if (restoredTotal <= 0) {
         throw new Error('لا يمكن فك الدمج: لم يتم العثور على قيود مطابقة للحالة الحالية.');
       }
 
       const skippedRows = Math.max(0, expectedRows - restoredTotal);
+      const sourceAliases = Array.from(new Set((mergeRecord?.source_names || [])
+        .map((name) => normalizeSupplierDisplayName(name))
+        .filter(Boolean)));
+      if (sourceAliases.length > 0) {
+        const aliasPlaceholders = sourceAliases.map(() => '?').join(', ');
+        await ledgerIpc.invoke(
+          'db-run',
+          `UPDATE supplier_identity_aliases
+           SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+           WHERE branch_id = ?
+             AND alias_name IN (${aliasPlaceholders})
+             AND canonical_supplier_id IN (
+               SELECT id FROM supplier_accounts
+               WHERE branch_id = ? AND supplier_name = ? COLLATE NOCASE
+             )`,
+          [Number(mergeRecord.branch_id || 0), ...sourceAliases, Number(mergeRecord.branch_id || 0), safeTargetName]
+        );
+      }
       const undoDetails = {
         restored: {
           suppliers: suppliersRestored,
-          manual_supplier_transactions: manualRestored
+          manual_supplier_transactions: manualRestored,
+          supplier_accounts: accountsRestored
         },
         expected_rows: expectedRows,
         skipped_rows: skippedRows

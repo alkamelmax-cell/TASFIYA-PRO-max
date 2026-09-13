@@ -781,11 +781,11 @@ function normalizeCustomerStatementRef(customerNameOrRef, forcedBranchId = '', c
 
 function buildCustomerSelectionKey(customerNameOrRef, branchId = '', customerCode = '', customerId = '') {
   const customerRef = normalizeCustomerStatementRef(customerNameOrRef, branchId, customerCode, customerId);
+  if (customerRef.customerCode) {
+    return JSON.stringify({ customerCode: customerRef.customerCode, branchId: customerRef.forcedBranchId || '0' });
+  }
   if (customerRef.customerId > 0) {
     return JSON.stringify({ customerId: customerRef.customerId });
-  }
-  if (customerRef.customerCode) {
-    return JSON.stringify({ customerCode: customerRef.customerCode });
   }
   return JSON.stringify({
     name: customerRef.customerName,
@@ -798,13 +798,6 @@ function buildCustomerTableMatcher(alias, customerRefInput, options = {}) {
   const branchExpression = String(options.branchExpression || '').trim();
   const normalizedBranchId = normalizeBranchId(options.branchId || customerRef.forcedBranchId);
 
-  if (customerRef.customerId > 0) {
-    return {
-      clause: `COALESCE(${alias}.customer_id, 0) = ?`,
-      params: [customerRef.customerId]
-    };
-  }
-
   if (customerRef.customerCode) {
     let clause = `UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?`;
     const params = [customerRef.customerCode];
@@ -812,9 +805,13 @@ function buildCustomerTableMatcher(alias, customerRefInput, options = {}) {
       clause += ` AND COALESCE(${branchExpression}, 0) = ?`;
       params.push(Number(normalizedBranchId));
     }
+    return { clause, params };
+  }
+
+  if (customerRef.customerId > 0) {
     return {
-      clause,
-      params
+      clause: `COALESCE(${alias}.customer_id, 0) = ?`,
+      params: [customerRef.customerId]
     };
   }
 
@@ -837,7 +834,18 @@ function buildCustomerMergeTableMatcher(alias, customerRefInput, options = {}) {
   const clauses = [];
   const params = [];
 
-  if (customerRef.customerId > 0) {
+  if (customerRef.customerCode) {
+    let codeClause = `UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?`;
+    const codeParams = [customerRef.customerCode];
+    if (branchExpression && normalizedBranchId) {
+      codeClause += ` AND COALESCE(${branchExpression}, 0) = ?`;
+      codeParams.push(Number(normalizedBranchId));
+    }
+    clauses.push(codeClause);
+    params.push(...codeParams);
+  }
+
+  if (!customerRef.customerCode && customerRef.customerId > 0) {
     let idClause = `COALESCE(${alias}.customer_id, 0) = ?`;
     const idParams = [customerRef.customerId];
     if (branchExpression && normalizedBranchId) {
@@ -846,23 +854,6 @@ function buildCustomerMergeTableMatcher(alias, customerRefInput, options = {}) {
     }
     clauses.push(idClause);
     params.push(...idParams);
-  }
-
-  if (customerRef.customerCode && allowUnscopedFallback) {
-    let codeClause = `UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?`;
-    const codeParams = [customerRef.customerCode];
-
-    if (customerRef.customerId > 0) {
-      codeClause = `COALESCE(${alias}.customer_id, 0) = 0 AND ${codeClause}`;
-    }
-
-    if (branchExpression && normalizedBranchId) {
-      codeClause += ` AND COALESCE(${branchExpression}, 0) = ?`;
-      codeParams.push(Number(normalizedBranchId));
-    }
-
-    clauses.push(codeClause);
-    params.push(...codeParams);
   }
 
   if (clauses.length === 0 && customerRef.customerName && allowUnscopedFallback) {
@@ -1074,10 +1065,10 @@ function updateCustomerLedgerSelectionUi() {
     if (selectedCount === 0) {
       summaryEl.textContent = 'لم يتم تحديد أي عميل';
     } else if (hasMixedBranches) {
-      summaryEl.textContent = `تم تحديد ${selectedCount} عميل (من أكثر من فرع - الدمج غير مسموح)`;
+      summaryEl.textContent = `تم تحديد ${selectedCount} عميل (من أكثر من فرع - توحيد الهوية غير مسموح)`;
     } else {
       const branchLabel = selectedRows[0]?.branch_name || 'غير محدد';
-      summaryEl.textContent = `تم تحديد ${selectedCount} عميل للدمج - الفرع: ${branchLabel}`;
+      summaryEl.textContent = `تم تحديد ${selectedCount} عميل لتوحيد الهوية - الفرع: ${branchLabel}`;
     }
   }
 
@@ -1088,8 +1079,8 @@ function updateCustomerLedgerSelectionUi() {
       ? formatMergeDateTime(latestUndoableCustomerMerge.created_at)
       : '';
     undoBtn.title = latestUndoableCustomerMerge
-      ? `فك آخر دمج (${createdAtText || 'بدون تاريخ'})`
-      : 'لا يوجد دمج متاح للفك';
+      ? `التراجع عن آخر توحيد (${createdAtText || 'بدون تاريخ'})`
+      : 'لا توجد عملية توحيد متاحة للتراجع';
   }
   if (clearBtn) clearBtn.disabled = selectedCount === 0;
 
@@ -1110,7 +1101,7 @@ function updateCustomerLedgerSelectionUi() {
 
 async function mergeSelectedCustomersInLedger() {
   if (customerMergeInProgress) {
-    showTransactionAlert('عملية دمج العملاء قيد التنفيذ بالفعل', 'danger');
+    showTransactionAlert('عملية توحيد هوية العملاء قيد التنفيذ بالفعل', 'danger');
     return;
   }
   const mergeButton = document.getElementById('customerLedgerMergeSelectedBtn');
@@ -1118,7 +1109,7 @@ async function mergeSelectedCustomersInLedger() {
   customerMergeInProgress = true;
   if (mergeButton) {
     mergeButton.disabled = true;
-    mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ تجهيز الدمج...';
+    mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ تحليل الهويات...';
   }
 
   try {
@@ -1159,7 +1150,7 @@ async function mergeSelectedCustomersInLedger() {
     if (!confirmed) return;
 
     if (mergeButton) {
-      mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ تنفيذ الدمج...';
+      mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ توحيد الهوية...';
     }
     const mergeResult = await executeCustomerMergeTransaction(sourceRefs, targetCustomerRef, normalizedBranchId);
     selectedCustomerMergeKeys.clear();
@@ -1185,12 +1176,12 @@ async function mergeSelectedCustomersInLedger() {
     const changed = Number(mergeResult?.totalChanges || 0);
     const registryChanges = Number(mergeResult?.registryChanges || 0);
     showTransactionAlert(
-      `تم الدمج بنجاح: ${changed} حركة، وإغلاق ${registryChanges} سجل عميل مكرر`,
+      `تم توحيد الهوية بنجاح: ${changed} حركة، وإغلاق ${registryChanges} سجل مكرر، وحفظ الأسماء والأكواد القديمة كبدائل`,
       'success'
     );
   } catch (error) {
     console.error('Error merging selected customers:', error);
-    showTransactionAlert(`تعذر دمج العملاء: ${mapCustomerLedgerDbError(error)}`, 'danger');
+    showTransactionAlert(`تعذر توحيد هوية العملاء: ${mapCustomerLedgerDbError(error)}`, 'danger');
   } finally {
     customerMergeInProgress = false;
     if (mergeButton) {
@@ -1226,7 +1217,7 @@ async function promptMergeTargetCustomerRef(candidates) {
       input: 'radio',
       inputOptions,
       showCancelButton: true,
-      confirmButtonText: 'مراجعة نتيجة الدمج',
+      confirmButtonText: 'مراجعة نتيجة التوحيد',
       cancelButtonText: 'إلغاء',
       confirmButtonColor: '#175b4c',
       customClass: { input: 'text-end' },
@@ -1418,7 +1409,7 @@ async function confirmCustomerMergeExecution({ sourceNames, targetName, branchLa
   if (window.Swal) {
     const result = await window.Swal.fire({
       icon: 'warning',
-      title: 'تأكيد دمج العملاء',
+      title: 'تأكيد توحيد هوية العملاء',
       html: `
         <div style="text-align:right;line-height:1.75;color:#173f36">
           <div style="background:#edf7f3;border:1px solid #cce6dc;border-radius:12px;padding:12px;margin-bottom:10px">
@@ -1426,7 +1417,7 @@ async function confirmCustomerMergeExecution({ sourceNames, targetName, branchLa
             <div style="font-weight:800;font-size:17px">${escapeHtml(targetName || '-')}</div>
             <div style="font-size:13px">الفرع: ${escapeHtml(branchLabel || 'غير محدد')}</div>
           </div>
-          <div><strong>السجلات التي ستُدمج:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
+          <div><strong>الهويات البديلة التي ستُوحّد:</strong> ${escapeHtml(mergedNamesLabel || '-')}</div>
           <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0">
             <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>الحركات المنقولة</small><br><strong>${escapeHtml(String(movedCount))}</strong></div>
             <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>الحركات النهائية</small><br><strong>${escapeHtml(String(finalCount))}</strong></div>
@@ -1434,11 +1425,11 @@ async function confirmCustomerMergeExecution({ sourceNames, targetName, branchLa
             <div style="background:#f7f8f7;border-radius:9px;padding:8px"><small>إجمالي المقبوضات</small><br><strong>${escapeHtml(fmt(finalReceipts))}</strong></div>
           </div>
           <div style="background:${finalBalance >= 0 ? '#fff4e8' : '#edf9f2'};border-radius:9px;padding:9px"><strong>الرصيد النهائي: ${escapeHtml(fmt(finalBalance))}</strong></div>
-          <div style="font-size:12px;color:#7b6b58;margin-top:10px">يمكن فك آخر عملية دمج من زر «فك آخر دمج» ما دامت السجلات لم تتغير لاحقًا.</div>
+          <div style="font-size:12px;color:#7b6b58;margin-top:10px">تُحفظ الأكواد والأسماء القديمة كبدائل، وتُوجّه الحركات الجديدة تلقائيًا للحساب الأساسي، مع إمكانية التراجع.</div>
         </div>
       `,
       showCancelButton: true,
-      confirmButtonText: 'نعم، دمج آمن',
+      confirmButtonText: 'اعتماد التوحيد',
       cancelButtonText: 'إلغاء',
       confirmButtonColor: '#175b4c'
     });
@@ -1446,7 +1437,7 @@ async function confirmCustomerMergeExecution({ sourceNames, targetName, branchLa
   }
 
   return window.confirm(
-    `سيتم دمج العملاء (${mergedNamesLabel}) في (${targetName}) ضمن فرع (${branchLabel}). هل تريد المتابعة؟`
+    `سيتم توحيد هوية العملاء (${mergedNamesLabel}) في الحساب الأساسي (${targetName}) ضمن فرع (${branchLabel}). هل تريد المتابعة؟`
   );
 }
 
@@ -2042,6 +2033,35 @@ async function rollbackCustomerMergeRecord(mergeRecord) {
     }
 
     const skippedRows = Math.max(0, expectedRows - restoredTotal);
+    const aliasCustomerIds = Array.from(new Set((affectedRows.customers || [])
+      .map((row) => Number(row.id || 0)).filter((id) => id > 0)));
+    const aliasCodes = Array.from(new Set([
+      ...(affectedRows.customers || []),
+      ...(affectedRows.postpaid_sales || []),
+      ...(affectedRows.customer_receipts || []),
+      ...(affectedRows.manual_postpaid_sales || []),
+      ...(affectedRows.manual_customer_receipts || [])
+    ].map((row) => normalizeCustomerCode(row.old_code)).filter(Boolean)));
+    const aliasClauses = [];
+    const aliasParams = [Number(mergeRecord.branch_id || 0), targetIdentity.customerId];
+    if (aliasCustomerIds.length) {
+      aliasClauses.push(`alias_customer_id IN (${aliasCustomerIds.map(() => '?').join(', ')})`);
+      aliasParams.push(...aliasCustomerIds);
+    }
+    if (aliasCodes.length) {
+      aliasClauses.push(`alias_code IN (${aliasCodes.map(() => '?').join(', ')})`);
+      aliasParams.push(...aliasCodes);
+    }
+    if (aliasClauses.length) {
+      await ledgerIpc.invoke(
+        'db-run',
+        `UPDATE customer_identity_aliases
+         SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+         WHERE branch_id = ? AND canonical_customer_id = ?
+           AND (${aliasClauses.join(' OR ')})`,
+        aliasParams
+      );
+    }
     const undoDetails = {
       restored: {
         customers: registryRestored,

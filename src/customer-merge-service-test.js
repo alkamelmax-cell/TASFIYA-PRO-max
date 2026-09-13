@@ -57,6 +57,10 @@ function createDatabase() {
     { is_active: 0, merged_into_customer_id: 1 }
   );
   assert.strictEqual(db.prepare("SELECT COUNT(*) AS count FROM ledger_merge_history WHERE entity_type = 'customer'").get().count, 1);
+  assert.deepStrictEqual(
+    db.prepare("SELECT alias_code, canonical_customer_id FROM customer_identity_aliases WHERE alias_code = 'C7-000002'").get(),
+    { alias_code: 'C7-000002', canonical_customer_id: 1 }
+  );
   db.close();
 }
 
@@ -85,6 +89,28 @@ function createDatabase() {
   assert.strictEqual(result.targetIdentity.customer_id, createdTarget.id);
   assert.strictEqual(db.prepare('SELECT COUNT(*) AS count FROM postpaid_sales WHERE customer_id = ?').get(createdTarget.id).count, 2);
   assert.strictEqual(db.prepare('SELECT merged_into_customer_id FROM customers WHERE id = 2').get().merged_into_customer_id, createdTarget.id);
+  db.close();
+}
+
+{
+  const db = createDatabase();
+  db.prepare("UPDATE postpaid_sales SET customer_id = 1, customer_code = 'C7-000099', customer_name = 'هوية قديمة بنفس الرقم' WHERE id = 100").run();
+  const result = executeCustomerMerge(db, {
+    branchId: 7,
+    targetRef: { customerId: 1, customerCode: 'C7-000001', customerName: 'العميل الأساسي' },
+    sourceRefs: [{ customerId: 1, customerCode: 'C7-000099', customerName: 'هوية قديمة بنفس الرقم', branchId: 7 }]
+  });
+  assert.ok(result.totalChanges >= 1);
+  assert.deepStrictEqual(db.prepare('SELECT customer_id, customer_code, customer_name FROM postpaid_sales WHERE id = 100').get(), {
+    customer_id: 1,
+    customer_code: 'C7-000001',
+    customer_name: 'العميل الأساسي'
+  });
+  assert.deepStrictEqual(db.prepare("SELECT alias_customer_id, alias_code, canonical_customer_id FROM customer_identity_aliases WHERE alias_code = 'C7-000099'").get(), {
+    alias_customer_id: 0,
+    alias_code: 'C7-000099',
+    canonical_customer_id: 1
+  });
   db.close();
 }
 
