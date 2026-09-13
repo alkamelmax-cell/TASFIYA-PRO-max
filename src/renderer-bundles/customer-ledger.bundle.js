@@ -1710,8 +1710,8 @@
           ? candidates.filter((candidate) => candidate && candidate.selectionKey)
           : [];
         if (customerCandidates.length < 2) return null;
-        if (!customerCandidates.some((candidate) => candidate.customerId > 0 && candidate.customerCode)) {
-          showTransactionAlert('لا يوجد ضمن التحديد سجل عميل رسمي بكود معتمد ليبقى بعد الدمج', 'danger');
+        if (!customerCandidates.some((candidate) => candidate.customerCode)) {
+          showTransactionAlert('لا يوجد ضمن التحديد عميل يحمل كودًا معتمدًا ليبقى بعد الدمج', 'danger');
           return null;
         }
       
@@ -1721,7 +1721,7 @@
           customerCandidates.forEach((candidate, index) => {
             const officialLabel = candidate.customerId > 0 && candidate.customerCode
               ? 'سجل رسمي'
-              : 'سجل قديم بلا هوية كاملة';
+              : (candidate.customerCode ? 'سيتم إصلاح هويته تلقائيًا' : 'سجل قديم بلا كود');
             inputOptions[String(index)] = `${formatCustomerNameForSelection(candidate.label)} — ${officialLabel} — ${candidate.movementsCount} حركة — الرصيد ${fmt(candidate.balance)}`;
           });
       
@@ -1738,8 +1738,8 @@
             inputValidator: (value) => {
               if (value == null || value === '') return 'يجب اختيار السجل الرسمي الذي سيبقى';
               const selectedCandidate = customerCandidates[Number.parseInt(String(value), 10)];
-              if (!selectedCandidate || selectedCandidate.customerId <= 0 || !selectedCandidate.customerCode) {
-                return 'هذا سجل قديم بلا هوية كاملة؛ اختر العميل الرسمي الذي يحمل كودًا معتمدًا';
+              if (!selectedCandidate || !selectedCandidate.customerCode) {
+                return 'اختر عميلاً يحمل كودًا معتمدًا ليكون السجل الأساسي';
               }
               return null;
             }
@@ -1763,8 +1763,8 @@
           return null;
         }
         const selectedCandidate = customerCandidates[selectedIndex];
-        if (selectedCandidate.customerId <= 0 || !selectedCandidate.customerCode) {
-          showTransactionAlert('اختر العميل الرسمي الذي يحمل كودًا معتمدًا', 'danger');
+        if (!selectedCandidate.customerCode) {
+          showTransactionAlert('اختر عميلاً يحمل كودًا معتمدًا', 'danger');
           return null;
         }
         return selectedCandidate;

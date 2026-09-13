@@ -58,7 +58,7 @@ function buildMatcher(alias, refs, branchExpression = '') {
       params.push(ref.customerId);
       if (branchClause) params.push(ref.branchId);
       if (ref.customerCode) {
-        clauses.push(`(COALESCE(${alias}.customer_id, 0) = 0 AND UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?${branchClause})`);
+        clauses.push(`(UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?${branchClause})`);
         params.push(ref.customerCode);
         if (branchClause) params.push(ref.branchId);
       }
@@ -134,18 +134,41 @@ function executeCustomerMerge(db, payload = {}) {
 
   const targetRef = normalizeRef(payload.targetRef);
   const sourceRefs = dedupeRefs(payload.sourceRefs).filter((ref) => refKey(ref) !== refKey(targetRef));
-  if (!targetRef.customerId || !targetRef.customerCode) throw new Error('اختر العميل الرسمي الذي يحمل كودًا معتمدًا');
+  if (!targetRef.customerCode) throw new Error('اختر عميلاً يحمل كودًا معتمدًا ليكون السجل الأساسي');
   if (!sourceRefs.length) throw new Error('لم يتم تحديد عملاء مختلفين للدمج');
 
   ensureHistorySchema(db);
   const transaction = db.transaction(() => {
-    const target = db.prepare(`
+    let target = targetRef.customerId ? db.prepare(`
       SELECT id, customer_name, customer_code, branch_id,
              COALESCE(is_active, 1) AS is_active,
              COALESCE(merged_into_customer_id, 0) AS merged_into_customer_id
       FROM customers WHERE id = ? LIMIT 1
-    `).get(targetRef.customerId);
-    if (!target) throw new Error('تعذر العثور على سجل العميل الأساسي');
+    `).get(targetRef.customerId) : null;
+    if (!target) {
+      target = db.prepare(`
+        SELECT id, customer_name, customer_code, branch_id,
+               COALESCE(is_active, 1) AS is_active,
+               COALESCE(merged_into_customer_id, 0) AS merged_into_customer_id
+        FROM customers WHERE UPPER(TRIM(customer_code)) = ? LIMIT 1
+      `).get(targetRef.customerCode);
+    }
+    if (!target) {
+      if (!targetRef.customerName) throw new Error('اسم العميل الأساسي غير متوفر لإنشاء هويته الرسمية');
+      const inserted = db.prepare(`
+        INSERT INTO customers
+          (customer_code, customer_name, branch_id, is_active, created_at, updated_at)
+        VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+      `).run(targetRef.customerCode, targetRef.customerName, branchId);
+      target = {
+        id: Number(inserted.lastInsertRowid || 0),
+        customer_name: targetRef.customerName,
+        customer_code: targetRef.customerCode,
+        branch_id: branchId,
+        is_active: 1,
+        merged_into_customer_id: 0
+      };
+    }
     if (normalizeBranchId(target.branch_id) !== branchId) throw new Error('العميل الأساسي لا يتبع الفرع المحدد');
     if (normalizeId(target.merged_into_customer_id)) throw new Error('العميل المختار مدمج مسبقًا في سجل آخر');
     target.customer_name = normalizeName(target.customer_name);
@@ -153,30 +176,38 @@ function executeCustomerMerge(db, payload = {}) {
     if (!target.customer_name || !target.customer_code) throw new Error('بيانات العميل الأساسي غير مكتملة');
 
     const allRefs = dedupeRefs([targetRef, ...sourceRefs]);
-    const manualBranch = normalizeBranchId(db.prepare('SELECT branch_id FROM cashiers ORDER BY id LIMIT 1').get()?.branch_id);
+    const manualRefs = allRefs.filter((ref) => ref.customerId || ref.customerCode);
     const affected = {
       customers: [],
       postpaid_sales: selectMovementRows(db, 'postpaid_sales', 'ps', allRefs, branchId, true),
       customer_receipts: selectMovementRows(db, 'customer_receipts', 'cr', allRefs, branchId, true),
-      manual_postpaid_sales: [],
-      manual_customer_receipts: []
+      manual_postpaid_sales: selectMovementRows(db, 'manual_postpaid_sales', 'mps', manualRefs, branchId, false),
+      manual_customer_receipts: selectMovementRows(db, 'manual_customer_receipts', 'mcr', manualRefs, branchId, false)
     };
-    if (manualBranch === branchId) {
-      affected.manual_postpaid_sales = selectMovementRows(db, 'manual_postpaid_sales', 'mps', allRefs, branchId, false);
-      affected.manual_customer_receipts = selectMovementRows(db, 'manual_customer_receipts', 'mcr', allRefs, branchId, false);
-    }
 
-    const sourceCustomerIds = sourceRefs.map((ref) => ref.customerId).filter(Boolean);
-    if (sourceCustomerIds.length) {
-      const placeholders = sourceCustomerIds.map(() => '?').join(',');
+    const registryClauses = [];
+    const registryParams = [];
+    for (const ref of sourceRefs) {
+      const identityClauses = [];
+      if (ref.customerId) {
+        identityClauses.push('id = ?');
+        registryParams.push(ref.customerId);
+      }
+      if (ref.customerCode) {
+        identityClauses.push("UPPER(TRIM(COALESCE(customer_code, ''))) = ?");
+        registryParams.push(ref.customerCode);
+      }
+      if (identityClauses.length) registryClauses.push(`(${identityClauses.join(' OR ')})`);
+    }
+    if (registryClauses.length) {
       affected.customers = db.prepare(`
         SELECT id, customer_name AS old_name, COALESCE(customer_code, '') AS old_code,
                COALESCE(is_active, 1) AS old_is_active,
                COALESCE(merged_into_customer_id, 0) AS old_merged_into_customer_id,
                merged_at AS old_merged_at
         FROM customers
-        WHERE id IN (${placeholders}) AND COALESCE(branch_id, 0) = ? AND id <> ?
-      `).all(...sourceCustomerIds, branchId, target.id);
+        WHERE (${registryClauses.join(' OR ')}) AND COALESCE(branch_id, 0) = ? AND id <> ?
+      `).all(...registryParams, branchId, target.id);
     }
     const conflict = affected.customers.find((row) => normalizeId(row.old_merged_into_customer_id) && normalizeId(row.old_merged_into_customer_id) !== target.id);
     if (conflict) throw new Error(`العميل رقم ${conflict.id} مدمج مسبقًا في عميل آخر`);
