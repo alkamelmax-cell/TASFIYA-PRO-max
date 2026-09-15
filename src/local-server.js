@@ -699,7 +699,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-15.3',
+                        release: 'server-release-2026-09-15.4',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
@@ -711,7 +711,8 @@ class LocalWebServer {
                         pdf_engine: 'vector-pdfkit',
                         self_sync_protection: true,
                         duplicate_repair: true,
-                        sync_mirror_audit: true
+                        sync_mirror_audit: true,
+                        accounting_mirror_reseed: true
                     });
                     return;
                 }
@@ -787,6 +788,10 @@ class LocalWebServer {
                 }
                 else if (pathname === '/api/maintenance/sync-mirror/audit' && req.method === 'GET') {
                     await this.handleAuditSyncMirror(res);
+                    return;
+                }
+                else if (pathname === '/api/maintenance/sync-mirror/prepare-reseed' && req.method === 'POST') {
+                    await this.handlePrepareSyncMirrorReseed(req, res);
                     return;
                 }
                 else if (pathname === '/api/atm-report') {
@@ -1809,6 +1814,154 @@ class LocalWebServer {
             });
         } catch (error) {
             console.error('❌ [MAINTENANCE] Sync mirror audit failed:', error);
+            this.sendJson(res, { success: false, error: error.message }, { statusCode: error.statusCode || 500 });
+        }
+    }
+
+    async handlePrepareSyncMirrorReseed(req, res) {
+        const pool = this.dbManager?.pool;
+        let client = null;
+        try {
+            if (!pool || typeof pool.connect !== 'function') {
+                const error = new Error('Sync mirror reseed is available only on the PostgreSQL server');
+                error.statusCode = 409;
+                throw error;
+            }
+
+            const input = await this.readJsonBody(req, {
+                maxBytes: DEFAULT_JSON_BODY_LIMIT_BYTES,
+                routeLabel: '/api/maintenance/sync-mirror/prepare-reseed payload'
+            });
+            const sourceId = String(input?.authoritative_source_id || '').trim();
+            const expectedReconciliations = Number(input?.expected_reconciliations);
+            const confirmation = String(input?.confirmation || '').trim();
+
+            if (!/^[A-Za-z0-9._:-]{8,160}$/.test(sourceId)) {
+                const error = new Error('A valid authoritative source id is required');
+                error.statusCode = 400;
+                throw error;
+            }
+            if (!Number.isInteger(expectedReconciliations) || expectedReconciliations <= 0) {
+                const error = new Error('A positive expected reconciliation count is required');
+                error.statusCode = 400;
+                throw error;
+            }
+            if (confirmation !== 'RESET_ACCOUNTING_MIRROR_FOR_RESEED') {
+                const error = new Error('Explicit accounting mirror reseed confirmation is required');
+                error.statusCode = 400;
+                throw error;
+            }
+
+            client = await pool.connect();
+            await client.query('BEGIN');
+            await client.query("SELECT pg_advisory_xact_lock(hashtext('tasfiya-accounting-mirror-reseed-v1'))");
+
+            const countResult = await client.query('SELECT COUNT(*)::int AS count FROM reconciliations');
+            const currentReconciliations = Number(countResult.rows[0]?.count || 0);
+            if (currentReconciliations !== expectedReconciliations) {
+                const error = new Error(
+                    `Accounting mirror changed: expected ${expectedReconciliations} reconciliations but found ${currentReconciliations}`
+                );
+                error.statusCode = 409;
+                throw error;
+            }
+
+            const operationId = crypto.randomUUID();
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS sync_mirror_reseed_backups (
+                    operation_id TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    row_id BIGINT NOT NULL,
+                    row_data JSONB NOT NULL,
+                    authoritative_source_id TEXT NOT NULL,
+                    backed_up_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (operation_id, table_name, row_id)
+                )
+            `);
+
+            const mirrorTables = [
+                'cash_receipts',
+                'bank_receipts',
+                'postpaid_sales',
+                'customer_receipts',
+                'return_invoices',
+                'suppliers',
+                'manual_postpaid_sales',
+                'manual_customer_receipts',
+                'customer_fiscal_opening_balances',
+                'reconciliations'
+            ];
+            const availableResult = await client.query(`
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = current_schema()
+                  AND table_name = ANY($1::text[])
+            `, [mirrorTables]);
+            const availableTables = new Set(availableResult.rows.map((row) => row.table_name));
+            const backupCounts = {};
+            const deletedCounts = {};
+
+            for (const tableName of mirrorTables) {
+                if (!availableTables.has(tableName)) continue;
+                const backupResult = await client.query(`
+                    INSERT INTO sync_mirror_reseed_backups (
+                        operation_id, table_name, row_id, row_data, authoritative_source_id
+                    )
+                    SELECT $1, $2, t.id, to_jsonb(t), $3
+                    FROM ${tableName} t
+                    ON CONFLICT DO NOTHING
+                `, [operationId, tableName, sourceId]);
+                backupCounts[tableName] = backupResult.rowCount || 0;
+            }
+
+            const vouchersAvailable = await client.query(`
+                SELECT 1
+                FROM information_schema.tables
+                WHERE table_schema = current_schema()
+                  AND table_name = 'cashbox_vouchers'
+                LIMIT 1
+            `);
+            if (vouchersAvailable.rowCount > 0) {
+                const voucherBackup = await client.query(`
+                    INSERT INTO sync_mirror_reseed_backups (
+                        operation_id, table_name, row_id, row_data, authoritative_source_id
+                    )
+                    SELECT $1, 'cashbox_vouchers', v.id, to_jsonb(v), $2
+                    FROM cashbox_vouchers v
+                    WHERE COALESCE(v.is_auto_generated, 0) = 1
+                    ON CONFLICT DO NOTHING
+                `, [operationId, sourceId]);
+                backupCounts.cashbox_vouchers = voucherBackup.rowCount || 0;
+                const voucherDelete = await client.query(
+                    'DELETE FROM cashbox_vouchers WHERE COALESCE(is_auto_generated, 0) = 1'
+                );
+                deletedCounts.cashbox_vouchers = voucherDelete.rowCount || 0;
+            }
+
+            for (const tableName of mirrorTables) {
+                if (!availableTables.has(tableName)) continue;
+                const deleteResult = await client.query(`DELETE FROM ${tableName}`);
+                deletedCounts[tableName] = deleteResult.rowCount || 0;
+            }
+
+            await client.query('COMMIT');
+            client.release();
+            client = null;
+
+            this.sendJson(res, {
+                success: true,
+                operation_id: operationId,
+                authoritative_source_id: sourceId,
+                backup_counts: backupCounts,
+                deleted_counts: deletedCounts,
+                ready_for_full_reseed: true
+            });
+        } catch (error) {
+            if (client) {
+                try { await client.query('ROLLBACK'); } catch (_rollbackError) {}
+                client.release();
+            }
+            console.error('❌ [MAINTENANCE] Sync mirror reseed preparation failed:', error);
             this.sendJson(res, { success: false, error: error.message }, { statusCode: error.statusCode || 500 });
         }
     }
