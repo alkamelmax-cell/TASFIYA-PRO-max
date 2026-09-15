@@ -699,7 +699,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-15.2',
+                        release: 'server-release-2026-09-15.3',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
@@ -710,7 +710,8 @@ class LocalWebServer {
                         unified_pdf_viewer: true,
                         pdf_engine: 'vector-pdfkit',
                         self_sync_protection: true,
-                        duplicate_repair: true
+                        duplicate_repair: true,
+                        sync_mirror_audit: true
                     });
                     return;
                 }
@@ -782,6 +783,10 @@ class LocalWebServer {
                 }
                 else if (pathname === '/api/maintenance/reconciliation-duplicates/repair' && req.method === 'POST') {
                     await this.handleRepairReconciliationDuplicates(req, res);
+                    return;
+                }
+                else if (pathname === '/api/maintenance/sync-mirror/audit' && req.method === 'GET') {
+                    await this.handleAuditSyncMirror(res);
                     return;
                 }
                 else if (pathname === '/api/atm-report') {
@@ -1740,6 +1745,70 @@ class LocalWebServer {
             this.sendJson(res, { success: true, audit });
         } catch (error) {
             console.error('❌ [MAINTENANCE] Duplicate audit failed:', error);
+            this.sendJson(res, { success: false, error: error.message }, { statusCode: error.statusCode || 500 });
+        }
+    }
+
+    async handleAuditSyncMirror(res) {
+        try {
+            const pool = this.dbManager?.pool;
+            if (!pool || typeof pool.query !== 'function') {
+                const error = new Error('Sync mirror audit is available only on the PostgreSQL server');
+                error.statusCode = 409;
+                throw error;
+            }
+
+            const candidateTables = [
+                'reconciliations',
+                'cash_receipts',
+                'bank_receipts',
+                'postpaid_sales',
+                'customer_receipts',
+                'manual_postpaid_sales',
+                'manual_customer_receipts',
+                'return_invoices',
+                'suppliers',
+                'customers'
+            ];
+            const columnsResult = await pool.query(`
+                SELECT table_name
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND column_name = 'sync_source_id'
+                  AND table_name = ANY($1::text[])
+                ORDER BY table_name
+            `, [candidateTables]);
+            const auditedTables = columnsResult.rows.map((row) => row.table_name);
+            const tables = [];
+
+            for (const tableName of auditedTables) {
+                const countsResult = await pool.query(`
+                    SELECT
+                        COALESCE(NULLIF(sync_source_id, ''), '<legacy>') AS source_id,
+                        COUNT(*)::int AS row_count,
+                        COUNT(DISTINCT source_row_id)::int AS source_row_count,
+                        MIN(id)::int AS min_id,
+                        MAX(id)::int AS max_id
+                    FROM ${tableName}
+                    GROUP BY COALESCE(NULLIF(sync_source_id, ''), '<legacy>')
+                    ORDER BY row_count DESC, source_id
+                `);
+                tables.push({
+                    table_name: tableName,
+                    total_rows: countsResult.rows.reduce((sum, row) => sum + Number(row.row_count || 0), 0),
+                    sources: countsResult.rows
+                });
+            }
+
+            this.sendJson(res, {
+                success: true,
+                audit: {
+                    generated_at: new Date().toISOString(),
+                    tables
+                }
+            });
+        } catch (error) {
+            console.error('❌ [MAINTENANCE] Sync mirror audit failed:', error);
             this.sendJson(res, { success: false, error: error.message }, { statusCode: error.statusCode || 500 });
         }
     }
