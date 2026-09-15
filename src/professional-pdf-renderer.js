@@ -351,7 +351,7 @@ class ProfessionalPdfRenderer {
                 .strokeColor(COLORS.border)
                 .stroke();
             doc.font('Arabic').fillColor(COLORS.muted).fontSize(6.5)
-                .text(singleLineText('تصفية برو - جميع الحقوق محفوظة - محمد أمين الكامل - 2025'), PAGE.margin, PAGE.footerTop, {
+                .text(singleLineText(`تصفية برو - جميع الحقوق محفوظة - محمد أمين الكامل - ${new Date().getFullYear()}`), PAGE.margin, PAGE.footerTop, {
                     width: width - 80,
                     align: 'right',
                     lineBreak: false
@@ -482,6 +482,61 @@ class ProfessionalPdfRenderer {
         ], rows, {
             totalRow: [amount(finalBalance), amount(totalCredit), amount(totalDebit), '', '', 'الإجمالي', '']
         });
+
+        const output = collectDocument(state.doc);
+        this.finalize(state);
+        return output;
+    }
+
+    async renderOperationalReport(payload = {}) {
+        const isAtm = payload.type === 'atm';
+        const title = isAtm ? 'تقرير عمليات الصراف والبطاقات' : 'تقرير حركة الصناديق';
+        const state = this.createState(title);
+        const summary = payload.summary || {};
+
+        this.drawCards(state, [
+            { label: 'المنشأة', value: payload.companyName || 'تصفية برو', valueSize: 8.5 },
+            ...(payload.filters || []).map((item) => ({ label: item.label, value: item.value, valueSize: 8.5 }))
+        ], 4, { height: 43, after: 7 });
+
+        this.drawCards(state, isAtm ? [
+            { label: 'عدد العمليات', value: String(summary.count || 0), align: 'center', valueSize: 12 },
+            { label: 'إجمالي المبالغ', value: amount(summary.total), align: 'center', valueSize: 12, color: COLORS.positive },
+            { label: 'متوسط العملية', value: amount(summary.average), align: 'center', valueSize: 12 },
+            { label: 'أعلى مبلغ', value: amount(summary.maximum), align: 'center', valueSize: 12 }
+        ] : [
+            { label: 'الرصيد الافتتاحي', value: amount(summary.openingBalance), align: 'center', valueSize: 11 },
+            { label: 'إجمالي القبض', value: amount(summary.totalReceipts), align: 'center', valueSize: 11, color: COLORS.positive },
+            { label: 'إجمالي الصرف', value: amount(summary.totalPayments), align: 'center', valueSize: 11, color: COLORS.negative },
+            { label: 'الرصيد الحالي', value: amount(summary.currentBalance), align: 'center', valueSize: 11, color: toNumber(summary.currentBalance) < 0 ? COLORS.negative : COLORS.positive }
+        ], 4, { height: 48, after: 7 });
+
+        if (isAtm) {
+            this.drawTable(state, 'سجل عمليات الصراف والبطاقات', [
+                { label: 'التصفية', weight: 0.85, value: (row) => `#${row.reconciliation_number || row.reconciliation_id || '-'}` },
+                { label: 'الكاشير', weight: 1.05, value: (row) => row.cashier_name || '-' },
+                { label: 'المبلغ', weight: 0.9, value: (row) => amount(row.amount), bold: true, color: COLORS.positive },
+                { label: 'الفرع', weight: 1.05, value: (row) => row.branch_name || '-' },
+                { label: 'البنك', weight: 1.05, value: (row) => row.bank_name || '-' },
+                { label: 'الجهاز', weight: 1.05, value: (row) => row.atm_name || '-' },
+                { label: 'العملية', weight: 0.85, value: (row) => row.operation_type || '-' },
+                { label: 'التاريخ', weight: 0.9, value: (row) => displayDate(row.reconciliation_date) }
+            ], payload.rows || [], {
+                rowHeight: 21,
+                totalRow: ['', '', amount(summary.total), '', '', '', 'الإجمالي', '']
+            });
+        } else {
+            this.drawTable(state, 'سجل سندات الصناديق', [
+                { label: 'المستخدم', weight: 0.9, value: (row) => row.created_by || '-' },
+                { label: 'البيان', weight: 1.35, value: (row) => row.description || '-' },
+                { label: 'المرجع', weight: 0.9, value: (row) => row.reference_no || '-' },
+                { label: 'المبلغ', weight: 0.85, value: (row) => amount(row.amount), bold: true, color: (row) => row.voucher_type === 'payment' ? COLORS.negative : COLORS.positive },
+                { label: 'الطرف', weight: 1.25, value: (row) => row.counterparty_name || '-' },
+                { label: 'الفرع', weight: 1, value: (row) => row.branch_name || '-' },
+                { label: 'التاريخ', weight: 0.85, value: (row) => displayDate(row.voucher_date) },
+                { label: 'السند', weight: 0.9, value: (row) => `${row.voucher_type === 'receipt' ? 'قبض' : 'صرف'}-${row.voucher_display_number || row.voucher_number || '-'}` }
+            ], payload.rows || [], { rowHeight: 21 });
+        }
 
         const output = collectDocument(state.doc);
         this.finalize(state);

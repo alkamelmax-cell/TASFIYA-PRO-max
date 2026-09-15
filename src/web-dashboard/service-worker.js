@@ -5,9 +5,9 @@
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
 // Service Worker for Tasfiya Pro PWA
-// Version: 4.12 - vector PDF engine and unified document viewer.
+// Version: 4.14 - operational reports use the vector PDF engine and unified document viewer.
 
-const CACHE_NAME = 'tasfiya-pro-v4.13-android-native-pdf';
+const CACHE_NAME = 'tasfiya-pro-v4.14-operational-pdf';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',
@@ -63,6 +63,7 @@ const NETWORK_FIRST_RUNTIME_PATHS = new Set([
     '/js/onesignal-bootstrap.js',
     '/js/pdf-document-client.js',
     '/js/reconciliation-pdf-share.js',
+    '/js/operational-report-share.js',
     '/manifest.json',
     '/service-worker.js'
 ]);

@@ -2093,3 +2093,43 @@ body {
         padding: 1rem !important;
     }
 }
+
+/* Operational report PDF actions */
+.report-actions-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    padding: .9rem 1rem;
+    border: 1px solid rgba(61, 198, 178, .24);
+    border-radius: 1rem;
+    background: linear-gradient(135deg, rgba(20, 62, 55, .94), rgba(10, 35, 31, .92));
+    box-shadow: 0 12px 30px rgba(0, 0, 0, .14);
+}
+
+.report-actions-copy strong { display: block; color: #fff; font-size: .98rem; }
+.report-actions-copy small { display: block; margin-top: .25rem; color: rgba(229, 246, 242, .7); }
+.report-actions-buttons { display: flex; align-items: center; gap: .55rem; flex-shrink: 0; }
+.report-action-btn {
+    min-height: 42px;
+    padding: .6rem 1rem;
+    border: 1px solid rgba(255, 255, 255, .16);
+    border-radius: .8rem;
+    color: #fff;
+    background: rgba(255, 255, 255, .08);
+    font-weight: 800;
+    transition: transform 160ms ease, background 160ms ease, border-color 160ms ease;
+}
+.report-action-btn:hover:not(:disabled) { color: #fff; border-color: rgba(60, 219, 194, .62); background: rgba(60, 219, 194, .18); transform: translateY(-1px); }
+.report-action-btn.report-action-primary { color: #062d28; border-color: #45d3bd; background: linear-gradient(135deg, #55dbc6, #25bba3); }
+.report-action-btn:disabled { cursor: wait; opacity: .58; }
+.report-action-status { min-height: 1.25rem; margin-top: .4rem; font-size: .78rem; color: #8edfd2; }
+.report-action-status.is-error { color: #ff9c9c; }
+.report-action-status.is-success { color: #7ae5b2; }
+
+@media (max-width: 680px) {
+    .report-actions-bar { align-items: stretch; flex-direction: column; }
+    .report-actions-buttons { display: grid; grid-template-columns: 1fr 1fr; }
+    .report-action-btn { width: 100%; }
+}

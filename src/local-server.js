@@ -9,6 +9,7 @@ const { parse } = require('url');
 const { hashSecret, hashSecretIfNeeded, verifySecret } = require('./security/auth-service');
 const { WebSessionStore } = require('./security/web-session-store');
 const { ReconciliationPdfService } = require('./reconciliation-pdf-service');
+const { OperationalReportsPdfService, addAtmOperationFilter } = require('./operational-reports-pdf-service');
 const {
     buildArabicPdfFileName,
     buildPdfContentDisposition,
@@ -263,6 +264,9 @@ class LocalWebServer {
         this.sessionStore = new WebSessionStore({ ttlMs: SESSION_TTL_MS });
         this.reconciliationPdfService = new ReconciliationPdfService(dbManager);
         this.reportPdfRenderer = this.reconciliationPdfService.pdfRenderer;
+        this.operationalReportsPdfService = new OperationalReportsPdfService(dbManager, {
+            pdfRenderer: this.reportPdfRenderer
+        });
     }
 
     async readJsonBody(req, options = {}) {
@@ -771,6 +775,14 @@ class LocalWebServer {
                     await this.handleGetCashboxReport(res, parsedUrl.query);
                     return;
                 }
+                else if (pathname === '/api/reports/atm.pdf' && (req.method === 'GET' || req.method === 'HEAD')) {
+                    await this.handleGetOperationalReportPdf(req, res, 'atm', parsedUrl.query);
+                    return;
+                }
+                else if (pathname === '/api/reports/cashboxes.pdf' && (req.method === 'GET' || req.method === 'HEAD')) {
+                    await this.handleGetOperationalReportPdf(req, res, 'cashbox', parsedUrl.query);
+                    return;
+                }
                 else if (pathname.match(/^\/api\/reconciliation\/\d+$/)) {
                     const id = pathname.split('/').pop();
                     await this.handleGetReconciliationDetails(res, id);
@@ -942,6 +954,11 @@ class LocalWebServer {
     }
 
     stop() {
+        if (this.operationalReportsPdfService) {
+            this.operationalReportsPdfService.close().catch((error) => {
+                console.warn('⚠️ [PDF] تعذر إغلاق خدمة التقارير التشغيلية:', error?.message || error);
+            });
+        }
         if (this.reconciliationPdfService) {
             this.reconciliationPdfService.close().catch((error) => {
                 console.warn('⚠️ [PDF] تعذر إغلاق مولد التقارير:', error && error.message ? error.message : error);
@@ -1397,6 +1414,14 @@ class LocalWebServer {
                 sql += ` AND br.amount = ?`;
                 params.push(query.specificAmount);
             }
+            if (query.device && query.device !== 'all') {
+                sql += ` AND atm.name = ?`;
+                params.push(query.device);
+            }
+
+            const operationWhere = [];
+            addAtmOperationFilter(operationWhere, params, query.operationType);
+            if (operationWhere.length) sql += ` AND ${operationWhere.join(' AND ')}`;
 
             sql += ` ORDER BY br.created_at DESC, br.id DESC`;
 
@@ -1656,6 +1681,34 @@ class LocalWebServer {
 
         res.writeHead(200, { ...commonHeaders, 'Content-Length': pdfBuffer.length });
         res.end(req.method === 'HEAD' ? undefined : pdfBuffer);
+    }
+
+    async handleGetOperationalReportPdf(req, res, type, query = {}) {
+        const requestId = crypto.randomUUID();
+        try {
+            const report = await this.operationalReportsPdfService.getReport(type, query);
+            this.sendPdfBuffer(req, res, { ...report, requestId }, query);
+        } catch (error) {
+            const timedOut = error?.code === 'PDF_GENERATION_TIMEOUT';
+            const message = String(error?.message || '');
+            const missingCashboxTables = type === 'cashbox' && (
+                message.includes('no such table: cashbox_vouchers')
+                || message.includes('no such table: branch_cashboxes')
+                || message.includes('relation "cashbox_vouchers" does not exist')
+                || message.includes('relation "branch_cashboxes" does not exist')
+            );
+            console.error(`❌ [PDF] فشل التقرير التشغيلي ${type} (${requestId}):`, error);
+            this.sendJson(res, {
+                success: false,
+                error: missingCashboxTables
+                    ? 'لم تتم مزامنة بيانات الصناديق إلى هذا الخادم بعد.'
+                    : timedOut
+                        ? 'استغرق تجهيز التقرير وقتاً أطول من المتوقع. حاول مرة أخرى.'
+                        : 'تعذر تجهيز تقرير PDF حالياً. حاول مرة أخرى.',
+                retryable: !missingCashboxTables,
+                requestId
+            }, { statusCode: timedOut ? 504 : 503 });
+        }
     }
 
     async handleGetReconciliationPdf(req, res, id, query = {}) {
