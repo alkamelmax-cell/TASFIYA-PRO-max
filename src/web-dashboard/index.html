@@ -661,9 +661,12 @@
                 issues.push(`بلا رقم ${sequence.unnumberedCount}`);
             }
 
-            el.textContent = issues.length > 0
-                ? `آخر رقم ${formatNum(sequence.maxNumber)} | ${issues.join(' | ')}`
-                : `آخر رقم ${formatNum(sequence.maxNumber)} | التسلسل سليم`;
+            if (issues.length === 0) {
+                el.textContent = '';
+                el.className = 'small mt-2 opacity-75';
+                return;
+            }
+            el.textContent = `آخر رقم ${formatNum(sequence.maxNumber)} | ${issues.join(' | ')}`;
             el.className = `small mt-2 ${issues.length > 0 ? 'text-warning' : 'text-success'}`;
         }
 
