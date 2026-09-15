@@ -11,6 +11,10 @@ const { WebSessionStore } = require('./security/web-session-store');
 const { ReconciliationPdfService } = require('./reconciliation-pdf-service');
 const { OperationalReportsPdfService, addAtmOperationFilter } = require('./operational-reports-pdf-service');
 const {
+    SYNC_RUNTIME_HEADER,
+    isSameSyncRuntimeInstance
+} = require('./sync-runtime-identity');
+const {
     buildArabicPdfFileName,
     buildPdfContentDisposition,
     createPdfEtag,
@@ -634,7 +638,10 @@ class LocalWebServer {
             // Enable CORS
             res.setHeader('Access-Control-Allow-Origin', '*');
             res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-            res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, If-None-Match');
+            res.setHeader(
+                'Access-Control-Allow-Headers',
+                `Content-Type, Authorization, If-None-Match, ${SYNC_RUNTIME_HEADER}`
+            );
             res.setHeader('Access-Control-Expose-Headers', 'ETag, Content-Disposition, X-Report-Cache, X-Request-Id');
 
             if (req.method === 'OPTIONS') {
@@ -3511,6 +3518,17 @@ class LocalWebServer {
                 maxBytes: LARGE_JSON_BODY_LIMIT_BYTES,
                 routeLabel: '/api/sync/users payload'
             });
+                const incomingRuntimeId = req?.headers?.[SYNC_RUNTIME_HEADER];
+                if (isSameSyncRuntimeInstance(incomingRuntimeId)) {
+                    console.warn('🛡️ [SYNC] Ignored a self-sync upload targeting this application instance.');
+                    this.sendJson(res, {
+                        success: true,
+                        skipped: true,
+                        reason: 'self_sync_target',
+                        message: 'Self-sync upload ignored safely'
+                    });
+                    return;
+                }
                 console.log('🔄 [SYNC] Received sync data:', Object.keys(data));
 
                 // **ROOT FIX**: Use pool.query() directly for PostgreSQL
