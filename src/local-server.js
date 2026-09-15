@@ -699,7 +699,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-12.8',
+                        release: 'server-release-2026-09-15.1',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
@@ -708,7 +708,8 @@ class LocalWebServer {
                         normalized_puppeteer_pdf_output: true,
                         vector_pdf_engine: true,
                         unified_pdf_viewer: true,
-                        pdf_engine: 'vector-pdfkit'
+                        pdf_engine: 'vector-pdfkit',
+                        self_sync_protection: true
                     });
                     return;
                 }
