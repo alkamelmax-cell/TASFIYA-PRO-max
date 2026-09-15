@@ -699,7 +699,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-15.1',
+                        release: 'server-release-2026-09-15.2',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
@@ -709,7 +709,8 @@ class LocalWebServer {
                         vector_pdf_engine: true,
                         unified_pdf_viewer: true,
                         pdf_engine: 'vector-pdfkit',
-                        self_sync_protection: true
+                        self_sync_protection: true,
+                        duplicate_repair: true
                     });
                     return;
                 }
@@ -773,6 +774,14 @@ class LocalWebServer {
                 }
                 else if (pathname === '/api/reconciliations/reset' && req.method === 'POST') {
                     await this.handleResetReconciliations(res);
+                    return;
+                }
+                else if (pathname === '/api/maintenance/reconciliation-duplicates/audit' && req.method === 'GET') {
+                    await this.handleAuditReconciliationDuplicates(res, parsedUrl.query);
+                    return;
+                }
+                else if (pathname === '/api/maintenance/reconciliation-duplicates/repair' && req.method === 'POST') {
+                    await this.handleRepairReconciliationDuplicates(req, res);
                     return;
                 }
                 else if (pathname === '/api/atm-report') {
@@ -1618,6 +1627,288 @@ class LocalWebServer {
 
         } catch (error) {
             this.sendJson(res, { success: false, error: error.message });
+        }
+    }
+
+    getReconciliationBusinessFingerprintSql(alias = 'r') {
+        return `md5((to_jsonb(${alias})
+            - 'id'
+            - 'sync_source_id'
+            - 'source_row_id'
+            - 'created_at'
+            - 'updated_at'
+            - 'last_modified_date')::text)`;
+    }
+
+    async auditReconciliationDuplicates(authoritativeSourceId = '') {
+        const pool = this.dbManager?.pool;
+        if (!pool || typeof pool.query !== 'function') {
+            const error = new Error('Duplicate maintenance is available only on the PostgreSQL server');
+            error.statusCode = 409;
+            throw error;
+        }
+
+        const sourceId = String(authoritativeSourceId || '').trim();
+        const fingerprintSql = this.getReconciliationBusinessFingerprintSql('r');
+        const [sourceResult, summaryResult, sampleResult] = await Promise.all([
+            pool.query(`
+                SELECT
+                    COALESCE(NULLIF(sync_source_id, ''), '<legacy>') AS source_id,
+                    COUNT(*)::int AS row_count,
+                    COUNT(DISTINCT reconciliation_number)::int AS number_count,
+                    MIN(id)::int AS min_id,
+                    MAX(id)::int AS max_id
+                FROM reconciliations
+                GROUP BY COALESCE(NULLIF(sync_source_id, ''), '<legacy>')
+                ORDER BY row_count DESC, source_id
+            `),
+            pool.query(`
+                WITH fingerprinted AS (
+                    SELECT
+                        r.id,
+                        r.reconciliation_number,
+                        r.sync_source_id,
+                        ${fingerprintSql} AS business_hash
+                    FROM reconciliations r
+                ),
+                exact_groups AS (
+                    SELECT
+                        business_hash,
+                        COUNT(*)::int AS copies,
+                        COUNT(*) FILTER (WHERE sync_source_id = $1)::int AS authoritative_copies
+                    FROM fingerprinted
+                    GROUP BY business_hash
+                    HAVING COUNT(*) > 1
+                ),
+                number_groups AS (
+                    SELECT
+                        reconciliation_number,
+                        COUNT(*)::int AS copies,
+                        COUNT(DISTINCT business_hash)::int AS business_versions
+                    FROM fingerprinted
+                    WHERE reconciliation_number IS NOT NULL
+                    GROUP BY reconciliation_number
+                    HAVING COUNT(*) > 1
+                )
+                SELECT
+                    (SELECT COUNT(*)::int FROM reconciliations) AS total_rows,
+                    (SELECT COUNT(DISTINCT reconciliation_number)::int FROM reconciliations) AS unique_numbers,
+                    (SELECT COUNT(*)::int FROM exact_groups) AS exact_duplicate_groups,
+                    (SELECT COALESCE(SUM(copies - 1), 0)::int FROM exact_groups) AS exact_extra_rows,
+                    (SELECT COUNT(*)::int FROM number_groups WHERE business_versions > 1) AS conflicting_number_groups,
+                    (SELECT COUNT(*)::int FROM exact_groups WHERE authoritative_copies = 1) AS repairable_groups,
+                    (SELECT COALESCE(SUM(copies - 1), 0)::int FROM exact_groups WHERE authoritative_copies = 1) AS repairable_rows,
+                    (SELECT COUNT(*)::int FROM exact_groups WHERE authoritative_copies <> 1) AS skipped_ambiguous_groups
+            `, [sourceId]),
+            pool.query(`
+                WITH fingerprinted AS (
+                    SELECT
+                        r.id,
+                        r.reconciliation_number,
+                        r.reconciliation_date,
+                        r.sync_source_id,
+                        r.source_row_id,
+                        ${fingerprintSql} AS business_hash
+                    FROM reconciliations r
+                )
+                SELECT
+                    business_hash,
+                    MIN(reconciliation_number)::int AS reconciliation_number,
+                    COUNT(*)::int AS copies,
+                    ARRAY_AGG(id ORDER BY id) AS ids,
+                    ARRAY_AGG(COALESCE(NULLIF(sync_source_id, ''), '<legacy>') ORDER BY id) AS source_ids,
+                    ARRAY_AGG(source_row_id ORDER BY id) AS source_row_ids
+                FROM fingerprinted
+                GROUP BY business_hash
+                HAVING COUNT(*) > 1
+                ORDER BY MIN(reconciliation_number) NULLS LAST
+                LIMIT 20
+            `)
+        ]);
+
+        return {
+            authoritative_source_id: sourceId || null,
+            ...summaryResult.rows[0],
+            sources: sourceResult.rows,
+            sample: sampleResult.rows
+        };
+    }
+
+    async handleAuditReconciliationDuplicates(res, query = {}) {
+        try {
+            const audit = await this.auditReconciliationDuplicates(query.authoritative_source_id);
+            this.sendJson(res, { success: true, audit });
+        } catch (error) {
+            console.error('❌ [MAINTENANCE] Duplicate audit failed:', error);
+            this.sendJson(res, { success: false, error: error.message }, { statusCode: error.statusCode || 500 });
+        }
+    }
+
+    async handleRepairReconciliationDuplicates(req, res) {
+        const pool = this.dbManager?.pool;
+        let client = null;
+        try {
+            if (!pool || typeof pool.connect !== 'function') {
+                const error = new Error('Duplicate maintenance is available only on the PostgreSQL server');
+                error.statusCode = 409;
+                throw error;
+            }
+
+            const input = await this.readJsonBody(req, {
+                maxBytes: DEFAULT_JSON_BODY_LIMIT_BYTES,
+                routeLabel: '/api/maintenance/reconciliation-duplicates/repair payload'
+            });
+            const sourceId = String(input?.authoritative_source_id || '').trim();
+            const expectedGroups = Number(input?.expected_duplicate_groups);
+            const confirmation = String(input?.confirmation || '').trim();
+
+            if (!/^[A-Za-z0-9._:-]{8,160}$/.test(sourceId)) {
+                const error = new Error('A valid authoritative source id is required');
+                error.statusCode = 400;
+                throw error;
+            }
+            if (!Number.isInteger(expectedGroups) || expectedGroups <= 0) {
+                const error = new Error('A positive expected duplicate group count is required');
+                error.statusCode = 400;
+                throw error;
+            }
+            if (confirmation !== 'REPAIR_EXACT_SYNC_DUPLICATES') {
+                const error = new Error('Explicit duplicate repair confirmation is required');
+                error.statusCode = 400;
+                throw error;
+            }
+
+            client = await pool.connect();
+            await client.query('BEGIN');
+            await client.query("SELECT pg_advisory_xact_lock(hashtext('tasfiya-reconciliation-dedupe-v1'))");
+
+            const fingerprintSql = this.getReconciliationBusinessFingerprintSql('r');
+            const candidatesResult = await client.query(`
+                WITH fingerprinted AS (
+                    SELECT
+                        r.id,
+                        r.sync_source_id,
+                        ${fingerprintSql} AS business_hash
+                    FROM reconciliations r
+                ),
+                repairable_groups AS (
+                    SELECT business_hash
+                    FROM fingerprinted
+                    GROUP BY business_hash
+                    HAVING COUNT(*) > 1
+                       AND COUNT(*) FILTER (WHERE sync_source_id = $1) = 1
+                ),
+                ranked AS (
+                    SELECT
+                        f.id,
+                        f.business_hash,
+                        ROW_NUMBER() OVER (
+                            PARTITION BY f.business_hash
+                            ORDER BY CASE WHEN f.sync_source_id = $1 THEN 0 ELSE 1 END, f.id
+                        ) AS keep_rank
+                    FROM fingerprinted f
+                    INNER JOIN repairable_groups g ON g.business_hash = f.business_hash
+                )
+                SELECT id::int, business_hash
+                FROM ranked
+                WHERE keep_rank > 1
+                ORDER BY id
+            `, [sourceId]);
+
+            const duplicateIds = candidatesResult.rows.map((row) => Number(row.id));
+            const actualGroups = new Set(candidatesResult.rows.map((row) => row.business_hash)).size;
+            if (actualGroups !== expectedGroups) {
+                const error = new Error(`Duplicate set changed: expected ${expectedGroups} groups but found ${actualGroups}`);
+                error.statusCode = 409;
+                throw error;
+            }
+            if (duplicateIds.length === 0) {
+                const error = new Error('No repairable duplicate rows were found');
+                error.statusCode = 409;
+                throw error;
+            }
+
+            const operationId = crypto.randomUUID();
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS sync_duplicate_repair_backups (
+                    operation_id TEXT NOT NULL,
+                    table_name TEXT NOT NULL,
+                    row_id BIGINT NOT NULL,
+                    row_data JSONB NOT NULL,
+                    backed_up_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (operation_id, table_name, row_id)
+                )
+            `);
+
+            const candidateTables = [
+                'reconciliations',
+                'cash_receipts',
+                'bank_receipts',
+                'postpaid_sales',
+                'customer_receipts',
+                'return_invoices',
+                'suppliers',
+                'cashbox_vouchers'
+            ];
+            const availableResult = await client.query(`
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = current_schema()
+                  AND table_name = ANY($1::text[])
+            `, [candidateTables]);
+            const availableTables = new Set(availableResult.rows.map((row) => row.table_name));
+            let backupRows = 0;
+
+            for (const tableName of candidateTables) {
+                if (!availableTables.has(tableName)) continue;
+                const foreignKeyColumn = tableName === 'reconciliations'
+                    ? 'id'
+                    : (tableName === 'cashbox_vouchers' ? 'source_reconciliation_id' : 'reconciliation_id');
+                const backupResult = await client.query(`
+                    INSERT INTO sync_duplicate_repair_backups (
+                        operation_id, table_name, row_id, row_data
+                    )
+                    SELECT $1, $2, t.id, to_jsonb(t)
+                    FROM ${tableName} t
+                    WHERE t.${foreignKeyColumn} = ANY($3::int[])
+                    ON CONFLICT DO NOTHING
+                `, [operationId, tableName, duplicateIds]);
+                backupRows += backupResult.rowCount || 0;
+            }
+
+            if (availableTables.has('cashbox_vouchers')) {
+                await client.query(
+                    'DELETE FROM cashbox_vouchers WHERE source_reconciliation_id = ANY($1::int[])',
+                    [duplicateIds]
+                );
+            }
+            const deleteResult = await client.query(
+                'DELETE FROM reconciliations WHERE id = ANY($1::int[])',
+                [duplicateIds]
+            );
+            if ((deleteResult.rowCount || 0) !== duplicateIds.length) {
+                throw new Error(`Repair deleted ${deleteResult.rowCount || 0} of ${duplicateIds.length} expected rows`);
+            }
+
+            await client.query('COMMIT');
+            client.release();
+            client = null;
+
+            const audit = await this.auditReconciliationDuplicates(sourceId);
+            this.sendJson(res, {
+                success: true,
+                operation_id: operationId,
+                deleted_reconciliations: deleteResult.rowCount || 0,
+                backup_rows: backupRows,
+                audit
+            });
+        } catch (error) {
+            if (client) {
+                try { await client.query('ROLLBACK'); } catch (_rollbackError) {}
+                client.release();
+            }
+            console.error('❌ [MAINTENANCE] Duplicate repair failed:', error);
+            this.sendJson(res, { success: false, error: error.message }, { statusCode: error.statusCode || 500 });
         }
     }
 
