@@ -144,6 +144,7 @@
                     <i class="fas fa-clipboard-check icon-wrapper"></i>
                     <div class="stat-label">التصفيات</div>
                     <div class="stat-value" id="statsTotalCount">0</div>
+                    <div class="small mt-2 opacity-75" id="statsSequenceHealth"></div>
                 </div>
             </div>
             <div class="col-6 col-lg-3">
@@ -639,6 +640,31 @@
             document.getElementById('statsTotalReceipts').textContent = formatCurrency(stats.totalReceipts);
             document.getElementById('statsTotalSales').textContent = formatCurrency(stats.totalSales);
             document.getElementById('statsTotalCash').textContent = formatCurrency(stats.totalCash);
+            renderSequenceHealth(stats.sequence);
+        }
+
+        function renderSequenceHealth(sequence) {
+            const el = document.getElementById('statsSequenceHealth');
+            if (!el) return;
+            if (!sequence || !sequence.maxNumber) {
+                el.textContent = '';
+                el.className = 'small mt-2 opacity-75';
+                return;
+            }
+
+            const issues = [];
+            if (sequence.missingCount > 0) {
+                const preview = (sequence.missingNumbers || []).join('، ');
+                issues.push(`ناقص ${sequence.missingCount}${preview ? `: ${preview}` : ''}`);
+            }
+            if (sequence.unnumberedCount > 0) {
+                issues.push(`بلا رقم ${sequence.unnumberedCount}`);
+            }
+
+            el.textContent = issues.length > 0
+                ? `آخر رقم ${formatNum(sequence.maxNumber)} | ${issues.join(' | ')}`
+                : `آخر رقم ${formatNum(sequence.maxNumber)} | التسلسل سليم`;
+            el.className = `small mt-2 ${issues.length > 0 ? 'text-warning' : 'text-success'}`;
         }
 
         function renderTable(data) {

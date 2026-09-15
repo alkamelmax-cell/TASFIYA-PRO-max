@@ -1335,11 +1335,45 @@ class LocalWebServer {
                 FROM filtered_reconciliations
             `).get(params);
 
+            const hasSequenceFilter = Boolean(
+                query.dateFrom
+                || query.dateTo
+                || (query.cashierId && query.cashierId !== 'all')
+                || (query.branchId && query.branchId !== 'all')
+                || (query.status && query.status !== 'all')
+            );
+            let sequence = null;
+            if (!hasSequenceFilter) {
+                const sequenceRows = await this.dbManager.db.prepare(`
+                    SELECT r.reconciliation_number
+                    FROM reconciliations r
+                    LEFT JOIN cashiers c ON r.cashier_id = c.id
+                    LEFT JOIN accountants a ON r.accountant_id = a.id
+                    ${whereClause}
+                `).all(params);
+                const numbers = sequenceRows
+                    .map(row => Number.parseInt(row.reconciliation_number, 10))
+                    .filter(number => Number.isFinite(number) && number > 0);
+                const numberSet = new Set(numbers);
+                const maxNumber = numbers.length > 0 ? Math.max(...numbers) : 0;
+                const missingNumbers = [];
+                for (let number = 1; number <= maxNumber; number += 1) {
+                    if (!numberSet.has(number)) missingNumbers.push(number);
+                }
+                sequence = {
+                    maxNumber,
+                    missingCount: missingNumbers.length,
+                    missingNumbers: missingNumbers.slice(0, 25),
+                    unnumberedCount: sequenceRows.length - numbers.length
+                };
+            }
+
             const result = {
                 count: parseNumericDbValue(statsRow?.count, 0),
                 totalReceipts: parseNumericDbValue(statsRow?.total_receipts, 0),
                 totalSales: parseNumericDbValue(statsRow?.total_sales, 0),
-                totalCash: parseNumericDbValue(statsRow?.total_cash, 0)
+                totalCash: parseNumericDbValue(statsRow?.total_cash, 0),
+                sequence
             };
 
             this.sendJson(res, { success: true, stats: result });
