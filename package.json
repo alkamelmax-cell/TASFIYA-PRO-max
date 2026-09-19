@@ -3,7 +3,7 @@
   "_copyright": "🧾 تطبيق: تصفية برو | 🛠️ المطور: محمد أمين الكامل | 🗓️ سنة: 2025 | 📌 جميع الحقوق محفوظة | يمنع الاستخدام أو التعديل دون إذن كتابي",
   "_comment2": "===================================================",
   "name": "casher",
-  "version": "6.1.0",
+  "version": "6.1.1",
   "description": "تصفية برو - Professional Reconciliation System with Canonical Customer & Supplier Identity v6.1.0",
   "main": "src/main.js",
   "scripts": {

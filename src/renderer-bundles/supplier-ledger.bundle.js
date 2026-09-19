@@ -6,16 +6,16 @@
     "src/renderer-ipc.js": function rendererModule(module, exports, require) {
       (function initializeRendererIpc(root, factory) {
           const globalRoot = root && typeof root === 'object'
-              ? roo
+              ? root
               : (typeof globalThis !== 'undefined' ? globalThis : {});
-
+      
           const rendererIpc = factory(globalRoot);
-
+      
           if (typeof module !== 'undefined' && module.exports) {
               module.exports = rendererIpc;
               module.exports.createRendererIpcBridge = factory;
           }
-
+      
           if (globalRoot && typeof globalRoot === 'object') {
               globalRoot.RendererIPC = rendererIpc;
           }
@@ -23,7 +23,7 @@
           const requireFn = typeof options.requireFn === 'function'
               ? options.requireFn
               : (typeof require === 'function' ? require : null);
-
+      
           function resolveTransport() {
               const preloadIpc = root?.electronAPI?.ipc;
               if (preloadIpc && typeof preloadIpc.invoke === 'function') {
@@ -32,7 +32,7 @@
                       transport: 'preload'
                   };
               }
-
+      
               if (typeof requireFn === 'function') {
                   try {
                       const electronModule = requireFn('electron');
@@ -50,19 +50,19 @@
                       };
                   }
               }
-
+      
               return {
                   ipc: null,
                   transport: 'unavailable'
               };
           }
-
+      
           const resolved = resolveTransport();
-
+      
           function createUnavailableError(methodName) {
               return new Error(`IPC bridge unavailable for ${methodName}`);
           }
-
+      
           return {
               transport: resolved.transport,
               isSecureBridge: resolved.transport === 'preload',
@@ -72,30 +72,30 @@
                   if (!resolved.ipc || typeof resolved.ipc.invoke !== 'function') {
                       return Promise.reject(createUnavailableError('invoke'));
                   }
-
+      
                   return resolved.ipc.invoke(channel, ...args);
               },
               send(channel, ...args) {
                   if (!resolved.ipc || typeof resolved.ipc.send !== 'function') {
                       throw createUnavailableError('send');
                   }
-
+      
                   return resolved.ipc.send(channel, ...args);
               }
           };
       }));
-
+      
     },
     "src/supplier-ledger.js": function rendererModule(module, exports, require) {
       // ===================================================
       // 🏪 Supplier Ledger
       // ===================================================
-
+      
       (() => {
         const ledgerIpc = typeof window !== 'undefined' && window.RendererIPC
           ? window.RendererIPC
           : require('./renderer-ipc');
-
+      
         let printManager = null;
         let supplierLedgerLoadPromise = null;
         let supplierLedgerLoadSequence = 0;
@@ -112,10 +112,10 @@
           supplierName: '',
           forcedBranchId: ''
         };
-
+      
         function initializeSupplierLedger() {
           attachSupplierLedgerEventListeners();
-
+      
           window.loadSupplierLedger = loadSupplierLedger;
           window.loadSupplierLedgerFilters = loadSupplierLedgerFilters;
           window.showSupplierStatement = showSupplierStatement;
@@ -128,7 +128,7 @@
           window.renameSupplierNameInLedger = renameSupplierNameInLedger;
           window.undoLastSupplierMergeInLedger = undoLastSupplierMergeInLedger;
         }
-
+      
         async function initializePrintManager() {
           try {
             printManager = await ledgerIpc.invoke('get-print-manager');
@@ -137,13 +137,13 @@
             console.warn('[SUPPLIER-LEDGER] get-print-manager failed:', error && error.message ? error.message : error);
           }
         }
-
+      
         function mapSupplierLedgerDbError(error, fallback = 'خطأ غير معروف') {
           const message = String(error && error.message ? error.message : error || '').trim();
           if (!message) {
             return fallback;
           }
-
+      
           if (message.includes('manual_supplier_transactions_invalid_data')) {
             return 'بيانات حركة المورد غير صالحة. تأكد من الاسم ونوع الحركة والمبلغ.';
           }
@@ -156,55 +156,55 @@
           if (message.includes('SQLITE_CONSTRAINT')) {
             return 'فشلت العملية بسبب قيد سلامة البيانات.';
           }
-
+      
           return message;
         }
-
+      
         function attachSupplierLedgerEventListeners() {
           const searchBtn = document.getElementById('supplierLedgerSearchBtn');
           if (searchBtn) {
             searchBtn.addEventListener('click', () => loadSupplierLedger());
           }
-
+      
           const clearBtn = document.getElementById('supplierLedgerClearBtn');
           if (clearBtn) {
             clearBtn.addEventListener('click', handleSupplierLedgerClear);
           }
-
+      
           const onlyBalance = document.getElementById('supplierLedgerOnlyWithBalance');
           if (onlyBalance) {
             onlyBalance.addEventListener('change', () => loadSupplierLedger());
           }
-
+      
           const branchFilter = document.getElementById('supplierLedgerBranchFilter');
           if (branchFilter) {
             branchFilter.addEventListener('change', () => loadSupplierLedger());
           }
-
+      
           const mergeSelectedBtn = document.getElementById('supplierLedgerMergeSelectedBtn');
           if (mergeSelectedBtn) {
             mergeSelectedBtn.addEventListener('click', () => mergeSelectedSuppliersInLedger());
           }
-
+      
           const undoMergeBtn = document.getElementById('supplierLedgerUndoMergeBtn');
           if (undoMergeBtn) {
             undoMergeBtn.addEventListener('click', () => undoLastSupplierMergeInLedger());
           }
-
+      
           const clearSelectionBtn = document.getElementById('supplierLedgerClearSelectionBtn');
           if (clearSelectionBtn) {
             clearSelectionBtn.addEventListener('click', () => {
               clearSupplierLedgerSelection();
             });
           }
-
+      
           const selectAll = document.getElementById('supplierLedgerSelectAll');
           if (selectAll) {
             selectAll.addEventListener('change', (event) => {
               toggleSupplierLedgerSelectAll(!!event?.target?.checked);
             });
           }
-
+      
           const tableBody = document.getElementById('supplierLedgerTable');
           if (tableBody) {
             tableBody.addEventListener('change', (event) => {
@@ -212,25 +212,25 @@
               if (!target || !target.classList?.contains('supplier-ledger-select-checkbox')) {
                 return;
               }
-
+      
               const selectionKey = String(target.dataset.selectionKey || '');
               if (!selectionKey) {
                 return;
               }
-
+      
               if (target.checked) {
                 selectedSupplierMergeKeys.add(selectionKey);
               } else {
                 selectedSupplierMergeKeys.delete(selectionKey);
               }
-
+      
               updateSupplierLedgerSelectionUi();
             });
           }
-
+      
           updateSupplierLedgerSelectionUi();
         }
-
+      
         async function loadSupplierLedgerFilters(options = {}) {
           await ensureManualSupplierTable();
           const forceReload = !!options.forceReload;
@@ -238,7 +238,7 @@
           if (!branchFilter) {
             return;
           }
-
+      
           try {
             const selectedValue = branchFilter.value || '';
             if (!forceReload && supplierLedgerBranchesLoaded && branchFilter.options.length > 1) {
@@ -247,12 +247,12 @@
               }
               return;
             }
-
+      
             const branches = await ledgerIpc.invoke(
               'db-query',
               'SELECT * FROM branches WHERE is_active = 1 ORDER BY branch_name'
             );
-
+      
             const placeholder = branchFilter.querySelector('option[value=""]');
             branchFilter.innerHTML = '';
             if (placeholder) {
@@ -263,24 +263,24 @@
               fallbackPlaceholder.textContent = 'جميع الفروع';
               branchFilter.appendChild(fallbackPlaceholder);
             }
-
+      
             (branches || []).forEach((branch) => {
               const option = document.createElement('option');
               option.value = String(branch.id);
               option.textContent = branch.branch_name || `فرع ${branch.id}`;
               branchFilter.appendChild(option);
             });
-
+      
             if (selectedValue && Array.from(branchFilter.options).some((opt) => opt.value === selectedValue)) {
               branchFilter.value = selectedValue;
             }
-
+      
             supplierLedgerBranchesLoaded = true;
           } catch (error) {
             console.error('Error loading branches for supplier ledger:', error);
           }
         }
-
+      
         function getSupplierLedgerFilters() {
           return {
             branchId: (document.getElementById('supplierLedgerBranchFilter')?.value || '').trim(),
@@ -290,23 +290,23 @@
             onlyWithBalance: !!document.getElementById('supplierLedgerOnlyWithBalance')?.checked
           };
         }
-
+      
         function handleSupplierLedgerClear() {
           const nameInput = document.getElementById('supplierLedgerSearchName');
           const dateFrom = document.getElementById('supplierLedgerDateFrom');
           const dateTo = document.getElementById('supplierLedgerDateTo');
           const onlyBalance = document.getElementById('supplierLedgerOnlyWithBalance');
-
+      
           if (nameInput) nameInput.value = '';
           if (dateFrom) dateFrom.value = '';
           if (dateTo) dateTo.value = '';
           if (onlyBalance) onlyBalance.checked = false;
           selectedSupplierMergeKeys.clear();
           updateSupplierLedgerSelectionUi();
-
+      
           loadSupplierLedger();
         }
-
+      
         function buildSupplierLedgerPeriodLabel(filters) {
           const from = filters?.dateFrom || '';
           const to = filters?.dateTo || '';
@@ -315,63 +315,63 @@
           if (to) return `الفترة: حتى ${to}`;
           return 'الفترة: كل الفترات';
         }
-
+      
         function updateSupplierLedgerSummaryCards(rows, filters) {
           const totalInvoicesEl = document.getElementById('supplierLedgerTotalInvoicesPeriod');
           const totalPaymentsEl = document.getElementById('supplierLedgerTotalPaymentsPeriod');
           const netBalanceEl = document.getElementById('supplierLedgerNetBalancePeriod');
           const periodEl = document.getElementById('supplierLedgerSummaryPeriod');
-
+      
           if (!totalInvoicesEl || !totalPaymentsEl || !netBalanceEl) {
             return;
           }
-
+      
           const fmt = getCurrencyFormatter();
           const safeRows = Array.isArray(rows) ? rows : [];
-
+      
           const totals = safeRows.reduce((acc, row) => {
             acc.invoices += Number(row?.total_invoices || 0);
             acc.payments += Number(row?.total_payments || 0);
             acc.net += Number(row?.balance || 0);
             return acc;
           }, { invoices: 0, payments: 0, net: 0 });
-
+      
           totalInvoicesEl.textContent = fmt(totals.invoices);
           totalPaymentsEl.textContent = fmt(totals.payments);
           netBalanceEl.textContent = fmt(totals.net);
-
+      
           netBalanceEl.classList.remove('text-success', 'text-deficit');
           if (totals.net > 0) {
             netBalanceEl.classList.add('text-deficit');
           } else if (totals.net < 0) {
             netBalanceEl.classList.add('text-success');
           }
-
+      
           if (periodEl) {
             periodEl.textContent = buildSupplierLedgerPeriodLabel(filters || getSupplierLedgerFilters());
           }
         }
-
+      
         function buildSupplierLedgerQuery(filters) {
           let reconciledDateFilter = '';
           let manualDateFilter = '';
           const dateParamsReconciled = [];
           const dateParamsManual = [];
-
+      
           if (filters.dateFrom) {
             reconciledDateFilter += ' AND DATE(COALESCE(r.reconciliation_date, s.created_at)) >= DATE(?)';
             manualDateFilter += ' AND DATE(mst.created_at) >= DATE(?)';
             dateParamsReconciled.push(filters.dateFrom);
             dateParamsManual.push(filters.dateFrom);
           }
-
+      
           if (filters.dateTo) {
             reconciledDateFilter += ' AND DATE(COALESCE(r.reconciliation_date, s.created_at)) <= DATE(?)';
             manualDateFilter += ' AND DATE(mst.created_at) <= DATE(?)';
             dateParamsReconciled.push(filters.dateTo);
             dateParamsManual.push(filters.dateTo);
           }
-
+      
           let reconciledBranchFilter = '';
           let manualBranchFilter = '';
           const branchParamsReconciled = [];
@@ -382,14 +382,14 @@
             branchParamsReconciled.push(filters.branchId);
             branchParamsManual.push(filters.branchId);
           }
-
+      
           let nameFilter = '';
           const nameParams = [];
           if (filters.name) {
             nameFilter = ' AND t_supplier LIKE ?';
             nameParams.push(`%${filters.name}%`);
           }
-
+      
           const subReconciled = `
             SELECT
               s.supplier_name AS t_supplier,
@@ -404,7 +404,7 @@
             LEFT JOIN branches b ON b.id = c.branch_id
             WHERE 1=1 ${reconciledDateFilter} ${reconciledBranchFilter}
           `;
-
+      
           const subManual = `
             SELECT
               mst.supplier_name AS t_supplier,
@@ -416,11 +416,11 @@
               mst.created_at AS t_created,
               COALESCE(mst.branch_id, 0) AS t_branch_id,
               COALESCE(b.branch_name, 'غير محدد') AS t_branch_name
-            FROM manual_supplier_transactions ms
+            FROM manual_supplier_transactions mst
             LEFT JOIN branches b ON b.id = mst.branch_id
             WHERE 1=1 ${manualDateFilter} ${manualBranchFilter}
           `;
-
+      
           const unioned = `
             SELECT * FROM (
               ${subReconciled}
@@ -429,11 +429,11 @@
             ) tx
             WHERE 1=1 ${nameFilter}
           `;
-
+      
           const havingPart = filters.onlyWithBalance
             ? 'HAVING ABS(COALESCE(SUM(t_amount), 0)) > 0.0001'
             : '';
-
+      
           const sql = `
             SELECT
               t_supplier AS supplier_name,
@@ -446,12 +446,12 @@
               MAX(t_date) AS last_tx_date
             FROM (
               ${unioned}
-            )
+            ) t
             GROUP BY t_supplier, t_branch_id, t_branch_name
             ${havingPart}
             ORDER BY branch_name ASC, balance DESC, supplier_name ASC
           `;
-
+      
           const params = [
             ...dateParamsReconciled,
             ...branchParamsReconciled,
@@ -459,37 +459,37 @@
             ...branchParamsManual,
             ...nameParams
           ];
-
+      
           return { sql, params };
         }
-
+      
         async function loadSupplierLedger() {
           await ensureManualSupplierTable();
           const tbody = document.getElementById('supplierLedgerTable');
           if (!tbody) return [];
-
+      
           const filters = getSupplierLedgerFilters();
           const currentSignature = JSON.stringify(filters);
-
+      
           if (supplierLedgerLoadPromise && currentSignature === lastSupplierLedgerFiltersSignature) {
             return supplierLedgerLoadPromise;
           }
-
+      
           lastSupplierLedgerFiltersSignature = currentSignature;
           const requestId = ++supplierLedgerLoadSequence;
           supplierLedgerRowsCache = [];
           tbody.innerHTML = '<tr><td colspan="9" class="text-center">جاري التحميل...</td></tr>';
           updateSupplierLedgerSelectionUi();
-
+      
           supplierLedgerLoadPromise = (async () => {
             try {
               const { sql, params } = buildSupplierLedgerQuery(filters);
               const rows = await ledgerIpc.invoke('db-query', sql, params);
-
+      
               if (requestId !== supplierLedgerLoadSequence) {
                 return rows || [];
               }
-
+      
               const safeRows = rows || [];
               supplierLedgerRowsCache = safeRows;
               syncSupplierLedgerSelectionWithRows();
@@ -502,7 +502,7 @@
               if (requestId !== supplierLedgerLoadSequence) {
                 return [];
               }
-
+      
               console.error('Error loading supplier ledger:', error);
               supplierLedgerRowsCache = [];
               syncSupplierLedgerSelectionWithRows();
@@ -517,19 +517,19 @@
               }
             }
           })();
-
+      
           return supplierLedgerLoadPromise;
         }
-
+      
         function renderSupplierLedgerTable(rows) {
           const tbody = document.getElementById('supplierLedgerTable');
           if (!tbody) return;
-
+      
           if (!rows || rows.length === 0) {
             tbody.innerHTML = '<tr><td colspan="9" class="text-center">لا توجد بيانات مطابقة</td></tr>';
             return;
           }
-
+      
           const fmt = getCurrencyFormatter();
           tbody.innerHTML = rows.map((row) => {
             const lastDate = row.last_tx_date ? escapeHtml(row.last_tx_date) : '-';
@@ -540,7 +540,7 @@
             return `
               <tr>
                 <td>
-                  <inpu
+                  <input
                     type="checkbox"
                     class="form-check-input supplier-ledger-select-checkbox"
                     data-selection-key="${escapeAttr(selectionKey)}"
@@ -566,47 +566,47 @@
             `;
           }).join('');
         }
-
+      
         function buildSupplierSelectionKey(supplierName, branchId) {
           const safeName = String(supplierName == null ? '' : supplierName);
           const safeBranchId = normalizeBranchId(branchId) || '0';
           return JSON.stringify({ name: safeName, branchId: safeBranchId });
         }
-
+      
         function syncSupplierLedgerSelectionWithRows() {
           const availableKeys = new Set(
             (supplierLedgerRowsCache || []).map((row) => buildSupplierSelectionKey(row?.supplier_name, row?.branch_id))
           );
-
+      
           selectedSupplierMergeKeys.forEach((key) => {
             if (!availableKeys.has(key)) {
               selectedSupplierMergeKeys.delete(key);
             }
           });
         }
-
+      
         function getSelectedSupplierRows() {
           if (!Array.isArray(supplierLedgerRowsCache) || supplierLedgerRowsCache.length === 0) {
             return [];
           }
-
+      
           return supplierLedgerRowsCache.filter((row) => {
             const key = buildSupplierSelectionKey(row?.supplier_name, row?.branch_id);
             return selectedSupplierMergeKeys.has(key);
           });
         }
-
+      
         function clearSupplierLedgerSelection() {
           selectedSupplierMergeKeys.clear();
-
+      
           const rowChecks = document.querySelectorAll('.supplier-ledger-select-checkbox');
           rowChecks.forEach((checkbox) => {
             checkbox.checked = false;
           });
-
+      
           updateSupplierLedgerSelectionUi();
         }
-
+      
         function toggleSupplierLedgerSelectAll(isChecked) {
           const visibleRows = Array.isArray(supplierLedgerRowsCache) ? supplierLedgerRowsCache : [];
           visibleRows.forEach((row) => {
@@ -617,15 +617,15 @@
               selectedSupplierMergeKeys.delete(key);
             }
           });
-
+      
           const rowChecks = document.querySelectorAll('.supplier-ledger-select-checkbox');
           rowChecks.forEach((checkbox) => {
             checkbox.checked = isChecked;
           });
-
+      
           updateSupplierLedgerSelectionUi();
         }
-
+      
         function updateSupplierLedgerSelectionUi() {
           const summaryEl = document.getElementById('supplierLedgerSelectionSummary');
           const mergeBtn = document.getElementById('supplierLedgerMergeSelectedBtn');
@@ -635,13 +635,13 @@
           const selectedRows = getSelectedSupplierRows();
           const totalRows = Array.isArray(supplierLedgerRowsCache) ? supplierLedgerRowsCache.length : 0;
           const selectedCount = selectedRows.length;
-
+      
           const selectedBranchSet = new Set(
             selectedRows.map((row) => normalizeBranchId(row?.branch_id) || '0')
           );
           const hasMixedBranches = selectedBranchSet.size > 1;
           const canMerge = selectedCount >= 2 && !hasMixedBranches;
-
+      
           if (summaryEl) {
             if (selectedCount === 0) {
               summaryEl.textContent = 'لم يتم تحديد أي مورد';
@@ -652,25 +652,25 @@
               summaryEl.textContent = `تم تحديد ${selectedCount} مورد لتوحيد الهوية - الفرع: ${branchLabel}`;
             }
           }
-
+      
           if (mergeBtn) {
             mergeBtn.disabled = !canMerge;
           }
-
+      
           if (undoBtn) {
             undoBtn.disabled = !latestUndoableSupplierMerge;
-            const createdAtText = latestUndoableSupplierMerge?.created_a
+            const createdAtText = latestUndoableSupplierMerge?.created_at
               ? formatMergeDateTime(latestUndoableSupplierMerge.created_at)
               : '';
             undoBtn.title = latestUndoableSupplierMerge
               ? `التراجع عن آخر توحيد (${createdAtText || 'بدون تاريخ'})`
               : 'لا توجد عملية توحيد متاحة للتراجع';
           }
-
+      
           if (clearBtn) {
             clearBtn.disabled = selectedCount === 0;
           }
-
+      
           if (selectAll) {
             if (totalRows === 0) {
               selectAll.checked = false;
@@ -685,7 +685,7 @@
             }
           }
         }
-
+      
         async function mergeSelectedSuppliersInLedger() {
           if (supplierMergeInProgress) {
             showErrorToast('عملية توحيد هوية الموردين قيد التنفيذ بالفعل');
@@ -713,7 +713,7 @@
               }];
             })).values()).filter((candidate) => candidate.displayName);
             if (candidates.length < 2) throw new Error('حدد سجلين مختلفين على الأقل للمورد');
-
+      
             const targetCandidate = await promptMergeTargetSupplierName(candidates);
             if (!targetCandidate) return;
             const rawTargetName = targetCandidate.rawName;
@@ -729,11 +729,11 @@
             });
             if (!confirmed) return;
             if (mergeButton) mergeButton.innerHTML = '<span class="spinner-border spinner-border-sm ms-1"></span> جارٍ توحيد الهوية...';
-
+      
             const mergeResult = await executeSupplierMergeTransaction(sourceNames, rawTargetName, normalizedBranchId);
             selectedSupplierMergeKeys.clear();
             await loadSupplierLedger();
-
+      
             const currentName = String(currentSupplierStatementContext?.supplierName || '');
             const currentBranch = normalizeBranchId(currentSupplierStatementContext?.forcedBranchId || '');
             const shouldRefreshStatement = currentBranch === normalizedBranchId
@@ -749,7 +749,7 @@
               }
               await refreshSupplierStatementData(targetName, normalizedBranchId);
             }
-
+      
             const changed = Number(mergeResult?.totalChanges || 0);
             showSuccessToast(`تم توحيد هوية الموردين بنجاح (${changed} حركة، ${Number(mergeResult?.aliasesRecorded || 0)} اسم بديل)`);
           } catch (error) {
@@ -763,23 +763,23 @@
             updateSupplierLedgerSelectionUi();
           }
         }
-
+      
         async function promptMergeTargetSupplierName(candidateNames) {
           const candidates = Array.isArray(candidateNames)
             ? candidateNames.filter((candidate) => normalizeSupplierDisplayName(candidate?.rawName).length > 0)
             : [];
-
+      
           if (candidates.length < 2) {
             return null;
           }
-
+      
           if (window.Swal) {
             const inputOptions = {};
             const fmt = getCurrencyFormatter();
             candidates.forEach((candidate, index) => {
               inputOptions[String(index)] = `${formatSupplierNameForSelection(candidate.rawName)} — ${candidate.movementsCount} حركة — الرصيد ${fmt(candidate.balance)}`;
             });
-
+      
             const result = await window.Swal.fire({
               title: 'أي سجل مورد سيبقى؟',
               html: '<div style="text-align:right;color:#55706a;line-height:1.7">اختر المورد الأساسي. ستُنقل إليه كل القيود، وسيُنظّف اسمه تلقائيًا من المسافات والمحارف المخفية.</div>',
@@ -795,18 +795,18 @@
                 return null;
               }
             });
-
+      
             if (!result.isConfirmed) {
               return null;
             }
-
+      
             const selectedIndex = Number.parseInt(String(result.value), 10);
             if (!Number.isFinite(selectedIndex) || selectedIndex < 0 || selectedIndex >= candidates.length) {
               return null;
             }
             return candidates[selectedIndex];
           }
-
+      
           const optionsText = candidates
             .map((candidate, index) => `${index + 1}) ${formatSupplierNameForSelection(candidate.rawName)}`)
             .join('\n');
@@ -819,13 +819,13 @@
           }
           return candidates[selectedIndex];
         }
-
+      
         async function buildSupplierMergePreview(sourceNames, targetName, branchId) {
           const [sourceTotals, targetTotals] = await Promise.all([
             fetchSupplierAggregateForNames(sourceNames, branchId),
             fetchSupplierAggregateForNames([targetName], branchId)
           ]);
-
+      
           return {
             source: sourceTotals,
             target: targetTotals,
@@ -836,7 +836,7 @@
             }
           };
         }
-
+      
         function formatSupplierNameForSelection(name) {
           const raw = String(name == null ? '' : name);
           const visible = normalizeSupplierDisplayName(raw) || raw || '(فارغ)';
@@ -845,19 +845,19 @@
           const hasInternalMultiSpaces = /\s{2,}/.test(raw.trim());
           const hasHiddenCharacters = /[\u200B-\u200D\u2060\uFEFF]/.test(raw);
           const notes = [];
-
+      
           if (hasLeading) notes.push('مسافة بالبداية');
           if (hasTrailing) notes.push('مسافة بالنهاية');
           if (hasInternalMultiSpaces) notes.push('مسافات داخلية متعددة');
           if (hasHiddenCharacters) notes.push('محارف مخفية');
-
+      
           if (notes.length === 0) {
             return visible;
           }
-
+      
           return `${visible} (${notes.join('، ')})`;
         }
-
+      
         function normalizeSupplierDisplayName(value) {
           return String(value == null ? '' : value)
             .normalize('NFKC')
@@ -865,14 +865,14 @@
             .replace(/\s+/g, ' ')
             .trim();
         }
-
+      
         async function fetchSupplierAggregateForNames(names, branchId) {
           const safeNames = Array.from(new Set(
             (Array.isArray(names) ? names : [])
               .map((name) => String(name == null ? '' : name))
               .filter((name) => name.trim().length > 0)
           ));
-
+      
           if (safeNames.length === 0) {
             return {
               movementsCount: 0,
@@ -881,7 +881,7 @@
               balance: 0
             };
           }
-
+      
           const normalizedBranchId = normalizeBranchId(branchId);
           const numericBranchId = normalizedBranchId ? Number(normalizedBranchId) : 0;
           const placeholders = safeNames.map(() => '?').join(', ');
@@ -891,26 +891,26 @@
               COALESCE(SUM(CASE WHEN amount >= 0 THEN amount ELSE 0 END), 0) AS total_invoices,
               COALESCE(SUM(CASE WHEN amount < 0 THEN ABS(amount) ELSE 0 END), 0) AS total_payments
             FROM (
-              SELECT -ABS(s.amount) AS amoun
+              SELECT -ABS(s.amount) AS amount
               FROM suppliers s
               LEFT JOIN reconciliations r ON r.id = s.reconciliation_id
               LEFT JOIN cashiers c ON c.id = r.cashier_id
               WHERE s.supplier_name IN (${placeholders})
                 AND COALESCE(c.branch_id, 0) = ?
-
+      
               UNION ALL
-
+      
               SELECT
                 CASE
                   WHEN mst.transaction_type = 'payment' THEN -ABS(mst.amount)
                   ELSE ABS(mst.amount)
-                END AS amoun
-              FROM manual_supplier_transactions ms
+                END AS amount
+              FROM manual_supplier_transactions mst
               WHERE mst.supplier_name IN (${placeholders})
                 AND COALESCE(mst.branch_id, 0) = ?
             ) tx
           `;
-
+      
           const params = [
             ...safeNames,
             numericBranchId,
@@ -928,7 +928,7 @@
             balance: totalInvoices - totalPayments
           };
         }
-
+      
         async function confirmSupplierMergeExecution({ sourceNames, targetName, branchLabel, preview }) {
           const fmt = getCurrencyFormatter();
           const mergedNamesLabel = Array.isArray(sourceNames) ? sourceNames.join(' + ') : '';
@@ -937,7 +937,7 @@
           const finalInvoices = Number(preview?.after?.totalInvoices || 0);
           const finalPayments = Number(preview?.after?.totalPayments || 0);
           const finalBalance = finalInvoices - finalPayments;
-
+      
           if (window.Swal) {
             const result = await window.Swal.fire({
               icon: 'warning',
@@ -967,17 +967,17 @@
             });
             return !!result.isConfirmed;
           }
-
+      
           return window.confirm(
             `سيتم توحيد هوية الموردين (${mergedNamesLabel}) في الحساب الأساسي (${targetName}) ضمن فرع (${branchLabel}). هل تريد المتابعة؟`
           );
         }
-
+      
         async function ensureSupplierLedgerMergeHistoryTable() {
           if (supplierLedgerMergeHistoryReady) {
             return;
           }
-
+      
           await ledgerIpc.invoke(
             'db-run',
             `CREATE TABLE IF NOT EXISTS ledger_merge_history (
@@ -1001,10 +1001,10 @@
           if (!Array.isArray(historyColumns) || !historyColumns.some((column) => column?.name === 'target_supplier_id')) {
             await ledgerIpc.invoke('db-run', 'ALTER TABLE ledger_merge_history ADD COLUMN target_supplier_id INTEGER DEFAULT 0');
           }
-
+      
           supplierLedgerMergeHistoryReady = true;
         }
-
+      
         function safeParseJson(value, fallback) {
           if (value == null || value === '') {
             return fallback;
@@ -1015,12 +1015,12 @@
             return fallback;
           }
         }
-
+      
         function normalizeMergeRowEntries(entries) {
           if (!Array.isArray(entries)) {
             return [];
           }
-
+      
           return entries
             .map((row) => {
               const id = Number(row?.id);
@@ -1037,7 +1037,7 @@
             })
             .filter((row) => !!row);
         }
-
+      
         function normalizeSupplierMergeAffectedRows(rawValue) {
           const raw = rawValue && typeof rawValue === 'object' ? rawValue : {};
           const supplierAccounts = (Array.isArray(raw.supplier_accounts) ? raw.supplier_accounts : [])
@@ -1060,12 +1060,12 @@
             supplier_accounts: supplierAccounts
           };
         }
-
+      
         function countSupplierMergeAffectedRows(affectedRows) {
           const normalized = normalizeSupplierMergeAffectedRows(affectedRows);
           return normalized.suppliers.length + normalized.manual_supplier_transactions.length + normalized.supplier_accounts.length;
         }
-
+      
         async function fetchLatestUndoableSupplierMerge() {
           await ensureSupplierLedgerMergeHistoryTable();
           const rows = await ledgerIpc.invoke(
@@ -1079,12 +1079,12 @@
              ORDER BY h.id DESC
              LIMIT 1`
           );
-
+      
           const row = Array.isArray(rows) ? rows[0] : null;
           if (!row) {
             return null;
           }
-
+      
           const sourceNames = Array.from(new Set(
             (safeParseJson(row.source_names_json, []) || [])
               .map((name) => String(name == null ? '' : name))
@@ -1093,7 +1093,7 @@
           const affectedRows = normalizeSupplierMergeAffectedRows(
             safeParseJson(row.affected_rows_json, {})
           );
-
+      
           return {
             id: Number(row.id || 0),
             branch_id: normalizeBranchId(row.branch_id) || '0',
@@ -1105,7 +1105,7 @@
             created_at: row.created_at || ''
           };
         }
-
+      
         async function refreshSupplierUndoMergeState() {
           try {
             latestUndoableSupplierMerge = await fetchLatestUndoableSupplierMerge();
@@ -1115,7 +1115,7 @@
           }
           updateSupplierLedgerSelectionUi();
         }
-
+      
         async function fetchSupplierMergeAffectedRows({ safeSourceNames, numericBranchId, placeholders }) {
           const suppliersRows = await ledgerIpc.invoke(
             'db-query',
@@ -1130,22 +1130,22 @@
                )`,
             [...safeSourceNames, numericBranchId]
           );
-
+      
           const manualRows = await ledgerIpc.invoke(
             'db-query',
             `SELECT mst.id AS id, mst.supplier_name AS old_name
-             FROM manual_supplier_transactions ms
+             FROM manual_supplier_transactions mst
              WHERE mst.supplier_name IN (${placeholders})
                AND COALESCE(mst.branch_id, 0) = ?`,
             [...safeSourceNames, numericBranchId]
           );
-
+      
           return normalizeSupplierMergeAffectedRows({
             suppliers: suppliersRows || [],
             manual_supplier_transactions: manualRows || []
           });
         }
-
+      
         async function recordSupplierMergeHistory({ numericBranchId, safeTargetName, safeSourceNames, affectedRows }) {
           await ensureSupplierLedgerMergeHistoryTable();
           const result = await ledgerIpc.invoke(
@@ -1162,7 +1162,7 @@
           );
           return Number(result?.lastInsertRowid || 0);
         }
-
+      
         async function executeSupplierMergeTransaction(sourceNames, targetName, branchId) {
           let timeoutId = null;
           const request = ledgerIpc.invoke('merge-suppliers-atomic', {
@@ -1181,13 +1181,13 @@
             if (timeoutId) clearTimeout(timeoutId);
           }
         }
-
+      
         async function revertSupplierNamesByRowId(tableName, columnName, entries, targetName, options = {}) {
           const safeEntries = normalizeMergeRowEntries(entries);
           if (safeEntries.length === 0) {
             return 0;
           }
-
+      
           const accountSetClause = options.restoreSupplierAccountId ? ', supplier_account_id = ?' : '';
           const extraSetClause = options.extraSetClause ? `, ${options.extraSetClause}` : '';
           let changed = 0;
@@ -1204,13 +1204,13 @@
           }
           return changed;
         }
-
+      
         async function rollbackSupplierMergeRecord(mergeRecord) {
           const recordId = Number(mergeRecord?.id || 0);
           if (!Number.isFinite(recordId) || recordId <= 0) {
             throw new Error('سجل الدمج غير صالح');
           }
-
+      
           const safeTargetName = String(mergeRecord?.target_name == null ? '' : mergeRecord.target_name);
           const affectedRows = normalizeSupplierMergeAffectedRows(mergeRecord?.affected_rows);
           const expectedRows = countSupplierMergeAffectedRows(affectedRows);
@@ -1218,7 +1218,7 @@
             throw new Error('لا توجد قيود محفوظة لفك هذا الدمج');
           }
           await ensureSupplierLedgerMergeHistoryTable();
-
+      
           await ledgerIpc.invoke('db-run', 'BEGIN TRANSACTION');
           let committed = false;
           try {
@@ -1236,7 +1236,7 @@
               safeTargetName,
               { restoreSupplierAccountId: true, extraSetClause: 'updated_at = CURRENT_TIMESTAMP' }
             );
-
+      
             let accountsRestored = 0;
             const targetSupplierId = Number(mergeRecord?.target_supplier_id || 0);
             for (const account of affectedRows.supplier_accounts) {
@@ -1255,12 +1255,12 @@
               );
               accountsRestored += Number(result?.changes || 0);
             }
-
+      
             const restoredTotal = suppliersRestored + manualRestored + accountsRestored;
             if (restoredTotal <= 0) {
               throw new Error('لا يمكن فك الدمج: لم يتم العثور على قيود مطابقة للحالة الحالية.');
             }
-
+      
             const skippedRows = Math.max(0, expectedRows - restoredTotal);
             const sourceAliases = Array.from(new Set((mergeRecord?.source_names || [])
               .map((name) => normalizeSupplierDisplayName(name))
@@ -1289,7 +1289,7 @@
               expected_rows: expectedRows,
               skipped_rows: skippedRows
             };
-
+      
             const markResult = await ledgerIpc.invoke(
               'db-run',
               `UPDATE ledger_merge_history
@@ -1302,7 +1302,7 @@
             if (Number(markResult?.changes || 0) <= 0) {
               throw new Error('تعذر تحديث حالة سجل الدمج');
             }
-
+      
             await ledgerIpc.invoke('db-run', 'COMMIT');
             committed = true;
             await refreshSupplierUndoMergeState();
@@ -1322,14 +1322,14 @@
             throw error;
           }
         }
-
+      
         async function confirmSupplierMergeUndoExecution(mergeRecord) {
           const sourceNames = Array.isArray(mergeRecord?.source_names) ? mergeRecord.source_names : [];
           const sourceLabel = sourceNames.length > 0 ? sourceNames.join(' + ') : '-';
           const affectedCount = countSupplierMergeAffectedRows(mergeRecord?.affected_rows);
           const branchLabel = mergeRecord?.branch_name || mergeRecord?.branch_id || 'غير محدد';
           const createdAt = formatMergeDateTime(mergeRecord?.created_at);
-
+      
           if (window.Swal) {
             const result = await window.Swal.fire({
               icon: 'warning',
@@ -1350,12 +1350,12 @@
             });
             return !!result.isConfirmed;
           }
-
+      
           return window.confirm(
             `سيتم فك آخر دمج للموردين (${sourceLabel}) من (${mergeRecord?.target_name || '-'}) بعدد قيود متوقع ${affectedCount}. هل تريد المتابعة؟`
           );
         }
-
+      
         async function undoLastSupplierMergeInLedger() {
           try {
             const mergeRecord = latestUndoableSupplierMerge || await fetchLatestUndoableSupplierMerge();
@@ -1364,16 +1364,16 @@
               await refreshSupplierUndoMergeState();
               return;
             }
-
+      
             const confirmed = await confirmSupplierMergeUndoExecution(mergeRecord);
             if (!confirmed) {
               return;
             }
-
+      
             const undoResult = await rollbackSupplierMergeRecord(mergeRecord);
             selectedSupplierMergeKeys.clear();
             await loadSupplierLedger();
-
+      
             const currentName = String(currentSupplierStatementContext?.supplierName || '');
             const currentBranch = normalizeBranchId(currentSupplierStatementContext?.forcedBranchId || '');
             const mergeBranch = normalizeBranchId(mergeRecord.branch_id);
@@ -1381,7 +1381,7 @@
             if (currentBranch === mergeBranch && impactedNames.has(currentName)) {
               await refreshSupplierStatementData(currentName, mergeBranch);
             }
-
+      
             const skippedText = undoResult.skippedRows > 0
               ? `، مع ${undoResult.skippedRows} قيد لم يتغير لأنه عُدّل بعد الدمج`
               : '';
@@ -1391,11 +1391,11 @@
             showErrorToast(`تعذر فك الدمج: ${mapSupplierLedgerDbError(error)}`);
           }
         }
-
+      
         async function renameSupplierNameInLedger(supplierName, branchId = '') {
           const oldName = String(supplierName == null ? '' : supplierName);
           if (!oldName.trim()) return;
-
+      
           try {
             await ensureManualSupplierTable();
             const normalizedBranchId = normalizeBranchId(branchId);
@@ -1409,7 +1409,7 @@
               showSuccessToast('لم يتم تغيير الاسم');
               return;
             }
-
+      
             const branchSupplierExists = await doesSupplierNameExistInBranch(normalizedNextName, numericBranchId);
             if (branchSupplierExists) {
               const confirmed = await confirmSupplierMerge(normalizedNextName);
@@ -1417,10 +1417,10 @@
                 return;
               }
             }
-
+      
             await executeSupplierMergeTransaction([oldName], normalizedNextName, numericBranchId);
             await loadSupplierLedger();
-
+      
             const currentContextName = String(currentSupplierStatementContext?.supplierName || '');
             const currentContextBranch = normalizeBranchId(currentSupplierStatementContext?.forcedBranchId || '');
             const canRefreshStatement = currentContextName === oldName
@@ -1436,14 +1436,14 @@
               }
               await refreshSupplierStatementData(normalizedNextName, normalizedBranchId);
             }
-
+      
             showSuccessToast('تم تعديل اسم المورد بنجاح');
           } catch (error) {
             console.error('Error renaming supplier name in ledger:', error);
             showErrorToast(`تعذر تعديل اسم المورد: ${mapSupplierLedgerDbError(error)}`);
           }
         }
-
+      
         async function renameSupplierNameInBranch(oldName, nextName, numericBranchId) {
           await ledgerIpc.invoke(
             'db-run',
@@ -1458,7 +1458,7 @@
                )`,
             [nextName, oldName, numericBranchId]
           );
-
+      
           await ledgerIpc.invoke(
             'db-run',
             `UPDATE manual_supplier_transactions
@@ -1468,7 +1468,7 @@
             [nextName, oldName, numericBranchId]
           );
         }
-
+      
         async function doesSupplierNameExistInBranch(name, numericBranchId) {
           const rows = await ledgerIpc.invoke(
             'db-query',
@@ -1484,7 +1484,7 @@
                +
                (CASE WHEN EXISTS (
                  SELECT 1
-                 FROM manual_supplier_transactions ms
+                 FROM manual_supplier_transactions mst
                  WHERE mst.supplier_name = ?
                    AND COALESCE(mst.branch_id, 0) = ?
                ) THEN 1 ELSE 0 END) AS total`,
@@ -1493,7 +1493,7 @@
           const total = Number(rows?.[0]?.total || 0);
           return total > 0;
         }
-
+      
         async function promptForSupplierRename(currentName) {
           if (window.Swal) {
             const result = await window.Swal.fire({
@@ -1517,7 +1517,7 @@
             }
             return normalizeSupplierDisplayName(result.value);
           }
-
+      
           const value = window.prompt('أدخل الاسم الجديد للمورد:', currentName);
           if (value == null) return null;
           const next = String(value).trim();
@@ -1531,7 +1531,7 @@
           }
           return next;
         }
-
+      
         async function confirmSupplierMerge(nextName) {
           if (window.Swal) {
             const result = await window.Swal.fire({
@@ -1546,34 +1546,34 @@
           }
           return window.confirm('الاسم موجود مسبقاً في نفس الفرع. المتابعة ستدمج الحركات. هل تريد الاستمرار؟');
         }
-
+      
         function buildSupplierStatementFilterSql(filters) {
           let reconciledSql = '';
           let manualSql = '';
           const reconciledParams = [];
           const manualParams = [];
-
+      
           if (filters.dateFrom) {
             reconciledSql += ' AND DATE(COALESCE(r.reconciliation_date, s.created_at)) >= DATE(?)';
             manualSql += ' AND DATE(mst.created_at) >= DATE(?)';
             reconciledParams.push(filters.dateFrom);
             manualParams.push(filters.dateFrom);
           }
-
+      
           if (filters.dateTo) {
             reconciledSql += ' AND DATE(COALESCE(r.reconciliation_date, s.created_at)) <= DATE(?)';
             manualSql += ' AND DATE(mst.created_at) <= DATE(?)';
             reconciledParams.push(filters.dateTo);
             manualParams.push(filters.dateTo);
           }
-
+      
           if (filters.branchId) {
             reconciledSql += ' AND c.branch_id = ?';
             manualSql += ' AND mst.branch_id = ?';
             reconciledParams.push(filters.branchId);
             manualParams.push(filters.branchId);
           }
-
+      
           return {
             reconciledSql,
             manualSql,
@@ -1581,7 +1581,7 @@
             manualParams
           };
         }
-
+      
         async function fetchSupplierStatementTransactions(supplierName, filters) {
           await ensureManualSupplierTable();
           const dateAndBranchFilter = buildSupplierStatementFilterSql(filters);
@@ -1601,16 +1601,16 @@
                 c.name AS cashier_name,
                 COALESCE(c.branch_id, 0) AS branch_id,
                 COALESCE(b.branch_name, 'غير محدد') AS branch_name,
-                NULL AS updated_a
+                NULL AS updated_at
               FROM suppliers s
               LEFT JOIN reconciliations r ON r.id = s.reconciliation_id
               LEFT JOIN cashiers c ON c.id = r.cashier_id
               LEFT JOIN branches b ON b.id = c.branch_id
               WHERE s.supplier_name = ?
               ${dateAndBranchFilter.reconciledSql}
-
+      
               UNION ALL
-
+      
               SELECT
                 mst.id AS row_id,
                 NULL AS reconciliation_id,
@@ -1631,25 +1631,25 @@
                 'إدخال يدوي' AS cashier_name,
                 COALESCE(mst.branch_id, 0) AS branch_id,
                 COALESCE(b.branch_name, 'غير محدد') AS branch_name,
-                mst.updated_at AS updated_a
-              FROM manual_supplier_transactions ms
+                mst.updated_at AS updated_at
+              FROM manual_supplier_transactions mst
               LEFT JOIN branches b ON b.id = mst.branch_id
               WHERE mst.supplier_name = ?
               ${dateAndBranchFilter.manualSql}
             ) tx
             ORDER BY tx_date DESC, created_at DESC
           `;
-
+      
           const params = [
             supplierName,
             ...dateAndBranchFilter.reconciledParams,
             supplierName,
             ...dateAndBranchFilter.manualParams
           ];
-
+      
           return ledgerIpc.invoke('db-query', sql, params);
         }
-
+      
         async function showSupplierStatement(supplierName, forcedBranchId = '') {
           try {
             const name = String(supplierName == null ? '' : supplierName);
@@ -1659,50 +1659,50 @@
               supplierName: name,
               forcedBranchId: normalizedBranchId
             };
-
+      
             const modalTitle = document.getElementById('supplierStatementTitle');
             if (modalTitle) {
               modalTitle.textContent = `كشف حساب المورد - ${name}`;
             }
-
+      
             const statementTable = document.getElementById('supplierStatementTable');
             if (statementTable) {
               statementTable.innerHTML = '<tr><td colspan="7" class="text-center">جاري تحميل الحركات...</td></tr>';
             }
-
+      
             setSupplierStatementTotals(0, 0, 0);
             setupSupplierStatementEvents(name, normalizedBranchId);
             openSupplierStatementModal();
-
+      
             await refreshSupplierStatementData(name, normalizedBranchId);
           } catch (error) {
             console.error('Error showing supplier statement:', error);
             showErrorToast('حدث خطأ أثناء تحميل كشف حساب المورد');
           }
         }
-
+      
         async function refreshSupplierStatementData(supplierName, forcedBranchId = '') {
           const name = String(supplierName == null ? '' : supplierName);
           if (!name.trim()) return;
-
+      
           const filters = getSupplierLedgerFilters();
           if (forcedBranchId) {
             filters.branchId = forcedBranchId;
           }
-
+      
           const transactions = await fetchSupplierStatementTransactions(name, filters);
           renderSupplierStatement(name, transactions || [], forcedBranchId);
         }
-
+      
         function renderSupplierStatement(supplierName, transactions, forcedBranchId = '') {
           const tbody = document.getElementById('supplierStatementTable');
           if (!tbody) {
             return;
           }
-
+      
           const fmt = getCurrencyFormatter();
           const allTx = Array.isArray(transactions) ? transactions : [];
-
+      
           let totalInvoices = 0;
           let totalPayments = 0;
           allTx.forEach((tx) => {
@@ -1713,7 +1713,7 @@
               totalPayments += Math.abs(amount);
             }
           });
-
+      
           let running = totalInvoices - totalPayments;
           const rowsHtml = allTx.map((tx) => {
             const amount = Number(tx.amount || 0);
@@ -1747,13 +1747,13 @@
                 </button>
               `;
             }
-
+      
             if (movementMeta.isInvoice) {
               running -= absoluteAmount;
             } else {
               running += absoluteAmount;
             }
-
+      
             return `
               <tr>
                 <td>${escapeHtml(tx.tx_date || tx.created_at || '')}</td>
@@ -1766,19 +1766,19 @@
               </tr>
             `;
           }).join('');
-
+      
           const balance = totalInvoices - totalPayments;
           setSupplierStatementTotals(totalInvoices, totalPayments, balance);
           tbody.innerHTML = rowsHtml || '<tr><td colspan="7" class="text-center">لا توجد حركات</td></tr>';
-
+      
           // Persist last viewed supplier for print action.
           window.currentStatementSupplier = supplierName;
         }
-
+      
         function closeSupplierStatementModal() {
           const modalEl = document.getElementById('supplierStatementModal');
           if (!modalEl) return;
-
+      
           if (window.bootstrap?.Modal) {
             const modal = window.bootstrap.Modal.getInstance(modalEl);
             if (modal) {
@@ -1786,19 +1786,19 @@
               return;
             }
           }
-
+      
           modalEl.classList.remove('show');
           modalEl.style.display = 'none';
           modalEl.setAttribute('aria-hidden', 'true');
         }
-
+      
         function activateReconciliationSectionFromLedger() {
           const reconciliationMenu = document.querySelector('a[data-section="reconciliation"]');
           if (reconciliationMenu && typeof reconciliationMenu.click === 'function') {
             reconciliationMenu.click();
             return;
           }
-
+      
           const targetSection = document.getElementById('reconciliation-section');
           if (targetSection) {
             document.querySelectorAll('.content-section').forEach((section) => {
@@ -1807,14 +1807,14 @@
             targetSection.classList.add('active');
           }
         }
-
+      
         async function openSupplierReconciliationFromStatement(reconciliationId) {
           const numericId = Number.parseInt(reconciliationId, 10);
           if (!Number.isFinite(numericId) || numericId <= 0) {
             showErrorToast('هذه الحركة غير مرتبطة بتصفية صالحة');
             return;
           }
-
+      
           try {
             if (typeof window.recallReconciliationFromId === 'function') {
               const recalled = await window.recallReconciliationFromId(numericId);
@@ -1825,25 +1825,25 @@
               activateReconciliationSectionFromLedger();
               return;
             }
-
+      
             if (typeof window.editReconciliationNew === 'function') {
               closeSupplierStatementModal();
               await window.editReconciliationNew(numericId);
               return;
             }
-
+      
             showErrorToast('تعذر فتح التصفية المرتبطة من هذه الشاشة');
           } catch (error) {
             console.error('Error opening reconciliation from supplier statement:', error);
             showErrorToast('حدث خطأ أثناء فتح التصفية المرتبطة');
           }
         }
-
+      
         function buildSupplierStatementReconciliationCell(tx, forcedBranchId = '') {
           const reconciliationId = Number(tx?.reconciliation_id || 0);
           const recLabel = tx?.rec_no != null ? `#${tx.rec_no}` : (reconciliationId > 0 ? `#${reconciliationId}` : '-');
           const cashierLabel = tx?.cashier_name ? ` - ${escapeHtml(tx.cashier_name)}` : '';
-
+      
           if (reconciliationId > 0 && tx?.source !== 'manual') {
             return `
               <button
@@ -1855,14 +1855,14 @@
               </button>${cashierLabel}
             `;
           }
-
+      
           return `${escapeHtml(recLabel)}${cashierLabel}`;
         }
-
+      
         function setupSupplierStatementEvents(supplierName, forcedBranchId = '') {
           resetManualSupplierForm();
           manualSupplierEditingContext = null;
-
+      
           const printBtn = document.getElementById('printSupplierStatementBtn');
           if (printBtn) {
             printBtn.replaceWith(printBtn.cloneNode(true));
@@ -1873,7 +1873,7 @@
               });
             }
           }
-
+      
           const addBtn = document.getElementById('addSupplierTransactionBtn');
           if (addBtn) {
             addBtn.replaceWith(addBtn.cloneNode(true));
@@ -1884,7 +1884,7 @@
               });
             }
           }
-
+      
           const cancelEditBtn = document.getElementById('cancelSupplierTransactionEditBtn');
           if (cancelEditBtn) {
             cancelEditBtn.replaceWith(cancelEditBtn.cloneNode(true));
@@ -1896,23 +1896,23 @@
             }
           }
         }
-
+      
         async function addManualSupplierTransaction(supplierName, forcedBranchId = '') {
           try {
             await ensureManualSupplierTable();
             const name = String(supplierName == null ? '' : supplierName);
             if (!name.trim()) return;
-
+      
             const typeEl = document.getElementById('newSupplierTransactionType');
             const amountEl = document.getElementById('newSupplierTransactionAmount');
             const refEl = document.getElementById('newSupplierTransactionRef');
             const notesEl = document.getElementById('newSupplierTransactionNotes');
-
+      
             const transactionType = (typeEl?.value || '').trim();
             const amount = Number.parseFloat(amountEl?.value || '0');
             const referenceNo = (refEl?.value || '').trim();
             const notes = (notesEl?.value || '').trim();
-
+      
             if (!['invoice', 'payment'].includes(transactionType)) {
               showSupplierTransactionAlert('نوع الحركة غير صالح', 'danger');
               return;
@@ -1921,7 +1921,7 @@
               showSupplierTransactionAlert('الرجاء إدخال مبلغ صحيح أكبر من صفر', 'danger');
               return;
             }
-
+      
             const selectedBranchId = normalizeBranchId(
               forcedBranchId
                 || manualSupplierEditingContext?.forcedBranchId
@@ -1931,7 +1931,7 @@
             const createdAt = new Date().toISOString();
             const editingId = manualSupplierEditingContext?.id || null;
             const targetSupplierName = manualSupplierEditingContext?.supplierName || name;
-
+      
             if (editingId) {
               await ledgerIpc.invoke(
                 'db-run',
@@ -1963,16 +1963,16 @@
                   notes || null,
                   selectedBranchId ? Number(selectedBranchId) : null,
                   createdAt,
-                  createdA
+                  createdAt
                 ]
               );
               showSupplierTransactionAlert('تمت إضافة الحركة اليدوية بنجاح', 'success');
             }
-
+      
             resetManualSupplierForm();
             manualSupplierEditingContext = null;
             setManualSupplierFormMode(false);
-
+      
             await refreshSupplierStatementData(targetSupplierName, selectedBranchId);
             await loadSupplierLedger();
           } catch (error) {
@@ -1980,23 +1980,23 @@
             showSupplierTransactionAlert(`فشلت إضافة الحركة: ${mapSupplierLedgerDbError(error)}`, 'danger');
           }
         }
-
+      
         async function deleteManualSupplierTransaction(id, supplierName, forcedBranchId = '') {
           const txId = Number.parseInt(id, 10);
           if (!Number.isFinite(txId) || txId <= 0) {
             return;
           }
-
+      
           try {
             const confirmed = await askDeleteConfirmation();
             if (!confirmed) return;
-
+      
             if (manualSupplierEditingContext && Number(manualSupplierEditingContext.id) === txId) {
               cancelManualSupplierEdit();
             }
-
+      
             await ledgerIpc.invoke('db-run', 'DELETE FROM manual_supplier_transactions WHERE id = ?', [txId]);
-
+      
             const normalizedBranchId = normalizeBranchId(forcedBranchId);
             await refreshSupplierStatementData(supplierName, normalizedBranchId);
             await loadSupplierLedger();
@@ -2006,7 +2006,7 @@
             showSupplierTransactionAlert(`تعذر حذف الحركة: ${mapSupplierLedgerDbError(error)}`, 'danger');
           }
         }
-
+      
         async function askDeleteConfirmation() {
           if (window.Swal) {
             const result = await window.Swal.fire({
@@ -2022,12 +2022,12 @@
           }
           return window.confirm('هل تريد حذف هذه الحركة اليدوية؟');
         }
-
+      
         async function ensureManualSupplierTable() {
           if (manualSupplierTableEnsured) {
             return;
           }
-
+      
           try {
             await ledgerIpc.invoke(
               'db-run',
@@ -2052,26 +2052,26 @@
               'db-run',
               'CREATE INDEX IF NOT EXISTS idx_manual_supplier_branch_date ON manual_supplier_transactions(branch_id, created_at)'
             );
-
+      
             manualSupplierTableEnsured = true;
           } catch (error) {
             console.error('Failed to ensure manual supplier table:', error);
           }
         }
-
+      
         async function ensureManualSupplierUpdatedAtColumn() {
           try {
             const columns = await ledgerIpc.invoke('db-query', 'PRAGMA table_info(manual_supplier_transactions)');
             const hasUpdatedAt = Array.isArray(columns)
               && columns.some((column) => String(column?.name || '').toLowerCase() === 'updated_at');
-
+      
             if (!hasUpdatedAt) {
               await ledgerIpc.invoke(
                 'db-run',
                 'ALTER TABLE manual_supplier_transactions ADD COLUMN updated_at DATETIME'
               );
             }
-
+      
             await ledgerIpc.invoke(
               'db-run',
               `UPDATE manual_supplier_transactions
@@ -2083,13 +2083,13 @@
             throw error;
           }
         }
-
+      
         async function editManualSupplierTransactionEntry(id, supplierName, forcedBranchId = '') {
           const txId = Number.parseInt(id, 10);
           if (!Number.isFinite(txId) || txId <= 0) {
             return;
           }
-
+      
           try {
             await ensureManualSupplierTable();
             const rows = await ledgerIpc.invoke(
@@ -2100,30 +2100,30 @@
                LIMIT 1`,
               [txId]
             );
-
+      
             const row = Array.isArray(rows) ? rows[0] : null;
             if (!row) {
               showSupplierTransactionAlert('الحركة غير موجودة', 'danger');
               return;
             }
-
+      
             const typeEl = document.getElementById('newSupplierTransactionType');
             const amountEl = document.getElementById('newSupplierTransactionAmount');
             const refEl = document.getElementById('newSupplierTransactionRef');
             const notesEl = document.getElementById('newSupplierTransactionNotes');
-
+      
             if (typeEl) typeEl.value = row.transaction_type === 'payment' ? 'payment' : 'invoice';
             if (amountEl) amountEl.value = Math.abs(Number(row.amount || 0)).toString();
             if (refEl) refEl.value = row.reference_no || '';
             if (notesEl) notesEl.value = row.notes || '';
-
+      
             const normalizedBranchId = normalizeBranchId(forcedBranchId || row.branch_id || '');
             manualSupplierEditingContext = {
               id: txId,
               supplierName: supplierName || row.supplier_name || '',
               forcedBranchId: normalizedBranchId
             };
-
+      
             setManualSupplierFormMode(true);
             showSupplierTransactionAlert('وضع تعديل الحركة اليدوية مفعل', 'info');
           } catch (error) {
@@ -2131,32 +2131,32 @@
             showSupplierTransactionAlert(`تعذر تحميل الحركة للتعديل: ${mapSupplierLedgerDbError(error)}`, 'danger');
           }
         }
-
+      
         function cancelManualSupplierEdit() {
           manualSupplierEditingContext = null;
           resetManualSupplierForm();
           setManualSupplierFormMode(false);
           showSupplierTransactionAlert('تم إلغاء وضع التعديل', 'info');
         }
-
+      
         function resetManualSupplierForm() {
           const typeEl = document.getElementById('newSupplierTransactionType');
           const amountEl = document.getElementById('newSupplierTransactionAmount');
           const refEl = document.getElementById('newSupplierTransactionRef');
           const notesEl = document.getElementById('newSupplierTransactionNotes');
           const alertEl = document.getElementById('supplierTransactionAlert');
-
+      
           if (typeEl) typeEl.value = 'payment';
           if (amountEl) amountEl.value = '';
           if (refEl) refEl.value = '';
           if (notesEl) notesEl.value = '';
           if (alertEl) alertEl.style.display = 'none';
         }
-
+      
         function setManualSupplierFormMode(isEditing) {
           const addBtn = document.getElementById('addSupplierTransactionBtn');
           const cancelBtn = document.getElementById('cancelSupplierTransactionEditBtn');
-
+      
           if (addBtn) {
             if (isEditing) {
               addBtn.classList.remove('btn-primary');
@@ -2168,7 +2168,7 @@
               addBtn.innerHTML = '<i class="bi bi-plus-circle"></i> إضافة الحركة';
             }
           }
-
+      
           if (cancelBtn) {
             if (isEditing) {
               cancelBtn.classList.remove('d-none');
@@ -2177,7 +2177,7 @@
             }
           }
         }
-
+      
         function showSupplierTransactionAlert(message, type = 'info') {
           const alertEl = document.getElementById('supplierTransactionAlert');
           if (!alertEl) {
@@ -2188,7 +2188,7 @@
             }
             return;
           }
-
+      
           alertEl.className = `alert alert-${type}`;
           alertEl.textContent = message;
           alertEl.style.display = 'block';
@@ -2196,23 +2196,23 @@
             alertEl.style.display = 'none';
           }, 4500);
         }
-
+      
         async function printSupplierStatement(supplierName, forcedBranchId = '') {
           try {
             const name = String(supplierName == null ? '' : supplierName);
             if (!name.trim()) return;
-
+      
             const filters = getSupplierLedgerFilters();
             if (forcedBranchId && forcedBranchId !== '0') {
               filters.branchId = String(forcedBranchId);
             }
             const transactions = await fetchSupplierStatementTransactions(name, filters);
             const allTx = Array.isArray(transactions) ? transactions : [];
-
+      
             {
               const currencyFormatter = getCurrencyFormatter();
               const openingBalance = 0;
-
+      
               let totalInvoices = 0;
               let totalPayments = 0;
               allTx.forEach((tx) => {
@@ -2220,7 +2220,7 @@
                 if (amount >= 0) totalInvoices += amount;
                 else totalPayments += Math.abs(amount);
               });
-
+      
               const finalBalance = totalInvoices - totalPayments;
               const sortedTransactions = [...allTx].sort((left, right) => {
                 const leftDate = String(left?.tx_date || left?.created_at || '');
@@ -2229,7 +2229,7 @@
                 if (dateCompare !== 0) return dateCompare;
                 return String(left?.created_at || '').localeCompare(String(right?.created_at || ''));
               });
-
+      
               let runningBalance = openingBalance;
               const rowsHtmlNew = sortedTransactions.map((tx) => {
                 const amount = Number(tx.amount || 0);
@@ -2238,7 +2238,7 @@
                 const debit = isInvoice ? 0 : Math.abs(amount);
                 const credit = isInvoice ? Math.abs(amount) : 0;
                 runningBalance += (credit - debit);
-
+      
                 const recNo = tx.rec_no != null ? `#${tx.rec_no}` : '-';
                 const sourceLabel = tx.source === 'manual' ? 'قيد يدوي' : `من التصفية ${recNo}`;
                 const cashierName = String(tx.cashier_name || '').trim();
@@ -2251,7 +2251,7 @@
                   `المصدر: ${sourceLabel}`,
                   cashierName ? `المستخدم: ${cashierName}` : ''
                 ].filter(Boolean).join(' - ');
-
+      
                 return `
                   <tr>
                     <td>${escapeHtml(formatDateTime(tx.tx_date || tx.created_at || ''))}</td>
@@ -2267,7 +2267,7 @@
                   </tr>
                 `;
               }).join('');
-
+      
               const firstBranch = allTx.find((tx) => tx && tx.branch_name);
               const branchName = firstBranch ? firstBranch.branch_name : 'غير محدد';
               const companyName = await getCompanyName();
@@ -2278,7 +2278,7 @@
               const openingCreditText = (openingCredit > 0 || (openingCredit === 0 && openingDebit === 0))
                 ? currencyFormatter(openingCredit)
                 : '';
-
+      
               const printHtmlNew = `
               <!DOCTYPE html>
               <html dir="rtl" lang="ar">
@@ -2441,7 +2441,7 @@
                           </div>
                       </div>
                   </div>
-
+      
                   <div class="summary">
                       <div class="summary-item">
                           <div class="label">إجمالي الدائن</div>
@@ -2456,7 +2456,7 @@
                           <div class="value text-currency">${currencyFormatter(finalBalance)}</div>
                       </div>
                   </div>
-
+      
                   <table>
                       <thead>
                           <tr>
@@ -2500,14 +2500,14 @@
                           </tr>
                       </tbody>
                   </table>
-
+      
                   <div class="footer">
                       تم إنشاء هذا الكشف بواسطة نظام تصفية برو
                   </div>
               </body>
               </html>
               `;
-
+      
               if (!printManager) {
                 try {
                   printManager = await ledgerIpc.invoke('get-print-manager');
@@ -2515,7 +2515,7 @@
                   console.warn('[SUPPLIER-LEDGER] print manager lazy init failed:', error);
                 }
               }
-
+      
               if (printManager && typeof printManager.printWithPreview === 'function') {
                 const result = await printManager.printWithPreview(printHtmlNew);
                 if (result && result.success) {
@@ -2525,7 +2525,7 @@
                 }
                 return;
               }
-
+      
               const printWindow = window.open('', '_blank');
               if (!printWindow) {
                 showErrorToast('تعذر فتح نافذة الطباعة');
@@ -2541,21 +2541,21 @@
             showErrorToast('حدث خطأ أثناء طباعة كشف حساب المورد');
           }
         }
-
+      
         function openSupplierStatementModal() {
           const modalEl = document.getElementById('supplierStatementModal');
           if (!modalEl) return;
-
+      
           if (modalEl.parentElement !== document.body) {
             document.body.appendChild(modalEl);
           }
-
+      
           if (window.bootstrap?.Modal) {
             const existingModal = window.bootstrap.Modal.getInstance(modalEl);
             if (existingModal) {
               existingModal.dispose();
             }
-
+      
             const modal = new window.bootstrap.Modal(modalEl, {
               backdrop: true,
               keyboard: true,
@@ -2564,20 +2564,20 @@
             modal.show();
             return;
           }
-
+      
           modalEl.classList.add('show');
           modalEl.style.display = 'block';
           modalEl.removeAttribute('aria-hidden');
           modalEl.setAttribute('aria-modal', 'true');
           modalEl.setAttribute('role', 'dialog');
         }
-
+      
         function setSupplierStatementTotals(totalInvoices, totalPayments, balance) {
           const fmt = getCurrencyFormatter();
           const invoicesEl = document.getElementById('supplierStatementTotalInvoices');
           const paymentsEl = document.getElementById('supplierStatementTotalPayments');
           const balanceEl = document.getElementById('supplierStatementBalance');
-
+      
           if (invoicesEl) invoicesEl.textContent = fmt(totalInvoices);
           if (paymentsEl) paymentsEl.textContent = fmt(totalPayments);
           if (balanceEl) {
@@ -2590,7 +2590,7 @@
             }
           }
         }
-
+      
         async function getCompanyName() {
           try {
             const cachedCompanyName = String(window.currentCompanyName || '').trim();
@@ -2601,7 +2601,7 @@
                 AND setting_key IN ('company_name', 'name')
               ORDER BY id DESC
             `);
-
+      
             const rows = Array.isArray(result) ? result : [];
             const latestByKey = new Map();
             rows.forEach((row) => {
@@ -2609,43 +2609,43 @@
               const settingKey = String(row?.setting_key || '').trim().toLowerCase();
               const settingValue = String(row?.setting_value || '').trim();
               if (!category || !settingKey || !settingValue) return;
-
+      
               const compositeKey = `${category}:${settingKey}`;
               if (!latestByKey.has(compositeKey)) {
                 latestByKey.set(compositeKey, settingValue);
               }
             });
-
+      
             const preferredKeys = [
               'general:company_name',
               'general:name',
               'company:name',
               'company:company_name'
             ];
-
+      
             for (const key of preferredKeys) {
               const value = latestByKey.get(key);
               if (value) {
                 return value;
               }
             }
-
+      
             if (cachedCompanyName) {
               return cachedCompanyName;
             }
-
+      
             return 'شركة المثال التجارية';
           } catch (error) {
             console.error('Error getting company name:', error);
             return 'شركة المثال التجارية';
           }
         }
-
+      
         function formatMergeDateTime(dateTime) {
           const formatted = formatDateTime(dateTime);
           return formatted === 'غير محدد' ? '' : formatted;
         }
-
+      
         function formatDateTime(dateTime) {
           if (!dateTime) return 'غير محدد';
           try {
@@ -2661,20 +2661,20 @@
             return 'غير محدد';
           }
         }
-
+      
         function normalizeBranchId(value) {
           const raw = String(value == null ? '' : value).trim();
           if (!raw || raw === '0') return '';
           const parsed = Number.parseInt(raw, 10);
           return Number.isFinite(parsed) && parsed > 0 ? String(parsed) : '';
         }
-
+      
         function getSupplierMovementMeta(tx, parsedAmount = Number(tx?.amount || 0)) {
           const amount = Number.isFinite(parsedAmount) ? parsedAmount : 0;
           const source = tx?.source === 'manual' ? 'manual' : 'reconciled';
           const isInvoice = amount >= 0;
           const isEdited = source === 'manual' && isManualSupplierTransactionEdited(tx);
-
+      
           return {
             source,
             isInvoice,
@@ -2684,39 +2684,39 @@
             amountClass: isInvoice ? 'text-deficit' : 'text-success'
           };
         }
-
+      
         function buildSupplierMovementBadgeHtml(movementMeta) {
           if (!movementMeta) return '';
-
+      
           const sourceBadgeClass = movementMeta.source === 'manual' ? 'bg-primary' : 'bg-secondary';
           const editedBadge = movementMeta.isEdited
             ? '<span class="badge bg-warning text-dark">معدلة</span>'
             : '';
-
+      
           return `<span class="badge ${sourceBadgeClass} me-1">${escapeHtml(movementMeta.sourceLabel)}</span>${editedBadge}`;
         }
-
+      
         function buildSupplierMovementPrintLabel(movementMeta) {
           if (!movementMeta) return '';
           return movementMeta.isEdited
             ? `${movementMeta.sourceLabel} - معدلة`
             : movementMeta.sourceLabel;
         }
-
+      
         function isManualSupplierTransactionEdited(tx) {
           if (!tx || tx.source !== 'manual') {
             return false;
           }
-
+      
           const createdAt = parseDateTimeValue(tx.created_at);
           const updatedAt = parseDateTimeValue(tx.updated_at);
           if (!createdAt || !updatedAt) {
             return false;
           }
-
+      
           return (updatedAt.getTime() - createdAt.getTime()) > 1000;
         }
-
+      
         function parseDateTimeValue(value) {
           if (!value) return null;
           const parsedDate = new Date(value);
@@ -2725,7 +2725,7 @@
           }
           return parsedDate;
         }
-
+      
         function getCurrencyFormatter() {
           if (typeof window.formatCurrency === 'function') return window.formatCurrency;
           return (amount) => {
@@ -2737,7 +2737,7 @@
             }).format(numeric);
           };
         }
-
+      
         function showSuccessToast(message) {
           if (window.DialogUtils?.showSuccessToast) {
             window.DialogUtils.showSuccessToast(message);
@@ -2749,7 +2749,7 @@
           }
           console.log(message);
         }
-
+      
         function showErrorToast(message) {
           if (window.DialogUtils?.showErrorToast) {
             window.DialogUtils.showErrorToast(message);
@@ -2761,7 +2761,7 @@
           }
           console.error(message);
         }
-
+      
         function escapeHtml(value) {
           return String(value || '')
             .replace(/&/g, '&amp;')
@@ -2770,7 +2770,7 @@
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
         }
-
+      
         function escapeAttr(value) {
           return String(value || '')
             .replace(/&/g, '&amp;')
@@ -2778,7 +2778,7 @@
             .replace(/'/g, '&#39;')
             .replace(/\\/g, '\\\\');
         }
-
+      
         if (document.readyState === 'loading') {
           document.addEventListener('DOMContentLoaded', () => {
             initializeSupplierLedger();
@@ -2789,7 +2789,7 @@
           initializePrintManager();
         }
       })();
-
+      
     }
   };
   const resolutionMap = {

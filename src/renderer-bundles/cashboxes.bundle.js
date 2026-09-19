@@ -3186,7 +3186,6 @@
       
     }
   };
-
   const resolutionMap = {
     "src/app/cashbox-report-utils.js": {"./cashbox-voucher-utils":"src/app/cashbox-voucher-utils.js"},
     "src/app/cashbox-voucher-utils.js": {},
@@ -3194,49 +3193,28 @@
     "src/cashboxes.js": {"./renderer-ipc":"src/renderer-ipc.js","./app/db-error-messages":"src/app/db-error-messages.js","./app/cashbox-report-utils":"src/app/cashbox-report-utils.js","./app/cashbox-voucher-utils":"src/app/cashbox-voucher-utils.js"},
     "src/renderer-ipc.js": {}
   };
-
   const externalLoaders = {
     "dexie": function loadExternalModule(globalObject) {
       const resolved = globalObject && globalObject["Dexie"];
-      if (typeof resolved === 'undefined') {
-        throw new Error("External module dexie is not available on globalThis.Dexie");
-      }
+      if (typeof resolved === 'undefined') throw new Error("External module dexie is unavailable");
       return resolved;
     }
   };
-
   const moduleCache = Object.create(null);
-
   function requireModule(moduleId) {
-    if (moduleCache[moduleId]) {
-      return moduleCache[moduleId].exports;
-    }
-
+    if (moduleCache[moduleId]) return moduleCache[moduleId].exports;
     const factory = modules[moduleId];
-    if (typeof factory !== 'function') {
-      throw new Error(`Unknown bundled module: ${moduleId}`);
-    }
-
+    if (typeof factory !== 'function') throw new Error(`Unknown bundled module: ${moduleId}`);
     const module = { exports: {} };
     moduleCache[moduleId] = module;
-
     function localRequire(request) {
-      if (externalLoaders[request]) {
-        return externalLoaders[request](globalObject);
-      }
-
-      const dependencies = resolutionMap[moduleId] || {};
-      const targetModuleId = dependencies[request];
-      if (!targetModuleId) {
-        throw new Error(`Cannot resolve ${request} from ${moduleId}`);
-      }
-
+      if (externalLoaders[request]) return externalLoaders[request](globalObject);
+      const targetModuleId = (resolutionMap[moduleId] || {})[request];
+      if (!targetModuleId) throw new Error(`Cannot resolve ${request} from ${moduleId}`);
       return requireModule(targetModuleId);
     }
-
     factory(module, module.exports, localRequire);
     return module.exports;
   }
-
   requireModule("src/cashboxes.js");
 }(typeof globalThis !== 'undefined' ? globalThis : window));

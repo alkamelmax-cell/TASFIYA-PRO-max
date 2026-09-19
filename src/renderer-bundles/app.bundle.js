@@ -2762,20 +2762,41 @@
           }
         }
       
-        async function resolveCustomerForInsert(customerInput, currentReconciliation, options = {}) {
+        async function resolveBranchCustomerCodePrefix(branchId) {
+          const normalizedBranchId = normalizePositiveInteger(branchId);
+          if (!normalizedBranchId) {
+            return '';
+          }
+      
+          try {
+            const branch = await ipc.invoke(
+              'db-get',
+              'SELECT customer_code_prefix FROM branches WHERE id = ? LIMIT 1',
+              [normalizedBranchId]
+            );
+            return normalizeCode(branch?.customer_code_prefix) || `C${normalizedBranchId}`;
+          } catch (error) {
+            logger.error('❌ Error resolving branch customer code prefix:', error);
+            return `C${normalizedBranchId}`;
+          }
+        }
+      
+        async function resolveCustomerForInsert(customerInput, currentReconciliation) {
           const source = customerInput && typeof customerInput === 'object'
             ? customerInput
             : { customer_name: customerInput };
           const branchId = normalizePositiveInteger(source.branch_id)
             || await resolveCurrentReconciliationBranchId(currentReconciliation);
           const inputName = normalizeText(source.customer_name || source.name);
-          const inputCode = normalizeCode(source.customer_code || source.code);
+          let inputCode = normalizeCode(source.customer_code || source.code);
           const inputId = normalizePositiveInteger(source.customer_id || source.id);
       
-          // An incoming reconciliation can be created on another installation where
-          // branch ids or customer-code prefixes differ.  The supplied code is the
-          // customer's stable identity; never discard it merely because a local
-          // prefix differs, otherwise duplicate customer names become ambiguous.
+          if (inputCode && branchId) {
+            const branchPrefix = await resolveBranchCustomerCodePrefix(branchId);
+            if (branchPrefix && !inputCode.startsWith(`${branchPrefix}-`)) {
+              inputCode = '';
+            }
+          }
       
           if (inputId) {
             try {
@@ -2801,77 +2822,18 @@
             }
           }
       
-          const toResolvedIdentity = (identity, fallbackCode = inputCode) => ({
-            customer_id: normalizePositiveInteger(identity.customer_id || identity.id),
-            customer_name: normalizeText(identity.customer_name) || inputName,
-            customer_code: normalizeCode(identity.customer_code) || fallbackCode,
-            branch_id: normalizePositiveInteger(identity.branch_id) || branchId || null
+          const identity = await resolveCustomerIdentity({
+            customerName: inputName,
+            customerCode: inputCode,
+            branchId
           });
       
-          try {
-            const identity = await resolveCustomerIdentity({
-              customerName: inputName,
-              customerCode: inputCode,
-              branchId
-            });
-            return toResolvedIdentity(identity);
-          } catch (error) {
-            const errorMessage = normalizeText(error?.message || error);
-            const preserveRequestIdentity = options.preserveIncomingCustomerIdentity === true
-              && Boolean(inputName && inputCode)
-              && errorMessage.startsWith('customer_code_name_conflict:');
-      
-            if (preserveRequestIdentity) {
-              // Customer registries are local to each desktop installation.  A code
-              // collision on an offline/older installation must never turn a valid
-              // incoming request into a name-only lookup: duplicate names cannot be
-              // resolved safely that way.  Keep the authoritative name and code from
-              // the request, but leave the *local* customer id empty so we never link
-              // this row to the unrelated local customer that owns the conflicting
-              // code.  No local customer record is created, changed, or merged.
-              const preserved = {
-                customer_id: null,
-                customer_name: inputName,
-                customer_code: inputCode,
-                branch_id: branchId || null
-              };
-              logger.warn('⚠️ [RECONCILIATION] Preserved incoming customer identity without local link', {
-                source: options.source || 'unknown',
-                incoming_customer_code: inputCode,
-                branch_id: preserved.branch_id
-              });
-              return preserved;
-            }
-      
-            const mayUseNameFallback = options.allowCustomerCodeConflictFallback === true
-              && Boolean(inputName && inputCode)
-              && errorMessage.startsWith('customer_code_name_conflict:');
-      
-            if (!mayUseNameFallback) {
-              throw error;
-            }
-      
-            // A request can be created while the receiving computer is offline.
-            // Its local customer-code registry may therefore contain an unrelated
-            // legacy customer with the same code.  Resolve by one unambiguous local
-            // name instead of assigning the request to that unrelated customer.
-            // If the name is ambiguous, resolveCustomerIdentity still throws and the
-            // request remains pending for a deliberate correction.
-            const identity = await resolveCustomerIdentity({
-              customerName: inputName,
-              customerCode: '',
-              branchId
-            });
-            const resolved = toResolvedIdentity(identity, '');
-            logger.warn('⚠️ [RECONCILIATION] Imported customer using safe name fallback', {
-              source: options.source || 'unknown',
-              incoming_customer_code: inputCode,
-              resolved_customer_id: resolved.customer_id,
-              resolved_customer_code: resolved.customer_code,
-              branch_id: resolved.branch_id
-            });
-            return resolved;
-          }
+          return {
+            customer_id: normalizePositiveInteger(identity.customer_id || identity.id),
+            customer_name: normalizeText(identity.customer_name) || inputName,
+            customer_code: normalizeCode(identity.customer_code) || inputCode,
+            branch_id: normalizePositiveInteger(identity.branch_id) || branchId || null
+          };
         }
       
         return {
@@ -2978,17 +2940,11 @@
             }
           },
       
-          addPostpaidSale: async (customerInput, amount, options = {}) => {
+          addPostpaidSale: async (customerInput, amount) => {
             const currentReconciliation = getCurrentReconciliation();
-            if (!currentReconciliation || !currentReconciliation.id) {
-              return {
-                success: false,
-                errorCode: 'reconciliation_not_active',
-                errorMessage: 'لا توجد تصفية نشطة لإضافة بند الآجل'
-              };
-            }
+            if (!currentReconciliation || !currentReconciliation.id) return;
             try {
-              const identity = await resolveCustomerForInsert(customerInput, currentReconciliation, options);
+              const identity = await resolveCustomerForInsert(customerInput, currentReconciliation);
               const result = await ipc.invoke(
                 'db-run',
                 'INSERT INTO postpaid_sales (reconciliation_id, customer_id, customer_name, customer_code, amount) VALUES (?, ?, ?, ?, ?)',
@@ -3010,36 +2966,16 @@
               });
               updatePostpaidSalesTable();
               updateSummary();
-              return {
-                success: true,
-                recordId: result.lastInsertRowid,
-                customerId: identity.customer_id || null
-              };
             } catch (error) {
-              const errorCode = normalizeText(error?.code || error?.message || 'postpaid_sale_insert_failed');
-              const errorMessage = normalizeText(error?.message || 'تعذر حفظ بند الآجل');
-              logger.error('❌ [RECONCILIATION] Postpaid item import failed', {
-                reconciliation_id: currentReconciliation.id,
-                customer_id: normalizePositiveInteger(customerInput?.customer_id || customerInput?.id),
-                customer_code: normalizeCode(customerInput?.customer_code || customerInput?.code),
-                error_code: errorCode,
-                error_message: errorMessage
-              });
-              return { success: false, errorCode, errorMessage };
+              logger.error('❌ Error saving postpaid sale:', error);
             }
           },
       
-          addCustomerReceipt: async (customerInput, amount, paymentType, notes, options = {}) => {
+          addCustomerReceipt: async (customerInput, amount, paymentType, notes) => {
             const currentReconciliation = getCurrentReconciliation();
-            if (!currentReconciliation || !currentReconciliation.id) {
-              return {
-                success: false,
-                errorCode: 'reconciliation_not_active',
-                errorMessage: 'لا توجد تصفية نشطة لإضافة مقبوض العميل'
-              };
-            }
+            if (!currentReconciliation || !currentReconciliation.id) return;
             try {
-              const identity = await resolveCustomerForInsert(customerInput, currentReconciliation, options);
+              const identity = await resolveCustomerForInsert(customerInput, currentReconciliation);
               const result = await ipc.invoke(
                 'db-run',
                 'INSERT INTO customer_receipts (reconciliation_id, customer_id, customer_name, customer_code, amount, payment_type, notes) VALUES (?, ?, ?, ?, ?, ?, ?)',
@@ -3065,22 +3001,8 @@
               });
               updateCustomerReceiptsTable();
               updateSummary();
-              return {
-                success: true,
-                recordId: result.lastInsertRowid,
-                customerId: identity.customer_id || null
-              };
             } catch (error) {
-              const errorCode = normalizeText(error?.code || error?.message || 'customer_receipt_insert_failed');
-              const errorMessage = normalizeText(error?.message || 'تعذر حفظ مقبوض العميل');
-              logger.error('❌ [RECONCILIATION] Customer receipt import failed', {
-                reconciliation_id: currentReconciliation.id,
-                customer_id: normalizePositiveInteger(customerInput?.customer_id || customerInput?.id),
-                customer_code: normalizeCode(customerInput?.customer_code || customerInput?.code),
-                error_code: errorCode,
-                error_message: errorMessage
-              });
-              return { success: false, errorCode, errorMessage };
+              logger.error('❌ Error saving customer receipt:', error);
             }
           },
       
@@ -3614,8 +3536,6 @@
         const shellHandlers = initializeAppShellRuntimeBootstrap(
           createShellRuntimeDeps({ core, shared, shell, editTableHandlers, runtime })
         );
-        core.windowObj.showSection = shellHandlers.showSection;
-        core.windowObj.highlightMenuItem = shellHandlers.highlightMenuItem;
       
         runtime.preUiHandlers = initializeAppPreUiRuntimeBootstrap(
           createPreUiRuntimeDeps({
@@ -4144,7 +4064,6 @@
         const postpaidSalesReportHandlers = createPostpaidSalesReportHandlers({
           document: deps.document,
           ipcRenderer: deps.ipcRenderer,
-          windowObj: deps.windowObj,
           getDialogUtils: deps.getDialogUtils,
           getCompanyName: systemSettingsHandlers.getCompanyName,
           getCurrentDate: deps.getCurrentDate,
@@ -5787,19 +5706,11 @@
             autoRefreshReportsIfVisible();
           };
       
-          // Resolve available years once, then mirror the options into the secondary
-          // selector. Previously both selectors queried the database and refreshed
-          // year-scoped lists independently during startup.
           populateFiscalYearSelect({ document, ipcRenderer, storage: localStorageObj, selectId: 'fiscalYear' })
-            .then((selectedYear) => {
-              const primarySelect = document.getElementById('fiscalYear');
-              const secondarySelect = document.getElementById('fiscalYearSwitch');
-              if (primarySelect && secondarySelect) {
-                secondarySelect.innerHTML = primarySelect.innerHTML;
-                syncFiscalYearSelectValue(document, 'fiscalYearSwitch', selectedYear);
-              }
-              applySelection(selectedYear);
-            })
+            .then(applySelection)
+            .catch(() => {});
+          populateFiscalYearSelect({ document, ipcRenderer, storage: localStorageObj, selectId: 'fiscalYearSwitch' })
+            .then(applySelection)
             .catch(() => {});
       
           const bindSelectChange = (selectId) => {
@@ -5850,15 +5761,11 @@
       
           initializeSidebarToggle();
       
-          void loadDropdownData();
+          loadDropdownData();
           loadSystemSettings();
       
           handleBranchSelectionChange();
-          // Printer discovery can invoke slow Windows drivers. It remains available
-          // on demand from the print workflow and is warmed after the UI is visible.
-          setTimeoutFn(() => {
-            void initializePrintSystem();
-          }, 1500);
+          initializePrintSystem();
           initializeThermalPrinterSettings();
           initializeEditModeEventListeners();
           initializeAutocomplete();
@@ -6065,20 +5972,15 @@
       
         async function loadDropdownData() {
         try {
+          await loadCustomersForDropdowns();
+          await loadSuppliersForDropdowns();
+      
           const branches = await ipcRenderer.invoke(
             'db-query',
             'SELECT * FROM branches WHERE is_active = 1 ORDER BY branch_name'
           );
           populateSelect('branchSelect', branches, 'id', 'branch_name');
           populateSelect('cashierBranchSelect', branches, 'id', 'branch_name');
-      
-          const selectedBranchId = document.getElementById('branchSelect')?.value || '';
-          if (selectedBranchId) {
-            await Promise.allSettled([
-              loadCustomersForDropdowns(selectedBranchId),
-              loadSuppliersForDropdowns(selectedBranchId)
-            ]);
-          }
       
           const cashiers = await ipcRenderer.invoke(
             'db-query',
@@ -7564,7 +7466,6 @@
                   'cash_receipts',
                   'postpaid_sales',
                   'customer_receipts',
-                  'customer_fiscal_opening_balances',
                   'return_invoices',
                   'suppliers',
                   'archived_years',
@@ -7573,8 +7474,6 @@
                   'archived_cash_receipts',
                   'archived_postpaid_sales',
                   'archived_customer_receipts',
-                  'archived_manual_postpaid_sales',
-                  'archived_manual_customer_receipts',
                   'archived_return_invoices',
                   'archived_suppliers',
                   'system_settings',
@@ -7835,51 +7734,6 @@
                       `
                   },
                   {
-                      name: 'customer_fiscal_opening_balances',
-                      createSQL: `
-                          CREATE TABLE IF NOT EXISTS customer_fiscal_opening_balances (
-                              id INTEGER PRIMARY KEY AUTOINCREMENT,
-                              fiscal_year TEXT NOT NULL,
-                              closed_year TEXT NOT NULL,
-                              balance_key TEXT NOT NULL,
-                              customer_id INTEGER,
-                              customer_code TEXT DEFAULT '',
-                              customer_name TEXT NOT NULL,
-                              branch_id INTEGER,
-                              branch_name TEXT DEFAULT '',
-                              opening_balance DECIMAL(10,2) NOT NULL DEFAULT 0,
-                              total_postpaid DECIMAL(10,2) NOT NULL DEFAULT 0,
-                              total_receipts DECIMAL(10,2) NOT NULL DEFAULT 0,
-                              movements_count INTEGER NOT NULL DEFAULT 0,
-                              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                              UNIQUE(fiscal_year, balance_key)
-                          )
-                      `
-                  },
-                  {
-                      name: 'customers',
-                      createSQL: `
-                          CREATE TABLE IF NOT EXISTS customers (
-                              id INTEGER PRIMARY KEY AUTOINCREMENT,
-                              customer_code TEXT NOT NULL UNIQUE,
-                              customer_name TEXT NOT NULL,
-                              branch_id INTEGER,
-                              phone TEXT,
-                              address TEXT,
-                              notes TEXT,
-                              is_favorite INTEGER DEFAULT 0,
-                              is_active INTEGER DEFAULT 1,
-                              merged_into_customer_id INTEGER,
-                              merged_at DATETIME,
-                              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                              FOREIGN KEY (branch_id) REFERENCES branches(id) ON DELETE SET NULL,
-                              FOREIGN KEY (merged_into_customer_id) REFERENCES customers(id) ON DELETE SET NULL
-                          )
-                      `
-                  },
-                  {
                       name: 'return_invoices',
                       createSQL: `
                           CREATE TABLE IF NOT EXISTS return_invoices (
@@ -7916,8 +7770,6 @@
                               total_cash_receipts INTEGER DEFAULT 0,
                               total_postpaid_sales INTEGER DEFAULT 0,
                               total_customer_receipts INTEGER DEFAULT 0,
-                              total_manual_postpaid_sales INTEGER DEFAULT 0,
-                              total_manual_customer_receipts INTEGER DEFAULT 0,
                               total_return_invoices INTEGER DEFAULT 0,
                               total_suppliers INTEGER DEFAULT 0
                           )
@@ -7986,9 +7838,6 @@
                           CREATE TABLE IF NOT EXISTS archived_postpaid_sales (
                               id INTEGER PRIMARY KEY,
                               reconciliation_id INTEGER NOT NULL,
-                              customer_id INTEGER,
-                              customer_code TEXT DEFAULT '',
-                              branch_id INTEGER,
                               customer_name TEXT NOT NULL,
                               amount DECIMAL(10,2) NOT NULL,
                               is_modified INTEGER DEFAULT 0,
@@ -8003,43 +7852,10 @@
                           CREATE TABLE IF NOT EXISTS archived_customer_receipts (
                               id INTEGER PRIMARY KEY,
                               reconciliation_id INTEGER NOT NULL,
-                              customer_id INTEGER,
-                              customer_code TEXT DEFAULT '',
-                              branch_id INTEGER,
                               customer_name TEXT NOT NULL,
                               amount DECIMAL(10,2) NOT NULL,
                               payment_type TEXT NOT NULL,
                               is_modified INTEGER DEFAULT 0,
-                              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                              archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                          )
-                      `
-                  },
-                  {
-                      name: 'archived_manual_postpaid_sales',
-                      createSQL: `
-                          CREATE TABLE IF NOT EXISTS archived_manual_postpaid_sales (
-                              id INTEGER PRIMARY KEY,
-                              customer_id INTEGER,
-                              customer_name TEXT NOT NULL,
-                              customer_code TEXT DEFAULT '',
-                              amount DECIMAL(10,2) NOT NULL,
-                              reason TEXT,
-                              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-                              archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
-                          )
-                      `
-                  },
-                  {
-                      name: 'archived_manual_customer_receipts',
-                      createSQL: `
-                          CREATE TABLE IF NOT EXISTS archived_manual_customer_receipts (
-                              id INTEGER PRIMARY KEY,
-                              customer_id INTEGER,
-                              customer_name TEXT NOT NULL,
-                              customer_code TEXT DEFAULT '',
-                              amount DECIMAL(10,2) NOT NULL,
-                              reason TEXT,
                               created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                               archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
                           )
@@ -8193,30 +8009,6 @@
                   }
               } catch (branchSchemaError) {
                   console.warn('⚠️ [RESTORE] تعذر إكمال ترحيل بنية الفروع:', branchSchemaError);
-              }
-      
-              try {
-                  const customerColumns = await ipcRenderer.invoke('db-query', 'PRAGMA table_info(customers)', []);
-                  const customerColumnNames = new Set((Array.isArray(customerColumns) ? customerColumns : [])
-                      .map((column) => String(column?.name || '')));
-                  if (!customerColumnNames.has('is_favorite')) {
-                      await ipcRenderer.invoke('db-run', 'ALTER TABLE customers ADD COLUMN is_favorite INTEGER DEFAULT 0', []);
-                      console.log('✅ [RESTORE] تمت إضافة الحقل is_favorite إلى customers');
-                  }
-                  if (!customerColumnNames.has('is_active')) {
-                      await ipcRenderer.invoke('db-run', 'ALTER TABLE customers ADD COLUMN is_active INTEGER DEFAULT 1', []);
-                      console.log('✅ [RESTORE] تمت إضافة الحقل is_active إلى customers');
-                  }
-                  if (!customerColumnNames.has('merged_into_customer_id')) {
-                      await ipcRenderer.invoke('db-run', 'ALTER TABLE customers ADD COLUMN merged_into_customer_id INTEGER', []);
-                      console.log('✅ [RESTORE] تمت إضافة الحقل merged_into_customer_id إلى customers');
-                  }
-                  if (!customerColumnNames.has('merged_at')) {
-                      await ipcRenderer.invoke('db-run', 'ALTER TABLE customers ADD COLUMN merged_at DATETIME', []);
-                      console.log('✅ [RESTORE] تمت إضافة الحقل merged_at إلى customers');
-                  }
-              } catch (customerSchemaError) {
-                  console.warn('⚠️ [RESTORE] تعذر إكمال ترحيل بنية العملاء:', customerSchemaError);
               }
       
               try {
@@ -8397,7 +8189,6 @@
                   'cash_receipts',    // References: reconciliations(id)
                   'postpaid_sales',   // References: reconciliations(id)
                   'customer_receipts', // References: reconciliations(id)
-                  'customer_fiscal_opening_balances', // Fiscal customer carry-forward balances
                   'return_invoices',  // References: reconciliations(id)
                   'suppliers',        // References: reconciliations(id)
                   'system_settings',  // No dependencies
@@ -8414,8 +8205,6 @@
                   'archived_cash_receipts',
                   'archived_postpaid_sales',
                   'archived_customer_receipts',
-                  'archived_manual_postpaid_sales',
-                  'archived_manual_customer_receipts',
                   'archived_return_invoices',
                   'archived_suppliers'
               ];
@@ -9778,17 +9567,6 @@
           return normalizeFiscalYear(value);
         }
       
-        function buildValidArchiveYearExpression(dateExpression) {
-          return `
-            CASE
-              WHEN ${dateExpression} IS NOT NULL
-               AND CAST(strftime('%Y', ${dateExpression}) AS INTEGER) BETWEEN 1900 AND 2200
-              THEN strftime('%Y', ${dateExpression})
-              ELSE NULL
-            END
-          `;
-        }
-      
         function getActiveFiscalYear() {
           return normalizeYearValue(getSelectedFiscalYear());
         }
@@ -9956,8 +9734,6 @@
               total_cash_receipts INTEGER DEFAULT 0,
               total_postpaid_sales INTEGER DEFAULT 0,
               total_customer_receipts INTEGER DEFAULT 0,
-              total_manual_postpaid_sales INTEGER DEFAULT 0,
-              total_manual_customer_receipts INTEGER DEFAULT 0,
               total_return_invoices INTEGER DEFAULT 0,
               total_suppliers INTEGER DEFAULT 0
             )
@@ -10018,9 +9794,6 @@
             CREATE TABLE IF NOT EXISTS archived_postpaid_sales (
               id INTEGER PRIMARY KEY,
               reconciliation_id INTEGER NOT NULL,
-              customer_id INTEGER,
-              customer_code TEXT DEFAULT '',
-              branch_id INTEGER,
               customer_name TEXT NOT NULL,
               amount DECIMAL(10,2) NOT NULL,
               is_modified INTEGER DEFAULT 0,
@@ -10033,62 +9806,12 @@
             CREATE TABLE IF NOT EXISTS archived_customer_receipts (
               id INTEGER PRIMARY KEY,
               reconciliation_id INTEGER NOT NULL,
-              customer_id INTEGER,
-              customer_code TEXT DEFAULT '',
-              branch_id INTEGER,
               customer_name TEXT NOT NULL,
               amount DECIMAL(10,2) NOT NULL,
               payment_type TEXT NOT NULL,
               is_modified INTEGER DEFAULT 0,
               created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
               archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-          `);
-      
-          await runDb(`
-            CREATE TABLE IF NOT EXISTS archived_manual_postpaid_sales (
-              id INTEGER PRIMARY KEY,
-              customer_id INTEGER,
-              customer_name TEXT NOT NULL,
-              customer_code TEXT DEFAULT '',
-              amount DECIMAL(10,2) NOT NULL,
-              reason TEXT,
-              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-          `);
-      
-          await runDb(`
-            CREATE TABLE IF NOT EXISTS archived_manual_customer_receipts (
-              id INTEGER PRIMARY KEY,
-              customer_id INTEGER,
-              customer_name TEXT NOT NULL,
-              customer_code TEXT DEFAULT '',
-              amount DECIMAL(10,2) NOT NULL,
-              reason TEXT,
-              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              archived_at DATETIME DEFAULT CURRENT_TIMESTAMP
-            )
-          `);
-      
-          await runDb(`
-            CREATE TABLE IF NOT EXISTS customer_fiscal_opening_balances (
-              id INTEGER PRIMARY KEY AUTOINCREMENT,
-              fiscal_year TEXT NOT NULL,
-              closed_year TEXT NOT NULL,
-              balance_key TEXT NOT NULL,
-              customer_id INTEGER,
-              customer_code TEXT DEFAULT '',
-              customer_name TEXT NOT NULL,
-              branch_id INTEGER,
-              branch_name TEXT DEFAULT '',
-              opening_balance DECIMAL(10,2) NOT NULL DEFAULT 0,
-              total_postpaid DECIMAL(10,2) NOT NULL DEFAULT 0,
-              total_receipts DECIMAL(10,2) NOT NULL DEFAULT 0,
-              movements_count INTEGER NOT NULL DEFAULT 0,
-              created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-              UNIQUE(fiscal_year, balance_key)
             )
           `);
       
@@ -10139,40 +9862,6 @@
           } catch (_error) {
             // Ignore column add errors for legacy tables.
           }
-      
-          const addColumnIfMissing = async (tableName, columnName, definition) => {
-            try {
-              const columns = await queryDb(`PRAGMA table_info(${tableName})`);
-              const exists = (columns || []).some((col) => col && col.name === columnName);
-              if (!exists) {
-                await runDb(`ALTER TABLE ${tableName} ADD COLUMN ${columnName} ${definition}`);
-              }
-            } catch (_error) {
-              // Legacy archive tables are repaired opportunistically.
-            }
-          };
-      
-          await addColumnIfMissing('archived_years', 'total_manual_postpaid_sales', 'INTEGER DEFAULT 0');
-          await addColumnIfMissing('archived_years', 'total_manual_customer_receipts', 'INTEGER DEFAULT 0');
-          await addColumnIfMissing('archived_postpaid_sales', 'customer_id', 'INTEGER');
-          await addColumnIfMissing('archived_postpaid_sales', 'customer_code', "TEXT DEFAULT ''");
-          await addColumnIfMissing('archived_postpaid_sales', 'branch_id', 'INTEGER');
-          await addColumnIfMissing('archived_customer_receipts', 'customer_id', 'INTEGER');
-          await addColumnIfMissing('archived_customer_receipts', 'customer_code', "TEXT DEFAULT ''");
-          await addColumnIfMissing('archived_customer_receipts', 'branch_id', 'INTEGER');
-          await addColumnIfMissing('postpaid_sales', 'customer_id', 'INTEGER');
-          await addColumnIfMissing('postpaid_sales', 'customer_code', "TEXT DEFAULT ''");
-          await addColumnIfMissing('customer_receipts', 'customer_id', 'INTEGER');
-          await addColumnIfMissing('customer_receipts', 'customer_code', "TEXT DEFAULT ''");
-          await addColumnIfMissing('manual_postpaid_sales', 'customer_id', 'INTEGER');
-          await addColumnIfMissing('manual_postpaid_sales', 'customer_code', "TEXT DEFAULT ''");
-          await addColumnIfMissing('manual_customer_receipts', 'customer_id', 'INTEGER');
-          await addColumnIfMissing('manual_customer_receipts', 'customer_code', "TEXT DEFAULT ''");
-      
-          await runDb('CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_year_key ON customer_fiscal_opening_balances(fiscal_year, balance_key)');
-          await runDb('CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_customer_id ON customer_fiscal_opening_balances(customer_id)');
-          await runDb('CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_code ON customer_fiscal_opening_balances(customer_code)');
-          await runDb('CREATE INDEX IF NOT EXISTS idx_customer_fiscal_opening_name_branch ON customer_fiscal_opening_balances(customer_name, branch_id)');
         }
       
         async function upsertSetting(category, key, value) {
@@ -10542,16 +10231,11 @@
         }
       
         async function loadAvailableArchiveYears() {
-          const yearExpression = buildValidArchiveYearExpression('reconciliation_date');
           const rows = await queryDb(`
-            SELECT DISTINCT year
-            FROM (
-              SELECT ${yearExpression} AS year
-              FROM reconciliations
-              WHERE reconciliation_date IS NOT NULL
-            )
-            WHERE year IS NOT NULL
-            ORDER BY CAST(year AS INTEGER) DESC
+            SELECT DISTINCT strftime('%Y', reconciliation_date) AS year
+            FROM reconciliations
+            WHERE reconciliation_date IS NOT NULL
+            ORDER BY year DESC
           `);
       
           return (rows || [])
@@ -10577,17 +10261,7 @@
           }
       
           const yearValue = String(normalizedYear);
-          const [
-            reconciliationsRows,
-            bankRows,
-            cashRows,
-            postpaidRows,
-            customerRows,
-            manualPostpaidRows,
-            manualCustomerRows,
-            returnRows,
-            suppliersRows
-          ] = await Promise.all([
+          const [reconciliationsRows, bankRows, cashRows, postpaidRows, customerRows, returnRows, suppliersRows] = await Promise.all([
             queryDb(
               `SELECT COUNT(*) AS count
                FROM reconciliations
@@ -10624,18 +10298,6 @@
             ),
             queryDb(
               `SELECT COUNT(*) AS count
-               FROM manual_postpaid_sales
-               WHERE strftime('%Y', created_at) = ?`,
-              [yearValue]
-            ),
-            queryDb(
-              `SELECT COUNT(*) AS count
-               FROM manual_customer_receipts
-               WHERE strftime('%Y', created_at) = ?`,
-              [yearValue]
-            ),
-            queryDb(
-              `SELECT COUNT(*) AS count
                FROM return_invoices ri
                INNER JOIN reconciliations r ON r.id = ri.reconciliation_id
                WHERE strftime('%Y', r.reconciliation_date) = ?`,
@@ -10657,254 +10319,9 @@
             cashReceipts: toNumber(cashRows?.[0]?.count, 0),
             postpaidSales: toNumber(postpaidRows?.[0]?.count, 0),
             customerReceipts: toNumber(customerRows?.[0]?.count, 0),
-            manualPostpaidSales: toNumber(manualPostpaidRows?.[0]?.count, 0),
-            manualCustomerReceipts: toNumber(manualCustomerRows?.[0]?.count, 0),
             returnInvoices: toNumber(returnRows?.[0]?.count, 0),
             suppliers: toNumber(suppliersRows?.[0]?.count, 0)
           };
-        }
-      
-        function normalizeCustomerArchiveCode(value) {
-          const normalized = String(value == null ? '' : value).trim().toUpperCase();
-          return ['', '-', '–', '—'].includes(normalized) ? '' : normalized;
-        }
-      
-        function buildCustomerFiscalBalanceKey(row) {
-          const customerId = toNumber(row?.customer_id, 0);
-          if (customerId > 0) {
-            return `CID:${customerId}`;
-          }
-      
-          const customerCode = normalizeCustomerArchiveCode(row?.customer_code);
-          if (customerCode) {
-            return `CODE:${customerCode}`;
-          }
-      
-          const customerName = String(row?.customer_name || 'غير محدد').trim() || 'غير محدد';
-          const branchId = toNumber(row?.branch_id, 0);
-          return `LEGACY:${customerName.toUpperCase()}|${branchId || 0}`;
-        }
-      
-        function mergeFiscalBalanceContribution(grouped, row) {
-          const key = String(row?.balance_key || buildCustomerFiscalBalanceKey(row));
-          if (!key) return;
-      
-          const current = grouped.get(key) || {
-            balance_key: key,
-            customer_id: null,
-            customer_code: '',
-            customer_name: 'غير محدد',
-            branch_id: null,
-            branch_name: '',
-            opening_balance: 0,
-            total_postpaid: 0,
-            total_receipts: 0,
-            movements_count: 0
-          };
-      
-          const customerId = toNumber(row?.customer_id, 0);
-          const branchId = toNumber(row?.branch_id, 0);
-          const customerCode = normalizeCustomerArchiveCode(row?.customer_code);
-          const customerName = String(row?.customer_name || '').trim();
-          const branchName = String(row?.branch_name || '').trim();
-      
-          if (customerId > 0) current.customer_id = customerId;
-          if (customerCode) current.customer_code = customerCode;
-          if (customerName) current.customer_name = customerName;
-          if (branchId > 0) current.branch_id = branchId;
-          if (branchName) current.branch_name = branchName;
-      
-          current.opening_balance += toNumber(row?.opening_balance, 0);
-          current.total_postpaid += toNumber(row?.total_postpaid, 0);
-          current.total_receipts += toNumber(row?.total_receipts, 0);
-          current.movements_count += toNumber(row?.movements_count, 0);
-          grouped.set(key, current);
-        }
-      
-        async function calculateCustomerFiscalOpeningRows(closedYear) {
-          const yearValue = String(closedYear);
-          const grouped = new Map();
-          const customerJoin = (alias) => `
-            LEFT JOIN customers cust ON (
-              COALESCE(${alias}.customer_id, 0) > 0 AND cust.id = ${alias}.customer_id
-            ) OR (
-              COALESCE(${alias}.customer_id, 0) = 0
-              AND TRIM(COALESCE(${alias}.customer_code, '')) <> ''
-              AND UPPER(TRIM(COALESCE(cust.customer_code, ''))) = UPPER(TRIM(COALESCE(${alias}.customer_code, '')))
-            )
-          `;
-      
-          const previousOpeningRows = await queryDb(
-            `SELECT balance_key, customer_id, customer_code, customer_name, branch_id, branch_name,
-                    opening_balance, 0 AS total_postpaid, 0 AS total_receipts, 0 AS movements_count
-             FROM customer_fiscal_opening_balances
-             WHERE fiscal_year = ?`,
-            [yearValue]
-          );
-      
-          const postpaidRows = await queryDb(
-            `SELECT
-                COALESCE(ps.customer_id, cust.id, 0) AS customer_id,
-                COALESCE(NULLIF(TRIM(COALESCE(ps.customer_code, '')), ''), NULLIF(TRIM(COALESCE(cust.customer_code, '')), ''), '') AS customer_code,
-                COALESCE(NULLIF(TRIM(COALESCE(ps.customer_name, '')), ''), NULLIF(TRIM(COALESCE(cust.customer_name, '')), ''), 'غير محدد') AS customer_name,
-                COALESCE(cust.branch_id, c.branch_id, 0) AS branch_id,
-                COALESCE(cb.branch_name, b.branch_name, 'غير محدد') AS branch_name,
-                0 AS opening_balance,
-                COALESCE(SUM(ps.amount), 0) AS total_postpaid,
-                0 AS total_receipts,
-                COUNT(*) AS movements_count
-             FROM postpaid_sales ps
-             LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id
-             LEFT JOIN cashiers c ON c.id = r.cashier_id
-             LEFT JOIN branches b ON b.id = c.branch_id
-             ${customerJoin('ps')}
-             LEFT JOIN branches cb ON cb.id = cust.branch_id
-             WHERE strftime('%Y', r.reconciliation_date) = ?
-             GROUP BY 1, 2, 3, 4, 5`,
-            [yearValue]
-          );
-      
-          const customerReceiptRows = await queryDb(
-            `SELECT
-                COALESCE(cr.customer_id, cust.id, 0) AS customer_id,
-                COALESCE(NULLIF(TRIM(COALESCE(cr.customer_code, '')), ''), NULLIF(TRIM(COALESCE(cust.customer_code, '')), ''), '') AS customer_code,
-                COALESCE(NULLIF(TRIM(COALESCE(cr.customer_name, '')), ''), NULLIF(TRIM(COALESCE(cust.customer_name, '')), ''), 'غير محدد') AS customer_name,
-                COALESCE(cust.branch_id, c.branch_id, 0) AS branch_id,
-                COALESCE(cb.branch_name, b.branch_name, 'غير محدد') AS branch_name,
-                0 AS opening_balance,
-                0 AS total_postpaid,
-                COALESCE(SUM(cr.amount), 0) AS total_receipts,
-                COUNT(*) AS movements_count
-             FROM customer_receipts cr
-             LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id
-             LEFT JOIN cashiers c ON c.id = r.cashier_id
-             LEFT JOIN branches b ON b.id = c.branch_id
-             ${customerJoin('cr')}
-             LEFT JOIN branches cb ON cb.id = cust.branch_id
-             WHERE strftime('%Y', r.reconciliation_date) = ?
-             GROUP BY 1, 2, 3, 4, 5`,
-            [yearValue]
-          );
-      
-          const manualPostpaidRows = await queryDb(
-            `SELECT
-                COALESCE(mp.customer_id, cust.id, 0) AS customer_id,
-                COALESCE(NULLIF(TRIM(COALESCE(mp.customer_code, '')), ''), NULLIF(TRIM(COALESCE(cust.customer_code, '')), ''), '') AS customer_code,
-                COALESCE(NULLIF(TRIM(COALESCE(mp.customer_name, '')), ''), NULLIF(TRIM(COALESCE(cust.customer_name, '')), ''), 'غير محدد') AS customer_name,
-                COALESCE(cust.branch_id, 0) AS branch_id,
-                COALESCE(b.branch_name, 'غير محدد') AS branch_name,
-                0 AS opening_balance,
-                COALESCE(SUM(mp.amount), 0) AS total_postpaid,
-                0 AS total_receipts,
-                COUNT(*) AS movements_count
-             FROM manual_postpaid_sales mp
-             ${customerJoin('mp')}
-             LEFT JOIN branches b ON b.id = cust.branch_id
-             WHERE strftime('%Y', mp.created_at) = ?
-             GROUP BY 1, 2, 3, 4, 5`,
-            [yearValue]
-          );
-      
-          const manualReceiptRows = await queryDb(
-            `SELECT
-                COALESCE(mr.customer_id, cust.id, 0) AS customer_id,
-                COALESCE(NULLIF(TRIM(COALESCE(mr.customer_code, '')), ''), NULLIF(TRIM(COALESCE(cust.customer_code, '')), ''), '') AS customer_code,
-                COALESCE(NULLIF(TRIM(COALESCE(mr.customer_name, '')), ''), NULLIF(TRIM(COALESCE(cust.customer_name, '')), ''), 'غير محدد') AS customer_name,
-                COALESCE(cust.branch_id, 0) AS branch_id,
-                COALESCE(b.branch_name, 'غير محدد') AS branch_name,
-                0 AS opening_balance,
-                0 AS total_postpaid,
-                COALESCE(SUM(mr.amount), 0) AS total_receipts,
-                COUNT(*) AS movements_count
-             FROM manual_customer_receipts mr
-             ${customerJoin('mr')}
-             LEFT JOIN branches b ON b.id = cust.branch_id
-             WHERE strftime('%Y', mr.created_at) = ?
-             GROUP BY 1, 2, 3, 4, 5`,
-            [yearValue]
-          );
-      
-          [
-            ...(previousOpeningRows || []),
-            ...(postpaidRows || []),
-            ...(customerReceiptRows || []),
-            ...(manualPostpaidRows || []),
-            ...(manualReceiptRows || [])
-          ].forEach((row) => mergeFiscalBalanceContribution(grouped, row));
-      
-          return Array.from(grouped.values())
-            .map((row) => ({
-              ...row,
-              opening_balance: row.opening_balance + row.total_postpaid - row.total_receipts
-            }))
-            .filter((row) => Math.abs(toNumber(row.opening_balance, 0)) > 0.000001 || toNumber(row.movements_count, 0) > 0)
-            .sort((left, right) => String(left.customer_name || '').localeCompare(String(right.customer_name || ''), 'ar'));
-        }
-      
-        async function persistCustomerFiscalOpeningRows(fiscalYear, closedYear, rows) {
-          await runDb(
-            'DELETE FROM customer_fiscal_opening_balances WHERE fiscal_year = ? AND closed_year = ?',
-            [String(fiscalYear), String(closedYear)]
-          );
-      
-          const sql = `
-            INSERT INTO customer_fiscal_opening_balances (
-              fiscal_year, closed_year, balance_key, customer_id, customer_code, customer_name,
-              branch_id, branch_name, opening_balance, total_postpaid, total_receipts,
-              movements_count, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            ON CONFLICT(fiscal_year, balance_key) DO UPDATE SET
-              closed_year = excluded.closed_year,
-              customer_id = excluded.customer_id,
-              customer_code = excluded.customer_code,
-              customer_name = excluded.customer_name,
-              branch_id = excluded.branch_id,
-              branch_name = excluded.branch_name,
-              opening_balance = excluded.opening_balance,
-              total_postpaid = excluded.total_postpaid,
-              total_receipts = excluded.total_receipts,
-              movements_count = excluded.movements_count,
-              updated_at = CURRENT_TIMESTAMP
-          `;
-      
-          for (const row of rows || []) {
-            await runDb(sql, [
-              String(fiscalYear),
-              String(closedYear),
-              row.balance_key,
-              row.customer_id || null,
-              row.customer_code || '',
-              row.customer_name || 'غير محدد',
-              row.branch_id || null,
-              row.branch_name || '',
-              Number(row.opening_balance || 0),
-              Number(row.total_postpaid || 0),
-              Number(row.total_receipts || 0),
-              Number(row.movements_count || 0)
-            ]);
-          }
-        }
-      
-        async function validateCustomerFiscalOpeningRows(fiscalYear, closedYear, expectedRows) {
-          const rows = await queryDb(
-            `SELECT balance_key, opening_balance, total_postpaid, total_receipts, movements_count
-             FROM customer_fiscal_opening_balances
-             WHERE fiscal_year = ? AND closed_year = ?`,
-            [String(fiscalYear), String(closedYear)]
-          );
-      
-          const actualByKey = new Map((rows || []).map((row) => [String(row.balance_key || ''), row]));
-          for (const expected of expectedRows || []) {
-            const actual = actualByKey.get(String(expected.balance_key || ''));
-            if (!actual) {
-              throw new Error(`missing_opening_balance:${expected.balance_key}`);
-            }
-            const diff = Math.abs(toNumber(actual.opening_balance, 0) - toNumber(expected.opening_balance, 0));
-            if (diff > 0.0001) {
-              throw new Error(`opening_balance_mismatch:${expected.balance_key}`);
-            }
-          }
         }
       
         async function handleLoadArchiveYears() {
@@ -11701,9 +11118,7 @@
           try {
             const rows = await queryDb(
               `SELECT year, total_reconciliations, total_bank_receipts, total_cash_receipts,
-                      total_postpaid_sales, total_customer_receipts,
-                      total_manual_postpaid_sales, total_manual_customer_receipts,
-                      total_return_invoices, total_suppliers
+                      total_postpaid_sales, total_customer_receipts, total_return_invoices, total_suppliers
                FROM archived_years
                WHERE year = ?
                LIMIT 1`,
@@ -11718,8 +11133,6 @@
                 cashReceipts: toNumber(row.total_cash_receipts, 0),
                 postpaidSales: toNumber(row.total_postpaid_sales, 0),
                 customerReceipts: toNumber(row.total_customer_receipts, 0),
-                manualPostpaidSales: toNumber(row.total_manual_postpaid_sales, 0),
-                manualCustomerReceipts: toNumber(row.total_manual_customer_receipts, 0),
                 returnInvoices: toNumber(row.total_return_invoices, 0),
                 suppliers: toNumber(row.total_suppliers, 0)
               };
@@ -11728,17 +11141,7 @@
             // Fall back to live counts
           }
       
-          const [
-            reconciliationsRows,
-            bankRows,
-            cashRows,
-            postpaidRows,
-            customerRows,
-            manualPostpaidRows,
-            manualCustomerRows,
-            returnRows,
-            suppliersRows
-          ] = await Promise.all([
+          const [reconciliationsRows, bankRows, cashRows, postpaidRows, customerRows, returnRows, suppliersRows] = await Promise.all([
             queryDb(
               `SELECT COUNT(*) AS count
                FROM archived_reconciliations
@@ -11775,18 +11178,6 @@
             ),
             queryDb(
               `SELECT COUNT(*) AS count
-               FROM archived_manual_postpaid_sales
-               WHERE strftime('%Y', created_at) = ?`,
-              [yearValue]
-            ),
-            queryDb(
-              `SELECT COUNT(*) AS count
-               FROM archived_manual_customer_receipts
-               WHERE strftime('%Y', created_at) = ?`,
-              [yearValue]
-            ),
-            queryDb(
-              `SELECT COUNT(*) AS count
                FROM archived_return_invoices ri
                INNER JOIN archived_reconciliations r ON r.id = ri.reconciliation_id
                WHERE strftime('%Y', r.reconciliation_date) = ?`,
@@ -11808,8 +11199,6 @@
             cashReceipts: toNumber(cashRows?.[0]?.count, 0),
             postpaidSales: toNumber(postpaidRows?.[0]?.count, 0),
             customerReceipts: toNumber(customerRows?.[0]?.count, 0),
-            manualPostpaidSales: toNumber(manualPostpaidRows?.[0]?.count, 0),
-            manualCustomerReceipts: toNumber(manualCustomerRows?.[0]?.count, 0),
             returnInvoices: toNumber(returnRows?.[0]?.count, 0),
             suppliers: toNumber(suppliersRows?.[0]?.count, 0)
           };
@@ -11875,21 +11264,6 @@
               return;
             }
       
-            const laterArchivedRows = await queryDb(
-              `SELECT year
-               FROM archived_years
-               WHERE CAST(year AS INTEGER) > ?
-               ORDER BY CAST(year AS INTEGER) ASC`,
-              [Number(yearValue)]
-            );
-            if (Array.isArray(laterArchivedRows) && laterArchivedRows.length > 0) {
-              dialog.showError(
-                `لا يمكن استعادة سنة ${yearValue} قبل استعادة السنوات الأحدث: ${formatYearList(laterArchivedRows.map((row) => row.year))}.\nاستعد السنوات من الأحدث إلى الأقدم حتى لا تتعارض الأرصدة المرحّلة.`,
-                'ترتيب الاستعادة مطلوب'
-              );
-              return;
-            }
-      
             const hasActive = await hasActiveYearData(yearValue);
             if (hasActive) {
               dialog.showError(
@@ -11908,8 +11282,6 @@
               `المقبوضات النقدية: ${formatNumber(summary?.cashReceipts || 0)}`,
               `البيع الآجل: ${formatNumber(summary?.postpaidSales || 0)}`,
               `تحصيل العملاء: ${formatNumber(summary?.customerReceipts || 0)}`,
-              `مبيعات العملاء اليدوية: ${formatNumber(summary?.manualPostpaidSales || 0)}`,
-              `سندات قبض العملاء اليدوية: ${formatNumber(summary?.manualCustomerReceipts || 0)}`,
               `مرتجعات الفواتير: ${formatNumber(summary?.returnInvoices || 0)}`,
               `الموردين: ${formatNumber(summary?.suppliers || 0)}`
             ].join('\n');
@@ -11934,7 +11306,6 @@
             try {
               dialog.showLoading('جاري استعادة بيانات السنة...', 'يرجى الانتظار');
               await runDb('BEGIN TRANSACTION');
-              await runDb('DELETE FROM customer_fiscal_opening_balances WHERE closed_year = ?', [String(yearValue)]);
       
               const archivedRecs = await queryDb(
                 `SELECT *
@@ -11990,22 +11361,12 @@
               `;
               const insertPostpaidQuery = `
                 INSERT INTO postpaid_sales (
-                  reconciliation_id, customer_id, customer_name, customer_code, amount, is_modified, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                  reconciliation_id, customer_name, amount, is_modified, created_at
+                ) VALUES (?, ?, ?, ?, ?)
               `;
               const insertCustomerQuery = `
                 INSERT INTO customer_receipts (
-                  reconciliation_id, customer_id, customer_name, customer_code, amount, payment_type, is_modified, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-              `;
-              const insertManualPostpaidQuery = `
-                INSERT INTO manual_postpaid_sales (
-                  customer_id, customer_name, customer_code, amount, reason, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-              `;
-              const insertManualCustomerQuery = `
-                INSERT INTO manual_customer_receipts (
-                  customer_id, customer_name, customer_code, amount, reason, created_at
+                  reconciliation_id, customer_name, amount, payment_type, is_modified, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?)
               `;
               const insertReturnQuery = `
@@ -12074,9 +11435,7 @@
                 if (!newRecId) continue;
                 await runDb(insertPostpaidQuery, [
                   newRecId,
-                  row.customer_id ?? null,
                   row.customer_name,
-                  row.customer_code ?? '',
                   row.amount,
                   row.is_modified ?? 0,
                   row.created_at ?? null
@@ -12096,48 +11455,10 @@
                 if (!newRecId) continue;
                 await runDb(insertCustomerQuery, [
                   newRecId,
-                  row.customer_id ?? null,
                   row.customer_name,
-                  row.customer_code ?? '',
                   row.amount,
                   row.payment_type,
                   row.is_modified ?? 0,
-                  row.created_at ?? null
-                ]);
-              }
-      
-              const manualPostpaidRows = await queryDb(
-                `SELECT *
-                 FROM archived_manual_postpaid_sales
-                 WHERE strftime('%Y', created_at) = ?
-                 ORDER BY id ASC`,
-                [String(yearValue)]
-              );
-              for (const row of manualPostpaidRows || []) {
-                await runDb(insertManualPostpaidQuery, [
-                  row.customer_id ?? null,
-                  row.customer_name,
-                  row.customer_code ?? '',
-                  row.amount,
-                  row.reason ?? null,
-                  row.created_at ?? null
-                ]);
-              }
-      
-              const manualCustomerRows = await queryDb(
-                `SELECT *
-                 FROM archived_manual_customer_receipts
-                 WHERE strftime('%Y', created_at) = ?
-                 ORDER BY id ASC`,
-                [String(yearValue)]
-              );
-              for (const row of manualCustomerRows || []) {
-                await runDb(insertManualCustomerQuery, [
-                  row.customer_id ?? null,
-                  row.customer_name,
-                  row.customer_code ?? '',
-                  row.amount,
-                  row.reason ?? null,
                   row.created_at ?? null
                 ]);
               }
@@ -12210,16 +11531,6 @@
                  WHERE reconciliation_id IN (
                    SELECT id FROM archived_reconciliations WHERE strftime('%Y', reconciliation_date) = ?
                  )`,
-                [String(yearValue)]
-              );
-              await runDb(
-                `DELETE FROM archived_manual_postpaid_sales
-                 WHERE strftime('%Y', created_at) = ?`,
-                [String(yearValue)]
-              );
-              await runDb(
-                `DELETE FROM archived_manual_customer_receipts
-                 WHERE strftime('%Y', created_at) = ?`,
                 [String(yearValue)]
               );
               await runDb(
@@ -12587,27 +11898,6 @@
               return;
             }
       
-            const activeYearExpression = buildValidArchiveYearExpression('reconciliation_date');
-            const olderActiveYears = await queryDb(
-              `SELECT DISTINCT year
-               FROM (
-                 SELECT ${activeYearExpression} AS year
-                 FROM reconciliations
-                 WHERE reconciliation_date IS NOT NULL
-               )
-               WHERE year IS NOT NULL
-                 AND CAST(year AS INTEGER) < ?
-               ORDER BY CAST(year AS INTEGER) ASC`,
-              [Number(summary.year)]
-            );
-            if (Array.isArray(olderActiveYears) && olderActiveYears.length > 0) {
-              dialog.showError(
-                `لا يمكن أرشفة سنة ${summary.year} قبل إقفال السنوات الأقدم: ${formatYearList(olderActiveYears.map((row) => row.year))}.\nأرشف السنوات بالترتيب حتى يبقى الرصيد المرحل صحيحًا.`,
-                'ترتيب الأرشفة مطلوب'
-              );
-              return;
-            }
-      
             const confirmMessage = [
               `سيتم نقل بيانات سنة ${summary.year} إلى الأرشيف وإزالتها من الجداول النشطة.`,
               'هذا الإجراء قد يستغرق بعض الوقت ولا يمكن التراجع عنه إلا باستعادة نسخة احتياطية.',
@@ -12616,8 +11906,6 @@
               `المقبوضات النقدية: ${formatNumber(summary.cashReceipts)}`,
               `البيع الآجل: ${formatNumber(summary.postpaidSales)}`,
               `تحصيل العملاء: ${formatNumber(summary.customerReceipts)}`,
-              `مبيعات العملاء اليدوية: ${formatNumber(summary.manualPostpaidSales || 0)}`,
-              `سندات قبض العملاء اليدوية: ${formatNumber(summary.manualCustomerReceipts || 0)}`,
               `مرتجعات الفواتير: ${formatNumber(summary.returnInvoices)}`,
               `الموردين: ${formatNumber(summary.suppliers)}`
             ].join('\n');
@@ -12642,10 +11930,6 @@
             try {
               dialog.showLoading('جاري نقل بيانات السنة إلى الأرشيف...', 'يرجى الانتظار');
               await runDb('BEGIN TRANSACTION');
-              const nextFiscalYear = String(Number(summary.year) + 1);
-              const openingRows = await calculateCustomerFiscalOpeningRows(summary.year);
-              await persistCustomerFiscalOpeningRows(nextFiscalYear, summary.year, openingRows);
-              await validateCustomerFiscalOpeningRows(nextFiscalYear, summary.year, openingRows);
       
               await runDb(
                 `INSERT OR IGNORE INTO archived_reconciliations (
@@ -12692,51 +11976,25 @@
       
               await runDb(
                 `INSERT OR IGNORE INTO archived_postpaid_sales (
-                   id, reconciliation_id, customer_id, customer_code, branch_id, customer_name, amount, is_modified, created_at, archived_at
+                   id, reconciliation_id, customer_name, amount, is_modified, created_at, archived_at
                  )
                  SELECT
-                   ps.id, ps.reconciliation_id, ps.customer_id, ps.customer_code, c.branch_id,
-                   ps.customer_name, ps.amount, ps.is_modified, ps.created_at, CURRENT_TIMESTAMP
+                   ps.id, ps.reconciliation_id, ps.customer_name, ps.amount, ps.is_modified, ps.created_at, CURRENT_TIMESTAMP
                  FROM postpaid_sales ps
                  INNER JOIN reconciliations r ON r.id = ps.reconciliation_id
-                 LEFT JOIN cashiers c ON c.id = r.cashier_id
                  WHERE strftime('%Y', r.reconciliation_date) = ?`,
                 [summary.year]
               );
       
               await runDb(
                 `INSERT OR IGNORE INTO archived_customer_receipts (
-                   id, reconciliation_id, customer_id, customer_code, branch_id, customer_name, amount, payment_type, is_modified, created_at, archived_at
+                   id, reconciliation_id, customer_name, amount, payment_type, is_modified, created_at, archived_at
                  )
                  SELECT
-                   cr.id, cr.reconciliation_id, cr.customer_id, cr.customer_code, c.branch_id,
-                   cr.customer_name, cr.amount, cr.payment_type, cr.is_modified, cr.created_at, CURRENT_TIMESTAMP
+                   cr.id, cr.reconciliation_id, cr.customer_name, cr.amount, cr.payment_type, cr.is_modified, cr.created_at, CURRENT_TIMESTAMP
                  FROM customer_receipts cr
                  INNER JOIN reconciliations r ON r.id = cr.reconciliation_id
-                 LEFT JOIN cashiers c ON c.id = r.cashier_id
                  WHERE strftime('%Y', r.reconciliation_date) = ?`,
-                [summary.year]
-              );
-      
-              await runDb(
-                `INSERT OR IGNORE INTO archived_manual_postpaid_sales (
-                   id, customer_id, customer_name, customer_code, amount, reason, created_at, archived_at
-                 )
-                 SELECT
-                   id, customer_id, customer_name, customer_code, amount, reason, created_at, CURRENT_TIMESTAMP
-                 FROM manual_postpaid_sales
-                 WHERE strftime('%Y', created_at) = ?`,
-                [summary.year]
-              );
-      
-              await runDb(
-                `INSERT OR IGNORE INTO archived_manual_customer_receipts (
-                   id, customer_id, customer_name, customer_code, amount, reason, created_at, archived_at
-                 )
-                 SELECT
-                   id, customer_id, customer_name, customer_code, amount, reason, created_at, CURRENT_TIMESTAMP
-                 FROM manual_customer_receipts
-                 WHERE strftime('%Y', created_at) = ?`,
                 [summary.year]
               );
       
@@ -12768,10 +12026,9 @@
                 `INSERT INTO archived_years (
                    year, archived_at, total_reconciliations, total_bank_receipts,
                    total_cash_receipts, total_postpaid_sales, total_customer_receipts,
-                   total_manual_postpaid_sales, total_manual_customer_receipts,
                    total_return_invoices, total_suppliers
                  )
-                 VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 VALUES (?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
                  ON CONFLICT(year) DO UPDATE SET
                    archived_at = excluded.archived_at,
                    total_reconciliations = excluded.total_reconciliations,
@@ -12779,8 +12036,6 @@
                    total_cash_receipts = excluded.total_cash_receipts,
                    total_postpaid_sales = excluded.total_postpaid_sales,
                    total_customer_receipts = excluded.total_customer_receipts,
-                   total_manual_postpaid_sales = excluded.total_manual_postpaid_sales,
-                   total_manual_customer_receipts = excluded.total_manual_customer_receipts,
                    total_return_invoices = excluded.total_return_invoices,
                    total_suppliers = excluded.total_suppliers`,
                 [
@@ -12790,8 +12045,6 @@
                   summary.cashReceipts,
                   summary.postpaidSales,
                   summary.customerReceipts,
-                  summary.manualPostpaidSales,
-                  summary.manualCustomerReceipts,
                   summary.returnInvoices,
                   summary.suppliers
                 ]
@@ -12823,16 +12076,6 @@
                  WHERE reconciliation_id IN (
                    SELECT id FROM reconciliations WHERE strftime('%Y', reconciliation_date) = ?
                  )`,
-                [summary.year]
-              );
-              await runDb(
-                `DELETE FROM manual_postpaid_sales
-                 WHERE strftime('%Y', created_at) = ?`,
-                [summary.year]
-              );
-              await runDb(
-                `DELETE FROM manual_customer_receipts
-                 WHERE strftime('%Y', created_at) = ?`,
                 [summary.year]
               );
               await runDb(
@@ -15631,34 +14874,6 @@
           return Number.isFinite(numericBranchId) && numericBranchId > 0 ? numericBranchId : null;
         }
       
-        function normalizeCustomerRow(row) {
-          if (!row) {
-            return null;
-          }
-      
-          return {
-            id: Number(row.id || row.customer_id || 0),
-            customer_name: normalizeCustomerName(row.customer_name),
-            customer_code: normalizeCustomerCode(row.customer_code),
-            branch_id: normalizeBranchId(row.branch_id),
-            matched_customer_name: normalizeCustomerName(row.matched_customer_name || row.customer_name),
-            matched_customer_id: Number(row.matched_customer_id || row.id || 0),
-            merged_into_customer_id: Number(row.merged_into_customer_id || 0)
-          };
-        }
-      
-        function customerNameMatchesIdentity(customer, customerName) {
-          const normalizedName = normalizeCustomerName(customerName);
-          if (!normalizedName) {
-            return false;
-          }
-      
-          return (
-            normalizeCustomerName(customer?.customer_name) === normalizedName
-            || normalizeCustomerName(customer?.matched_customer_name) === normalizedName
-          );
-        }
-      
         async function resolveBranchCodePrefix(branchId) {
           const normalizedBranchId = normalizeBranchId(branchId);
           if (!normalizedBranchId) {
@@ -15747,33 +14962,24 @@
             const row = await ipcRenderer.invoke(
               'db-get',
               `
-                SELECT
-                  COALESCE(target.id, c.id) AS id,
-                  COALESCE(target.customer_name, c.customer_name) AS customer_name,
-                  COALESCE(target.customer_code, c.customer_code) AS customer_code,
-                  COALESCE(target.branch_id, c.branch_id) AS branch_id,
-                  c.customer_name AS matched_customer_name,
-                  c.id AS matched_customer_id,
-                  COALESCE(c.merged_into_customer_id, 0) AS merged_into_customer_id
-                FROM customers c
-                LEFT JOIN customers target ON target.id = c.merged_into_customer_id
-                WHERE UPPER(TRIM(COALESCE(c.customer_code, ''))) = ?
-                  AND (target.id IS NULL OR (
-                    COALESCE(target.is_active, 1) = 1
-                    AND COALESCE(target.merged_into_customer_id, 0) = 0
-                  ))
-                ORDER BY
-                  CASE
-                    WHEN COALESCE(c.is_active, 1) = 1 AND COALESCE(c.merged_into_customer_id, 0) = 0 THEN 0
-                    ELSE 1
-                  END,
-                  c.id ASC
+                SELECT id, customer_name, customer_code, branch_id
+                FROM customers
+                WHERE UPPER(TRIM(COALESCE(customer_code, ''))) = ?
                 LIMIT 1
               `,
               [normalizedCode]
             );
       
-            return normalizeCustomerRow(row);
+            if (!row) {
+              return null;
+            }
+      
+            return {
+              id: Number(row.id || 0),
+              customer_name: normalizeCustomerName(row.customer_name),
+              branch_id: normalizeBranchId(row.branch_id),
+              customer_code: normalizeCustomerCode(row.customer_code)
+            };
           } catch (error) {
             logger.error('Error finding customer by code:', error);
             return null;
@@ -15787,163 +14993,34 @@
           }
       
           const normalizedBranchId = normalizeBranchId(branchId);
-          const activeBranchFilterSql = normalizedBranchId ? 'AND COALESCE(c.branch_id, 0) = ?' : '';
-          const mergedBranchFilterSql = normalizedBranchId
-            ? 'AND COALESCE(target.branch_id, source.branch_id, 0) = ?'
-            : '';
-          const params = normalizedBranchId
-            ? [normalizedName, normalizedBranchId, normalizedName, normalizedBranchId]
-            : [normalizedName, normalizedName];
+          const branchFilterSql = normalizedBranchId ? 'AND COALESCE(branch_id, 0) = ?' : '';
+          const params = normalizedBranchId ? [normalizedName, normalizedBranchId] : [normalizedName];
       
           try {
             const rows = await ipcRenderer.invoke(
               'db-query',
               `
-                SELECT id, customer_name, customer_code, branch_id, matched_customer_name, matched_customer_id, merged_into_customer_id
-                FROM (
-                  SELECT
-                    c.id AS id,
-                    c.customer_name AS customer_name,
-                    c.customer_code AS customer_code,
-                    c.branch_id AS branch_id,
-                    c.customer_name AS matched_customer_name,
-                    c.id AS matched_customer_id,
-                    0 AS merged_into_customer_id
-                  FROM customers c
-                  WHERE TRIM(COALESCE(c.customer_name, '')) = ?
-                    AND COALESCE(c.is_active, 1) = 1
-                    AND COALESCE(c.merged_into_customer_id, 0) = 0
-                    ${activeBranchFilterSql}
-      
-                  UNION ALL
-      
-                  SELECT
-                    target.id AS id,
-                    target.customer_name AS customer_name,
-                    target.customer_code AS customer_code,
-                    target.branch_id AS branch_id,
-                    source.customer_name AS matched_customer_name,
-                    source.id AS matched_customer_id,
-                    source.merged_into_customer_id AS merged_into_customer_id
-                  FROM customers source
-                  JOIN customers target ON target.id = source.merged_into_customer_id
-                  WHERE TRIM(COALESCE(source.customer_name, '')) = ?
-                    AND COALESCE(source.merged_into_customer_id, 0) > 0
-                    AND COALESCE(target.is_active, 1) = 1
-                    AND COALESCE(target.merged_into_customer_id, 0) = 0
-                    ${mergedBranchFilterSql}
-                ) customer_matches
-                GROUP BY id
+                SELECT id, customer_name, customer_code, branch_id
+                FROM customers
+                WHERE TRIM(COALESCE(customer_name, '')) = ?
+                ${branchFilterSql}
                 ORDER BY id ASC
               `,
               params
             );
       
             return Array.isArray(rows)
-              ? rows.map(normalizeCustomerRow).filter(Boolean)
+              ? rows.map((row) => ({
+                id: Number(row.id || 0),
+                customer_name: normalizeCustomerName(row.customer_name),
+                customer_code: normalizeCustomerCode(row.customer_code),
+                branch_id: normalizeBranchId(row.branch_id)
+              }))
               : [];
           } catch (error) {
             logger.error('Error finding customers by name:', error);
             return [];
           }
-        }
-      
-        function buildCustomerIdentityUsageMatcher(alias, customer) {
-          const customerId = Number(customer?.id || customer?.customer_id || 0);
-          const customerCode = normalizeCustomerCode(customer?.customer_code);
-          const clauses = [];
-          const params = [];
-      
-          if (Number.isFinite(customerId) && customerId > 0) {
-            clauses.push(`COALESCE(${alias}.customer_id, 0) = ?`);
-            params.push(customerId);
-          }
-      
-          if (customerCode) {
-            clauses.push(`UPPER(TRIM(COALESCE(${alias}.customer_code, ''))) = ?`);
-            params.push(customerCode);
-          }
-      
-          return {
-            clause: clauses.length > 0 ? clauses.map((clause) => `(${clause})`).join(' OR ') : '',
-            params
-          };
-        }
-      
-        async function countCustomerIdentityUsage(customer, branchId = null) {
-          const normalizedBranchId = normalizeBranchId(branchId);
-          const buildUsageSelect = (tableName, alias, options = {}) => {
-            const matcher = buildCustomerIdentityUsageMatcher(alias, customer);
-            if (!matcher.clause) {
-              return null;
-            }
-      
-            const reconciled = options.reconciled === true;
-            const joinSql = reconciled
-              ? `LEFT JOIN reconciliations r ON r.id = ${alias}.reconciliation_id
-                 LEFT JOIN cashiers c ON c.id = r.cashier_id`
-              : '';
-            const branchSql = reconciled && normalizedBranchId
-              ? 'AND (COALESCE(c.branch_id, 0) = 0 OR COALESCE(c.branch_id, 0) = ?)'
-              : '';
-            const branchParams = branchSql ? [normalizedBranchId] : [];
-      
-            return {
-              sql: `
-                SELECT COUNT(*) AS usage_count
-                FROM ${tableName} ${alias}
-                ${joinSql}
-                WHERE (${matcher.clause})
-                ${branchSql}
-              `,
-              params: [...matcher.params, ...branchParams]
-            };
-          };
-      
-          const selects = [
-            buildUsageSelect('postpaid_sales', 'ps', { reconciled: true }),
-            buildUsageSelect('customer_receipts', 'cr', { reconciled: true }),
-            buildUsageSelect('manual_postpaid_sales', 'mps'),
-            buildUsageSelect('manual_customer_receipts', 'mcr')
-          ].filter(Boolean);
-      
-          if (selects.length === 0) {
-            return 0;
-          }
-      
-          try {
-            const rows = await ipcRenderer.invoke(
-              'db-query',
-              `
-                SELECT COALESCE(SUM(usage_count), 0) AS usage_count
-                FROM (
-                  ${selects.map((select) => select.sql).join('\nUNION ALL\n')}
-                ) identity_usage
-              `,
-              selects.flatMap((select) => select.params)
-            );
-            return Number(rows?.[0]?.usage_count || 0);
-          } catch (error) {
-            logger.error('Error counting customer identity usage:', error);
-            return 0;
-          }
-        }
-      
-        async function selectSingleCustomerMatch(matchingCustomers, branchId = null) {
-          const safeMatches = Array.isArray(matchingCustomers) ? matchingCustomers : [];
-          if (safeMatches.length <= 1) {
-            return safeMatches[0] || null;
-          }
-      
-          const matchesWithUsage = await Promise.all(
-            safeMatches.map(async (customer) => ({
-              customer,
-              usageCount: await countCustomerIdentityUsage(customer, branchId)
-            }))
-          );
-          const usedMatches = matchesWithUsage.filter((match) => Number(match.usageCount || 0) > 0);
-      
-          return usedMatches.length === 1 ? usedMatches[0].customer : null;
         }
       
         async function createCustomerRecord({ customerName, customerCode, branchId = null }) {
@@ -16006,8 +15083,7 @@
       
         async function suggestCustomerCodeForName(customerName, branchId = null) {
           const matches = await findCustomersByName(customerName, branchId);
-          const singleMatch = await selectSingleCustomerMatch(matches, branchId);
-          return singleMatch ? singleMatch.customer_code : '';
+          return matches.length === 1 ? matches[0].customer_code : '';
         }
       
         async function resolveCustomerIdentity({ customerName, customerCode, branchId }) {
@@ -16023,7 +15099,7 @@
             const existingCustomer = await findCustomerByCode(normalizedCode);
             if (existingCustomer) {
               const existingName = normalizeCustomerName(existingCustomer.customer_name);
-              const sameName = customerNameMatchesIdentity(existingCustomer, normalizedName);
+              const sameName = existingName === normalizedName;
               const sameBranch = normalizedBranchId == null
                 || existingCustomer.branch_id == null
                 || existingCustomer.branch_id === normalizedBranchId;
@@ -16059,9 +15135,8 @@
           }
       
           const matchingCustomers = await findCustomersByName(normalizedName, normalizedBranchId);
-          const singleMatch = await selectSingleCustomerMatch(matchingCustomers, normalizedBranchId);
-          if (singleMatch) {
-            const customerWithCode = await ensureCustomerHasCode(singleMatch, normalizedBranchId);
+          if (matchingCustomers.length === 1) {
+            const customerWithCode = await ensureCustomerHasCode(matchingCustomers[0], normalizedBranchId);
             return {
               customer_id: Number(customerWithCode.id || 0),
               customer_name: customerWithCode.customer_name,
@@ -16262,51 +15337,26 @@
         return Number.isFinite(numericValue) && numericValue > 0 ? Math.floor(numericValue) : null;
       }
       
-      function normalizeUsageCount(value) {
-        const numericValue = Number(value);
-        return Number.isFinite(numericValue) && numericValue > 0 ? numericValue : 0;
-      }
-      
       function normalizeCustomerListRows(rows) {
-        const normalizedRows = (Array.isArray(rows) ? rows : [])
+        return (Array.isArray(rows) ? rows : [])
           .map((row) => ({
             customer_name: String(row?.customer_name || '').trim(),
-            customer_code: normalizeCustomerCode(row?.customer_code),
-            branch_id: normalizeBranchId(row?.branch_id),
-            usage_count: normalizeUsageCount(row?.usage_count)
+            customer_code: normalizeCustomerCode(row?.customer_code)
           }))
           .filter((customer) => customer.customer_name);
-      
-        const namesWithActiveRows = new Set(
-          normalizedRows
-            .filter((customer) => customer.usage_count > 0)
-            .map((customer) => `${customer.customer_name}|${customer.branch_id || 0}`)
-        );
-      
-        return normalizedRows
-          .filter((customer) => (
-            customer.usage_count > 0
-            || !namesWithActiveRows.has(`${customer.customer_name}|${customer.branch_id || 0}`)
-          ))
-          .map((customer) => ({
-            customer_name: customer.customer_name,
-            customer_code: customer.customer_code
-          }));
       }
       
       function buildCustomersByBranchQuery() {
         return `
-          WITH raw_customers AS (
+          SELECT c.customer_name, c.customer_code
+          FROM (
             SELECT
               cust.customer_name AS customer_name,
               NULLIF(NULLIF(NULLIF(NULLIF(UPPER(TRIM(COALESCE(cust.customer_code, ''))), ''), '-'), '–'), '—') AS customer_code,
-              COALESCE(cust.branch_id, 0) AS branch_id,
-              0 AS usage_count
+              COALESCE(cust.branch_id, 0) AS branch_id
             FROM customers cust
-            WHERE COALESCE(cust.is_active, 1) = 1
-              AND COALESCE(cust.merged_into_customer_id, 0) = 0
       
-            UNION ALL
+            UNION
       
             SELECT
               ps.customer_name,
@@ -16314,14 +15364,13 @@
                 NULLIF(NULLIF(NULLIF(NULLIF(UPPER(TRIM(COALESCE(ps.customer_code, ''))), ''), '-'), '–'), '—'),
                 NULLIF(NULLIF(NULLIF(NULLIF(UPPER(TRIM(COALESCE(cust.customer_code, ''))), ''), '-'), '–'), '—')
               ) AS customer_code,
-              ch.branch_id,
-              1 AS usage_count
+              ch.branch_id
             FROM postpaid_sales ps
             JOIN reconciliations r ON ps.reconciliation_id = r.id
             JOIN cashiers ch ON r.cashier_id = ch.id
             LEFT JOIN customers cust ON cust.id = ps.customer_id
       
-            UNION ALL
+            UNION
       
             SELECT
               cr.customer_name,
@@ -16329,37 +15378,16 @@
                 NULLIF(NULLIF(NULLIF(NULLIF(UPPER(TRIM(COALESCE(cr.customer_code, ''))), ''), '-'), '–'), '—'),
                 NULLIF(NULLIF(NULLIF(NULLIF(UPPER(TRIM(COALESCE(cust.customer_code, ''))), ''), '-'), '–'), '—')
               ) AS customer_code,
-              ch.branch_id,
-              1 AS usage_count
+              ch.branch_id
             FROM customer_receipts cr
             JOIN reconciliations r ON cr.reconciliation_id = r.id
             JOIN cashiers ch ON r.cashier_id = ch.id
             LEFT JOIN customers cust ON cust.id = cr.customer_id
-          ),
-          grouped_customers AS (
-            SELECT
-              TRIM(customer_name) AS customer_name,
-              customer_code,
-              COALESCE(branch_id, 0) AS branch_id,
-              SUM(usage_count) AS usage_count
-            FROM raw_customers
-            WHERE customer_name IS NOT NULL
-              AND TRIM(customer_name) != ''
-            GROUP BY TRIM(customer_name), customer_code, COALESCE(branch_id, 0)
-          )
-          SELECT c.customer_name, c.customer_code, c.branch_id, c.usage_count
-          FROM grouped_customers c
-          WHERE c.branch_id = ?
-            AND NOT (
-              c.usage_count = 0
-              AND EXISTS (
-                SELECT 1
-                FROM grouped_customers active_customer
-                WHERE active_customer.customer_name = c.customer_name
-                  AND active_customer.branch_id = c.branch_id
-                  AND active_customer.usage_count > 0
-              )
-            )
+          ) c
+          WHERE c.customer_name IS NOT NULL
+            AND TRIM(c.customer_name) != ''
+            AND c.branch_id = ?
+          GROUP BY c.customer_name, c.customer_code
           ORDER BY c.customer_name, c.customer_code
         `;
       }
@@ -23907,46 +22935,6 @@
           saveButton.innerHTML = '<i class="icon">💾</i> حفظ التصفية';
         }
       
-        function summarizeRequestImportFailure(failure) {
-          const label = failure.type === 'postpaid'
-            ? 'عميل آجل'
-            : 'مقبوض عميل';
-          const detail = String(failure.errorMessage || failure.errorCode || 'خطأ غير معروف')
-            .replace(/\s+/g, ' ')
-            .trim();
-          return `${label} ${failure.index + 1}${detail ? `: ${detail}` : ''}`;
-        }
-      
-        async function rollbackIncompleteRequestImport(reconciliationId) {
-          // This reconciliation was created only for the request currently being
-          // imported.  Delete its children first so an incomplete request can never
-          // be saved or marked completed.  Customer records are intentionally not
-          // touched because they may already be shared by other reconciliations.
-          const childTables = [
-            'bank_receipts',
-            'cash_receipts',
-            'postpaid_sales',
-            'customer_receipts',
-            'return_invoices',
-            'suppliers'
-          ];
-      
-          try {
-            for (const table of childTables) {
-              await ipc.invoke('db-run', `DELETE FROM ${table} WHERE reconciliation_id = ?`, [reconciliationId]);
-            }
-            await ipc.invoke('db-run', 'DELETE FROM reconciliations WHERE id = ?', [reconciliationId]);
-            return true;
-          } catch (error) {
-            logger.error('❌ [REQUEST IMPORT] Unable to roll back incomplete reconciliation', {
-              reconciliation_id: reconciliationId,
-              error_code: error?.code || null,
-              error_message: error?.message || String(error)
-            });
-            return false;
-          }
-        }
-      
         async function isArchivedFiscalYear(year) {
           const normalizedYear = Number.parseInt(String(year || ''), 10);
           if (!Number.isFinite(normalizedYear)) {
@@ -24185,119 +23173,39 @@
                 if (!text) return '';
                 return text.toString().replace(/\uFFFD/g, '').replaceAll('\u0000', '').trim();
               };
-              const customerImportFailures = [];
-              const importCustomerItems = async (items, type) => {
-                const addItem = type === 'postpaid'
-                  ? windowObj.appAPI.addPostpaidSale
-                  : windowObj.appAPI.addCustomerReceipt;
       
-                for (const [index, item] of toArray(items).entries()) {
-                  const name = cleanWebText(item?.customer_name || item?.name);
-                  const customerCode = cleanWebText(item?.customer_code || item?.code || '');
-                  const customerId = item?.customer_id || item?.id || null;
-                  const branchId = item?.branch_id || pData.branchId || null;
-                  const notes = cleanWebText(item?.notes || '');
-                  const amount = parseAmount(item?.amount);
-                  const paymentType = cleanWebText(item?.payment_type || item?.type || 'نقدي');
-      
-                  if (!name || amount <= 0) {
-                    customerImportFailures.push({
-                      type,
-                      index,
-                      errorCode: 'invalid_request_customer_item',
-                      errorMessage: 'اسم العميل أو المبلغ غير صالح'
-                    });
-                    continue;
-                  }
-      
-                  try {
-                    const outcome = type === 'postpaid'
-                      ? await addItem.call(windowObj.appAPI, {
-                        customer_id: customerId,
-                        customer_name: name,
-                        customer_code: customerCode,
-                        branch_id: branchId
-                      }, amount, {
-                        allowCustomerCodeConflictFallback: true,
-                        preserveIncomingCustomerIdentity: true,
-                        source: 'reconciliation_request'
-                      })
-                      : await addItem.call(windowObj.appAPI, {
-                        customer_id: customerId,
-                        customer_name: name,
-                        customer_code: customerCode,
-                        branch_id: branchId
-                      }, amount, paymentType, notes, {
-                        allowCustomerCodeConflictFallback: true,
-                        preserveIncomingCustomerIdentity: true,
-                        source: 'reconciliation_request'
-                      });
-      
-                    // Undefined is accepted for compatibility with older builds of
-                    // the renderer API.  Current builds return { success: true }.
-                    if (outcome && outcome.success === false) {
-                      customerImportFailures.push({
-                        type,
-                        index,
-                        errorCode: outcome.errorCode,
-                        errorMessage: outcome.errorMessage
-                      });
-                    }
-                  } catch (error) {
-                    customerImportFailures.push({
-                      type,
-                      index,
-                      errorCode: error?.code || 'request_customer_item_import_failed',
-                      errorMessage: error?.message || String(error)
-                    });
-                  }
+              for (const item of toArray(pDetails.postpaid_items)) {
+                const name = cleanWebText(item?.customer_name || item?.name);
+                const customerCode = cleanWebText(item?.customer_code || item?.code || '');
+                const customerId = item?.customer_id || item?.id || null;
+                const branchId = item?.branch_id || pData.branchId || null;
+                const amount = parseAmount(item?.amount);
+                if (name && amount > 0) {
+                  await windowObj.appAPI.addPostpaidSale({
+                    customer_id: customerId,
+                    customer_name: name,
+                    customer_code: customerCode,
+                    branch_id: branchId
+                  }, amount);
                 }
-              };
+              }
       
-              await importCustomerItems(pDetails.postpaid_items, 'postpaid');
-              await importCustomerItems(pDetails.customer_receipts, 'customer_receipt');
-      
-              if (customerImportFailures.length > 0) {
-                const rolledBack = await rollbackIncompleteRequestImport(currentReconciliation.id);
-                const failurePreview = customerImportFailures
-                  .slice(0, 3)
-                  .map(summarizeRequestImportFailure)
-                  .join(' • ');
-                logger.error('❌ [REQUEST IMPORT] Customer items were not imported completely', {
-                  request_id: pData.requestId || null,
-                  reconciliation_id: currentReconciliation.id,
-                  failed_items: customerImportFailures.length,
-                  error_codes: customerImportFailures.slice(0, 3).map((failure) => failure.errorCode || null)
-                });
-      
-                if (rolledBack) {
-                  deps.setCurrentReconciliation(null);
-                  deps.setBankReceipts([]);
-                  deps.setCashReceipts([]);
-                  deps.setPostpaidSales([]);
-                  deps.setCustomerReceipts([]);
-                  deps.setReturnInvoices([]);
-                  deps.setSuppliers([]);
-                  deps.updateBankReceiptsTable();
-                  deps.updateCashReceiptsTable();
-                  deps.updatePostpaidSalesTable();
-                  deps.updateCustomerReceiptsTable();
-                  deps.updateReturnInvoicesTable();
-                  deps.updateSuppliersTable();
-                  updateSummary();
-                  infoDiv.style.display = 'none';
-                  resetSaveButtonToDefaultMode();
-                } else {
-                  currentReconciliation.__requestImportFailures = customerImportFailures;
+              for (const item of toArray(pDetails.customer_receipts)) {
+                const name = cleanWebText(item?.customer_name || item?.name);
+                const customerCode = cleanWebText(item?.customer_code || item?.code || '');
+                const customerId = item?.customer_id || item?.id || null;
+                const branchId = item?.branch_id || pData.branchId || null;
+                const notes = cleanWebText(item?.notes || '');
+                const amount = parseAmount(item?.amount);
+                const paymentType = cleanWebText(item?.payment_type || item?.type || 'نقدي');
+                if (name && amount > 0) {
+                  await windowObj.appAPI.addCustomerReceipt({
+                    customer_id: customerId,
+                    customer_name: name,
+                    customer_code: customerCode,
+                    branch_id: branchId
+                  }, amount, paymentType, notes);
                 }
-      
-                const rollbackMessage = rolledBack
-                  ? 'لم يتم حفظ أي جزء من التصفية، والطلب ما زال معلقًا.'
-                  : 'تم إيقاف حفظ هذه التصفية لحمايتها من النقص.';
-                deps.getDialogUtils().showErrorToast(
-                  `تعذر تحميل الطلب كاملًا (${customerImportFailures.length} بند). ${rollbackMessage}${failurePreview ? ` ${failurePreview}` : ''}`
-                );
-                return;
               }
       
               for (const item of toArray(pDetails.return_items)) {
@@ -24688,10 +23596,6 @@
           return String(value || '').trim().toUpperCase();
         }
       
-        function normalizeFavoriteFlag(value) {
-          return Number(value || 0) === 1 ? 1 : 0;
-        }
-      
         function normalizeNameKey(value) {
           return normalizeCustomerName(value).toUpperCase();
         }
@@ -24716,33 +23620,11 @@
           return labels.length > 0 ? labels.join('، ') : 'غير محدد';
         }
       
-        function normalizedCodeSql(columnExpression) {
-          return `NULLIF(NULLIF(NULLIF(NULLIF(UPPER(TRIM(COALESCE(${columnExpression}, ''))), ''), '-'), '–'), '—')`;
-        }
-      
-        function buildCustomerJoinSql(alias) {
-          return `
-            (
-              (
-                COALESCE(${alias}.customer_id, 0) > 0
-                AND cust.id = ${alias}.customer_id
-              )
-              OR (
-                COALESCE(${alias}.customer_id, 0) = 0
-                AND ${normalizedCodeSql(`${alias}.customer_code`)} IS NOT NULL
-                AND ${normalizedCodeSql(`${alias}.customer_code`)} = ${normalizedCodeSql('cust.customer_code')}
-                AND COALESCE(cust.is_active, 1) = 1
-                AND COALESCE(cust.merged_into_customer_id, 0) = 0
-              )
-            )
-          `;
-        }
-      
         function buildReconciledSubquery({ tableName, alias, txType, filters }) {
           const params = [];
           let query = `
                   SELECT
-                      COALESCE(NULLIF(${alias}.customer_id, 0), cust.id, 0) AS customer_id,
+                      COALESCE(${alias}.customer_id, cust.id, 0) AS customer_id,
                       COALESCE(NULLIF(TRIM(${alias}.customer_name), ''), cust.customer_name, '') AS customer_name,
                       COALESCE(NULLIF(${alias}.customer_code, ''), cust.customer_code, '') AS customer_code,
                       ${alias}.amount AS amount,
@@ -24750,10 +23632,9 @@
                       COALESCE(r.reconciliation_date, ${alias}.created_at) AS tx_date,
                       COALESCE(c.branch_id, cust.branch_id, 0) AS branch_id,
                       COALESCE(b.branch_name, cb.branch_name, 'غير محدد') AS branch_name,
-                      COALESCE(cust.is_favorite, 0) AS is_favorite,
                       c.name AS cashier_name
                   FROM ${tableName} ${alias}
-                  LEFT JOIN customers cust ON ${buildCustomerJoinSql(alias)}
+                  LEFT JOIN customers cust ON cust.id = ${alias}.customer_id
                   LEFT JOIN branches cb ON cb.id = cust.branch_id
                   LEFT JOIN reconciliations r ON ${alias}.reconciliation_id = r.id
                   LEFT JOIN cashiers c ON r.cashier_id = c.id
@@ -24783,7 +23664,7 @@
           const params = [];
           let query = `
                   SELECT
-                      COALESCE(NULLIF(${alias}.customer_id, 0), cust.id, 0) AS customer_id,
+                      COALESCE(${alias}.customer_id, cust.id, 0) AS customer_id,
                       COALESCE(NULLIF(TRIM(${alias}.customer_name), ''), cust.customer_name, '') AS customer_name,
                       COALESCE(NULLIF(${alias}.customer_code, ''), cust.customer_code, '') AS customer_code,
                       ${alias}.amount AS amount,
@@ -24795,10 +23676,9 @@
                           (SELECT branch_name FROM branches WHERE id = (SELECT branch_id FROM cashiers WHERE id = 1)),
                           'غير محدد'
                       ) AS branch_name,
-                      COALESCE(cust.is_favorite, 0) AS is_favorite,
                       NULL AS cashier_name
                   FROM ${tableName} ${alias}
-                  LEFT JOIN customers cust ON ${buildCustomerJoinSql(alias)}
+                  LEFT JOIN customers cust ON cust.id = ${alias}.customer_id
                   WHERE 1=1
               `;
       
@@ -24869,8 +23749,7 @@
                       tx_type,
                       tx_date,
                       branch_id,
-                      branch_name,
-                      is_favorite
+                      branch_name
                   FROM (
                       ${unionQueries.join('\nUNION ALL\n')}
                   ) tx
@@ -24901,7 +23780,6 @@
               const customerCode = normalizeCustomerCode(row.customer_code);
               const branchId = normalizeBranchId(row.branch_id);
               const branchName = normalizeBranchLabel(row.branch_name);
-              const isFavorite = normalizeFavoriteFlag(row.is_favorite);
               const aggregationKey = customerId > 0
                 ? `ID:${customerId}`
                 : customerCode
@@ -24919,8 +23797,7 @@
                   movements_count: 0,
                   last_tx_date: null,
                   branch_ids: new Set(),
-                  branch_labels: new Set(),
-                  is_favorite: 0
+                  branch_labels: new Set()
                 });
               }
       
@@ -24932,7 +23809,6 @@
               entry.customer_id = entry.customer_id || customerId;
               entry.customer_name = entry.customer_name || customerName;
               entry.customer_code = entry.customer_code || customerCode;
-              entry.is_favorite = Math.max(normalizeFavoriteFlag(entry.is_favorite), isFavorite);
               entry.branch_ids.add(branchId);
               entry.branch_labels.add(branchName);
               entry.movements_count += 1;
@@ -24959,12 +23835,6 @@
                 return normalizeNameKey(item.customer_name).includes(searchName)
                   || normalizeCustomerCode(item.customer_code).includes(searchName);
               })
-              .filter((item) => {
-                if (filters.favoriteFilter !== 'favorites') {
-                  return true;
-                }
-                return normalizeFavoriteFlag(item.is_favorite) === 1;
-              })
               .map((item) => {
                 const branchIds = Array.from(item.branch_ids);
                 const branchLabel = buildBranchLabel(item.branch_labels);
@@ -24979,8 +23849,7 @@
                   net_balance: normalizeNumber(item.net_balance),
                   movements_count: normalizeNumber(item.movements_count),
                   last_tx_date: item.last_tx_date || null,
-                  branch_label: branchLabel,
-                  is_favorite: normalizeFavoriteFlag(item.is_favorite)
+                  branch_label: branchLabel
                 };
               })
               .sort((left, right) => {
@@ -25048,11 +23917,6 @@
             customersWithOutstandingBalance,
             highestBalance
           };
-        }
-      
-        function formatCustomerName(item) {
-          const customerName = item.customer_name || 'غير محدد';
-          return Number(item.is_favorite || 0) === 1 ? `★ ${customerName}` : customerName;
         }
       
         async function generatePostpaidSalesReportHtml(data) {
@@ -25237,7 +24101,7 @@
                               <tr>
                                   <td style="text-align: center;">${index + 1}</td>
                                   <td style="text-align: center;">${item.customer_code || '-'}</td>
-                                  <td>${formatCustomerName(item)}</td>
+                                  <td>${item.customer_name || 'غير محدد'}</td>
                                   <td class="amount-postpaid" style="text-align: center;">${formatDecimal(item.total_postpaid)}</td>
                                   <td class="amount-receipt" style="text-align: center;">${formatDecimal(item.total_receipts)}</td>
                                   <td class="${balanceClass}" style="text-align: center;">${formatDecimal(netBalance)}</td>
@@ -25289,7 +24153,7 @@
             rows: data.map((item, index) => [
               index + 1,
               item.customer_code || '-',
-              formatCustomerName(item),
+              item.customer_name || 'غير محدد',
               formatDecimal(item.total_postpaid),
               formatDecimal(item.total_receipts),
               formatDecimal(item.net_balance),
@@ -25333,10 +24197,6 @@
         function getSelectedReportMode() {
           const modeField = getElement('postpaidSalesReportMode');
           return normalizeReportMode(modeField ? modeField.value : DEFAULT_REPORT_MODE);
-        }
-      
-        function getSelectedFavoriteFilter() {
-          return getElement('postpaidSalesFavoriteFilter')?.value === 'favorites' ? 'favorites' : 'all';
         }
       
         function applyPostpaidSalesReportModeUi(reportMode) {
@@ -25409,7 +24269,6 @@
             searchName: (getElement('postpaidSalesSearchName')?.value || '').trim(),
             cashierFilter: getElement('postpaidSalesCashierFilter')?.value || '',
             branchFilter: getElement('postpaidSalesBranchFilter')?.value || '',
-            favoriteFilter: getSelectedFavoriteFilter(),
             dateFrom: isPeriodMode ? (getElement('postpaidSalesDateFrom')?.value || '') : '',
             dateTo: isPeriodMode ? (getElement('postpaidSalesDateTo')?.value || '') : ''
           };
@@ -25421,13 +24280,11 @@
           const searchInput = getElement('postpaidSalesSearchName');
           const cashierSelect = getElement('postpaidSalesCashierFilter');
           const branchSelect = getElement('postpaidSalesBranchFilter');
-          const favoriteSelect = getElement('postpaidSalesFavoriteFilter');
           const modeSelect = getElement('postpaidSalesReportMode');
       
           if (searchInput) searchInput.value = '';
           if (cashierSelect) cashierSelect.value = '';
           if (branchSelect) branchSelect.value = '';
-          if (favoriteSelect) favoriteSelect.value = 'all';
           if (modeSelect) {
             modeSelect.value = DEFAULT_REPORT_MODE;
           }
@@ -25500,9 +24357,6 @@
             const searchTerm = filters.searchName.toLowerCase();
             filteredData = filteredData.filter((item) => item.customer_name.toLowerCase().includes(searchTerm));
           }
-          if (filters.favoriteFilter === 'favorites') {
-            filteredData = filteredData.filter((item) => Number(item?.is_favorite || 0) === 1);
-          }
           logger.log(`🔍 [POSTPAID-SALES] تم تصفية البيانات: ${filteredData.length} من ${data.length} سجل`);
           return filteredData;
         }
@@ -25533,14 +24387,11 @@
               : 'فرع محدد';
             filterInfo += `الفرع: ${branchName} | `;
           }
-          if (filters.favoriteFilter === 'favorites') {
-            filterInfo += 'نطاق العملاء: المفضلة فقط | ';
-          }
           return filterInfo.replace(/ \| $/, '');
         }
       
         function buildExcelFilterInfo(filters) {
-          if (!filters.searchName && !filters.dateFrom && !filters.dateTo && !filters.cashierFilter && !filters.branchFilter && filters.favoriteFilter !== 'favorites') {
+          if (!filters.searchName && !filters.dateFrom && !filters.dateTo && !filters.cashierFilter && !filters.branchFilter) {
             return 'جميع البيانات';
           }
           return buildFilterInfo(filters);
@@ -25570,9 +24421,6 @@
         const state = context.state;
         const itemsPerPage = context.itemsPerPage || 20;
         const logger = context.logger || console;
-        const windowObj = context.windowObj || globalThis;
-        const getPostpaidSalesReportFilters = context.getPostpaidSalesReportFilters || (() => ({}));
-        let rowActionsBound = false;
       
         function normalizeNumber(value) {
           const numericValue = Number(value);
@@ -25597,97 +24445,6 @@
             customersWithOutstandingBalance,
             highestBalance
           };
-        }
-      
-        function buildCustomerNameCell(item) {
-          const customerName = item.customer_name || 'غير محدد';
-          if (Number(item.is_favorite || 0) !== 1) {
-            return customerName;
-          }
-          return `<span class="text-warning" title="عميل مفضل"><i class="bi bi-star-fill"></i></span> ${customerName}`;
-        }
-      
-        function escapeAttr(value) {
-          return String(value == null ? '' : value)
-            .replace(/&/g, '&amp;')
-            .replace(/"/g, '&quot;')
-            .replace(/'/g, '&#39;')
-            .replace(/</g, '&lt;')
-            .replace(/>/g, '&gt;');
-        }
-      
-        function normalizeCustomerStatementPayload(item = {}) {
-          const filters = getPostpaidSalesReportFilters();
-          return {
-            customer_id: Number(item.customer_id || 0) || 0,
-            customer_name: String(item.customer_name || '').trim(),
-            customer_code: String(item.customer_code || '').trim(),
-            branch_id: Number(item.branch_id || 0) || 0,
-            branch_label: String(item.branch_label || item.branch_name || '').trim(),
-            report_filters: {
-              reportMode: filters.reportMode || 'current_balance',
-              dateFrom: filters.reportMode === 'period_activity' ? (filters.dateFrom || '') : '',
-              dateTo: filters.reportMode === 'period_activity' ? (filters.dateTo || '') : '',
-              branchFilter: filters.branchFilter || '',
-              cashierFilter: filters.cashierFilter || ''
-            }
-          };
-        }
-      
-        async function openCustomerStatementFromReportIndex(index) {
-          const rowIndex = Number(index);
-          const item = Array.isArray(state.currentData) && Number.isInteger(rowIndex)
-            ? state.currentData[rowIndex]
-            : null;
-      
-          if (!item) {
-            return false;
-          }
-      
-          const opener = windowObj && windowObj.openCustomerLedgerStatementFromReport;
-          if (typeof opener !== 'function') {
-            logger.warn('⚠️ [POSTPAID-SALES] لم يتم العثور على دالة فتح كشف العميل من التقرير');
-            return false;
-          }
-      
-          await opener(normalizeCustomerStatementPayload(item));
-          return true;
-        }
-      
-        function setupPostpaidSalesReportRowActions() {
-          const tableBody = doc.getElementById('postpaidSalesReportTableBody');
-          if (!tableBody || rowActionsBound || typeof tableBody.addEventListener !== 'function') {
-            return;
-          }
-      
-          rowActionsBound = true;
-      
-          tableBody.addEventListener('dblclick', (event) => {
-            const row = event.target && typeof event.target.closest === 'function'
-              ? event.target.closest('tr[data-postpaid-report-index]')
-              : null;
-            if (!row) {
-              return;
-            }
-            openCustomerStatementFromReportIndex(row.dataset.postpaidReportIndex);
-          });
-      
-          tableBody.addEventListener('click', (event) => {
-            const button = event.target && typeof event.target.closest === 'function'
-              ? event.target.closest('[data-postpaid-report-action="open-customer-statement"]')
-              : null;
-            if (!button) {
-              return;
-            }
-            if (typeof event.preventDefault === 'function') {
-              event.preventDefault();
-            }
-            const row = button.closest('tr[data-postpaid-report-index]');
-            if (!row) {
-              return;
-            }
-            openCustomerStatementFromReportIndex(row.dataset.postpaidReportIndex);
-          });
         }
       
         function displayPostpaidSalesReportResults(data) {
@@ -25775,7 +24532,6 @@
               <th>الفرع/الفروع</th>
               <th>عدد الحركات</th>
               <th>آخر حركة</th>
-              <th>كشف الحساب</th>
           `;
       
           const startIndex = (state.currentPage - 1) * itemsPerPage;
@@ -25790,36 +24546,21 @@
             const balanceClass = netBalance > 0 ? 'text-danger' : netBalance < 0 ? 'text-success' : 'text-muted';
       
               tableRows += `
-                  <tr class="postpaid-sales-report-row"
-                      data-postpaid-report-index="${startIndex + index}"
-                      data-customer-id="${escapeAttr(item.customer_id || '')}"
-                      data-customer-code="${escapeAttr(item.customer_code || '')}"
-                      data-customer-name="${escapeAttr(item.customer_name || '')}"
-                      data-branch-id="${escapeAttr(item.branch_id || '')}"
-                      title="اضغط مرتين لفتح كشف الحساب">
+                  <tr>
                       <td>${rowNumber}</td>
                       <td class="customer-code-cell">${item.customer_code || '-'}</td>
-                      <td>${buildCustomerNameCell(item)}</td>
+                      <td>${item.customer_name || 'غير محدد'}</td>
                       <td class="text-end">${formatDecimal(item.total_postpaid)}</td>
                       <td class="text-end">${formatDecimal(item.total_receipts)}</td>
                       <td class="text-end ${balanceClass}"><strong>${formatDecimal(netBalance)}</strong></td>
                       <td>${item.branch_label || 'غير محدد'}</td>
                       <td class="text-center">${item.movements_count || 0}</td>
                       <td>${lastTransactionDate}</td>
-                      <td class="text-center">
-                          <button type="button"
-                                  class="btn btn-sm btn-outline-primary"
-                                  data-postpaid-report-action="open-customer-statement"
-                                  title="فتح كشف الحساب">
-                              <i class="bi bi-journal-text"></i> كشف
-                          </button>
-                      </td>
                   </tr>
               `;
           });
       
           tableBody.innerHTML = tableRows;
-          setupPostpaidSalesReportRowActions();
       
           const totalItems = data.length;
           const startItem = totalItems === 0 ? 0 : startIndex + 1;
@@ -25905,7 +24646,6 @@
         const formatDate = deps.formatDate;
         const logger = deps.logger || console;
         const itemsPerPage = deps.itemsPerPage || 20;
-        const windowObj = deps.windowObj || globalThis;
       
         const state = {
           currentData: [],
@@ -25924,11 +24664,6 @@
             totalReceipts: data.reduce((sum, item) => sum + normalizeNumber(item.total_receipts), 0),
             totalNetBalance: data.reduce((sum, item) => sum + normalizeNumber(item.net_balance), 0)
           };
-        }
-      
-        function formatFavoriteCustomerName(item) {
-          const customerName = item.customer_name || 'غير محدد';
-          return Number(item.is_favorite || 0) === 1 ? `★ ${customerName}` : customerName;
         }
       
         function getSelectedFilterLabel(selectId, fallbackLabel) {
@@ -25957,7 +24692,7 @@
           filterInfo
         }) {
           const rows = data.map((item) => ({
-            customerName: formatFavoriteCustomerName(item),
+            customerName: item.customer_name || 'غير محدد',
             customerCode: item.customer_code || '',
             netBalance: normalizeNumber(item.net_balance),
             totalPostpaid: normalizeNumber(item.total_postpaid),
@@ -26047,13 +24782,11 @@
       
         const renderHelpers = createPostpaidSalesReportRenderHelpers({
           document: doc,
-          windowObj,
           formatDecimal,
           formatDate,
           state,
           itemsPerPage,
-          logger,
-          getPostpaidSalesReportFilters: filterHelpers.getPostpaidSalesReportFilters
+          logger
         });
       
         const exportBuilders = createPostpaidSalesReportExportBuilders({
@@ -31868,7 +30601,6 @@
       const { createReconciliationSaveResetHelpers } = require('./reconciliation-save-reset-helpers');
       const { getEffectiveFormulaSettingsFromDocument } = require('./reconciliation-formula');
       const { mapDbErrorMessage } = require('./db-error-messages');
-      const { getConfiguredSyncApiUrl } = require('./sync-server-url');
       
       function createReconciliationSaveResetHandlers(deps) {
         const doc = deps.document;
@@ -32158,19 +30890,6 @@
             return;
           }
       
-          if (Array.isArray(currentReconciliation.__requestImportFailures)
-            && currentReconciliation.__requestImportFailures.length > 0) {
-            logger.error('❌ [SAVE] Blocked save of an incompletely imported request', {
-              reconciliation_id: currentReconciliation.id,
-              failed_items: currentReconciliation.__requestImportFailures.length
-            });
-            dialogUtils.showError(
-              'لم تُحمَّل جميع بنود طلب التصفية. لا يمكن حفظها أو إغلاق الطلب قبل إعادة استيراد جميع البنود بنجاح.',
-              'طلب غير مكتمل'
-            );
-            return;
-          }
-      
           const isRecalled = isRecalledReconciliation(currentReconciliation);
       
           const validation = validateReconciliationBeforeSave();
@@ -32350,16 +31069,11 @@
               logger.log(`✅ [SAVE] Request ${reqId} marked as completed in local DB.`);
       
               if (await isSyncEnabled()) {
-                const statusUrl = await getConfiguredSyncApiUrl(ipc, '/api/sync/update-status');
-                if (statusUrl) {
-                  fetchFn(statusUrl, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ id: reqId, status: 'completed' })
-                  }).catch(() => {});
-                } else {
-                  logger.warn?.('⚠️ [SAVE] Sync server URL is not configured; skipping remote request status update.');
-                }
+                fetchFn('http://localhost:4000/api/sync/update-status', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ id: reqId, status: 'completed' })
+                }).catch(() => {});
               } else {
                 logger.log('⛔ [SAVE] Sync disabled - skipping server notification');
               }
@@ -36374,7 +35088,6 @@
         const applyTheme = deps.applyTheme;
         const logger = deps.logger || console;
         const bankFeeUiHelpers = createBankFeeSettingsUiHelpers({ document });
-        const MAX_SYNC_SERVER_URL_HISTORY = 8;
       
         function normalizeThemeSelection(theme) {
           const normalizedTheme = String(theme || '').trim().toLowerCase();
@@ -36412,89 +35125,6 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
-        }
-      
-        function normalizeSyncServerOrigin(rawValue) {
-          const candidate = String(rawValue || '').trim();
-          if (!candidate) {
-            return '';
-          }
-      
-          let parsedUrl;
-          try {
-            parsedUrl = new URL(candidate);
-          } catch (_error) {
-            return '';
-          }
-      
-          if (parsedUrl.protocol !== 'https:' || parsedUrl.pathname !== '/' || parsedUrl.search || parsedUrl.hash) {
-            return '';
-          }
-      
-          return parsedUrl.origin;
-        }
-      
-        function parseSyncServerUrlHistory(rawValue) {
-          if (!rawValue) {
-            return [];
-          }
-      
-          try {
-            const parsed = JSON.parse(rawValue);
-            if (!Array.isArray(parsed)) {
-              return [];
-            }
-      
-            return parsed
-              .map((url) => normalizeSyncServerOrigin(url))
-              .filter(Boolean)
-              .filter((url, index, urls) => urls.indexOf(url) === index)
-              .slice(0, MAX_SYNC_SERVER_URL_HISTORY);
-          } catch (_error) {
-            return [];
-          }
-        }
-      
-        function buildSyncServerUrlHistory(activeUrl, savedUrls = []) {
-          return [activeUrl, ...savedUrls]
-            .map((url) => normalizeSyncServerOrigin(url))
-            .filter(Boolean)
-            .filter((url, index, urls) => urls.indexOf(url) === index)
-            .slice(0, MAX_SYNC_SERVER_URL_HISTORY);
-        }
-      
-        function renderSavedSyncServerUrls(settings) {
-          const select = document.getElementById('savedSyncServerUrls');
-          const input = document.getElementById('syncServerUrl');
-          if (!select) {
-            return;
-          }
-      
-          const urls = buildSyncServerUrlHistory(
-            settings.sync_server_url,
-            parseSyncServerUrlHistory(settings.sync_server_url_history)
-          );
-      
-          select.onchange = () => {
-            if (select.value && input) {
-              input.value = select.value;
-            }
-          };
-      
-          if (urls.length === 0) {
-            select.innerHTML = '<option value="">لا توجد روابط محفوظة بعد</option>';
-            select.disabled = true;
-            select.value = '';
-            return;
-          }
-      
-          select.disabled = false;
-          select.innerHTML = '<option value="">اختر رابطاً محفوظاً...</option>'
-            + urls.map((url) => {
-              const safeUrl = escapeHtml(url);
-              return `<option value="${safeUrl}">${safeUrl}</option>`;
-            }).join('');
-          select.value = '';
         }
       
         function displayCompanyLogo(base64Data) {
@@ -36804,11 +35434,6 @@
             const companyAddressField = document.getElementById('companyAddress');
             if (companyAddressField) companyAddressField.value = settings.company_address || '';
           }
-          if (Object.prototype.hasOwnProperty.call(settings, 'sync_server_url')) {
-            const syncServerUrlField = document.getElementById('syncServerUrl');
-            if (syncServerUrlField) syncServerUrlField.value = settings.sync_server_url || '';
-          }
-          renderSavedSyncServerUrls(settings);
           if (Object.prototype.hasOwnProperty.call(settings, 'company_logo')) {
             displayCompanyLogo(settings.company_logo || '');
           }
@@ -37587,85 +36212,6 @@
       
       module.exports = {
         createSyncControl
-      };
-      
-    },
-    "src/app/sync-server-url.js": function rendererModule(module, exports, require) {
-      function normalizeSyncServerOrigin(rawValue) {
-        const candidate = String(rawValue || '').trim();
-        if (!candidate) {
-          return '';
-        }
-      
-        try {
-          const url = new URL(candidate);
-          if (url.protocol !== 'https:') {
-            return '';
-          }
-      
-          url.hash = '';
-          url.search = '';
-      
-          let pathname = url.pathname.replace(/\/+$/, '');
-          pathname = pathname
-            .replace(/\/api\/sync\/users$/i, '')
-            .replace(/\/api$/i, '')
-            .replace(/\/+$/, '');
-      
-          if (pathname && pathname !== '/') {
-            return '';
-          }
-      
-          return url.origin;
-        } catch (_error) {
-          return '';
-        }
-      }
-      
-      function normalizeApiPath(apiPath) {
-        const value = String(apiPath || '').trim();
-        if (!value) {
-          return '/';
-        }
-        return value.startsWith('/') ? value : `/${value}`;
-      }
-      
-      async function getConfiguredSyncServerOrigin(ipcRenderer) {
-        if (!ipcRenderer || typeof ipcRenderer.invoke !== 'function') {
-          return '';
-        }
-      
-        try {
-          const rows = await ipcRenderer.invoke(
-            'db-query',
-            `SELECT setting_value
-             FROM system_settings
-             WHERE category = 'general' AND setting_key = 'sync_server_url'
-             ORDER BY updated_at DESC, id DESC
-             LIMIT 1`,
-            []
-          );
-      
-          const row = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
-          return normalizeSyncServerOrigin(row?.setting_value);
-        } catch (_error) {
-          return '';
-        }
-      }
-      
-      async function getConfiguredSyncApiUrl(ipcRenderer, apiPath) {
-        const origin = await getConfiguredSyncServerOrigin(ipcRenderer);
-        if (!origin) {
-          return '';
-        }
-        return `${origin}${normalizeApiPath(apiPath)}`;
-      }
-      
-      module.exports = {
-        normalizeSyncServerOrigin,
-        normalizeApiPath,
-        getConfiguredSyncServerOrigin,
-        getConfiguredSyncApiUrl
       };
       
     },
@@ -41469,29 +40015,8 @@
               // إذا كان هناك اتصال، قم بمزامنة البيانات المخزنة محلياً
               console.log('🌐 متصل بالإنترنت - بدء المزامنة...');
               try {
-                  const result = await OfflineStorage.syncWithServer();
-                  if (result && result.success) {
-                      const syncedCount = Number(result.syncedCount || 0);
-                      const queuedCount = Number(result.queuedCount || 0);
-                      if (queuedCount > 0 || syncedCount > 0) {
-                          console.log(`✅ تمت مزامنة ${syncedCount} من ${queuedCount} عملية محلية`);
-                      } else {
-                          console.log('✅ لا توجد بيانات محلية معلقة للمزامنة');
-                      }
-                      return;
-                  }
-      
-                  if (result && result.reason === 'local_db_unavailable') {
-                      console.warn('⚠️ التخزين المحلي غير متاح حالياً؛ تم تجاوز مزامنة البيانات المحلية.');
-                      return;
-                  }
-      
-                  if (result && result.reason === 'sync_in_progress') {
-                      console.log('ℹ️ توجد مزامنة محلية قيد التنفيذ بالفعل');
-                      return;
-                  }
-      
-                  console.warn('⚠️ لم تكتمل مزامنة التخزين المحلي:', result);
+                  await OfflineStorage.syncWithServer();
+                  console.log('✅ تمت المزامنة بنجاح');
               } catch (error) {
                   console.error('❌ خطأ في المزامنة:', error);
                   // لا نوقف التطبيق، فقط نسجل الخطأ
@@ -41501,10 +40026,37 @@
           }
       }
       
-      // مهم: لا نحول حفظ التصفية إلى IndexedDB عند انقطاع الاتصال.
-      // مصدر الحقيقة في تطبيق سطح المكتب هو SQLite، والمزامنة الخلفية هي المسؤولة عن إرسال
-      // ما تم حفظه لاحقاً. المسار القديم كان يحفظ خارج SQLite بينما مزامنته غير مكتملة،
-      // وهذا قد يجعل التصفية لا تصل إلى الخادم أو يعلق زر الحفظ.
+      // تعديل الدوال الحالية لدعم العمل دون اتصال
+      const originalHandleSaveReconciliation = window.handleSaveReconciliation;
+      window.handleSaveReconciliation = async function() {
+          const OfflineStorage = require('./offline-storage');
+          
+          if (!OfflineStorage.isOnline()) {
+              console.log('📱 حفظ التصفية محلياً...');
+              try {
+                  // حفظ البيانات في التخزين المحلي
+                  await OfflineStorage.saveData('reconciliations', {
+                      ...currentReconciliation,
+                      bankReceipts,
+                      cashReceipts,
+                      postpaidSales,
+                      customerReceipts,
+                      returnInvoices,
+                      suppliers,
+                      systemSales: parseFloat(document.getElementById('systemSales').value) || 0
+                  });
+                  
+                  DialogUtils.showSuccessToast('تم حفظ التصفية محلياً. ستتم المزامنة عند عودة الاتصال.');
+                  
+              } catch (error) {
+                  console.error('❌ خطأ في الحفظ المحلي:', error);
+                  DialogUtils.showErrorToast('حدث خطأ أثناء الحفظ المحلي');
+              }
+          } else {
+              // استخدام الدالة الأصلية إذا كان هناك اتصال
+              return originalHandleSaveReconciliation.call(this);
+          }
+      };
       
     },
     "src/connection-status.js": function rendererModule(module, exports, require) {
@@ -42243,48 +40795,12 @@
           dbInitialized = false;
       }
       
-      function formatStorageError(error) {
-          if (!error) {
-              return '';
-          }
-      
-          const name = error.name ? String(error.name).trim() : '';
-          const message = error.message ? String(error.message).replace(/\s+/g, ' ').trim() : '';
-          return [name, message].filter(Boolean).join(': ') || String(error);
-      }
-      
       function logStorageUnavailableOnce(context, error) {
           if (storageUnavailableLogged) {
               return;
           }
           storageUnavailableLogged = true;
-          console.error(`❌ التخزين المحلي غير متاح (${context}): ${formatStorageError(error)}`);
-      }
-      
-      async function clearIndexedDbFromMainProcess() {
-          const clearOfflineStorage = typeof window !== 'undefined'
-              && window.electronAPI
-              && window.electronAPI.sync
-              && typeof window.electronAPI.sync.clearOfflineStorage === 'function'
-              ? window.electronAPI.sync.clearOfflineStorage
-              : null;
-      
-          if (!clearOfflineStorage) {
-              return false;
-          }
-      
-          try {
-              const result = await clearOfflineStorage();
-              if (result && result.success) {
-                  console.warn('✅ تم مسح تخزين IndexedDB المحلي من العملية الرئيسية');
-                  return true;
-              }
-              console.warn('⚠️ تعذر مسح IndexedDB من العملية الرئيسية:', result && result.error ? result.error : result);
-          } catch (error) {
-              console.warn(`⚠️ فشل طلب مسح IndexedDB من العملية الرئيسية: ${formatStorageError(error)}`);
-          }
-      
-          return false;
+          console.error(`❌ التخزين المحلي غير متاح (${context})`, error);
       }
       
       async function recoverCorruptedDatabase(originalError) {
@@ -42298,17 +40814,11 @@
               console.warn('⚠️ محاولة إصلاح قاعدة البيانات المحلية التالفة...');
               resetDatabaseHandle();
               const currentDbName = getOfflineDbName();
-              let currentDbDeleted = false;
       
               try {
                   await Dexie.delete(currentDbName);
-                  currentDbDeleted = true;
               } catch (deleteError) {
-                  console.warn(`⚠️ تعذر حذف قاعدة البيانات المحلية مباشرةً: ${formatStorageError(deleteError)}`);
-                  currentDbDeleted = await clearIndexedDbFromMainProcess();
-                  if (!currentDbDeleted && isLikelyIndexedDbCorruption(deleteError)) {
-                      return false;
-                  }
+                  console.warn('⚠️ تعذر حذف قاعدة البيانات المحلية مباشرةً:', deleteError);
               }
       
               try {
@@ -42326,10 +40836,6 @@
                   console.warn('✅ تمت إعادة إنشاء قاعدة البيانات المحلية بنجاح');
                   return true;
               } catch (openError) {
-                  if (currentDbDeleted) {
-                      throw openError;
-                  }
-      
                   const fallbackName = `${OFFLINE_DB_NAME}_recovered_${Date.now()}`;
                   console.warn('⚠️ محاولة إنشاء قاعدة بديلة:', fallbackName);
                   const fallbackDb = createOfflineDatabaseInstance(fallbackName);
@@ -42344,8 +40850,8 @@
               }
           } catch (recoveryError) {
               console.error('❌ فشل إصلاح قاعدة البيانات المحلية:', {
-                  originalError: formatStorageError(originalError),
-                  recoveryError: formatStorageError(recoveryError)
+                  originalError,
+                  recoveryError
               });
               return false;
           }
@@ -42697,7 +41203,6 @@
       
     }
   };
-
   const resolutionMap = {
     "src/app.js": {"./renderer-ipc":"src/renderer-ipc.js","./keyboard-shortcuts":"src/keyboard-shortcuts.js","./form-navigation":"src/form-navigation.js","./app/app-composition":"src/app/app-composition.js","./app/app-state":"src/app/app-state.js","./app/app-feature-deps":"src/app/app-feature-deps.js","./app/user-permissions":"src/app/user-permissions.js","./app/app-state-deps":"src/app/app-state-deps.js","./app/app-handler-bootstrap":"src/app/app-handler-bootstrap.js"},
     "src/app/accountant-management.js": {"./db-error-messages":"src/app/db-error-messages.js"},
@@ -42833,7 +41338,7 @@
     "src/app/reconciliation-operations.js": {"./reconciliation-operations-data":"src/app/reconciliation-operations-data.js","./reconciliation-operations-delete":"src/app/reconciliation-operations-delete.js","./reconciliation-operations-view":"src/app/reconciliation-operations-view.js","./reconciliation-operations-print":"src/app/reconciliation-operations-print.js"},
     "src/app/reconciliation-recall.js": {"./reconciliation-formula":"src/app/reconciliation-formula.js"},
     "src/app/reconciliation-save-reset-helpers.js": {"./reconciliation-formula":"src/app/reconciliation-formula.js"},
-    "src/app/reconciliation-save-reset.js": {"./reconciliation-save-reset-helpers":"src/app/reconciliation-save-reset-helpers.js","./reconciliation-formula":"src/app/reconciliation-formula.js","./db-error-messages":"src/app/db-error-messages.js","./sync-server-url":"src/app/sync-server-url.js"},
+    "src/app/reconciliation-save-reset.js": {"./reconciliation-save-reset-helpers":"src/app/reconciliation-save-reset-helpers.js","./reconciliation-formula":"src/app/reconciliation-formula.js","./db-error-messages":"src/app/db-error-messages.js"},
     "src/app/reconciliation-state-controls.js": {"./reconciliation-formula":"src/app/reconciliation-formula.js","./fiscal-year":"src/app/fiscal-year.js"},
     "src/app/reconciliation-ui-actions.js": {"./reconciliation-ui-summary":"src/app/reconciliation-ui-summary.js","./reconciliation-ui-print-actions":"src/app/reconciliation-ui-print-actions.js","./reconciliation-ui-misc-actions":"src/app/reconciliation-ui-misc-actions.js"},
     "src/app/reconciliation-ui-misc-actions.js": {"./db-error-messages":"src/app/db-error-messages.js"},
@@ -42857,7 +41362,6 @@
     "src/app/sidebar-toggle.js": {},
     "src/app/supplier-dropdowns.js": {},
     "src/app/sync-control.js": {},
-    "src/app/sync-server-url.js": {},
     "src/app/system-settings-actions.js": {"./system-settings-save-actions":"src/app/system-settings-save-actions.js","./system-settings-reset-actions":"src/app/system-settings-reset-actions.js"},
     "src/app/system-settings-loader.js": {},
     "src/app/system-settings-reset-actions.js": {"./reconciliation-formula":"src/app/reconciliation-formula.js","./bank-fee-settings-ui":"src/app/bank-fee-settings-ui.js","./db-error-messages":"src/app/db-error-messages.js"},
@@ -42876,49 +41380,28 @@
     "src/offline-storage.js": {},
     "src/renderer-ipc.js": {}
   };
-
   const externalLoaders = {
     "dexie": function loadExternalModule(globalObject) {
       const resolved = globalObject && globalObject["Dexie"];
-      if (typeof resolved === 'undefined') {
-        throw new Error("External module dexie is not available on globalThis.Dexie");
-      }
+      if (typeof resolved === 'undefined') throw new Error("External module dexie is unavailable");
       return resolved;
     }
   };
-
   const moduleCache = Object.create(null);
-
   function requireModule(moduleId) {
-    if (moduleCache[moduleId]) {
-      return moduleCache[moduleId].exports;
-    }
-
+    if (moduleCache[moduleId]) return moduleCache[moduleId].exports;
     const factory = modules[moduleId];
-    if (typeof factory !== 'function') {
-      throw new Error(`Unknown bundled module: ${moduleId}`);
-    }
-
+    if (typeof factory !== 'function') throw new Error(`Unknown bundled module: ${moduleId}`);
     const module = { exports: {} };
     moduleCache[moduleId] = module;
-
     function localRequire(request) {
-      if (externalLoaders[request]) {
-        return externalLoaders[request](globalObject);
-      }
-
-      const dependencies = resolutionMap[moduleId] || {};
-      const targetModuleId = dependencies[request];
-      if (!targetModuleId) {
-        throw new Error(`Cannot resolve ${request} from ${moduleId}`);
-      }
-
+      if (externalLoaders[request]) return externalLoaders[request](globalObject);
+      const targetModuleId = (resolutionMap[moduleId] || {})[request];
+      if (!targetModuleId) throw new Error(`Cannot resolve ${request} from ${moduleId}`);
       return requireModule(targetModuleId);
     }
-
     factory(module, module.exports, localRequire);
     return module.exports;
   }
-
   requireModule("src/app.js");
 }(typeof globalThis !== 'undefined' ? globalThis : window));
