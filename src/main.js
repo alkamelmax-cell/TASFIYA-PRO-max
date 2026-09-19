@@ -2770,6 +2770,7 @@ ipcMain.handle('merge-customers-atomic', async (event, payload = {}) => {
         const result = executeCustomerMerge(dbManager.db, payload);
         schedulePostSaveSync('customer-merge-atomic', [
             'customers',
+            'customer_identity_aliases',
             'postpaid_sales',
             'customer_receipts',
             'manual_postpaid_sales',

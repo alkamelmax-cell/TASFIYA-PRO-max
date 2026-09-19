@@ -6,6 +6,7 @@ const SYNC_RELEVANT_TABLES = [
   'atms',
   'branch_cashboxes',
   'customers',
+  'customer_identity_aliases',
   'cashbox_vouchers',
   'cashbox_voucher_audit_log',
   'reconciliations',

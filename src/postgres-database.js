@@ -161,6 +161,28 @@ class PostgresManager {
                 ON customers(sync_source_id, source_row_id)
                 WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL
             `);
+            await client.query(`
+                CREATE TABLE IF NOT EXISTS customer_identity_aliases (
+                    id SERIAL PRIMARY KEY,
+                    sync_source_id TEXT,
+                    source_row_id BIGINT,
+                    branch_id INTEGER NOT NULL,
+                    alias_customer_id INTEGER DEFAULT 0,
+                    alias_code TEXT DEFAULT '',
+                    alias_name TEXT DEFAULT '',
+                    canonical_customer_id INTEGER NOT NULL REFERENCES customers(id) ON DELETE RESTRICT,
+                    is_active INTEGER DEFAULT 1,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            `);
+            await client.query(`
+                CREATE UNIQUE INDEX IF NOT EXISTS idx_customer_identity_aliases_sync_source_row
+                ON customer_identity_aliases(sync_source_id, source_row_id)
+                WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL
+            `);
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customer_identity_aliases_branch_name ON customer_identity_aliases(branch_id, alias_name)');
+            await client.query('CREATE INDEX IF NOT EXISTS idx_customer_identity_aliases_canonical ON customer_identity_aliases(canonical_customer_id)');
             await client.query('ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_id INTEGER');
             await client.query("ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS customer_code TEXT DEFAULT ''");
             await client.query('ALTER TABLE customer_receipts ADD COLUMN IF NOT EXISTS customer_id INTEGER');

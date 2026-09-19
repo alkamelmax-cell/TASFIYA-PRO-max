@@ -3253,7 +3253,26 @@ class LocalWebServer {
                 `,
                 params
             );
-            return uniqueCustomerAliasRows(result.rows || []);
+            const explicitAliasResult = await pool.query(
+                `
+                    SELECT target.id AS id, target.customer_name AS customer_name,
+                           target.customer_code AS customer_code, target.branch_id AS branch_id,
+                           aliases.alias_name AS matched_customer_name,
+                           aliases.alias_code AS matched_customer_code,
+                           aliases.alias_customer_id AS matched_customer_id,
+                           target.id AS merged_into_customer_id
+                    FROM customer_identity_aliases aliases
+                    JOIN customers target ON target.id = aliases.canonical_customer_id
+                    WHERE COALESCE(aliases.is_active, 1) = 1
+                      AND BTRIM(COALESCE(aliases.alias_name, '')) <> ''
+                      AND COALESCE(target.is_active, 1) = 1
+                      AND COALESCE(target.merged_into_customer_id, 0) = 0
+                      ${normalizedBranchId ? 'AND COALESCE(aliases.branch_id, target.branch_id, 0) = $1' : ''}
+                    ORDER BY aliases.alias_name ASC, target.customer_code ASC, aliases.id ASC
+                `,
+                params
+            );
+            return uniqueCustomerAliasRows((result.rows || []).concat(explicitAliasResult.rows || []));
         }
 
         const branchFilter = normalizedBranchId
@@ -5146,6 +5165,7 @@ class LocalWebServer {
                 };
 
                 const scopedSyncTables = new Set([
+                    'customer_identity_aliases',
                     'reconciliations',
                     'cash_receipts',
                     'bank_receipts',
@@ -5466,6 +5486,14 @@ class LocalWebServer {
                     } catch (sequenceError) {
                         console.warn('⚠️ [SYNC] customers sequence refresh failed:', sequenceError.message);
                     }
+                }
+
+                if (data.customer_identity_aliases) {
+                    await syncSourceScopedTable('customer_identity_aliases', data.customer_identity_aliases, [
+                        { name: 'id' }, { name: 'branch_id' }, { name: 'alias_customer_id' },
+                        { name: 'alias_code' }, { name: 'alias_name' }, { name: 'canonical_customer_id' },
+                        { name: 'is_active' }, { name: 'created_at' }, { name: 'updated_at' }
+                    ]);
                 }
 
                 if (data.accountants) {

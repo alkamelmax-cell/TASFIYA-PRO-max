@@ -39,8 +39,10 @@ const SYNC_META_KEYS = {
     lastMirrorCleanupAt: 'background-sync:last-mirror-cleanup-at',
     lastRequestPullAt: 'background-sync:requests:last-pull-at',
     lastRequestFullPullAt: 'background-sync:requests:last-full-pull-at',
-    lastRequestId: 'background-sync:requests:last-id'
+    lastRequestId: 'background-sync:requests:last-id',
+    customerAliasProtocol: 'background-sync:customer-alias-protocol'
 };
+const CUSTOMER_ALIAS_PROTOCOL_VERSION = '1';
 
 const MIRROR_ID_TABLES = [
     'reconciliations',
@@ -59,6 +61,7 @@ const MIRROR_ID_TABLES = [
 ];
 
 const SYNC_TABLE_DEPENDENCIES = {
+    customer_identity_aliases: ['customers'],
     branch_cashboxes: ['branches'],
     cashbox_vouchers: ['branches', 'cashiers', 'branch_cashboxes', 'reconciliations'],
     cashbox_voucher_audit_log: ['cashbox_vouchers'],
@@ -429,6 +432,24 @@ class BackgroundSync {
         }
 
         return changedRemote || legacyStateForAnotherRemote;
+    }
+
+    // The first run after adding canonical aliases must publish the already
+    // merged customers too. Otherwise historical merges would wait for a new
+    // edit or for the weekly full refresh before reaching the web server.
+    ensureCustomerAliasProtocol(db) {
+        if (this.readSyncMeta(db, SYNC_META_KEYS.customerAliasProtocol) === CUSTOMER_ALIAS_PROTOCOL_VERSION) {
+            return false;
+        }
+        try {
+            db.prepare("DELETE FROM sync_row_state WHERE table_name IN ('customers', 'customer_identity_aliases')").run();
+            this.writeSyncMeta(db, SYNC_META_KEYS.customerAliasProtocol, CUSTOMER_ALIAS_PROTOCOL_VERSION);
+            console.log('🪪 [SYNC] Publishing canonical customer aliases to the server.');
+            return true;
+        } catch (error) {
+            console.warn('⚠️ [SYNC] Could not reset the customer alias sync baseline:', error.message);
+            return false;
+        }
     }
 
     loadRowStateMap(db, tableName) {
@@ -1177,10 +1198,12 @@ class BackgroundSync {
     async pushLocalData(db, options = {}) {
         const stateAvailable = this.ensureSyncStateSchema(db);
         const remoteScopeReset = stateAvailable ? this.ensureRemoteSyncScope(db) : false;
+        const customerAliasProtocolChanged = stateAvailable ? this.ensureCustomerAliasProtocol(db) : false;
         const forceFullRefresh = Boolean(options.forceFullRefresh);
         const fullRefresh = forceFullRefresh
             || !stateAvailable
             || remoteScopeReset
+            || customerAliasProtocolChanged
             || this.isIntervalDue(db, SYNC_META_KEYS.lastFullRefreshAt, FULL_REFRESH_INTERVAL_MS);
         const cleanupDue = !stateAvailable
             || (!remoteScopeReset && (
@@ -1196,6 +1219,7 @@ class BackgroundSync {
             { key: 'atms', query: 'SELECT * FROM atms', batchSize: DEFAULT_SYNC_BATCH_SIZE },
             { key: 'branch_cashboxes', query: 'SELECT * FROM branch_cashboxes', batchSize: DEFAULT_SYNC_BATCH_SIZE },
             { key: 'customers', query: 'SELECT * FROM customers ORDER BY id ASC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
+            { key: 'customer_identity_aliases', query: 'SELECT * FROM customer_identity_aliases ORDER BY id ASC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
             { key: 'cashbox_vouchers', query: 'SELECT * FROM cashbox_vouchers ORDER BY id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
             { key: 'cashbox_voucher_audit_log', query: 'SELECT * FROM cashbox_voucher_audit_log ORDER BY id DESC', batchSize: DEFAULT_SYNC_BATCH_SIZE },
             { key: 'reconciliations', query: 'SELECT * FROM reconciliations ORDER BY id DESC', batchSize: RECONCILIATION_SYNC_BATCH_SIZE },
