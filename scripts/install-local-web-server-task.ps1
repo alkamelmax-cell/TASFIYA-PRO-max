@@ -48,9 +48,10 @@ $config = [ordered]@{
 } | ConvertTo-Json
 [System.IO.File]::WriteAllText($configPath, $config, [System.Text.UTF8Encoding]::new($false))
 
-# The password is intentionally outside Git and is readable only by the
-# service account and Administrators.
-& icacls.exe $configPath '/inheritance:r' '/grant:r' 'SYSTEM:(R)' 'Administrators:(R)' | Out-Null
+# The password is intentionally outside Git. SYSTEM runs the service, while
+# local Administrators retain full control so a future server release can
+# safely update the non-secret application path without taking ownership.
+& icacls.exe $configPath '/inheritance:r' '/grant:r' 'SYSTEM:(R)' 'Administrators:(F)' | Out-Null
 if ($LASTEXITCODE -ne 0) { throw 'Could not secure the web server configuration file.' }
 
 $actionArguments = "-NoProfile -ExecutionPolicy Bypass -File `"$runnerPath`" -ConfigPath `"$configPath`""
