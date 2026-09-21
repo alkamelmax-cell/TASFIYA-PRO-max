@@ -159,7 +159,11 @@ try {
     $redirect = "module.exports = require('../.web-feature-releases/$stamp/src/local-server.js');`r`n"
     $temporaryModule = Join-Path $targetRoot "src\local-server.$stamp.new"
     [IO.File]::WriteAllText($temporaryModule, $redirect, [Text.UTF8Encoding]::new($false))
-    [IO.File]::Replace($temporaryModule, $modulePath, $null)
+    # File.Replace requires a valid backup path on Windows PowerShell; passing
+    # $null selects an invalid overload and fails after preflight. Keep the
+    # rollback copy and provide a second valid replacement backup path.
+    $replaceBackup = Join-Path $privateRoot 'local-server.replace-backup.js'
+    [IO.File]::Replace($temporaryModule, $modulePath, $replaceBackup, $true)
     $switched = $true
     $runner = Join-Path $releaseRoot 'scripts\run-web-features.ps1'
     $action = New-ScheduledTaskAction -Execute (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$runner`" -ConfigPath `"$newConfigPath`"" -WorkingDirectory $targetRoot
