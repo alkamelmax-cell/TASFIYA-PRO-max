@@ -4028,13 +4028,25 @@ class LocalWebServer {
                     : null;
                 const sameCanonicalName = canonicalCustomer
                     && isCustomerNameMatchOrAlias(canonicalCustomer, customerName);
-                if (!customerCode || !canonicalCustomer || !sameCanonicalName) {
-                    const error = new Error(`customer_selection_required:${customerName || 'unknown'}`);
-                    error.statusCode = 422;
-                    throw error;
-                }
                 const sourceCustomerRef = normalizeCustomerNameValue(item.source_customer_ref).slice(0, 180)
                     || `${requestKey || 'legacy'}:${section}:${index}`;
+
+                // A sender is allowed to submit the reconciliation even when its
+                // customer code/name is stale, merged, or not yet present in the
+                // accountant registry. Keep the original identity in the pending
+                // request; the accountant resolves it later without blocking the
+                // financial submission.
+                if (!customerCode || !canonicalCustomer || !sameCanonicalName) {
+                    return {
+                        ...item,
+                        customer_id: null,
+                        customer_name: customerName,
+                        customer_code: customerCode,
+                        branch_id: normalizePositiveInteger(item.branch_id) || branchId || null,
+                        customer_identity_mode: 'unresolved',
+                        source_customer_ref: sourceCustomerRef
+                    };
+                }
                 return {
                     ...item,
                     customer_id: null,
