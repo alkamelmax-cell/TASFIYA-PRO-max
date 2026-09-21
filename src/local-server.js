@@ -103,6 +103,18 @@ function normalizeCustomerNameValue(value) {
     return String(value == null ? '' : value).replace(/\uFFFD/g, '').replaceAll('\u0000', '').trim();
 }
 
+// Customer codes are authoritative; this key only tolerates harmless Arabic
+// spelling/diacritic differences around an already unique code.
+function normalizeCustomerLooseNameKey(value) {
+    return normalizeCustomerNameValue(value)
+        .toLowerCase()
+        .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+        .replace(/[إأآا]/g, 'ا')
+        .replace(/[ىي]/g, 'ي')
+        .replace(/ة/g, 'ه')
+        .replace(/\s+/g, '');
+}
+
 function normalizeCustomerCodeValue(value) {
     const normalized = String(value == null ? '' : value).trim().toUpperCase();
     return ['', '-', '–', '—'].includes(normalized) ? '' : normalized;
@@ -200,6 +212,8 @@ function isCustomerNameMatchOrAlias(customer, name) {
     return (
         normalizeCustomerNameValue(customer?.customer_name) === normalizedName
         || normalizeCustomerNameValue(customer?.matched_customer_name) === normalizedName
+        || normalizeCustomerLooseNameKey(customer?.customer_name) === normalizeCustomerLooseNameKey(normalizedName)
+        || normalizeCustomerLooseNameKey(customer?.matched_customer_name) === normalizeCustomerLooseNameKey(normalizedName)
     );
 }
 
@@ -4013,7 +4027,7 @@ class LocalWebServer {
                     ? await this.findCustomerByCode(customerCode)
                     : null;
                 const sameCanonicalName = canonicalCustomer
-                    && normalizeCustomerNameValue(canonicalCustomer.customer_name) === customerName;
+                    && isCustomerNameMatchOrAlias(canonicalCustomer, customerName);
                 if (!customerCode || !canonicalCustomer || !sameCanonicalName) {
                     const error = new Error(`customer_selection_required:${customerName || 'unknown'}`);
                     error.statusCode = 422;
@@ -4050,7 +4064,9 @@ class LocalWebServer {
             const branchId = await this.getCashierBranchId(effectiveCashierId);
             let customerRows = await this.listCustomerRowsForBranch(branchId);
             const compactResponse = isTruthyQueryValue(queryParams && queryParams.compact);
-            const includeAliases = isTruthyQueryValue(queryParams && queryParams.includeAliases);
+            const includeAliases = isTruthyQueryValue(queryParams && (
+                queryParams.include_aliases || queryParams.includeAliases
+            ));
 
             if (customerRows.length === 0) {
                 customerRows = await this.listTransactionCustomerRowsForBranch(branchId);
