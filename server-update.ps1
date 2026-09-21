@@ -11,6 +11,7 @@ $npm = Join-Path $env:ProgramFiles 'nodejs\npm.cmd'
 $wasRunning = $false
 $transcriptStarted = $false
 $transcriptPath = $null
+$configuredPort = 4000
 
 try {
     $logRoot = Join-Path $serverRoot '_update-logs'
@@ -178,6 +179,30 @@ function Invoke-Git {
     }
 }
 
+function Get-ConfiguredWebServerPort {
+    param([string]$ServerRoot)
+
+    $configCandidates = @(
+        (Join-Path $env:ProgramData 'TasfiyaPro\web-server.json'),
+        (Join-Path $ServerRoot 'web-server.json')
+    )
+    foreach ($configPath in $configCandidates) {
+        if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+            continue
+        }
+        try {
+            $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+            $port = 0
+            if ([int]::TryParse([string]$config.port, [ref]$port) -and $port -ge 1 -and $port -le 65535) {
+                return $port
+            }
+        } catch {
+            Write-Host "Could not read web-server port from $configPath; using port 4000." -ForegroundColor DarkYellow
+        }
+    }
+    return 4000
+}
+
 function New-UpdateBackup {
     param(
         [string]$ServerRoot,
@@ -254,6 +279,8 @@ try {
     }
 
     Set-Location $serverRoot
+    $configuredPort = Get-ConfiguredWebServerPort -ServerRoot $serverRoot
+    Write-Host "Configured web-server port: $configuredPort" -ForegroundColor DarkCyan
     $wasRunning = Stop-ManagedServerProcesses -TaskName $TaskName -ServerRoot $serverRoot
 
     $before = (& $git.Source rev-parse HEAD).Trim()
@@ -287,9 +314,9 @@ try {
     # Database migrations can take noticeably longer than a few seconds on a
     # fresh server or a remote PostgreSQL connection.  Do not misreport a
     # completed update as failed merely because the app is still booting.
-    $listeningPids = Wait-ForWebServer -Port 4000 -TimeoutSeconds 75
+    $listeningPids = Wait-ForWebServer -Port $configuredPort -TimeoutSeconds 75
     if ($listeningPids.Count -eq 0) {
-        throw 'The web server did not become ready on port 4000 within 75 seconds.'
+        throw "The web server did not become ready on port $configuredPort within 75 seconds."
     }
 
     Write-Host 'The web server was started successfully.' -ForegroundColor Green
