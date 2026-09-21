@@ -3214,6 +3214,7 @@ class LocalWebServer {
                     SELECT id, customer_name, customer_code, branch_id, sync_source_id, source_row_id
                     FROM customers
                     WHERE BTRIM(COALESCE(customer_name, '')) <> ''
+                    AND BTRIM(COALESCE(customer_code, '')) <> ''
                     AND COALESCE(is_active, 1) = 1
                     AND COALESCE(merged_into_customer_id, 0) = 0
                     ${whereBranch}
@@ -3231,6 +3232,7 @@ class LocalWebServer {
                 SELECT id, customer_name, customer_code, branch_id, sync_source_id, source_row_id
                 FROM customers
                 WHERE TRIM(COALESCE(customer_name, '')) <> ''
+                AND TRIM(COALESCE(customer_code, '')) <> ''
                 AND COALESCE(is_active, 1) = 1
                 AND COALESCE(merged_into_customer_id, 0) = 0
                 ${whereBranch}
@@ -4079,10 +4081,6 @@ class LocalWebServer {
             const includeAliases = isTruthyQueryValue(queryParams && (
                 queryParams.include_aliases || queryParams.includeAliases
             ));
-
-            if (customerRows.length === 0) {
-                customerRows = await this.listTransactionCustomerRowsForBranch(branchId);
-            }
 
             const customers = customerRows.map((row) => row.customer_name).filter(Boolean);
             const payload = {
