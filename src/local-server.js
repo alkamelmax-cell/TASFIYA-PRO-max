@@ -5359,6 +5359,151 @@ class LocalWebServer {
                     return result.rowCount || 0;
                 };
 
+                // Customers are also device-scoped. Their SQLite ids and generated
+                // customer codes are only unique inside one desktop installation.
+                // The old global-id upsert could therefore fail with a duplicate id
+                // or duplicate customer_code while approving a new customer request.
+                const syncCustomers = async (items = []) => {
+                    if (!Array.isArray(items) || items.length === 0) return;
+
+                    const columns = [
+                        'customer_code', 'customer_name', 'branch_id', 'phone', 'address',
+                        'is_favorite', 'is_active', 'merged_into_customer_id', 'merged_at',
+                        'created_at', 'updated_at'
+                    ];
+
+                    if (!sourceScopedSync) {
+                        return syncTable('customers', items, [
+                            { name: 'id' }, { name: 'customer_code' }, { name: 'customer_name' },
+                            { name: 'branch_id' }, { name: 'phone' }, { name: 'address' },
+                            { name: 'is_favorite', preserveIfNull: true }, { name: 'is_active', preserveIfNull: true },
+                            { name: 'merged_into_customer_id' }, { name: 'merged_at' },
+                            { name: 'created_at' }, { name: 'updated_at' }
+                        ]);
+                    }
+
+                    let successCount = 0;
+                    let errorCount = 0;
+                    const normalizedText = value => String(value ?? '').trim();
+                    const normalizedCode = value => normalizedText(value).toUpperCase();
+                    const normalizedName = value => normalizeCustomerNameValue(value);
+
+                    const codeOwner = async (code, excludedId = null) => {
+                        const normalized = normalizedCode(code);
+                        if (!normalized) return null;
+                        const params = [normalized];
+                        let sql = `SELECT id, customer_code, customer_name, branch_id,
+                                          sync_source_id, source_row_id
+                                   FROM customers
+                                   WHERE UPPER(TRIM(COALESCE(customer_code, ''))) = $1`;
+                        if (excludedId !== null) {
+                            params.push(excludedId);
+                            sql += ` AND id <> $${params.length}`;
+                        }
+                        sql += ' LIMIT 1';
+                        const result = await pool.query(sql, params);
+                        return result.rows?.[0] || null;
+                    };
+
+                    const makeAvailableCode = async (rawCode, localId) => {
+                        const base = normalizedText(rawCode) || `C-${localId}`;
+                        const sourceSuffix = normalizedText(syncSourceId).replace(/[^A-Za-z0-9]/g, '').slice(-10) || 'device';
+                        let candidate = `${base}-${sourceSuffix}-${localId}`;
+                        let attempt = 0;
+                        while (await codeOwner(candidate)) {
+                            attempt += 1;
+                            candidate = `${base}-${sourceSuffix}-${localId}-${attempt}`;
+                        }
+                        return candidate;
+                    };
+
+                    for (const item of items) {
+                        const localId = parseInteger(item?.id);
+                        if (localId === null || localId <= 0) {
+                            syncFailures.push({ table: 'customers', id: item?.id ?? null, error: 'Missing valid local source row id' });
+                            errorCount += 1;
+                            continue;
+                        }
+
+                        try {
+                            let existingResult = await pool.query(
+                                `SELECT id, customer_code, customer_name, branch_id
+                                 FROM customers
+                                 WHERE sync_source_id = $1 AND source_row_id = $2
+                                 LIMIT 1`,
+                                [syncSourceId, localId]
+                            );
+                            let existing = existingResult.rows?.[0] || null;
+                            let customerCode = normalizedText(item.customer_code);
+
+                            // If this is an old master row already present on the server,
+                            // adopt it only when its code and identity agree. Otherwise
+                            // never overwrite an unrelated server customer.
+                            if (!existing && customerCode) {
+                                const owner = await codeOwner(customerCode);
+                                const sameName = owner && normalizedName(owner.customer_name) === normalizedName(item.customer_name);
+                                const sameBranch = owner && (!item.branch_id || !owner.branch_id || Number(owner.branch_id) === Number(item.branch_id));
+                                if (owner && sameName && sameBranch) {
+                                    existing = owner;
+                                } else if (owner) {
+                                    customerCode = await makeAvailableCode(customerCode, localId);
+                                }
+                            }
+
+                            if (existing) {
+                                const conflictingOwner = await codeOwner(customerCode, Number(existing.id));
+                                // Keep the server's established code if a different
+                                // customer owns the incoming local code.
+                                if (conflictingOwner) {
+                                    customerCode = normalizedText(existing.customer_code);
+                                }
+                                await pool.query(
+                                    `UPDATE customers
+                                     SET sync_source_id = $1, source_row_id = $2,
+                                         customer_code = $3, customer_name = $4, branch_id = $5,
+                                         phone = $6, address = $7, is_favorite = $8, is_active = $9,
+                                         merged_into_customer_id = $10, merged_at = $11,
+                                         created_at = COALESCE($12, created_at),
+                                         updated_at = COALESCE($13, CURRENT_TIMESTAMP)
+                                     WHERE id = $14`,
+                                    [
+                                        syncSourceId, localId, customerCode, item.customer_name ?? '',
+                                        item.branch_id ?? null, item.phone ?? '', item.address ?? '',
+                                        item.is_favorite ?? 0, item.is_active ?? 1,
+                                        item.merged_into_customer_id ?? null, item.merged_at ?? null,
+                                        item.created_at ?? null, item.updated_at ?? null, Number(existing.id)
+                                    ]
+                                );
+                            } else {
+                                await pool.query(
+                                    `INSERT INTO customers (
+                                        sync_source_id, source_row_id, ${columns.join(', ')}
+                                     ) VALUES ($1, $2, ${columns.map((_, index) => `$${index + 3}`).join(', ')})`,
+                                    [
+                                        syncSourceId, localId,
+                                        customerCode, item.customer_name ?? '', item.branch_id ?? null,
+                                        item.phone ?? '', item.address ?? '', item.is_favorite ?? 0,
+                                        item.is_active ?? 1, item.merged_into_customer_id ?? null,
+                                        item.merged_at ?? null, item.created_at ?? null, item.updated_at ?? null
+                                    ]
+                                );
+                            }
+                            successCount += 1;
+                        } catch (error) {
+                            errorCount += 1;
+                            syncFailures.push({ table: 'customers', id: localId, error: error.message });
+                            console.error('❌ [SYNC] Customer row failed:', {
+                                source_id: syncSourceId,
+                                record_id: localId,
+                                code: error.code || null,
+                                message: error.message
+                            });
+                        }
+                    }
+
+                    console.log(`✅ [SYNC] customers: device-scoped upsert processed ${successCount} items.${errorCount ? ` Failed ${errorCount}.` : ''}`);
+                };
+
                 // Local SQLite ids are only unique inside one desktop installation.  This
                 // upsert keeps the PostgreSQL primary key canonical and uses the stable
                 // installation id + local row id as the idempotency key.
@@ -5494,13 +5639,7 @@ class LocalWebServer {
                 }
 
                 if (data.customers) {
-                    await syncTable('customers', data.customers, [
-                        { name: 'id' }, { name: 'customer_code' }, { name: 'customer_name' },
-                        { name: 'branch_id' }, { name: 'phone' }, { name: 'address' },
-                        { name: 'is_favorite', preserveIfNull: true }, { name: 'is_active', preserveIfNull: true },
-                        { name: 'merged_into_customer_id' }, { name: 'merged_at' },
-                        { name: 'created_at' }, { name: 'updated_at' }
-                    ]);
+                    await syncCustomers(data.customers);
                     try {
                         await this.refreshPostgresSerialSequence('customers');
                     } catch (sequenceError) {
