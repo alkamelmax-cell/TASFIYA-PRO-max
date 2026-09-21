@@ -699,7 +699,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-15.4',
+                        release: 'server-release-2026-09-21.reports.1',
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
@@ -967,6 +967,10 @@ class LocalWebServer {
         // Handle server errors (e.g. Port in use)
         this.server.on('error', (e) => {
             if (e.code === 'EADDRINUSE') {
+                if (process.env.TASFIYA_STRICT_PORT === '1') {
+                    console.error(`[WEB APP] Required port ${this.port} is already in use. Refusing to switch ports.`);
+                    process.exit(1);
+                }
                 console.log(`⚠️ [WEB APP] Port ${this.port} is in use, trying ${this.port + 1}...`);
                 this.port++;
                 this.server.listen(this.port);

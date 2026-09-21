@@ -5,9 +5,9 @@
 importScripts('https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.sw.js');
 
 // Service Worker for Tasfiya Pro PWA
-// Version: 4.14 - operational reports use the vector PDF engine and unified document viewer.
+// Version: 4.15 - restore the complete reports release on local PostgreSQL servers.
 
-const CACHE_NAME = 'tasfiya-pro-v4.14-operational-pdf';
+const CACHE_NAME = 'tasfiya-pro-v4.15-operational-pdf';
 const STATIC_ASSETS = [
     '/login.html',
     '/css/custom.css',

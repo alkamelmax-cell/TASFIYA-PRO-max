@@ -17,5 +17,5 @@ test('ATM and cashbox pages include view and share actions', () => {
 test('operational PDF client is network-first in the service worker', () => {
     const source = fs.readFileSync(path.join(root, 'service-worker.js'), 'utf8');
     assert.match(source, /operational-report-share\.js/);
-    assert.match(source, /v4\.14-operational-pdf/);
+    assert.match(source, /v4\.15-operational-pdf/);
 });
