@@ -6805,8 +6805,42 @@ class LocalWebServer {
             const id=Number(requestId);const sourceRowId=Number(data.customer_source_row_id||0);const decisionNote=normalizeCustomerNameValue(data.decision_note).slice(0,500);const reviewedBy=normalizeCustomerNameValue(data.reviewed_by||'تطبيق المحاسب').slice(0,120);const pool=this.dbManager.pool||(this.dbManager.db&&this.dbManager.db.pool);let canonicalCustomer=null;
             if(decision==='approved'){
                 if(!sourceRowId)return this.sendJson(res,{success:false,error:'هوية العميل المعتمد غير مكتملة'},{statusCode:400});
-                if(pool){const found=await pool.query('SELECT id,customer_code,customer_name,sync_source_id,source_row_id FROM customers WHERE sync_source_id=$1 AND source_row_id=$2 AND COALESCE(is_active,1)=1 LIMIT 1',[sourceId,sourceRowId]);canonicalCustomer=found.rows[0]||null;}else{canonicalCustomer=this.dbManager.db.prepare('SELECT id,customer_code,customer_name,sync_source_id,source_row_id FROM customers WHERE sync_source_id=? AND source_row_id=? AND COALESCE(is_active,1)=1 LIMIT 1').get(sourceId,sourceRowId)||null;}
-                if(!canonicalCustomer)return this.sendJson(res,{success:false,error:'لم تصل هوية العميل المعتمد إلى الخادم بعد؛ أعد المحاولة بعد المزامنة'},{statusCode:409});
+                if(pool){
+                    const found=await pool.query('SELECT id,customer_code,customer_name,sync_source_id,source_row_id FROM customers WHERE sync_source_id=$1 AND source_row_id=$2 AND COALESCE(is_active,1)=1 LIMIT 1',[sourceId,sourceRowId]);
+                    canonicalCustomer=found.rows[0]||null;
+
+                    // Fallback for older desktop builds or a delayed customer upload:
+                    // create the server identity from the pending request and attach
+                    // the same device/source row key. This keeps approval from being
+                    // blocked by a transient SYNC_PARTIAL_FAILURE.
+                    if(!canonicalCustomer){
+                        const requestResult=await pool.query('SELECT customer_name,customer_code,branch_id,phone FROM customer_creation_requests WHERE id=$1 AND status=\'pending\' LIMIT 1',[id]);
+                        const requestCustomer=requestResult.rows?.[0]||null;
+                        if(requestCustomer){
+                            const created=await this.createOrUpdateServerCustomer({
+                                customerName: requestCustomer.customer_name,
+                                customerCode: requestCustomer.customer_code||'',
+                                branchId: requestCustomer.branch_id
+                            });
+                            if(created?.id){
+                                await pool.query(
+                                    `UPDATE customers
+                                     SET sync_source_id=$1, source_row_id=$2,
+                                         phone=COALESCE(NULLIF($3,''),phone),
+                                         updated_at=CURRENT_TIMESTAMP
+                                     WHERE id=$4
+                                       AND (sync_source_id IS NULL OR (sync_source_id=$1 AND source_row_id=$2))`,
+                                    [sourceId,sourceRowId,requestCustomer.phone||'',Number(created.id)]
+                                );
+                                const linked=await pool.query('SELECT id,customer_code,customer_name,sync_source_id,source_row_id FROM customers WHERE id=$1 AND COALESCE(is_active,1)=1 LIMIT 1',[Number(created.id)]);
+                                canonicalCustomer=linked.rows?.[0]||null;
+                            }
+                        }
+                    }
+                }else{
+                    canonicalCustomer=this.dbManager.db.prepare('SELECT id,customer_code,customer_name,sync_source_id,source_row_id FROM customers WHERE sync_source_id=? AND source_row_id=? AND COALESCE(is_active,1)=1 LIMIT 1').get(sourceId,sourceRowId)||null;
+                }
+                if(!canonicalCustomer)return this.sendJson(res,{success:false,error:'تعذر إنشاء هوية العميل على الخادم؛ أعد المحاولة'},{statusCode:409});
             }
             let updated;
             if(pool){const result=await pool.query(`UPDATE customer_creation_requests SET status=$1,customer_id=$2,customer_code=$3,customer_sync_source_id=$4,customer_source_row_id=$5,decision_note=$6,reviewed_by=$7,reviewed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=$8 AND status='pending' RETURNING *`,[decision,canonicalCustomer?.id||null,canonicalCustomer?.customer_code||'',decision==='approved'?sourceId:null,canonicalCustomer?.source_row_id||null,decisionNote,reviewedBy,id]);updated=result.rows[0]||null;}else{const info=this.dbManager.db.prepare(`UPDATE customer_creation_requests SET status=?,customer_id=?,customer_code=?,customer_sync_source_id=?,customer_source_row_id=?,decision_note=?,reviewed_by=?,reviewed_at=CURRENT_TIMESTAMP,updated_at=CURRENT_TIMESTAMP WHERE id=? AND status='pending'`).run(decision,canonicalCustomer?.id||null,canonicalCustomer?.customer_code||'',decision==='approved'?sourceId:null,canonicalCustomer?.source_row_id||null,decisionNote,reviewedBy,id);updated=info.changes?this.dbManager.db.prepare('SELECT * FROM customer_creation_requests WHERE id=?').get(id):null;}
