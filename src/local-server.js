@@ -995,6 +995,8 @@ class LocalWebServer {
 
         this.server.listen(this.port, () => {
             console.log(`🌐 [WEB APP] Server running at http://localhost:${this.port}`);
+            const pushConfig = this.getOneSignalConfig();
+            console.log(`🔔 [PUSH] OneSignal config: app_id=${pushConfig.appId} api_key=${pushConfig.configured ? 'configured' : 'missing_or_invalid'}`);
         });
     }
 

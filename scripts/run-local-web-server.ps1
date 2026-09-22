@@ -32,6 +32,17 @@ New-Item -ItemType Directory -Path $logDirectory -Force | Out-Null
 $env:DATABASE_URL = $config.databaseUrl
 $env:TASFIYA_REQUIRE_LOCAL_POSTGRES = '1'
 $env:PORT = [string]$config.port
+# Optional notification settings may be stored in the protected server config.
+# If omitted, inherited machine-level environment variables remain in force.
+if (-not [string]::IsNullOrWhiteSpace([string]$config.oneSignalAppId)) {
+    $env:ONESIGNAL_APP_ID = [string]$config.oneSignalAppId
+}
+if (-not [string]::IsNullOrWhiteSpace([string]$config.oneSignalRestApiKey)) {
+    $env:ONESIGNAL_REST_API_KEY = [string]$config.oneSignalRestApiKey
+}
+if (-not [string]::IsNullOrWhiteSpace([string]$config.publicUrl)) {
+    $env:TASFIYA_PUBLIC_URL = [string]$config.publicUrl
+}
 Set-Location -LiteralPath $config.appPath
 
 # Keep the service alive and keep ordinary Node stderr in the private log.
