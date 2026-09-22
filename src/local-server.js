@@ -2627,13 +2627,12 @@ class LocalWebServer {
     }
     async handleGetCustomersSummary(res, query = {}) {
         try {
-            // Determine DB type for compatibility
-            // SQLite uses MAX(a,b,c), Postgres uses GREATEST(a,b,c)
-            // Postgres throws error on empty string for timestamp, SQLite accepts it
+            // Use the same identity rules as the desktop ledger.  The old query
+            // grouped by customer_name only, which merged equal names across
+            // branches/devices and produced different balances.
             const isPostgres = !!process.env.DATABASE_URL;
             const greatestFunc = isPostgres ? 'GREATEST' : 'MAX';
             const defaultDate = isPostgres ? "TIMESTAMP '1970-01-01 00:00:00'" : "''";
-            const transactionCreatedAt = isPostgres ? 'created_at::timestamp' : 'created_at';
             const openingBalanceCreatedAt = isPostgres
                 ? "make_timestamp(CAST(fiscal_year AS INTEGER), 1, 1, 0, 0, 0)"
                 : "fiscal_year || '-01-01 00:00:00'";
@@ -2660,31 +2659,79 @@ class LocalWebServer {
             const sql = `
             SELECT * FROM (
                 SELECT 
+                    CASE
+                        WHEN COALESCE(t.customer_id, 0) > 0 THEN 'CID:' || t.customer_id
+                        WHEN TRIM(COALESCE(t.customer_code, '')) <> '' THEN 'CODE:' || UPPER(TRIM(t.customer_code))
+                        ELSE 'LEGACY:' || UPPER(TRIM(COALESCE(t.customer_name, ''))) || '|' || COALESCE(t.branch_id, 0)
+                    END AS customer_key,
+                    MAX(t.customer_id) AS customer_id,
+                    MAX(t.customer_code) AS customer_code,
                     t.customer_name,
+                    t.branch_id,
+                    MAX(t.branch_name) AS branch_name,
                     COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE 0 END), 0) as total_debit,
                     COALESCE(SUM(CASE WHEN t.type = 'credit' THEN t.amount ELSE 0 END), 0) as total_credit,
                     COALESCE(SUM(CASE WHEN t.type = 'debit' THEN t.amount ELSE -t.amount END), 0) as balance,
                     ${greatestFunc}(MAX(t.created_at), ${defaultDate}) as last_transaction,
-                    COUNT(*) as transaction_count,
-                    (
-                        SELECT b.branch_name 
-                        FROM postpaid_sales ps
-                        JOIN reconciliations r ON ps.reconciliation_id = r.id
-                        JOIN cashiers c ON r.cashier_id = c.id
-                        JOIN branches b ON c.branch_id = b.id
-                        WHERE ps.customer_name = t.customer_name
-                        ORDER BY ps.created_at DESC LIMIT 1
-                    ) as branch_name 
+                    COUNT(*) as transaction_count
                 FROM (
-                    SELECT customer_name, amount, 'debit' as type, ${transactionCreatedAt} as created_at FROM postpaid_sales WHERE customer_name IS NOT NULL
+                    SELECT COALESCE(NULLIF(ps.customer_id, 0), cust.id, 0) AS customer_id,
+                           COALESCE(NULLIF(TRIM(ps.customer_code), ''), NULLIF(TRIM(cust.customer_code), ''), '') AS customer_code,
+                           COALESCE(NULLIF(TRIM(ps.customer_name), ''), cust.customer_name, '') AS customer_name,
+                           COALESCE(cust.branch_id, c.branch_id, 0) AS branch_id,
+                           COALESCE(b.branch_name, cb.branch_name, 'غير محدد') AS branch_name,
+                           ps.amount, 'debit' as type,
+                           ${isPostgres ? 'COALESCE(r.reconciliation_date, ps.created_at)::timestamp' : 'COALESCE(r.reconciliation_date, ps.created_at)'} as created_at
+                    FROM postpaid_sales ps
+                    LEFT JOIN customers cust ON cust.id = ps.customer_id
+                    LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id
+                    LEFT JOIN cashiers c ON c.id = r.cashier_id
+                    LEFT JOIN branches b ON b.id = c.branch_id
+                    LEFT JOIN branches cb ON cb.id = cust.branch_id
+                    WHERE ps.customer_name IS NOT NULL
                     UNION ALL
-                    SELECT customer_name, amount, 'debit' as type, ${transactionCreatedAt} as created_at FROM manual_postpaid_sales WHERE customer_name IS NOT NULL
+                    SELECT COALESCE(NULLIF(mps.customer_id, 0), cust.id, 0) AS customer_id,
+                           COALESCE(NULLIF(TRIM(mps.customer_code), ''), NULLIF(TRIM(cust.customer_code), ''), '') AS customer_code,
+                           COALESCE(NULLIF(TRIM(mps.customer_name), ''), cust.customer_name, '') AS customer_name,
+                           COALESCE(cust.branch_id, 0) AS branch_id,
+                           COALESCE(cb.branch_name, 'غير محدد') AS branch_name,
+                           mps.amount, 'debit' as type, mps.created_at as created_at
+                    FROM manual_postpaid_sales mps
+                    LEFT JOIN customers cust ON cust.id = mps.customer_id
+                    LEFT JOIN branches cb ON cb.id = cust.branch_id
+                    WHERE mps.customer_name IS NOT NULL
                     UNION ALL
-                    SELECT customer_name, amount, 'credit' as type, ${transactionCreatedAt} as created_at FROM customer_receipts WHERE customer_name IS NOT NULL
+                    SELECT COALESCE(NULLIF(cr.customer_id, 0), cust.id, 0) AS customer_id,
+                           COALESCE(NULLIF(TRIM(cr.customer_code), ''), NULLIF(TRIM(cust.customer_code), ''), '') AS customer_code,
+                           COALESCE(NULLIF(TRIM(cr.customer_name), ''), cust.customer_name, '') AS customer_name,
+                           COALESCE(cust.branch_id, c.branch_id, 0) AS branch_id,
+                           COALESCE(b.branch_name, cb.branch_name, 'غير محدد') AS branch_name,
+                           cr.amount, 'credit' as type,
+                           ${isPostgres ? 'COALESCE(r.reconciliation_date, cr.created_at)::timestamp' : 'COALESCE(r.reconciliation_date, cr.created_at)'} as created_at
+                    FROM customer_receipts cr
+                    LEFT JOIN customers cust ON cust.id = cr.customer_id
+                    LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id
+                    LEFT JOIN cashiers c ON c.id = r.cashier_id
+                    LEFT JOIN branches b ON b.id = c.branch_id
+                    LEFT JOIN branches cb ON cb.id = cust.branch_id
+                    WHERE cr.customer_name IS NOT NULL
                     UNION ALL
-                    SELECT customer_name, amount, 'credit' as type, ${transactionCreatedAt} as created_at FROM manual_customer_receipts WHERE customer_name IS NOT NULL
+                    SELECT COALESCE(NULLIF(mcr.customer_id, 0), cust.id, 0) AS customer_id,
+                           COALESCE(NULLIF(TRIM(mcr.customer_code), ''), NULLIF(TRIM(cust.customer_code), ''), '') AS customer_code,
+                           COALESCE(NULLIF(TRIM(mcr.customer_name), ''), cust.customer_name, '') AS customer_name,
+                           COALESCE(cust.branch_id, 0) AS branch_id,
+                           COALESCE(cb.branch_name, 'غير محدد') AS branch_name,
+                           mcr.amount, 'credit' as type, mcr.created_at as created_at
+                    FROM manual_customer_receipts mcr
+                    LEFT JOIN customers cust ON cust.id = mcr.customer_id
+                    LEFT JOIN branches cb ON cb.id = cust.branch_id
+                    WHERE mcr.customer_name IS NOT NULL
                     UNION ALL
-                    SELECT customer_name, ABS(opening_balance) as amount,
+                    SELECT COALESCE(ob.customer_id, 0) AS customer_id,
+                           COALESCE(NULLIF(TRIM(ob.customer_code), ''), '') AS customer_code,
+                           ob.customer_name, COALESCE(ob.branch_id, 0) AS branch_id,
+                           COALESCE(NULLIF(TRIM(ob.branch_name), ''), 'غير محدد') AS branch_name,
+                           ABS(ob.opening_balance) as amount,
                            CASE WHEN opening_balance >= 0 THEN 'debit' ELSE 'credit' END as type,
                            ${openingBalanceCreatedAt} as created_at
                     FROM customer_fiscal_opening_balances ob
@@ -2697,7 +2744,7 @@ class LocalWebServer {
                 ) t
                 WHERE t.customer_name IS NOT NULL
                 ${dateWhereClause}
-                GROUP BY t.customer_name
+                GROUP BY customer_key, t.customer_name, t.branch_id
             ) AS final_result
             WHERE balance != 0 OR transaction_count > 0
             ORDER BY balance DESC
@@ -5516,6 +5563,146 @@ class LocalWebServer {
                     console.log(`✅ [SYNC] customers: device-scoped upsert processed ${successCount} items.${errorCount ? ` Failed ${errorCount}.` : ''}`);
                 };
 
+                // Desktop SQLite customer ids are local to one installation. Every
+                // transaction must therefore be rewritten to the canonical PostgreSQL
+                // customer id before it is stored on the server.
+                const customerIdentityIndex = {
+                    loaded: false,
+                    bySourceRowId: new Map(),
+                    byCode: new Map(),
+                    byNameBranch: new Map()
+                };
+
+                const loadCustomerIdentityIndex = async () => {
+                    if (customerIdentityIndex.loaded || !sourceScopedSync) return;
+
+                    const result = await pool.query(
+                        `SELECT id, source_row_id, customer_code, customer_name, branch_id,
+                                is_active, merged_into_customer_id
+                         FROM customers
+                         WHERE sync_source_id = $1`,
+                        [syncSourceId]
+                    );
+
+                    for (const row of result.rows || []) {
+                        const canonicalId = parseInteger(row.id);
+                        const sourceRowId = parseInteger(row.source_row_id);
+                        if (!canonicalId) continue;
+
+                        if (sourceRowId) {
+                            customerIdentityIndex.bySourceRowId.set(sourceRowId, canonicalId);
+                        }
+
+                        if (Number(row.is_active ?? 1) === 0 || parseInteger(row.merged_into_customer_id)) {
+                            continue;
+                        }
+
+                        const code = normalizeCustomerCodeValue(row.customer_code);
+                        if (code) {
+                            const codeRows = customerIdentityIndex.byCode.get(code) || [];
+                            codeRows.push({ id: canonicalId, branchId: parseInteger(row.branch_id) || 0 });
+                            customerIdentityIndex.byCode.set(code, codeRows);
+                        }
+
+                        const name = normalizeCustomerLooseNameKey(row.customer_name);
+                        if (name) {
+                            const key = `${name}|${parseInteger(row.branch_id) || 0}`;
+                            const nameRows = customerIdentityIndex.byNameBranch.get(key) || [];
+                            nameRows.push(canonicalId);
+                            customerIdentityIndex.byNameBranch.set(key, nameRows);
+                        }
+                    }
+
+                    customerIdentityIndex.loaded = true;
+                };
+
+                const resolveIncomingCustomerId = async (item = {}) => {
+                    const localCustomerId = parseInteger(item.customer_id);
+                    if (!sourceScopedSync) return localCustomerId || null;
+
+                    await loadCustomerIdentityIndex();
+                    if (localCustomerId && customerIdentityIndex.bySourceRowId.has(localCustomerId)) {
+                        return customerIdentityIndex.bySourceRowId.get(localCustomerId);
+                    }
+
+                    const code = normalizeCustomerCodeValue(item.customer_code);
+                    const branchId = parseInteger(item.branch_id) || 0;
+                    if (code) {
+                        const codeRows = customerIdentityIndex.byCode.get(code) || [];
+                        const sameBranch = codeRows.filter((row) => !branchId || !row.branchId || row.branchId === branchId);
+                        if (sameBranch.length === 1) return sameBranch[0].id;
+                        if (codeRows.length === 1) return codeRows[0].id;
+                    }
+
+                    const nameKey = `${normalizeCustomerLooseNameKey(item.customer_name)}|${branchId}`;
+                    const nameRows = customerIdentityIndex.byNameBranch.get(nameKey) || [];
+                    return nameRows.length === 1 ? nameRows[0] : null;
+                };
+
+                const remapIncomingCustomerRows = async (items = []) => {
+                    if (!sourceScopedSync || !Array.isArray(items) || items.length === 0) return items;
+                    const remapped = [];
+                    for (const item of items) {
+                        remapped.push({
+                            ...item,
+                            customer_id: await resolveIncomingCustomerId(item)
+                        });
+                    }
+                    return remapped;
+                };
+
+                const syncFiscalOpeningBalances = async (items = []) => {
+                    if (!Array.isArray(items) || items.length === 0) return;
+                    const remapped = await remapIncomingCustomerRows(items);
+                    let successCount = 0;
+
+                    for (const item of remapped) {
+                        const canonicalCustomerId = parseInteger(item.customer_id);
+                        const code = normalizeCustomerCodeValue(item.customer_code);
+                        const name = normalizeCustomerLooseNameKey(item.customer_name);
+                        const branchId = parseInteger(item.branch_id) || 0;
+                        const balanceKey = canonicalCustomerId
+                            ? `CID:${canonicalCustomerId}`
+                            : code
+                                ? `CODE:${code}`
+                                : `LEGACY:${name}|${branchId}`;
+
+                        try {
+                            await pool.query(
+                                `INSERT INTO customer_fiscal_opening_balances (
+                                    fiscal_year, closed_year, balance_key, customer_id, customer_code,
+                                    customer_name, branch_id, branch_name, opening_balance,
+                                    total_postpaid, total_receipts, movements_count, created_at, updated_at
+                                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+                                ON CONFLICT (fiscal_year, balance_key) DO UPDATE SET
+                                    customer_id = EXCLUDED.customer_id,
+                                    customer_code = EXCLUDED.customer_code,
+                                    customer_name = EXCLUDED.customer_name,
+                                    branch_id = EXCLUDED.branch_id,
+                                    branch_name = EXCLUDED.branch_name,
+                                    opening_balance = EXCLUDED.opening_balance,
+                                    total_postpaid = EXCLUDED.total_postpaid,
+                                    total_receipts = EXCLUDED.total_receipts,
+                                    movements_count = EXCLUDED.movements_count,
+                                    updated_at = COALESCE(EXCLUDED.updated_at, CURRENT_TIMESTAMP)`,
+                                [
+                                    item.fiscal_year ?? '', item.closed_year ?? '', balanceKey,
+                                    canonicalCustomerId || null, code, item.customer_name ?? '',
+                                    item.branch_id ?? null, item.branch_name ?? '', item.opening_balance ?? 0,
+                                    item.total_postpaid ?? 0, item.total_receipts ?? 0,
+                                    item.movements_count ?? 0, item.created_at ?? null, item.updated_at ?? null
+                                ]
+                            );
+                            successCount += 1;
+                        } catch (error) {
+                            syncFailures.push({ table: 'customer_fiscal_opening_balances', id: item.id ?? null, error: error.message });
+                            console.error('❌ [SYNC] Opening balance row failed:', error.message);
+                        }
+                    }
+
+                    console.log(`✅ [SYNC] customer_fiscal_opening_balances: Processed ${successCount} items.`);
+                };
+
                 // Local SQLite ids are only unique inside one desktop installation.  This
                 // upsert keeps the PostgreSQL primary key canonical and uses the stable
                 // installation id + local row id as the idempotency key.
@@ -5556,6 +5743,9 @@ class LocalWebServer {
                                 continue;
                             }
                             normalized.reconciliation_id = canonicalReconciliationId;
+                        }
+                        if (options.remapCustomerIdentity) {
+                            normalized.customer_id = await resolveIncomingCustomerId(normalized);
                         }
                         normalized.source_row_id = localId;
                         normalized.sync_source_id = syncSourceId;
@@ -6063,7 +6253,7 @@ class LocalWebServer {
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'customer_id' },
                         { name: 'customer_name' }, { name: 'customer_code' }, { name: 'amount' },
                         { name: 'notes' }, { name: 'is_modified' }, { name: 'created_at' }
-                    ], { remapReconciliationId: true });
+                    ], { remapReconciliationId: true, remapCustomerIdentity: true });
                 }
 
                 if (data.return_invoices) {
@@ -6087,7 +6277,7 @@ class LocalWebServer {
                         { name: 'customer_name' }, { name: 'customer_code' }, { name: 'amount' },
                         { name: 'payment_type' }, { name: 'notes' }, { name: 'is_modified' },
                         { name: 'created_at' }
-                    ], { remapReconciliationId: true });
+                    ], { remapReconciliationId: true, remapCustomerIdentity: true });
                 }
 
                 if (data.manual_postpaid_sales) {
@@ -6095,7 +6285,7 @@ class LocalWebServer {
                         { name: 'id' }, { name: 'customer_id' }, { name: 'customer_name' },
                         { name: 'customer_code' }, { name: 'amount' }, { name: 'reason' },
                         { name: 'created_at' }
-                    ]);
+                    ], { remapCustomerIdentity: true });
                 }
 
                 if (data.manual_customer_receipts) {
@@ -6103,17 +6293,11 @@ class LocalWebServer {
                         { name: 'id' }, { name: 'customer_id' }, { name: 'customer_name' },
                         { name: 'customer_code' }, { name: 'amount' }, { name: 'reason' },
                         { name: 'created_at' }
-                    ]);
+                    ], { remapCustomerIdentity: true });
                 }
 
                 if (data.customer_fiscal_opening_balances) {
-                    await syncTable('customer_fiscal_opening_balances', data.customer_fiscal_opening_balances, [
-                        { name: 'id' }, { name: 'fiscal_year' }, { name: 'closed_year' }, { name: 'balance_key' },
-                        { name: 'customer_id' }, { name: 'customer_code' }, { name: 'customer_name' },
-                        { name: 'branch_id' }, { name: 'branch_name' }, { name: 'opening_balance' },
-                        { name: 'total_postpaid' }, { name: 'total_receipts' }, { name: 'movements_count' },
-                        { name: 'created_at' }, { name: 'updated_at' }
-                    ]);
+                    await syncFiscalOpeningBalances(data.customer_fiscal_opening_balances);
                 }
                 // Sync reconciliation requests (especially status updates)
                 if (data.reconciliation_requests) {

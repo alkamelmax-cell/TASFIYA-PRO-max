@@ -1,4 +1,6 @@
 const API_URL = '/api';
+let currentCustomerId = 0;
+let currentCustomerCode = '';
 
 document.addEventListener('DOMContentLoaded', async () => {
     // Auth Check
@@ -253,7 +255,7 @@ function renderCustomersTable(data) {
             </td>
             <td class="d-none d-md-table-cell text-center" style="text-align: center !important;">${row.transaction_count}</td>
             <td class="text-center" style="text-align: center !important;">
-                <button class="btn btn-sm btn-primary btn-action-mobile" onclick="viewCustomerStatement('${row.customer_name}')">
+                <button class="btn btn-sm btn-primary btn-action-mobile" onclick="viewCustomerStatement('${row.customer_name}', '${row.customer_id || 0}', '${row.customer_code || ''}')">
                     <i class="fas fa-file-invoice me-1"></i> كشف
                 </button>
             </td>
@@ -264,10 +266,12 @@ function renderCustomersTable(data) {
 
 // ================== DETAILS VIEW LOGIC ==================
 
-function viewCustomerStatement(customerName) {
+function viewCustomerStatement(customerName, customerId = 0, customerCode = '') {
     // Set customer name
     document.getElementById('currentCustomerName').value = customerName;
     document.getElementById('selectedCustomerTitle').textContent = `تفاصيل العميل: ${customerName}`;
+    currentCustomerId = Number(customerId) > 0 ? Number(customerId) : 0;
+    currentCustomerCode = String(customerCode || '').trim();
 
     // Switch views
     document.getElementById('customersListSection').classList.add('d-none');
@@ -280,7 +284,7 @@ function viewCustomerStatement(customerName) {
     if (shareButton) shareButton.disabled = true;
 
     // Load Data
-    loadCustomerLedger(customerName);
+    loadCustomerLedger(customerName, currentCustomerId, currentCustomerCode);
 }
 
 function showListView() {
@@ -291,16 +295,18 @@ function showListView() {
 
 function refreshLedger() {
     const customerName = document.getElementById('currentCustomerName').value;
-    if (customerName) loadCustomerLedger(customerName);
+    if (customerName) loadCustomerLedger(customerName, currentCustomerId, currentCustomerCode);
 }
 
-async function loadCustomerLedger(customerName) {
+async function loadCustomerLedger(customerName, customerId = currentCustomerId, customerCode = currentCustomerCode) {
     const dateFrom = document.getElementById('filterDateFrom').value;
     const dateTo = document.getElementById('filterDateTo').value;
 
     showLoading(true);
     try {
         const params = new URLSearchParams({ customerName: customerName });
+        if (Number(customerId) > 0) params.append('customerId', String(customerId));
+        if (customerCode) params.append('customerCode', customerCode);
         if (dateFrom) params.append('dateFrom', dateFrom);
         if (dateTo) params.append('dateTo', dateTo);
 
