@@ -2319,70 +2319,182 @@ class LocalWebServer {
         return match ? match[1] : '';
     }
 
+    /**
+     * Expand a merged customer into every source display name that can still
+     * exist on synchronized transaction rows.  Merging changes the identity
+     * registry, but older/offline rows may retain the source name.
+     */
+    async getMergedCustomerNames(customerName) {
+        const requested = normalizeCustomerNameValue(customerName);
+        if (!requested) return [];
+
+        let aliases = [];
+        try {
+            aliases = await this.listMergedCustomerAliasRowsForBranch();
+        } catch (error) {
+            console.warn('[Customer Identity] Could not load merge aliases; using requested name only:', error.message);
+        }
+        const requestedKey = normalizeCustomerLooseNameKey(requested);
+        const matching = aliases.filter((row) => (
+            normalizeCustomerLooseNameKey(row.customer_name) === requestedKey
+            || normalizeCustomerLooseNameKey(row.matched_customer_name) === requestedKey
+        ));
+        if (matching.length === 0) return [requested];
+
+        const targetIds = new Set(
+            matching.map((row) => normalizePositiveInteger(row.id)).filter(Boolean)
+        );
+        const names = new Set([requested]);
+        aliases.forEach((row) => {
+            const targetId = normalizePositiveInteger(row.id);
+            if (targetId && targetIds.has(targetId)) {
+                if (row.customer_name) names.add(normalizeCustomerNameValue(row.customer_name));
+                if (row.matched_customer_name) names.add(normalizeCustomerNameValue(row.matched_customer_name));
+            }
+        });
+        return Array.from(names).filter(Boolean);
+    }
+
+    /** Collapse source-name summary rows into their canonical merged row. */
+    mergeCustomerSummaryRows(rows = [], aliases = []) {
+        const targetByName = new Map();
+        const targetNames = new Map();
+        const addTarget = (name, row) => {
+            const key = normalizeCustomerLooseNameKey(name);
+            if (!key) return;
+            const targetId = normalizePositiveInteger(row.id);
+            const targetKey = targetId
+                ? `id:${targetId}`
+                : `name:${normalizeCustomerNameValue(row.customer_name)}`;
+            if (!targetByName.has(key)) targetByName.set(key, new Set());
+            targetByName.get(key).add(targetKey);
+            targetNames.set(targetKey, normalizeCustomerNameValue(row.customer_name));
+        };
+
+        aliases.forEach((alias) => {
+            if (!alias || !alias.customer_name) return;
+            addTarget(alias.customer_name, alias);
+            if (alias.matched_customer_name) addTarget(alias.matched_customer_name, alias);
+        });
+
+        const grouped = new Map();
+        (Array.isArray(rows) ? rows : []).forEach((rawRow) => {
+            const row = { ...rawRow };
+            const nameKey = normalizeCustomerLooseNameKey(row.customer_name);
+            const targetKeys = targetByName.get(nameKey);
+            const canCanonicalize = targetKeys && targetKeys.size === 1;
+            const groupKey = canCanonicalize
+                ? Array.from(targetKeys)[0]
+                : `name:${normalizeCustomerNameValue(row.customer_name)}|branch:${row.branch_name || ''}`;
+            const targetName = canCanonicalize
+                ? targetNames.get(groupKey)
+                : normalizeCustomerNameValue(row.customer_name);
+            const existing = grouped.get(groupKey);
+            if (!existing) {
+                row.customer_name = targetName || row.customer_name;
+                grouped.set(groupKey, row);
+                return;
+            }
+
+            existing.total_debit = parseNumericDbValue(existing.total_debit) + parseNumericDbValue(row.total_debit);
+            existing.total_credit = parseNumericDbValue(existing.total_credit) + parseNumericDbValue(row.total_credit);
+            existing.balance = parseNumericDbValue(existing.balance) + parseNumericDbValue(row.balance);
+            existing.transaction_count = Number(existing.transaction_count || 0) + Number(row.transaction_count || 0);
+            const existingDate = new Date(existing.last_transaction);
+            const rowDate = new Date(row.last_transaction);
+            if (!Number.isNaN(rowDate.getTime()) && (Number.isNaN(existingDate.getTime()) || rowDate > existingDate)) {
+                existing.last_transaction = row.last_transaction;
+            }
+            if (!existing.branch_name && row.branch_name) existing.branch_name = row.branch_name;
+        });
+
+        return Array.from(grouped.values()).sort(
+            (a, b) => parseNumericDbValue(b.balance) - parseNumericDbValue(a.balance)
+        );
+    }
+
     async getCustomerLedgerOpeningContext(customerName, dateFrom = '', pool = null) {
+        const customerNames = (Array.isArray(customerName) ? customerName : [customerName])
+            .map(normalizeCustomerNameValue).filter(Boolean);
+        if (customerNames.length === 0) {
+            return { hasOpening: false, openingStartDate: '', openingBalance: 0 };
+        }
         const yearLimit = this.getYearFromDateValue(dateFrom);
-        let openingRow = null;
+        let openingRows = [];
 
         try {
             if (pool) {
-                const params = [customerName];
+                const params = [customerNames];
                 const yearSql = yearLimit ? 'AND CAST(fiscal_year AS INTEGER) <= $2' : '';
                 if (yearLimit) params.push(Number(yearLimit));
                 const result = await pool.query(
                     `SELECT *
                      FROM customer_fiscal_opening_balances
-                     WHERE TRIM(COALESCE(customer_name, '')) = TRIM($1)
+                     WHERE TRIM(COALESCE(customer_name, '')) = ANY($1::text[])
                      ${yearSql}
-                     ORDER BY CAST(fiscal_year AS INTEGER) DESC, id DESC
-                     LIMIT 1`,
+                     ORDER BY CAST(fiscal_year AS INTEGER) DESC, id DESC`,
                     params
                 );
-                openingRow = result.rows?.[0] || null;
+                openingRows = result.rows || [];
             } else {
-                const params = [customerName];
+                const placeholders = customerNames.map(() => '?').join(', ');
+                const params = [...customerNames];
                 const yearSql = yearLimit ? 'AND CAST(fiscal_year AS INTEGER) <= ?' : '';
                 if (yearLimit) params.push(Number(yearLimit));
-                openingRow = await this.dbManager.db.prepare(
+                openingRows = await this.dbManager.db.prepare(
                     `SELECT *
                      FROM customer_fiscal_opening_balances
-                     WHERE TRIM(COALESCE(customer_name, '')) = TRIM(?)
+                     WHERE TRIM(COALESCE(customer_name, '')) IN (${placeholders})
                      ${yearSql}
-                     ORDER BY CAST(fiscal_year AS INTEGER) DESC, id DESC
-                     LIMIT 1`
-                ).get(params);
+                     ORDER BY CAST(fiscal_year AS INTEGER) DESC, id DESC`
+                ).all(params);
             }
         } catch (_error) {
-            openingRow = null;
+            openingRows = [];
         }
 
-        const openingStartDate = openingRow?.fiscal_year ? `${openingRow.fiscal_year}-01-01` : '';
-        let openingBalance = parseNumericDbValue(openingRow?.opening_balance, 0);
+        const latestOpeningByName = new Map();
+        openingRows.forEach((row) => {
+            const key = normalizeCustomerLooseNameKey(row?.customer_name);
+            if (!key) return;
+            const previous = latestOpeningByName.get(key);
+            const year = Number.parseInt(row?.fiscal_year, 10) || 0;
+            const previousYear = Number.parseInt(previous?.fiscal_year, 10) || 0;
+            if (!previous || year > previousYear || (year === previousYear && Number(row?.id || 0) > Number(previous?.id || 0))) {
+                latestOpeningByName.set(key, row);
+            }
+        });
+        openingRows = Array.from(latestOpeningByName.values());
+        const openingStartDate = openingRows.reduce((oldest, row) => {
+            const value = row?.fiscal_year ? `${row.fiscal_year}-01-01` : '';
+            return value && (!oldest || value < oldest) ? value : oldest;
+        }, '');
+        let openingBalance = openingRows.reduce((sum, row) => sum + parseNumericDbValue(row?.opening_balance, 0), 0);
 
         if (dateFrom && openingStartDate) {
-            openingBalance += await this.calculateCustomerLedgerPreperiod(customerName, dateFrom, openingStartDate, pool);
+            openingBalance += await this.calculateCustomerLedgerPreperiod(customerNames, dateFrom, openingStartDate, pool);
         }
 
-        return {
-            hasOpening: !!openingRow,
-            openingStartDate,
-            openingBalance
-        };
+        return { hasOpening: openingRows.length > 0, openingStartDate, openingBalance };
     }
 
     async calculateCustomerLedgerPreperiod(customerName, dateFrom, openingStartDate = '', pool = null) {
+        const customerNames = (Array.isArray(customerName) ? customerName : [customerName])
+            .map(normalizeCustomerNameValue).filter(Boolean);
+        if (customerNames.length === 0) return 0;
         const lowerDate = String(openingStartDate || '').trim();
         const upperDate = String(dateFrom || '').trim();
         if (!upperDate) return 0;
 
         if (pool) {
-            const params = lowerDate ? [customerName, lowerDate, upperDate] : [customerName, upperDate];
+            const params = lowerDate ? [customerNames, lowerDate, upperDate] : [customerNames, upperDate];
             const recSql = lowerDate ? 'AND r.reconciliation_date >= $2 AND r.reconciliation_date < $3' : 'AND r.reconciliation_date < $2';
             const manualSql = lowerDate ? 'AND DATE(created_at) >= $2 AND DATE(created_at) < $3' : 'AND DATE(created_at) < $2';
             const [postpaid, receipts, manualPostpaid, manualReceipts] = await Promise.all([
-                pool.query(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id WHERE ps.customer_name = $1 ${recSql}`, params),
-                pool.query(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id WHERE cr.customer_name = $1 ${recSql}`, params),
-                pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_postpaid_sales WHERE customer_name = $1 ${manualSql}`, params),
-                pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_customer_receipts WHERE customer_name = $1 ${manualSql}`, params)
+                pool.query(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id WHERE ps.customer_name = ANY($1::text[]) ${recSql}`, params),
+                pool.query(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id WHERE cr.customer_name = ANY($1::text[]) ${recSql}`, params),
+                pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_postpaid_sales WHERE customer_name = ANY($1::text[]) ${manualSql}`, params),
+                pool.query(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_customer_receipts WHERE customer_name = ANY($1::text[]) ${manualSql}`, params)
             ]);
             return parseNumericDbValue(postpaid.rows?.[0]?.total, 0)
                 + parseNumericDbValue(manualPostpaid.rows?.[0]?.total, 0)
@@ -2390,13 +2502,14 @@ class LocalWebServer {
                 - parseNumericDbValue(manualReceipts.rows?.[0]?.total, 0);
         }
 
-        const params = lowerDate ? [customerName, lowerDate, upperDate] : [customerName, upperDate];
+        const placeholders = customerNames.map(() => '?').join(', ');
+        const params = lowerDate ? [...customerNames, lowerDate, upperDate] : [...customerNames, upperDate];
         const recSql = lowerDate ? 'AND r.reconciliation_date >= ? AND r.reconciliation_date < ?' : 'AND r.reconciliation_date < ?';
         const manualSql = lowerDate ? 'AND DATE(created_at) >= ? AND DATE(created_at) < ?' : 'AND DATE(created_at) < ?';
-        const postpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id WHERE ps.customer_name = ? ${recSql}`).get(params);
-        const receipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id WHERE cr.customer_name = ? ${recSql}`).get(params);
-        const manualPostpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_postpaid_sales WHERE customer_name = ? ${manualSql}`).get(params);
-        const manualReceipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_customer_receipts WHERE customer_name = ? ${manualSql}`).get(params);
+        const postpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(ps.amount), 0) AS total FROM postpaid_sales ps LEFT JOIN reconciliations r ON r.id = ps.reconciliation_id WHERE ps.customer_name IN (${placeholders}) ${recSql}`).get(params);
+        const receipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(cr.amount), 0) AS total FROM customer_receipts cr LEFT JOIN reconciliations r ON r.id = cr.reconciliation_id WHERE cr.customer_name IN (${placeholders}) ${recSql}`).get(params);
+        const manualPostpaid = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_postpaid_sales WHERE customer_name IN (${placeholders}) ${manualSql}`).get(params);
+        const manualReceipts = await this.dbManager.db.prepare(`SELECT COALESCE(SUM(amount), 0) AS total FROM manual_customer_receipts WHERE customer_name IN (${placeholders}) ${manualSql}`).get(params);
 
         return parseNumericDbValue(postpaid?.total, 0)
             + parseNumericDbValue(manualPostpaid?.total, 0)
@@ -2432,16 +2545,18 @@ class LocalWebServer {
         }
 
         const pool = this.dbManager.pool;
+        const mergedCustomerNames = await this.getMergedCustomerNames(customerName);
+        const customerNames = mergedCustomerNames.length > 0 ? mergedCustomerNames : [customerName];
 
         if (pool) {
             console.log('[Customer Ledger] Using PostgreSQL connection (Synced Data)');
 
-            const openingContext = await this.getCustomerLedgerOpeningContext(customerName, dateFrom, pool);
+            const openingContext = await this.getCustomerLedgerOpeningContext(customerNames, dateFrom, pool);
             const effectiveDateFrom = (dateFrom && dateFrom.trim() !== '') ? dateFrom : openingContext.openingStartDate;
             let dateFilterSales = '';
             let dateFilterReceipts = '';
-            const paramsSales = [customerName];
-            const paramsReceipts = [customerName];
+            const paramsSales = [customerNames];
+            const paramsReceipts = [customerNames];
             let pNextSales = 2;
             let pNextReceipts = 2;
 
@@ -2464,14 +2579,14 @@ class LocalWebServer {
                 FROM postpaid_sales ps
                 LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
                 LEFT JOIN cashiers c ON r.cashier_id = c.id
-                WHERE ps.customer_name = $1 ${dateFilterSales}
+                WHERE ps.customer_name = ANY($1::text[]) ${dateFilterSales}
             `, paramsSales);
 
             const filterSalesManual = dateFilterSales.replace(/ps\./g, '');
             const manualSalesResult = await pool.query(`
                 SELECT id, amount, created_at, 'مبيعات يدوية' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
                 FROM manual_postpaid_sales
-                WHERE customer_name = $1 ${filterSalesManual}
+                WHERE customer_name = ANY($1::text[]) ${filterSalesManual}
             `, paramsSales);
 
             const receiptsResult = await pool.query(`
@@ -2479,14 +2594,14 @@ class LocalWebServer {
                 FROM customer_receipts cr
                 LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
                 LEFT JOIN cashiers c ON r.cashier_id = c.id
-                WHERE cr.customer_name = $1 ${dateFilterReceipts}
+                WHERE cr.customer_name = ANY($1::text[]) ${dateFilterReceipts}
             `, paramsReceipts);
 
             const filterReceiptsManual = dateFilterReceipts.replace(/cr\./g, '');
             const manualReceiptsResult = await pool.query(`
                 SELECT id, amount, 'نقدي' as payment_type, created_at, 'سند قبض يدوي' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
                 FROM manual_customer_receipts
-                WHERE customer_name = $1 ${filterReceiptsManual}
+                WHERE customer_name = ANY($1::text[]) ${filterReceiptsManual}
             `, paramsReceipts);
 
             return [
@@ -2500,12 +2615,13 @@ class LocalWebServer {
 
         console.log('[Customer Ledger] Using SQLite connection (Local Data)');
 
-        const openingContext = await this.getCustomerLedgerOpeningContext(customerName, dateFrom);
+        const openingContext = await this.getCustomerLedgerOpeningContext(customerNames, dateFrom);
         const effectiveDateFrom = (dateFrom && dateFrom.trim() !== '') ? dateFrom : openingContext.openingStartDate;
         let dateFilterSales = '';
         let dateFilterReceipts = '';
-        const paramsSales = [customerName];
-        const paramsReceipts = [customerName];
+        const namePlaceholders = customerNames.map(() => '?').join(', ');
+        const paramsSales = [...customerNames];
+        const paramsReceipts = [...customerNames];
 
         if (effectiveDateFrom && effectiveDateFrom.trim() !== '') {
             dateFilterSales += ' AND ps.created_at >= ?';
@@ -2526,14 +2642,14 @@ class LocalWebServer {
             FROM postpaid_sales ps
             LEFT JOIN reconciliations r ON ps.reconciliation_id = r.id
             LEFT JOIN cashiers c ON r.cashier_id = c.id
-            WHERE ps.customer_name = ? ${dateFilterSales}
+            WHERE ps.customer_name IN (${namePlaceholders}) ${dateFilterSales}
         `).all(paramsSales);
 
         const filterSalesManual = dateFilterSales.replace(/ps\./g, '');
         const manualSales = await this.dbManager.db.prepare(`
             SELECT id, amount, created_at, 'مبيعات يدوية' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
             FROM manual_postpaid_sales
-            WHERE customer_name = ? ${filterSalesManual}
+            WHERE customer_name IN (${namePlaceholders}) ${filterSalesManual}
         `).all(paramsSales);
 
         const receipts = await this.dbManager.db.prepare(`
@@ -2541,14 +2657,14 @@ class LocalWebServer {
             FROM customer_receipts cr
             LEFT JOIN reconciliations r ON cr.reconciliation_id = r.id
             LEFT JOIN cashiers c ON r.cashier_id = c.id
-            WHERE cr.customer_name = ? ${dateFilterReceipts}
+            WHERE cr.customer_name IN (${namePlaceholders}) ${dateFilterReceipts}
         `).all(paramsReceipts);
 
         const filterReceiptsManual = dateFilterReceipts.replace(/cr\./g, '');
         const manualReceipts = await this.dbManager.db.prepare(`
             SELECT id, amount, 'نقدي' as payment_type, created_at, 'سند قبض يدوي' as type, reason as description, 'مسؤول النظام' as cashier_name, NULL as reconciliation_number
             FROM manual_customer_receipts
-            WHERE customer_name = ? ${filterReceiptsManual}
+            WHERE customer_name IN (${namePlaceholders}) ${filterReceiptsManual}
         `).all(paramsReceipts);
 
         return [
@@ -2750,7 +2866,14 @@ class LocalWebServer {
             ORDER BY balance DESC
             `;
 
-            const data = await this.dbManager.db.prepare(sql).all(params);
+            let aliases = [];
+            try {
+                aliases = await this.listMergedCustomerAliasRowsForBranch();
+            } catch (error) {
+                console.warn('[Customers Summary] Could not load merge aliases:', error.message);
+            }
+            const rows = await this.dbManager.db.prepare(sql).all(params);
+            const data = this.mergeCustomerSummaryRows(rows, aliases);
             this.sendJson(res, { success: true, data });
         } catch (error) {
             console.error('[Customers Summary] Error:', error);
@@ -3369,7 +3492,38 @@ class LocalWebServer {
                 ORDER BY source.customer_name COLLATE NOCASE ASC, target.customer_code ASC, source.id ASC
             `
         ).all(...params);
-        return uniqueCustomerAliasRows(rows);
+
+        let explicitAliasRows = [];
+        try {
+            const aliasBranchFilter = normalizedBranchId
+                ? 'AND COALESCE(aliases.branch_id, target.branch_id, 0) = ?'
+                : '';
+            const aliasParams = normalizedBranchId ? [normalizedBranchId] : [];
+            explicitAliasRows = this.dbManager.db.prepare(
+                `
+                    SELECT target.id AS id,
+                           target.customer_name AS customer_name,
+                           target.customer_code AS customer_code,
+                           target.branch_id AS branch_id,
+                           aliases.alias_name AS matched_customer_name,
+                           aliases.alias_code AS matched_customer_code,
+                           aliases.alias_customer_id AS matched_customer_id,
+                           target.id AS merged_into_customer_id
+                    FROM customer_identity_aliases aliases
+                    JOIN customers target ON target.id = aliases.canonical_customer_id
+                    WHERE COALESCE(aliases.is_active, 1) = 1
+                      AND TRIM(COALESCE(aliases.alias_name, '')) <> ''
+                      AND COALESCE(target.is_active, 1) = 1
+                      AND COALESCE(target.merged_into_customer_id, 0) = 0
+                      ${aliasBranchFilter}
+                    ORDER BY aliases.alias_name COLLATE NOCASE ASC, target.customer_code ASC, aliases.id ASC
+                `
+            ).all(...aliasParams);
+        } catch (error) {
+            // Older local databases may not have the explicit alias table yet.
+            console.warn('[Customer Identity] explicit alias table unavailable:', error.message);
+        }
+        return uniqueCustomerAliasRows(rows.concat(explicitAliasRows));
     }
 
     async filterStaleDuplicateCustomerRows(rows = [], branchId = null) {
