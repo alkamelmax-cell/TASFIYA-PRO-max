@@ -27,7 +27,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="css/custom.css?v=ui-20260902-v3">
+    <link rel="stylesheet" href="css/custom.css?v=ui-20260925-stats-privacy-v1">
 
     <!-- OneSignal SDK -->
     <script src="https://cdn.onesignal.com/sdks/web/v16/OneSignalSDK.page.js" defer></script>
@@ -119,9 +119,16 @@
 
     <div class="container-fluid px-3 px-md-4">
         <header class="dashboard-overview">
-            <div>
-                <h1>نظرة عامة</h1>
-                <p>ملخص لحركة التصفيات والمقبوضات ضمن الفترة المحددة.</p>
+            <div class="overview-heading">
+                <div>
+                    <h1>نظرة عامة</h1>
+                    <p>ملخص لحركة التصفيات والمقبوضات ضمن الفترة المحددة.</p>
+                </div>
+                <button id="statsPrivacyToggle" class="stats-privacy-toggle" type="button"
+                    aria-pressed="false" aria-label="إخفاء الإجماليات" title="إخفاء الإجماليات">
+                    <i class="fas fa-eye" aria-hidden="true"></i>
+                    <span class="visually-hidden">إخفاء الإجماليات</span>
+                </button>
             </div>
             <div class="overview-chip"><i class="fas fa-shield-halved"></i> لوحة تحكم آمنة ومتصلة</div>
         </header>
@@ -138,7 +145,7 @@
         </div>
 
         <!-- Stats Row -->
-        <div class="row g-3 mb-4">
+        <div id="statsOverviewCards" class="row g-3 mb-4">
             <div class="col-6 col-lg-3">
                 <div class="stat-box">
                     <i class="fas fa-clipboard-check icon-wrapper"></i>
@@ -635,10 +642,10 @@
         }
 
         function calculateStatsFromAPI(stats) {
-            document.getElementById('statsTotalCount').textContent = formatNum(stats.count);
-            document.getElementById('statsTotalReceipts').textContent = formatCurrency(stats.totalReceipts);
-            document.getElementById('statsTotalSales').textContent = formatCurrency(stats.totalSales);
-            document.getElementById('statsTotalCash').textContent = formatCurrency(stats.totalCash);
+            updateStatValue('statsTotalCount', formatNum(stats.count));
+            updateStatValue('statsTotalReceipts', formatCurrency(stats.totalReceipts));
+            updateStatValue('statsTotalSales', formatCurrency(stats.totalSales));
+            updateStatValue('statsTotalCash', formatCurrency(stats.totalCash));
             renderSequenceHealth(stats.sequence);
         }
 
@@ -712,10 +719,10 @@
             const totalSales = data.reduce((sum, r) => sum + Number(r.system_sales || 0), 0);
             const totalCash = data.reduce((sum, r) => sum + Number(r.cash_total || 0), 0);
 
-            document.getElementById('statsTotalCount').textContent = formatNum(count);
-            document.getElementById('statsTotalReceipts').textContent = formatCurrency(totalReceipts);
-            document.getElementById('statsTotalSales').textContent = formatCurrency(totalSales);
-            document.getElementById('statsTotalCash').textContent = formatCurrency(totalCash);
+            updateStatValue('statsTotalCount', formatNum(count));
+            updateStatValue('statsTotalReceipts', formatCurrency(totalReceipts));
+            updateStatValue('statsTotalSales', formatCurrency(totalSales));
+            updateStatValue('statsTotalCash', formatCurrency(totalCash));
         }
 
         let activeReconciliationDetails = null;
@@ -993,6 +1000,77 @@
             // Compact format for cards (e.g. 1.2k) if needed, currently full number
             return Number(val || 0).toLocaleString('en-US', { maximumFractionDigits: 0 });
         }
+
+        const STATS_PRIVACY_STORAGE_KEY = 'tasfiya.webDashboard.statsHidden.v1';
+        const STATS_HIDDEN_VALUE = '••••••';
+        const STATS_VALUE_IDS = [
+            'statsTotalCount',
+            'statsTotalReceipts',
+            'statsTotalSales',
+            'statsTotalCash'
+        ];
+        let statsValuesHidden = false;
+
+        function updateStatValue(elementId, formattedValue) {
+            const element = document.getElementById(elementId);
+            if (!element) return;
+
+            const value = String(formattedValue ?? '0');
+            element.dataset.statsValue = value;
+            element.textContent = statsValuesHidden ? STATS_HIDDEN_VALUE : value;
+        }
+
+        function applyStatsPrivacy(hidden, { persist = true } = {}) {
+            statsValuesHidden = Boolean(hidden);
+
+            const cards = document.getElementById('statsOverviewCards');
+            const toggle = document.getElementById('statsPrivacyToggle');
+            cards?.classList.toggle('stats-values-hidden', statsValuesHidden);
+
+            if (toggle) {
+                const label = statsValuesHidden ? 'إظهار الإجماليات' : 'إخفاء الإجماليات';
+                toggle.classList.toggle('is-hidden', statsValuesHidden);
+                toggle.setAttribute('aria-pressed', String(statsValuesHidden));
+                toggle.setAttribute('aria-label', label);
+                toggle.setAttribute('title', label);
+                toggle.innerHTML = `
+                    <i class="fas ${statsValuesHidden ? 'fa-eye-slash' : 'fa-eye'}" aria-hidden="true"></i>
+                    <span class="visually-hidden">${label}</span>
+                `;
+            }
+
+            STATS_VALUE_IDS.forEach((elementId) => {
+                const element = document.getElementById(elementId);
+                if (!element) return;
+
+                const value = element.dataset.statsValue ?? element.textContent.trim() ?? '0';
+                element.dataset.statsValue = value;
+                element.textContent = statsValuesHidden ? STATS_HIDDEN_VALUE : value;
+            });
+
+            if (persist) {
+                try {
+                    localStorage.setItem(STATS_PRIVACY_STORAGE_KEY, String(statsValuesHidden));
+                } catch (error) {
+                    console.warn('تعذر حفظ تفضيل إخفاء الإجماليات:', error);
+                }
+            }
+        }
+
+        function initializeStatsPrivacy() {
+            let savedState = false;
+            try {
+                savedState = localStorage.getItem(STATS_PRIVACY_STORAGE_KEY) === 'true';
+            } catch (error) {
+                console.warn('تعذر قراءة تفضيل إخفاء الإجماليات:', error);
+            }
+
+            const toggle = document.getElementById('statsPrivacyToggle');
+            toggle?.addEventListener('click', () => applyStatsPrivacy(!statsValuesHidden));
+            applyStatsPrivacy(savedState, { persist: false });
+        }
+
+        initializeStatsPrivacy();
 
         function showLoading(show) {
             document.getElementById('loading').style.display = show ? 'flex' : 'none';
