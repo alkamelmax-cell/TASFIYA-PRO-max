@@ -5572,6 +5572,62 @@ class LocalWebServer {
                     return result.rowCount || 0;
                 };
 
+                // A merge target id in a desktop payload is a SQLite-local id. It
+                // must never be written directly to PostgreSQL, where ids belong to
+                // the server. Resolve every source row through the stable
+                // (sync_source_id, source_row_id) pair before exposing the merge.
+                const remapCustomerMergeTargets = async (items = []) => {
+                    if (!sourceScopedSync || !Array.isArray(items) || items.length === 0) return;
+
+                    const sourceLocalIds = items
+                        .map(item => parseInteger(item?.id))
+                        .filter(id => id !== null && id > 0);
+                    const targetLocalIds = items
+                        .map(item => parseInteger(item?.merged_into_customer_id))
+                        .filter(id => id !== null && id > 0);
+                    const lookupIds = Array.from(new Set([...sourceLocalIds, ...targetLocalIds]));
+                    if (lookupIds.length === 0) return;
+
+                    const result = await pool.query(
+                        `SELECT id, source_row_id
+                         FROM customers
+                         WHERE sync_source_id = $1
+                           AND source_row_id = ANY($2::bigint[])`,
+                        [syncSourceId, lookupIds]
+                    );
+                    const serverIdBySourceRowId = new Map(
+                        (result.rows || [])
+                            .map(row => [parseInteger(row.source_row_id), parseInteger(row.id)])
+                            .filter(([sourceRowId, serverId]) => sourceRowId && serverId)
+                    );
+
+                    for (const item of items) {
+                        const sourceLocalId = parseInteger(item?.id);
+                        const sourceServerId = serverIdBySourceRowId.get(sourceLocalId);
+                        if (!sourceServerId) continue;
+
+                        const targetLocalId = parseInteger(item?.merged_into_customer_id);
+                        if (targetLocalId && !serverIdBySourceRowId.has(targetLocalId)) {
+                            console.warn(
+                                `⚠️ [SYNC] Merge target ${targetLocalId} for customer ${sourceLocalId} was not synced; preserving the existing server link.`
+                            );
+                            continue;
+                        }
+
+                        const targetServerId = targetLocalId
+                            ? serverIdBySourceRowId.get(targetLocalId)
+                            : null;
+                        await pool.query(
+                            `UPDATE customers
+                             SET merged_into_customer_id = $1,
+                                 merged_at = $2,
+                                 updated_at = COALESCE($3, CURRENT_TIMESTAMP)
+                             WHERE id = $4 AND sync_source_id = $5`,
+                            [targetServerId || null, item?.merged_at ?? null, item?.updated_at ?? null, sourceServerId, syncSourceId]
+                        );
+                    }
+                };
+
                 // Customers are also device-scoped. Their SQLite ids and generated
                 // customer codes are only unique inside one desktop installation.
                 // The old global-id upsert could therefore fail with a duplicate id
@@ -5683,7 +5739,7 @@ class LocalWebServer {
                                         syncSourceId, localId, customerCode, item.customer_name ?? '',
                                         item.branch_id ?? null, item.phone ?? '', item.address ?? '',
                                         item.is_favorite ?? 0, item.is_active ?? 1,
-                                        item.merged_into_customer_id ?? null, item.merged_at ?? null,
+                                        sourceScopedSync ? null : (item.merged_into_customer_id ?? null), item.merged_at ?? null,
                                         item.created_at ?? null, item.updated_at ?? null, Number(existing.id)
                                     ]
                                 );
@@ -5696,7 +5752,7 @@ class LocalWebServer {
                                         syncSourceId, localId,
                                         customerCode, item.customer_name ?? '', item.branch_id ?? null,
                                         item.phone ?? '', item.address ?? '', item.is_favorite ?? 0,
-                                        item.is_active ?? 1, item.merged_into_customer_id ?? null,
+                                        item.is_active ?? 1, sourceScopedSync ? null : (item.merged_into_customer_id ?? null),
                                         item.merged_at ?? null, item.created_at ?? null, item.updated_at ?? null
                                     ]
                                 );
@@ -5714,6 +5770,7 @@ class LocalWebServer {
                         }
                     }
 
+                    await remapCustomerMergeTargets(items);
                     console.log(`✅ [SYNC] customers: device-scoped upsert processed ${successCount} items.${errorCount ? ` Failed ${errorCount}.` : ''}`);
                 };
 
@@ -5901,6 +5958,34 @@ class LocalWebServer {
                         if (options.remapCustomerIdentity) {
                             normalized.customer_id = await resolveIncomingCustomerId(normalized);
                         }
+                        if (options.remapCustomerIdentityAlias) {
+                            const aliasCustomerId = parseInteger(item?.alias_customer_id);
+                            const canonicalCustomerId = parseInteger(item?.canonical_customer_id);
+                            normalized.alias_customer_id = aliasCustomerId
+                                ? await resolveIncomingCustomerId({
+                                    customer_id: aliasCustomerId,
+                                    customer_code: item?.alias_code,
+                                    customer_name: item?.alias_name,
+                                    branch_id: item?.branch_id
+                                }) || 0
+                                : 0;
+                            normalized.canonical_customer_id = canonicalCustomerId
+                                ? await resolveIncomingCustomerId({
+                                    customer_id: canonicalCustomerId,
+                                    customer_code: item?.canonical_code,
+                                    customer_name: item?.canonical_name || item?.alias_name,
+                                    branch_id: item?.branch_id
+                                })
+                                : null;
+                            if (!normalized.canonical_customer_id) {
+                                syncFailures.push({
+                                    table,
+                                    id: localId,
+                                    error: `Canonical customer ${canonicalCustomerId ?? '?'} is not synced for this device`
+                                });
+                                continue;
+                            }
+                        }
                         normalized.source_row_id = localId;
                         normalized.sync_source_id = syncSourceId;
                         normalizedItems.push(normalized);
@@ -5986,6 +6071,58 @@ class LocalWebServer {
                     console.log(`✅ [SYNC] ${table}: device-scoped upsert processed ${successCount} items.${errorCount ? ` Failed ${errorCount}.` : ''}`);
                 };
 
+                // Once the alias rows are remapped, normalize already-synced
+                // transactions to the canonical server customer. This makes the
+                // repair self-healing: old rows and newly uploaded rows use the
+                // same identity and can no longer appear as a second customer in
+                // the web ledger.
+                const repairServerCustomerAliasTransactions = async () => {
+                    if (!sourceScopedSync) return 0;
+
+                    const transactionTables = [
+                        'postpaid_sales',
+                        'customer_receipts',
+                        'manual_postpaid_sales',
+                        'manual_customer_receipts'
+                    ];
+                    let repairedRows = 0;
+
+                    for (const table of transactionTables) {
+                        const result = await pool.query(
+                            `UPDATE ${table} AS tx
+                             SET customer_id = target.id,
+                                 customer_code = target.customer_code,
+                                 customer_name = target.customer_name
+                             FROM customer_identity_aliases AS aliases
+                             JOIN customers AS target ON target.id = aliases.canonical_customer_id
+                             WHERE tx.sync_source_id = $1
+                               AND aliases.sync_source_id = $1
+                               AND COALESCE(aliases.is_active, 1) = 1
+                               AND COALESCE(target.is_active, 1) = 1
+                               AND (
+                                   (COALESCE(aliases.alias_customer_id, 0) > 0
+                                    AND tx.customer_id = aliases.alias_customer_id)
+                                   OR (
+                                       BTRIM(COALESCE(aliases.alias_code, '')) <> ''
+                                       AND UPPER(BTRIM(COALESCE(tx.customer_code, ''))) = UPPER(BTRIM(aliases.alias_code))
+                                   )
+                               )
+                               AND (
+                                   tx.customer_id IS DISTINCT FROM target.id
+                                   OR UPPER(BTRIM(COALESCE(tx.customer_code, ''))) IS DISTINCT FROM UPPER(BTRIM(COALESCE(target.customer_code, '')))
+                                   OR BTRIM(COALESCE(tx.customer_name, '')) IS DISTINCT FROM BTRIM(COALESCE(target.customer_name, ''))
+                               )`,
+                            [syncSourceId]
+                        );
+                        repairedRows += result.rowCount || 0;
+                    }
+
+                    if (repairedRows > 0) {
+                        console.log(`🔗 [SYNC] Canonicalized ${repairedRows} customer transaction rows after merge.`);
+                    }
+                    return repairedRows;
+                };
+
                 // Sync all tables in dependency order
                 if (data.branches) {
                     await syncTable('branches', data.branches, [
@@ -6008,7 +6145,7 @@ class LocalWebServer {
                         { name: 'id' }, { name: 'branch_id' }, { name: 'alias_customer_id' },
                         { name: 'alias_code' }, { name: 'alias_name' }, { name: 'canonical_customer_id' },
                         { name: 'is_active' }, { name: 'created_at' }, { name: 'updated_at' }
-                    ]);
+                    ], { remapCustomerIdentityAlias: true });
                 }
 
                 if (data.accountants) {
@@ -6453,6 +6590,9 @@ class LocalWebServer {
                 if (data.customer_fiscal_opening_balances) {
                     await syncFiscalOpeningBalances(data.customer_fiscal_opening_balances);
                 }
+
+                await repairServerCustomerAliasTransactions();
+
                 // Sync reconciliation requests (especially status updates)
                 if (data.reconciliation_requests) {
                     // SANITIZE DATA: Ensure numeric fields are clean for Postgres (remove commas)
