@@ -5785,6 +5785,112 @@ class LocalWebServer {
                     console.log(`✅ [SYNC] customers: device-scoped upsert processed ${successCount} items.${errorCount ? ` Failed ${errorCount}.` : ''}`);
                 };
 
+                // Older desktop databases can contain the merge relationship on
+                // customers.merged_into_customer_id while their local
+                // customer_identity_aliases table is empty (the alias table was
+                // added after those merges were made).  Rebuild a stable alias
+                // row from every merged customer so historical transactions are
+                // folded into the same canonical identity.  The negative source
+                // row id keeps these repair rows separate from real SQLite alias
+                // rows, whose ids are positive.
+                const rebuildCustomerIdentityAliasesFromMerges = async () => {
+                    if (!sourceScopedSync) return 0;
+
+                    await pool.query(
+                        `UPDATE customer_identity_aliases
+                         SET is_active = 0, updated_at = CURRENT_TIMESTAMP
+                         WHERE sync_source_id = $1 AND source_row_id < 0`,
+                        [syncSourceId]
+                    );
+
+                    const result = await pool.query(
+                        `WITH RECURSIVE merge_chain AS (
+                             SELECT c.id AS alias_customer_id,
+                                    c.source_row_id AS alias_source_row_id,
+                                    c.branch_id AS alias_branch_id,
+                                    c.customer_code AS alias_code,
+                                    c.customer_name AS alias_name,
+                                    c.merged_into_customer_id AS canonical_customer_id,
+                                    ARRAY[c.id]::integer[] AS path
+                             FROM customers AS c
+                             WHERE c.sync_source_id = $1
+                               AND c.merged_into_customer_id IS NOT NULL
+                             UNION ALL
+                             SELECT chain.alias_customer_id,
+                                    chain.alias_source_row_id,
+                                    chain.alias_branch_id,
+                                    chain.alias_code,
+                                    chain.alias_name,
+                                    target.merged_into_customer_id AS canonical_customer_id,
+                                    chain.path || target.id
+                             FROM merge_chain AS chain
+                             JOIN customers AS target
+                               ON target.id = chain.canonical_customer_id
+                             WHERE target.merged_into_customer_id IS NOT NULL
+                               AND NOT target.id = ANY(chain.path)
+                         ), resolved AS (
+                             SELECT DISTINCT ON (chain.alias_customer_id)
+                                    chain.alias_customer_id,
+                                    chain.alias_source_row_id,
+                                    chain.alias_branch_id,
+                                    chain.alias_code,
+                                    chain.alias_name,
+                                    canonical.id AS canonical_customer_id,
+                                    canonical.branch_id AS canonical_branch_id
+                             FROM merge_chain AS chain
+                             JOIN customers AS canonical
+                               ON canonical.id = chain.canonical_customer_id
+                             WHERE canonical.merged_into_customer_id IS NULL
+                             ORDER BY chain.alias_customer_id, cardinality(chain.path) DESC
+                         )
+                         INSERT INTO customer_identity_aliases (
+                             sync_source_id, source_row_id, branch_id,
+                             alias_customer_id, alias_code, alias_name,
+                             canonical_customer_id, is_active,
+                             created_at, updated_at
+                         )
+                         SELECT $1,
+                                -ABS(resolved.alias_source_row_id),
+                                COALESCE(resolved.alias_branch_id, resolved.canonical_branch_id, 0),
+                                resolved.alias_customer_id,
+                                COALESCE(resolved.alias_code, ''),
+                                COALESCE(resolved.alias_name, ''),
+                                resolved.canonical_customer_id,
+                                1,
+                                CURRENT_TIMESTAMP,
+                                CURRENT_TIMESTAMP
+                         FROM resolved
+                         WHERE resolved.alias_source_row_id IS NOT NULL
+                           AND resolved.alias_source_row_id > 0
+                           AND resolved.alias_customer_id <> resolved.canonical_customer_id
+                         ON CONFLICT (sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL
+                         DO UPDATE SET
+                             branch_id = EXCLUDED.branch_id,
+                             alias_customer_id = EXCLUDED.alias_customer_id,
+                             alias_code = EXCLUDED.alias_code,
+                             alias_name = EXCLUDED.alias_name,
+                             canonical_customer_id = EXCLUDED.canonical_customer_id,
+                             is_active = 1,
+                             updated_at = CURRENT_TIMESTAMP`,
+                        [syncSourceId]
+                    );
+
+                    const countResult = await pool.query(
+                        `SELECT COUNT(*)::int AS count
+                         FROM customer_identity_aliases
+                         WHERE sync_source_id = $1
+                           AND source_row_id < 0
+                           AND COALESCE(is_active, 1) = 1`,
+                        [syncSourceId]
+                    );
+                    const count = Number(countResult.rows?.[0]?.count || 0);
+                    if (count > 0) {
+                        console.log(`🔗 [SYNC] Rebuilt ${count} customer merge aliases from customer links.`);
+                    }
+                    return count;
+                };
+
                 // Desktop SQLite customer ids are local to one installation. Every
                 // transaction must therefore be rewritten to the canonical PostgreSQL
                 // customer id before it is stored on the server.
@@ -6158,6 +6264,11 @@ class LocalWebServer {
                         { name: 'is_active' }, { name: 'created_at' }, { name: 'updated_at' }
                     ], { remapCustomerIdentityAlias: true });
                 }
+
+                // Do this even when the desktop sent no alias rows.  It repairs
+                // legacy databases whose merge pointers exist but whose alias
+                // table was created later or never populated.
+                await rebuildCustomerIdentityAliasesFromMerges();
 
                 if (data.accountants) {
                     await syncTable('accountants', data.accountants, [
