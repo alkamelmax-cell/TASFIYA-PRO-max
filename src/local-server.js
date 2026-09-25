@@ -5797,15 +5797,15 @@ class LocalWebServer {
                     if (!sourceScopedSync) return 0;
 
                     await pool.query(
-                        `UPDATE customer_identity_aliases
-                         SET is_active = 0, updated_at = CURRENT_TIMESTAMP
-                         WHERE sync_source_id = $1 AND source_row_id < 0`,
-                        [syncSourceId]
+                        `DELETE FROM customer_identity_aliases
+                         WHERE source_row_id < 0`,
+                        []
                     );
 
-                    const result = await pool.query(
+                    await pool.query(
                         `WITH RECURSIVE merge_chain AS (
                              SELECT c.id AS alias_customer_id,
+                                    c.sync_source_id AS alias_sync_source_id,
                                     c.source_row_id AS alias_source_row_id,
                                     c.branch_id AS alias_branch_id,
                                     c.customer_code AS alias_code,
@@ -5813,10 +5813,10 @@ class LocalWebServer {
                                     c.merged_into_customer_id AS canonical_customer_id,
                                     ARRAY[c.id]::integer[] AS path
                              FROM customers AS c
-                             WHERE c.sync_source_id = $1
-                               AND c.merged_into_customer_id IS NOT NULL
+                             WHERE c.merged_into_customer_id IS NOT NULL
                              UNION ALL
                              SELECT chain.alias_customer_id,
+                                    chain.alias_sync_source_id,
                                     chain.alias_source_row_id,
                                     chain.alias_branch_id,
                                     chain.alias_code,
@@ -5831,6 +5831,7 @@ class LocalWebServer {
                          ), resolved AS (
                              SELECT DISTINCT ON (chain.alias_customer_id)
                                     chain.alias_customer_id,
+                                    chain.alias_sync_source_id,
                                     chain.alias_source_row_id,
                                     chain.alias_branch_id,
                                     chain.alias_code,
@@ -5849,95 +5850,8 @@ class LocalWebServer {
                              canonical_customer_id, is_active,
                              created_at, updated_at
                          )
-                         SELECT $1,
-                                -ABS(resolved.alias_source_row_id),
-                                COALESCE(resolved.alias_branch_id, resolved.canonical_branch_id, 0),
-                                resolved.alias_customer_id,
-                                COALESCE(resolved.alias_code, ''),
-                                COALESCE(resolved.alias_name, ''),
-                                resolved.canonical_customer_id,
-                                1,
-                                CURRENT_TIMESTAMP,
-                                CURRENT_TIMESTAMP
-                         FROM resolved
-                         WHERE resolved.alias_source_row_id IS NOT NULL
-                           AND resolved.alias_source_row_id > 0
-                           AND resolved.alias_customer_id <> resolved.canonical_customer_id
-                         ON CONFLICT (sync_source_id, source_row_id)
-                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL
-                         DO UPDATE SET
-                             branch_id = EXCLUDED.branch_id,
-                             alias_customer_id = EXCLUDED.alias_customer_id,
-                             alias_code = EXCLUDED.alias_code,
-                             alias_name = EXCLUDED.alias_name,
-                             canonical_customer_id = EXCLUDED.canonical_customer_id,
-                             is_active = 1,
-                             updated_at = CURRENT_TIMESTAMP`,
-                        [syncSourceId]
-                    );
-
-                    const countResult = await pool.query(
-                        `SELECT COUNT(*)::int AS count
-                         FROM customer_identity_aliases
-                         WHERE sync_source_id = $1
-                           AND source_row_id < 0
-                           AND COALESCE(is_active, 1) = 1`,
-                        [syncSourceId]
-                    );
-                    // Older rows may predate source-scoped sync and therefore
-                    // have no sync_source_id/source_row_id.  Keep those rows in
-                    // the same identity protocol as well; use the server
-                    // customer id as a deterministic negative repair key.
-                    await pool.query(
-                        `DELETE FROM customer_identity_aliases
-                         WHERE sync_source_id IS NULL AND source_row_id < 0`,
-                        []
-                    );
-                    await pool.query(
-                        `WITH RECURSIVE merge_chain AS (
-                             SELECT c.id AS alias_customer_id,
-                                    c.branch_id AS alias_branch_id,
-                                    c.customer_code AS alias_code,
-                                    c.customer_name AS alias_name,
-                                    c.merged_into_customer_id AS canonical_customer_id,
-                                    ARRAY[c.id]::integer[] AS path
-                             FROM customers AS c
-                             WHERE c.sync_source_id IS NULL
-                               AND c.merged_into_customer_id IS NOT NULL
-                             UNION ALL
-                             SELECT chain.alias_customer_id,
-                                    chain.alias_branch_id,
-                                    chain.alias_code,
-                                    chain.alias_name,
-                                    target.merged_into_customer_id AS canonical_customer_id,
-                                    chain.path || target.id
-                             FROM merge_chain AS chain
-                             JOIN customers AS target
-                               ON target.id = chain.canonical_customer_id
-                             WHERE target.merged_into_customer_id IS NOT NULL
-                               AND NOT target.id = ANY(chain.path)
-                         ), resolved AS (
-                             SELECT DISTINCT ON (chain.alias_customer_id)
-                                    chain.alias_customer_id,
-                                    chain.alias_branch_id,
-                                    chain.alias_code,
-                                    chain.alias_name,
-                                    canonical.id AS canonical_customer_id,
-                                    canonical.branch_id AS canonical_branch_id
-                             FROM merge_chain AS chain
-                             JOIN customers AS canonical
-                               ON canonical.id = chain.canonical_customer_id
-                             WHERE canonical.merged_into_customer_id IS NULL
-                             ORDER BY chain.alias_customer_id, cardinality(chain.path) DESC
-                         )
-                         INSERT INTO customer_identity_aliases (
-                             sync_source_id, source_row_id, branch_id,
-                             alias_customer_id, alias_code, alias_name,
-                             canonical_customer_id, is_active,
-                             created_at, updated_at
-                         )
-                         SELECT NULL,
-                                -ABS(resolved.alias_customer_id),
+                         SELECT resolved.alias_sync_source_id,
+                                -ABS(COALESCE(resolved.alias_source_row_id, resolved.alias_customer_id)),
                                 COALESCE(resolved.alias_branch_id, resolved.canonical_branch_id, 0),
                                 resolved.alias_customer_id,
                                 COALESCE(resolved.alias_code, ''),
@@ -5948,12 +5862,16 @@ class LocalWebServer {
                                 CURRENT_TIMESTAMP
                          FROM resolved
                          WHERE resolved.alias_customer_id <> resolved.canonical_customer_id
-                           AND NOT EXISTS (
-                               SELECT 1
-                               FROM customer_identity_aliases AS existing
-                               WHERE existing.sync_source_id IS NULL
-                                 AND existing.source_row_id = -ABS(resolved.alias_customer_id)
-                           )`,
+                         ON CONFLICT (sync_source_id, source_row_id)
+                         WHERE sync_source_id IS NOT NULL AND source_row_id IS NOT NULL
+                         DO UPDATE SET
+                             branch_id = EXCLUDED.branch_id,
+                             alias_customer_id = EXCLUDED.alias_customer_id,
+                             alias_code = EXCLUDED.alias_code,
+                             alias_name = EXCLUDED.alias_name,
+                             canonical_customer_id = EXCLUDED.canonical_customer_id,
+                             is_active = 1,
+                             updated_at = CURRENT_TIMESTAMP`,
                         []
                     );
 
@@ -6292,10 +6210,7 @@ class LocalWebServer {
                                  customer_name = target.customer_name
                              FROM customer_identity_aliases AS aliases
                              JOIN customers AS target ON target.id = aliases.canonical_customer_id
-                            WHERE (
-                                   (tx.sync_source_id = $1 AND aliases.sync_source_id = $1)
-                                   OR (tx.sync_source_id IS NULL AND aliases.sync_source_id IS NULL)
-                               )
+                            WHERE tx.sync_source_id IS NOT DISTINCT FROM aliases.sync_source_id
                                AND COALESCE(aliases.is_active, 1) = 1
                                AND COALESCE(target.is_active, 1) = 1
                                AND (
@@ -6311,7 +6226,7 @@ class LocalWebServer {
                                    OR UPPER(BTRIM(COALESCE(tx.customer_code, ''))) IS DISTINCT FROM UPPER(BTRIM(COALESCE(target.customer_code, '')))
                                    OR BTRIM(COALESCE(tx.customer_name, '')) IS DISTINCT FROM BTRIM(COALESCE(target.customer_name, ''))
                                )`,
-                            [syncSourceId]
+                            []
                         );
                         repairedRows += result.rowCount || 0;
                     }
@@ -6320,6 +6235,24 @@ class LocalWebServer {
                         console.log(`🔗 [SYNC] Canonicalized ${repairedRows} customer transaction rows after merge.`);
                     }
                     return repairedRows;
+                };
+
+                const customerMergeAliasesAreIncomplete = async () => {
+                    if (!sourceScopedSync) return false;
+                    const result = await pool.query(
+                        `SELECT EXISTS (
+                             SELECT 1
+                             FROM customers AS merged
+                             WHERE COALESCE(merged.merged_into_customer_id, 0) > 0
+                               AND NOT EXISTS (
+                                   SELECT 1
+                                   FROM customer_identity_aliases AS aliases
+                                   WHERE COALESCE(aliases.is_active, 1) = 1
+                                     AND aliases.alias_customer_id = merged.id
+                               )
+                         ) AS missing`
+                    );
+                    return result.rows?.[0]?.missing === true;
                 };
 
                 // Sync all tables in dependency order
@@ -6353,7 +6286,9 @@ class LocalWebServer {
                 // Do this even when the desktop sent no alias rows.  It repairs
                 // legacy databases whose merge pointers exist but whose alias
                 // table was created later or never populated.
-                if (hasMergeIdentityPayload) {
+                const identityAliasesIncomplete = hasMergeIdentityPayload
+                    || await customerMergeAliasesAreIncomplete();
+                if (identityAliasesIncomplete) {
                     await rebuildCustomerIdentityAliasesFromMerges();
                 }
 
@@ -6804,7 +6739,7 @@ class LocalWebServer {
                 // inserted.  The full-table repair is intentionally limited to
                 // identity payloads; running it after every transaction batch
                 // made a full upload scan the entire ledger repeatedly.
-                if (hasMergeIdentityPayload) {
+                if (identityAliasesIncomplete) {
                     await repairServerCustomerAliasTransactions();
                 }
 
