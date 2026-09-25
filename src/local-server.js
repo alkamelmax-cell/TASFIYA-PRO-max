@@ -1943,7 +1943,12 @@ class LocalWebServer {
                 'manual_postpaid_sales',
                 'manual_customer_receipts',
                 'customer_fiscal_opening_balances',
-                'reconciliations'
+                'reconciliations',
+                // Customer identity is part of the accounting mirror. Leaving
+                // old customers/aliases behind makes a clean reseed reproduce
+                // the same duplicate balances after the next full sync.
+                'customer_identity_aliases',
+                'customers'
             ];
             const availableResult = await client.query(`
                 SELECT table_name
@@ -1994,6 +1999,12 @@ class LocalWebServer {
 
             for (const tableName of mirrorTables) {
                 if (!availableTables.has(tableName)) continue;
+                if (tableName === 'customers') {
+                    // Break self-referencing merge links before deleting the
+                    // registry rows. Transaction tables and aliases have already
+                    // been removed in the order above.
+                    await client.query('UPDATE customers SET merged_into_customer_id = NULL');
+                }
                 const deleteResult = await client.query(`DELETE FROM ${tableName}`);
                 deletedCounts[tableName] = deleteResult.rowCount || 0;
             }
