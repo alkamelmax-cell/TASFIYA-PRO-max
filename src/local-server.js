@@ -6119,7 +6119,12 @@ class LocalWebServer {
 
                     const dataColumns = columns.map(column => column.name).filter(name => name !== 'id');
                     const cols = ['sync_source_id', 'source_row_id', ...dataColumns];
-                    const updateSets = dataColumns.map(name => `${name} = EXCLUDED.${name}`).join(', ');
+                    const updateSets = dataColumns.map(name => {
+                        if (options.preserveReconciliationNumber && name === 'reconciliation_number') {
+                            return `${name} = COALESCE(EXCLUDED.${name}, ${table}.${name})`;
+                        }
+                        return `${name} = EXCLUDED.${name}`;
+                    }).join(', ');
                     const BATCH_SIZE = 100;
                     let successCount = 0;
                     let errorCount = 0;
@@ -6583,7 +6588,7 @@ class LocalWebServer {
                         { name: 'formula_profile_id' }, { name: 'formula_settings' },
                         { name: 'cashbox_posting_enabled' }, { name: 'created_at' },
                         { name: 'updated_at' }, { name: 'last_modified_date' }
-                    ]);
+                    ], { preserveReconciliationNumber: true });
 
                     // 4. Send Notification ONLY if we found NEW items
                     if (newReconciliationsCount > 0 && firstNewRec) {
