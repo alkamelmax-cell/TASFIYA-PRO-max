@@ -4,7 +4,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$expectedCommit = '625b8435e36fa411ef8abf944b78c67d206a7aad'
+$expectedCommit = '382addc5c76f843ed438f92a32467ac020a67e96'
 $expectedRelease = 'server-release-balance-number-2'
 
 try {
