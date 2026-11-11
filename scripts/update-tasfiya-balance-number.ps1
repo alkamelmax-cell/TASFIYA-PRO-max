@@ -11,58 +11,65 @@ try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
     $principal = [Security.Principal.WindowsPrincipal]::new($identity)
     if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-        throw 'افتح PowerShell بصفة مسؤول ثم أعد تشغيل الملف.'
+        throw 'Open PowerShell as Administrator, then run this script again.'
     }
 
     $git = Get-Command git.exe -ErrorAction Stop
     if (-not $RepositoryPath) {
         $desktop = [Environment]::GetFolderPath('Desktop')
-        $buttonPath = Join-Path $desktop 'تحديث خادم تصفية برو.cmd'
-        if (-not (Test-Path -LiteralPath $buttonPath -PathType Leaf)) {
-            throw 'لم يتم العثور على زر تحديث الخادم على سطح المكتب. شغّل الملف مع المعامل -RepositoryPath وحدد مجلد نسخة الخادم.'
+        $repositoryCandidates = @()
+        foreach ($button in @(Get-ChildItem -LiteralPath $desktop -Filter '*.cmd' -File -ErrorAction SilentlyContinue)) {
+            $buttonText = Get-Content -LiteralPath $button.FullName -Raw
+            $match = [regex]::Match($buttonText, '(?im)^\s*cd\s+/d\s+"([^"]+)"\s*$')
+            if ($match.Success) {
+                $candidate = $match.Groups[1].Value
+                $candidateBranch = [string](& $git.Source -C $candidate branch --show-current 2>$null)
+                $candidateBranch = $candidateBranch.Trim()
+                if ($LASTEXITCODE -eq 0 -and $candidateBranch -eq 'server-release') {
+                    $repositoryCandidates += $candidate
+                }
+            }
         }
-        $button = Get-Content -LiteralPath $buttonPath -Raw
-        $match = [regex]::Match($button, '(?im)^\s*cd\s+/d\s+"([^"]+)"\s*$')
-        if (-not $match.Success) {
-            throw 'تعذر تحديد مجلد الخادم من زر التحديث. شغّل الملف مع المعامل -RepositoryPath وحدد مجلد نسخة الخادم.'
+        if ($repositoryCandidates.Count -ne 1) {
+            throw 'Could not identify one server-release repository from the desktop command files. Pass -RepositoryPath with the server repository folder.'
         }
-        $RepositoryPath = $match.Groups[1].Value
+        $RepositoryPath = $repositoryCandidates[0]
     }
 
     $repo = (Resolve-Path -LiteralPath $RepositoryPath -ErrorAction Stop).Path
     $branch = (& $git.Source -C $repo branch --show-current).Trim()
     if ($LASTEXITCODE -ne 0 -or $branch -ne 'server-release') {
-        throw 'مجلد الخادم ليس على فرع server-release؛ لم يتم تطبيق التحديث.'
+        throw 'The server repository is not on the server-release branch. No update was applied.'
     }
     $changes = @(& $git.Source -C $repo status --porcelain --untracked-files=no)
     if ($LASTEXITCODE -ne 0 -or $changes.Count -gt 0) {
-        throw 'توجد تغييرات محلية في ملفات الخادم أو تعذر فحصها؛ لم يتم تطبيق التحديث.'
+        throw 'The server repository has local tracked changes or could not be checked. No update was applied.'
     }
 
-    Write-Host 'جاري جلب تحديث الخادم...' -ForegroundColor Cyan
+    Write-Host 'Fetching the web server update...' -ForegroundColor Cyan
     & $git.Source -C $repo fetch origin server-release
-    if ($LASTEXITCODE -ne 0) { throw 'تعذر جلب تحديث الخادم من GitHub.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Could not fetch the web server update from GitHub.' }
 
     & $git.Source -C $repo cat-file -e "$expectedCommit^{commit}"
-    if ($LASTEXITCODE -ne 0) { throw 'إصدار التحديث المطلوب غير موجود في المستودع.' }
+    if ($LASTEXITCODE -ne 0) { throw 'The requested update commit is not available in the repository.' }
     & $git.Source -C $repo merge --ff-only $expectedCommit
-    if ($LASTEXITCODE -ne 0) { throw 'تعذر تحديث مجلد الخادم بأمان؛ بقي الخادم الحالي دون تبديل.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Could not safely update the server repository. The active server was not switched.' }
 
     $installer = Join-Path $repo 'scripts\update-active-web-features.ps1'
     if (-not (Test-Path -LiteralPath $installer -PathType Leaf)) {
-        throw 'لم يتم العثور على أداة تثبيت تحديث الويب.'
+        throw 'The web feature installer was not found.'
     }
-    Write-Host 'جاري تجهيز إصدار الويب والتحقق منه قبل التبديل...' -ForegroundColor Cyan
+    Write-Host 'Preparing and checking the web release before switching...' -ForegroundColor Cyan
     & $installer
 
     $response = Invoke-RestMethod -Uri 'http://127.0.0.1:4000/api/server-version' -TimeoutSec 15
     if ($response.release -ne $expectedRelease -or $response.bank_balance_number -ne $true) {
-        throw 'لم يتم التحقق من إصدار رقم الموازنة على منفذ الخادم المحلي 4000.'
+        throw 'The bank balance number release could not be verified on local port 4000.'
     }
-    Write-Host 'SUCCESS: تم تشغيل تحديث رقم الموازنة والتحقق منه محليًا.' -ForegroundColor Green
+    Write-Host 'SUCCESS: The bank balance number display update is active and verified locally.' -ForegroundColor Green
     exit 0
 } catch {
-    Write-Error "فشل تحديث الخادم: $($_.Exception.Message)"
+    Write-Error "Server update failed: $($_.Exception.Message)"
     exit 1
 }
 
