@@ -244,6 +244,10 @@
                     </select>
                 </div>
                 <div class="col-6 col-md-3">
+                    <label class="custom-label">رقم الموازنة</label>
+                    <input type="text" class="custom-input w-100" id="filterBalanceNumber" placeholder="رقم الموازنة">
+                </div>
+                <div class="col-6 col-md-3">
                     <label class="custom-label">مبلغ محدد</label>
                     <input type="number" class="custom-input w-100" id="filterAmount" placeholder="ابحث عن مبلغ">
                 </div>
@@ -366,6 +370,8 @@
         const API_URL = '/api';
         let allAtmRecords = [];
 
+        function escapeBalanceNumber(value) { const el = document.createElement('span'); el.textContent = String(value || ''); return el.innerHTML; }
+
         function getAtmReportFilters() {
             return {
                 dateFrom: document.getElementById('filterDateFrom').value,
@@ -375,6 +381,7 @@
                 accountLocation: document.getElementById('filterAccount').value,
                 operationType: document.getElementById('filterOperationType').value,
                 device: document.getElementById('filterDevice').value,
+                balanceNumber: document.getElementById('filterBalanceNumber').value,
                 specificAmount: document.getElementById('filterAmount').value
             };
         }
@@ -521,9 +528,10 @@
             const branchId = document.getElementById('filterBranch').value;
             const accountLocation = document.getElementById('filterAccount').value;
             const specificAmount = document.getElementById('filterAmount').value;
+            const balanceNumber = document.getElementById('filterBalanceNumber').value.trim();
 
             // Update global flag
-            isServerFiltered = (dateFrom || dateTo || (cashierId && cashierId !== 'all') || (branchId && branchId !== 'all') || (accountLocation && accountLocation !== 'all') || specificAmount);
+            isServerFiltered = (dateFrom || dateTo || (cashierId && cashierId !== 'all') || (branchId && branchId !== 'all') || (accountLocation && accountLocation !== 'all') || specificAmount || balanceNumber);
 
             const params = new URLSearchParams();
             if (dateFrom) params.append('dateFrom', dateFrom);
@@ -532,6 +540,7 @@
             if (branchId && branchId !== 'all') params.append('branchId', branchId);
             if (accountLocation && accountLocation !== 'all') params.append('accountLocation', accountLocation);
             if (specificAmount) params.append('specificAmount', specificAmount);
+            if (balanceNumber) params.append('balanceNumber', balanceNumber);
 
             showLoading(true);
             try {
@@ -593,7 +602,7 @@
                         <td class="text-center fw-bold">${formattedDate}</td>
                         <td class="text-center">${opBadge}</td>
                         <td class="text-center text-info fw-bold">
-                            <div>${row.atm_name || '-'}</div>
+                            <div>${row.atm_name || '-'}</div>${row.balance_number ? `<div class="small">رقم الموازنة: ${escapeBalanceNumber(row.balance_number)}</div>` : ''}
                             ${(row.location || row.account_number) ? `<div class="text-secondary small fw-normal">${row.location || row.account_number}</div>` : ''}
                         </td>
                         <td class="text-center text-white">${row.bank_name || '-'}</td>
@@ -656,6 +665,7 @@
                                     <h5 class="fw-bold text-white mb-1">
                                         <i class="${iconClass} ${colorClass} me-2"></i> ${row.atm_name || 'جهاز صراف'}
                                     </h5>
+                                    ${row.balance_number ? `<div class="small">رقم الموازنة: ${escapeBalanceNumber(row.balance_number)}</div>` : ''}
                                     <div class="text-white-50 small font-monospace mb-1">
                                         <i class="far fa-calendar-alt me-1"></i> ${formattedDate}
                                     </div>

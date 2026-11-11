@@ -334,7 +334,7 @@
             const bankRows = d.bank.map(item => `
                 <tr>
                     <td>${escapeHtml(item?.operation_type ?? item?.opText ?? '-')}</td>
-                    <td>${escapeHtml(item?.atm_name ?? item?.atm ?? '-')}</td>
+                    <td>${escapeHtml(item?.atm_name ?? item?.atm ?? '-')}${item?.balance_number ? `<br><small>رقم الموازنة: ${escapeHtml(item.balance_number)}</small>` : ''}</td>
                     <td>${escapeHtml(item?.bank_name ?? item?.entry_bank_name ?? '-')}</td>
                     <td class="font-monospace dir-ltr">${formatMoney(item?.amount)}</td>
                 </tr>

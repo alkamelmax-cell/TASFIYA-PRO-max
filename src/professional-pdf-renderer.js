@@ -296,6 +296,13 @@ class ProfessionalPdfRenderer {
                     const fontSize = column.fontSize || 7.5;
                     doc.font(font).fillColor(typeof column.color === 'function' ? column.color(row) : (column.color || COLORS.ink));
                     const text = fitText(doc, rawValue, column.width - 8, fontSize);
+                    if (column.showBalanceNumber && row.balance_number) {
+                        doc.fontSize(fontSize).text(text, x + 4, state.y + 3, { width: column.width - 8, align: column.align || 'center', lineBreak: false });
+                        const balance = fitText(doc, `رقم الموازنة: ${row.balance_number}`, column.width - 8, fontSize);
+                        doc.fontSize(fontSize).text(balance, x + 4, state.y + 15, { width: column.width - 8, align: column.align || 'center', lineBreak: false });
+                        x += column.width;
+                        return;
+                    }
                     doc.fontSize(fontSize).text(text, x + 4, state.y + 7, {
                         width: column.width - 8,
                         align: column.align || 'center',
@@ -400,9 +407,9 @@ class ProfessionalPdfRenderer {
         this.drawTable(state, 'المقبوضات البنكية', [
             { label: 'المبلغ', weight: 1, value: (row) => amount(row.amount), bold: true },
             { label: 'البنك', weight: 1.4, value: 'bank_name' },
-            { label: 'الجهاز', weight: 1.2, value: 'atm_name' },
+            { label: 'الجهاز', weight: 1.2, value: 'atm_name', showBalanceNumber: true },
             { label: 'العملية', weight: 1.5, value: 'operation_type' }
-        ], bankRows, { totalRow: [amount(sum(bankRows, 'amount')), '', '', 'الإجمالي'] });
+        ], bankRows, { rowHeight: 30, totalRow: [amount(sum(bankRows, 'amount')), '', '', 'الإجمالي'] });
 
         const cashRows = [...(data.cashReceipts || [])].sort((a, b) => toNumber(b.denomination) - toNumber(a.denomination));
         this.drawTable(state, 'المقبوضات النقدية', [
@@ -518,11 +525,11 @@ class ProfessionalPdfRenderer {
                 { label: 'المبلغ', weight: 0.9, value: (row) => amount(row.amount), bold: true, color: COLORS.positive },
                 { label: 'الفرع', weight: 1.05, value: (row) => row.branch_name || '-' },
                 { label: 'البنك', weight: 1.05, value: (row) => row.bank_name || '-' },
-                { label: 'الجهاز', weight: 1.05, value: (row) => row.atm_name || '-' },
+                { label: 'الجهاز', weight: 1.05, value: (row) => row.atm_name || '-', showBalanceNumber: true },
                 { label: 'العملية', weight: 0.85, value: (row) => row.operation_type || '-' },
                 { label: 'التاريخ', weight: 0.9, value: (row) => displayDate(row.reconciliation_date) }
             ], payload.rows || [], {
-                rowHeight: 21,
+                rowHeight: 30,
                 totalRow: ['', '', amount(summary.total), '', '', '', 'الإجمالي', '']
             });
         } else {

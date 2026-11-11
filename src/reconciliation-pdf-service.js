@@ -112,6 +112,7 @@ class ReconciliationPdfService {
         }));
         const normalizedBank = bankReceipts.map((row) => ({
             operation_type: escapeHtml(row.operation_type || 'بطاقة'),
+            balance_number: row.balance_number || '',
             atm_name: escapeHtml(row.atm_name || '-'),
             bank_name: escapeHtml(row.bank_name || '-'),
             amount: toFiniteNumber(row.amount)

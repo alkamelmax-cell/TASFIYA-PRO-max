@@ -918,7 +918,7 @@
                                 <div class="bg-warning bg-opacity-10 p-2 rounded text-warning"><i class="fas fa-credit-card"></i></div>
                                 <div>
                                     <div class="fw-bold text-white small">${b.operation_type || 'بطاقة'}</div>
-                                    <small class="text-secondary opacity-75" style="font-size: 0.75rem">${b.atm_name || '-'}</small>
+                                    <small class="text-secondary opacity-75" style="font-size: 0.75rem">${b.atm_name || '-'}</small>${b.balance_number ? `<div class="small">رقم الموازنة: ${String(b.balance_number).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))}</div>` : ''}
                                 </div>
                             </div>
                             <div class="font-monospace fw-bold text-white text-ltr">${formatCurrency(b.amount).replace(' SAR', '')}</div>

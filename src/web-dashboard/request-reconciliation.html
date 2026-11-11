@@ -249,6 +249,10 @@
                                     style="background-color: #2d3748; cursor: not-allowed;">
                             </div>
                             <div class="col-md-5">
+                                <label class="text-secondary small mb-1">رقم الموازنة</label>
+                                <input type="text" id="input_bank_balance_number" class="form-control custom-input" maxlength="100" autocomplete="off">
+                            </div>
+                            <div class="col-md-5">
                                 <label class="text-secondary small mb-1">المبلغ</label>
                                 <input type="number" id="input_bank_amount_v2" class="form-control custom-input"
                                     placeholder="المبلغ">
@@ -265,6 +269,7 @@
                                     <tr>
                                         <th>العملية</th>
                                         <th>الصراف</th>
+                                        <th>رقم الموازنة</th>
                                         <th>البنك</th>
                                         <th class="text-ltr">المبلغ</th>
                                         <th>حذف</th>
@@ -867,6 +872,7 @@
                 'systemSales',
                 'notes',
                 'cashCountInput',
+                'input_bank_balance_number',
                 'input_bank_amount_v2',
                 'postpaidName',
                 'postpaidAmount',
@@ -907,6 +913,7 @@
                     bankOpType: readFieldValue('bankOpType'),
                     bankAtmName: readFieldValue('bankAtmName'),
                     input_bank_name_v2: readFieldValue('input_bank_name_v2'),
+                    input_bank_balance_number: readFieldValue('input_bank_balance_number'),
                     input_bank_amount_v2: readFieldValue('input_bank_amount_v2'),
                     postpaidName: readFieldValue('postpaidName'),
                     postpaidAmount: readFieldValue('postpaidAmount'),
@@ -986,7 +993,7 @@
                 supplierItems = Array.isArray(lists.supplierItems) ? lists.supplierItems : [];
 
                 renderTable('cashTableBody', cashItems, ['val', 'qty', 'sub']);
-                renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
+                renderTable('bankTableBody', bankItems, ['opText', 'atm', 'balance_number', 'entry_bank_name', 'amount']);
                 renderTable('postpaidTableBody', postpaidItems, ['customer_display', 'amount']);
                 renderTable('custReceiptTableBody', custReceiptItems, ['customer_display', 'type', 'amount']);
                 renderTable('returnTableBody', returnItems, ['num', 'amount', 'note']);
@@ -1042,9 +1049,11 @@
                 'notes',
                 'cashDenomSelect',
                 'cashCountInput',
+                'input_bank_balance_number',
                 'bankOpType',
                 'bankAtmName',
                 'input_bank_name_v2',
+                'input_bank_balance_number',
                 'input_bank_amount_v2',
                 'postpaidName',
                 'postpaidAmount',
@@ -1250,6 +1259,7 @@
 
             const atm = document.getElementById('bankAtmName').value;
             const bankVal = document.getElementById('input_bank_name_v2').value;
+            const balanceNumber = document.getElementById('input_bank_balance_number').value.trim();
             const amt = parseFloat(document.getElementById('input_bank_amount_v2').value);
 
             if (!amt || amt <= 0) {
@@ -1261,10 +1271,11 @@
             // For card payments, ATM should be selected (optional validation)
             const atmValue = (opType === 'transfer') ? 'تحويل بنكي' : (atm || '-');
 
-            bankItems.push({ op: opType, opText: opText, atm: atmValue, entry_bank_name: bankVal || '-', amount: amt });
-            renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
+            bankItems.push({ op: opType, opText: opText, atm: atmValue, balance_number: balanceNumber, entry_bank_name: bankVal || '-', amount: amt });
+            renderTable('bankTableBody', bankItems, ['opText', 'atm', 'balance_number', 'entry_bank_name', 'amount']);
 
             document.getElementById('input_bank_amount_v2').value = '';
+            document.getElementById('input_bank_balance_number').value = '';
             document.getElementById('bankOpType').focus();
             updateUI();
             showToast('success', 'تمت إضافة عملية البنك');
@@ -1400,7 +1411,7 @@
         // --- NEW REMOVE FUNCTIONS ---
         function removeBankItem(idx) {
             bankItems.splice(idx, 1);
-            renderTable('bankTableBody', bankItems, ['opText', 'atm', 'entry_bank_name', 'amount']);
+            renderTable('bankTableBody', bankItems, ['opText', 'atm', 'balance_number', 'entry_bank_name', 'amount']);
             updateUI();
             showToast('info', 'تم الحذف');
         }
@@ -1506,6 +1517,7 @@
                 bank_receipts: bankItems.map(i => ({
                     operation_type: i.opText,
                     atm_name: i.atm,
+                    balance_number: i.balance_number || '',
                     bank_name: i.entry_bank_name,
                     amount: i.amount
                 })),
@@ -1646,7 +1658,8 @@
             // 2. Bank Tab (Updated IDs)
             chain('bankOpType', 'bankAtmName');
             chain('bankAtmName', 'input_bank_name_v2');
-            chain('input_bank_name_v2', 'input_bank_amount_v2');
+            chain('input_bank_name_v2', 'input_bank_balance_number');
+            chain('input_bank_balance_number', 'input_bank_amount_v2');
             trigger('input_bank_amount_v2', addBankItem);
 
             // 3. Postpaid Tab

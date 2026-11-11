@@ -8,7 +8,7 @@ param(
 # Overlay only the web module. Preserve the active server's database adapter,
 # migrations, startup, sync code, node_modules and original connection settings.
 $ErrorActionPreference = 'Stop'
-$expectedRelease = 'server-release-2026-09-21.reports.1'
+$expectedRelease = 'server-release-balance-number-1'
 $taskName = 'TasfiyaPro-WebFeatures'
 $sourceRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path
 $targetRoot = (Resolve-Path -LiteralPath $TargetPath).Path.TrimEnd('\')
@@ -44,7 +44,7 @@ $webFiles = @(
     'src/operational-reports-pdf-service.js', 'src/professional-pdf-renderer.js',
     'src/report-pdf-templates.js', 'src/sync-runtime-identity.js',
     'src/security/auth-service.js', 'src/security/web-session-store.js',
-    'src/web-dashboard', 'scripts/check-web-features.cjs',
+    'src/web-dashboard', 'scripts/check-web-features.cjs', 'scripts/migrate-bank-balance.cjs',
     'scripts/run-web-features.ps1', 'scripts/web-features-runtime'
 )
 & $git -C $sourceRoot archive --format=zip "--output=$archive" HEAD -- @webFiles
@@ -58,6 +58,12 @@ if (-not (Select-String -LiteralPath (Join-Path $releaseRoot 'src\local-server.j
 Write-Host 'Preparing isolated report dependencies. The current server stays running...' -ForegroundColor Cyan
 & $npm ci --prefix $releaseRoot --omit=dev --ignore-scripts --no-audit --no-fund
 if ($LASTEXITCODE -ne 0) { throw 'Report dependency install failed. Live files are unchanged.' }
+
+if (-not $CheckOnly) {
+    Write-Host 'Preparing the additive bank balance number column...' -ForegroundColor Cyan
+    & $node (Join-Path $releaseRoot 'scripts\migrate-bank-balance.cjs') $targetRoot $ConfigPath
+    if ($LASTEXITCODE -ne 0) { throw 'Bank balance schema update failed. Running server and tasks were not changed.' }
+}
 
 Write-Host 'Checking local PostgreSQL and four real PDF reports using a read-only session...' -ForegroundColor Cyan
 & $node (Join-Path $releaseRoot 'scripts\check-web-features.cjs') $targetRoot $releaseRoot $ConfigPath

@@ -643,6 +643,9 @@ class LocalWebServer {
     }
 
     async start() {
+        if (this.dbManager.pool) {
+            await this.dbManager.pool.query('ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS balance_number TEXT');
+        }
         // Optimize Database Performance on Startup
         await this.ensureIndexes();
         await this.ensurePostgresSerialSequences();
@@ -713,7 +716,8 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-2026-09-21.reports.1',
+                        release: 'server-release-balance-number-1',
+                        bank_balance_number: true,
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,
                         reconciliation_pdf_delivery: true,
@@ -1452,6 +1456,7 @@ class LocalWebServer {
                     br.id, 
                     br.amount, 
                     br.operation_type, 
+                    br.balance_number,
                     br.created_at,
                     r.id as reconciliation_id,
                     r.reconciliation_number,
@@ -1494,6 +1499,10 @@ class LocalWebServer {
             if (query.specificAmount) {
                 sql += ` AND br.amount = ?`;
                 params.push(query.specificAmount);
+            }
+            if (query.balanceNumber) {
+                sql += ` AND COALESCE(br.balance_number, '') LIKE ?`;
+                params.push(`%${String(query.balanceNumber).trim()}%`);
             }
             if (query.device && query.device !== 'all') {
                 sql += ` AND atm.name = ?`;
@@ -3119,7 +3128,7 @@ class LocalWebServer {
 
                     // Bank Receipts
                     const allAtms = await tx.prepare("SELECT id, name FROM atms").all();
-                    const insertBank = tx.prepare(`INSERT INTO bank_receipts(reconciliation_id, operation_type, atm_id, amount) VALUES(?, ?, ?, ?)`);
+                    const insertBank = tx.prepare(`INSERT INTO bank_receipts(reconciliation_id, operation_type, atm_id, amount, balance_number) VALUES(?, ?, ?, ?, ?)`);
                     for (const item of bankReceipts) {
                         let atmId = null;
                         if (item.atm_id) atmId = item.atm_id;
@@ -3128,7 +3137,7 @@ class LocalWebServer {
                             if (found) atmId = found.id;
                         }
                         if (!atmId && allAtms.length > 0) atmId = allAtms[0].id; // Fallback
-                        await insertBank.run(recId, item.operation_type || 'Unknown', atmId, safeFloat(item.amount));
+                        await insertBank.run(recId, item.operation_type || 'Unknown', atmId, safeFloat(item.amount), String(item.balance_number || '').trim());
                     }
 
                     // Postpaid
@@ -4405,6 +4414,7 @@ class LocalWebServer {
                         'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
                         'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
                         'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+                        'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS balance_number TEXT',
                         'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
                         'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
                         'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
@@ -5320,6 +5330,7 @@ class LocalWebServer {
                     console.log(`🔄 [SYNC] Syncing ${table} (${items.length} items) in batches...`);
                     const cols = columns.map(c => c.name);
                     const updateSets = columns.map(col => {
+                        if (table === 'bank_receipts' && col.name === 'balance_number') return `${col.name} = COALESCE(EXCLUDED.${col.name}, ${table}.${col.name})`;
                         if (col.preserveIfNull) {
                             // Preserve existing value if new value is NULL or empty string
                             return `${col.name} = COALESCE(NULLIF(EXCLUDED.${col.name}, ''), NULLIF(EXCLUDED.${col.name}, 'null'), ${table}.${col.name})`;
@@ -6120,6 +6131,7 @@ class LocalWebServer {
                     const dataColumns = columns.map(column => column.name).filter(name => name !== 'id');
                     const cols = ['sync_source_id', 'source_row_id', ...dataColumns];
                     const updateSets = dataColumns.map(name => {
+                        if (table === 'bank_receipts' && name === 'balance_number') return `${name} = COALESCE(EXCLUDED.${name}, ${table}.${name})`;
                         if (options.preserveReconciliationNumber && name === 'reconciliation_number') {
                             return `${name} = COALESCE(EXCLUDED.${name}, ${table}.${name})`;
                         }
@@ -6666,7 +6678,7 @@ class LocalWebServer {
                 if (data.bank_receipts) {
                     await syncSourceScopedTable('bank_receipts', data.bank_receipts, [
                         { name: 'id' }, { name: 'reconciliation_id' }, { name: 'operation_type' },
-                        { name: 'atm_id' }, { name: 'amount' }, { name: 'is_modified' },
+                        { name: 'atm_id' }, { name: 'amount' }, { name: 'balance_number' }, { name: 'is_modified' },
                         { name: 'created_at' }
                     ], { remapReconciliationId: true });
                 }

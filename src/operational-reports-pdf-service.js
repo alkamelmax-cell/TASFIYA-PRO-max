@@ -26,6 +26,7 @@ function normalizeFilters(type, query = {}) {
             ...common,
             cashierId: clean(query.cashierId),
             accountLocation: clean(query.accountLocation),
+            balanceNumber: clean(query.balanceNumber),
             specificAmount: clean(query.specificAmount),
             operationType: clean(query.operationType),
             device: clean(query.device)
@@ -94,6 +95,7 @@ class OperationalReportsPdfService {
         if (filters.cashierId && filters.cashierId !== 'all') { where.push('r.cashier_id = ?'); params.push(filters.cashierId); }
         if (filters.branchId && filters.branchId !== 'all') { where.push('atm.branch_id = ?'); params.push(filters.branchId); }
         if (filters.accountLocation && filters.accountLocation !== 'all') { where.push('atm.location = ?'); params.push(filters.accountLocation); }
+        if (filters.balanceNumber) { where.push("COALESCE(br.balance_number, '') LIKE ?"); params.push(`%${filters.balanceNumber}%`); }
         if (filters.specificAmount) { where.push('br.amount = ?'); params.push(filters.specificAmount); }
         if (filters.device && filters.device !== 'all') { where.push('atm.name = ?'); params.push(filters.device); }
         addAtmOperationFilter(where, params, filters.operationType);
@@ -103,7 +105,7 @@ class OperationalReportsPdfService {
     async loadAtm(filters) {
         const { whereClause, params } = this.buildAtmWhere(filters);
         const rows = await this.queryAll(`
-            SELECT br.id, br.amount, br.operation_type, br.created_at,
+            SELECT br.id, br.amount, br.operation_type, br.balance_number, br.created_at,
                    r.id AS reconciliation_id, r.reconciliation_number, r.reconciliation_date,
                    atm.name AS atm_name, atm.bank_name, atm.location,
                    COALESCE(b.branch_name, '-') AS branch_name,
@@ -208,6 +210,7 @@ class OperationalReportsPdfService {
                 labels.push({ label: 'الكاشير', value: row?.name || filters.cashierId });
             }
             if (filters.operationType && filters.operationType !== 'all') labels.push({ label: 'العملية', value: operationLabel(filters.operationType) });
+            if (filters.balanceNumber) labels.push({ label: 'رقم الموازنة', value: filters.balanceNumber });
             if (filters.device && filters.device !== 'all') labels.push({ label: 'الجهاز', value: filters.device });
             if (filters.accountLocation && filters.accountLocation !== 'all') labels.push({ label: 'الحساب', value: filters.accountLocation });
             if (filters.specificAmount) labels.push({ label: 'المبلغ', value: filters.specificAmount });

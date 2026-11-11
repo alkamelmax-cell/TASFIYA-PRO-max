@@ -426,6 +426,7 @@ class PostgresManager {
             'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
             'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
             'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
+            'ALTER TABLE bank_receipts ADD COLUMN IF NOT EXISTS balance_number TEXT',
             'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS sync_source_id TEXT',
             'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS source_row_id BIGINT',
             'ALTER TABLE postpaid_sales ADD COLUMN IF NOT EXISTS is_modified INTEGER DEFAULT 0',
