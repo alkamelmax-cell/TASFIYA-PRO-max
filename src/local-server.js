@@ -716,7 +716,7 @@ class LocalWebServer {
                 if (pathname === '/api/server-version' && req.method === 'GET') {
                     this.sendJson(res, {
                         success: true,
-                        release: 'server-release-balance-number-1',
+                        release: 'server-release-balance-number-2',
                         bank_balance_number: true,
                         reconciliation_delete_ack: true,
                         customer_creation_requests: true,

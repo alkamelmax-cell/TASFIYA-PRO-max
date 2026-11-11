@@ -438,8 +438,8 @@ function buildReconciliationReportHtml(data) {
         <table>
             <thead><tr><th>العملية</th><th>الجهاز</th><th>البنك</th><th>المبلغ</th></tr></thead>
             <tbody>${tableRows(bankReceipts, [
-                { render: (row) => escapeHtml(row.operation_type || '-') },
-                { render: (row) => `${escapeHtml(row.atm_name || '-')}${row.balance_number ? `<br>رقم الموازنة: ${escapeHtml(row.balance_number)}` : ''}` },
+                { render: (row) => `${escapeHtml(row.operation_type || '-')}${row.balance_number ? `<br>رقم الموازنة: ${escapeHtml(row.balance_number)}` : ''}` },
+                { render: (row) => escapeHtml(row.atm_name || '-') },
                 { render: (row) => escapeHtml(row.bank_name || '-') },
                 { className: 'amount', render: (row) => formatAmount(row.amount) }
             ])}</tbody>

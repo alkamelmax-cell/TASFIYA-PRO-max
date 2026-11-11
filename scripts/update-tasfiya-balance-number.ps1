@@ -1,11 +1,11 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [string]$RepositoryPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
 $expectedCommit = '625b8435e36fa411ef8abf944b78c67d206a7aad'
-$expectedRelease = 'server-release-balance-number-1'
+$expectedRelease = 'server-release-balance-number-2'
 
 try {
     $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
@@ -65,3 +65,5 @@ try {
     Write-Error "فشل تحديث الخادم: $($_.Exception.Message)"
     exit 1
 }
+
+

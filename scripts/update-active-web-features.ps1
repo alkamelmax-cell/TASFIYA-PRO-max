@@ -8,7 +8,7 @@ param(
 # Overlay only the web module. Preserve the active server's database adapter,
 # migrations, startup, sync code, node_modules and original connection settings.
 $ErrorActionPreference = 'Stop'
-$expectedRelease = 'server-release-balance-number-1'
+$expectedRelease = 'server-release-balance-number-2'
 $taskName = 'TasfiyaPro-WebFeatures'
 $sourceRoot = (Resolve-Path -LiteralPath (Split-Path -Parent $PSScriptRoot)).Path
 $targetRoot = (Resolve-Path -LiteralPath $TargetPath).Path.TrimEnd('\')

@@ -600,9 +600,9 @@
                     <tr>
                         <td class="text-white text-center">${index + 1}</td>
                         <td class="text-center fw-bold">${formattedDate}</td>
-                        <td class="text-center">${opBadge}</td>
+                        <td class="text-center">${opBadge}${row.balance_number ? `<div class="small mt-1">رقم الموازنة: ${escapeBalanceNumber(row.balance_number)}</div>` : ''}</td>
                         <td class="text-center text-info fw-bold">
-                            <div>${row.atm_name || '-'}</div>${row.balance_number ? `<div class="small">رقم الموازنة: ${escapeBalanceNumber(row.balance_number)}</div>` : ''}
+                            <div>${row.atm_name || '-'}</div>
                             ${(row.location || row.account_number) ? `<div class="text-secondary small fw-normal">${row.location || row.account_number}</div>` : ''}
                         </td>
                         <td class="text-center text-white">${row.bank_name || '-'}</td>
@@ -665,7 +665,6 @@
                                     <h5 class="fw-bold text-white mb-1">
                                         <i class="${iconClass} ${colorClass} me-2"></i> ${row.atm_name || 'جهاز صراف'}
                                     </h5>
-                                    ${row.balance_number ? `<div class="small">رقم الموازنة: ${escapeBalanceNumber(row.balance_number)}</div>` : ''}
                                     <div class="text-white-50 small font-monospace mb-1">
                                         <i class="far fa-calendar-alt me-1"></i> ${formattedDate}
                                     </div>
@@ -683,7 +682,7 @@
                                     <i class="fas fa-user-circle text-secondary me-2"></i>
                                     <span class="text-white small">${row.cashier_name || 'غير معروف'}</span>
                                 </div>
-                                <span class="badge ${borderClass.replace('border-', 'bg-')} text-dark fw-bold">${row.operation_type}</span>
+                                <div class="text-center"><span class="badge ${borderClass.replace('border-', 'bg-')} text-dark fw-bold">${row.operation_type}</span>${row.balance_number ? `<div class="small mt-1">رقم الموازنة: ${escapeBalanceNumber(row.balance_number)}</div>` : ''}</div>
                             </div>
 
                             <hr class="border-secondary opacity-25 my-2">

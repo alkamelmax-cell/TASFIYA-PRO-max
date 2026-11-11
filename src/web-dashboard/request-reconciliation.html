@@ -269,7 +269,6 @@
                                     <tr>
                                         <th>العملية</th>
                                         <th>الصراف</th>
-                                        <th>رقم الموازنة</th>
                                         <th>البنك</th>
                                         <th class="text-ltr">المبلغ</th>
                                         <th>حذف</th>
@@ -1447,7 +1446,11 @@
                 cols.forEach(c => {
                     const val = item[c];
                     if (val === undefined) console.error(`Missing prop ${c} in table ${id}`, item);
-                    html += `<td>${escapeHtml(val !== undefined ? val : '-')}</td>`;
+                    if (c === 'opText') {
+                        html += `<td>${escapeHtml(val !== undefined ? val : '-')}${item.balance_number ? `<br><small>رقم الموازنة: ${escapeHtml(item.balance_number)}</small>` : ''}</td>`;
+                    } else if (c !== 'balance_number') {
+                        html += `<td>${escapeHtml(val !== undefined ? val : '-')}</td>`;
+                    }
                 });
                 // Use specific remove functions
                 let removeFn = '';

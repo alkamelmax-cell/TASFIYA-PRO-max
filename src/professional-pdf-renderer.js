@@ -407,8 +407,8 @@ class ProfessionalPdfRenderer {
         this.drawTable(state, 'المقبوضات البنكية', [
             { label: 'المبلغ', weight: 1, value: (row) => amount(row.amount), bold: true },
             { label: 'البنك', weight: 1.4, value: 'bank_name' },
-            { label: 'الجهاز', weight: 1.2, value: 'atm_name', showBalanceNumber: true },
-            { label: 'العملية', weight: 1.5, value: 'operation_type' }
+            { label: 'الجهاز', weight: 1.2, value: 'atm_name' },
+            { label: 'العملية', weight: 1.5, value: 'operation_type', showBalanceNumber: true }
         ], bankRows, { rowHeight: 30, totalRow: [amount(sum(bankRows, 'amount')), '', '', 'الإجمالي'] });
 
         const cashRows = [...(data.cashReceipts || [])].sort((a, b) => toNumber(b.denomination) - toNumber(a.denomination));
